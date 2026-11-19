@@ -16,4 +16,5 @@ tests/cores/*
 
 # Claude Code
 CLAUDE.local.md
-.claude/
+.claude/*
+!.claude/agents/
