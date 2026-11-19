@@ -6,7 +6,20 @@ mod cli;
 
 use std::process::ExitCode;
 
+const DEFAULT_LOG_FILTER: &str = "warn,emu_app=info,emu_ui=info,emu_runtime=info,emu_libretro=info";
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     let options = match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run(o)) => o,
         Ok(cli::Command::Help) => {

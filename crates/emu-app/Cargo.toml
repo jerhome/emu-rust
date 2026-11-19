@@ -14,6 +14,7 @@ audio-cpal = ["emu-ui/audio-cpal"]
 
 [dependencies]
 emu-ui = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use emu_ui::LaunchOptions;
 
 pub const USAGE: &str = "Usage : emu-rust --core <core.so> --rom <fichier> [--scale N] [--frames N]\n\
-                         \x20                [--dump-frame sortie.png] [--system-dir DIR] [--save-dir DIR]";
+                         \x20                [--dump-frame sortie.png] [--system-dir DIR] [--save-dir DIR] [--no-audio]";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -22,6 +22,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut dump = None;
     let mut system_dir = PathBuf::from("./data/system");
     let mut save_dir = PathBuf::from("./data/saves");
+    let mut audio = true;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -37,6 +38,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--dump-frame" => dump = Some(PathBuf::from(value(&mut it)?)),
             "--system-dir" => system_dir = PathBuf::from(value(&mut it)?),
             "--save-dir" => save_dir = PathBuf::from(value(&mut it)?),
+            "--no-audio" => audio = false,
             "--scale" => {
                 scale = number(&name, &value(&mut it)?)?;
                 if scale == 0 {
@@ -55,7 +57,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         scale,
         exit_after_frames: frames,
         dump_last_frame: dump,
-        audio: true,
+        audio,
     }))
 }
 
@@ -79,6 +81,7 @@ mod tests {
             panic!()
         };
         assert_eq!(o.scale, 3);
+        assert!(o.audio);
         assert_eq!(o.exit_after_frames, None);
         assert_eq!(o.system_dir, PathBuf::from("./data/system"));
         assert_eq!(o.save_dir, PathBuf::from("./data/saves"));
@@ -110,6 +113,14 @@ mod tests {
         assert_eq!(o.dump_last_frame, Some(PathBuf::from("o.png")));
         assert_eq!(o.system_dir, PathBuf::from("s"));
         assert_eq!(o.save_dir, PathBuf::from("v"));
+    }
+
+    #[test]
+    fn no_audio() {
+        let Command::Run(o) = p(&["--core", "c", "--rom", "r", "--no-audio"]).unwrap() else {
+            panic!()
+        };
+        assert!(!o.audio);
     }
 
     #[test]

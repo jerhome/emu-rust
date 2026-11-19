@@ -10,7 +10,10 @@ else
     rm -f "$HOME/.asoundrc"
 fi
 
+# Sound-less mode: tell emu-rust not to open an audio device (avoids ALSA noise on stderr).
+args=("$@")
 if [[ "${EMU_DISPLAY:-host}" == "novnc" ]]; then
+    args=(--no-audio "$@")
     export DISPLAY=:99
     unset WAYLAND_DISPLAY
     Xvfb :99 -screen 0 "${EMU_RESOLUTION:-1280x720x24}" -nolisten tcp &
@@ -19,9 +22,9 @@ if [[ "${EMU_DISPLAY:-host}" == "novnc" ]]; then
     websockify --web /usr/share/novnc 6080 localhost:5900 &
     if [[ "${EMU_KEEP_ALIVE:-0}" == "1" ]]; then
         # Keep the virtual screen up for debugging even if emu-rust exits (e.g. no --core given).
-        /usr/local/bin/emu-rust "$@" || true
+        /usr/local/bin/emu-rust "${args[@]}" || true
         wait
     fi
 fi
 
-exec /usr/local/bin/emu-rust "$@"
+exec /usr/local/bin/emu-rust "${args[@]}"

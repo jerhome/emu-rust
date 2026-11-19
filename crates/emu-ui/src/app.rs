@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use emu_runtime::{Emulator, EmulatorOptions, FramePacer, GlWindow, NullSink, Scaling};
+use emu_runtime::{
+    AudioConfig, AudioOutput, Emulator, EmulatorOptions, FramePacer, GlWindow, Scaling,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -19,7 +21,7 @@ struct App {
     pacer: Option<FramePacer>,
     keyboard: KeyboardInput,
     options: LaunchOptions,
-    audio: NullSink,
+    audio: AudioOutput,
     error: Option<UiError>,
 }
 
@@ -33,18 +35,37 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
             core_variables: Vec::new(),
         },
     )?;
+    let audio = if options.audio {
+        AudioOutput::open_or_null(
+            emulator.av_info().timing.sample_rate,
+            &AudioConfig::default(),
+        )
+    } else {
+        AudioOutput::null()
+    };
+    let keymap = KeyMap::genesis_default();
+    for (key, port, button) in keymap.bindings() {
+        tracing::info!("key {key:?} -> port {port} {}", md_button_name(*button));
+    }
     let event_loop = EventLoop::new().map_err(|e| UiError::EventLoop(e.to_string()))?;
     let mut app = App {
         window: None,
         emulator,
         pacer: None,
-        keyboard: KeyboardInput::new(KeyMap::genesis_default()),
+        keyboard: KeyboardInput::new(keymap),
         options,
-        audio: NullSink,
+        audio,
         error: None,
     };
     let result = event_loop.run_app(&mut app);
     app.window = None;
+    let stats = app.audio.stats();
+    tracing::info!(
+        "audio stats: underruns={} dropped_samples={} stream_failed={}",
+        stats.underruns,
+        stats.dropped_samples,
+        stats.stream_failed
+    );
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     if let Some(e) = app.error.take() {
         return Err(e);
@@ -53,6 +74,22 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
         app.emulator.frame().write_png(path)?;
     }
     Ok(())
+}
+
+/// Mega Drive pad name of a libretro button, as the Genesis core maps them.
+fn md_button_name(button: emu_runtime::JoypadButton) -> String {
+    use emu_runtime::JoypadButton as B;
+    match button {
+        B::Y => "MD A".into(),
+        B::B => "MD B".into(),
+        B::A => "MD C".into(),
+        B::L => "MD X".into(),
+        B::X => "MD Y".into(),
+        B::R => "MD Z".into(),
+        B::Select => "MD Mode".into(),
+        B::Start => "MD Start".into(),
+        other => format!("{other:?}"),
+    }
 }
 
 impl App {
@@ -70,6 +107,10 @@ impl App {
             && let Some(pacer) = &mut self.pacer
         {
             pacer.set_fps(self.emulator.av_info().timing.fps);
+        }
+        if status.av_info_changed {
+            self.audio
+                .set_input_rate(self.emulator.av_info().timing.sample_rate);
         }
         if status.video_updated
             && let Some(w) = &mut self.window

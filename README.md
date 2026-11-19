@@ -15,6 +15,7 @@ PC DOS et consoles 32 bits. Usage personnel.
 | N'importe lequel, dans le navigateur (sans son) | `docker compose -f docker/compose.yaml up --build emu-novnc` puis <http://localhost:6080/vnc.html> |
 
 Les données (cores, BIOS, ROMs, sauvegardes, covers) sont dans le volume Docker `emu-rust_emu-data`.
+Détails (placer core et ROM, test du son) : [docker/README.md](docker/README.md).
 
 ## Développement
 

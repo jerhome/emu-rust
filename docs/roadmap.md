@@ -27,7 +27,7 @@
 |---|---|---|
 | 0 | Cadrage | Squelette, ADR, agents, Dockerfiles. ✅ |
 | 1 | POC | genesis_plus_gx fait tourner une ROM homebrew : empreintes d'images headless + capture Xvfb. ✅ |
-| 1b | Premier déploiement Docker | Image en mode WSLg et noVNC, lancée par l'utilisateur, jouable au clavier ; sortie audio réelle via `cpal` |
+| 1b | Premier déploiement Docker | Image en mode WSLg et noVNC, lancée par l'utilisateur, jouable au clavier ; sortie audio réelle via `cpal`. Code et image ✅ ; essai WSLg par l'utilisateur en attente |
 | 2 | Frontend solide | Callbacks libretro complets, formats de pixels, sync A/V, SRAM, savestates, configuration des touches |
 | 3 | Gestionnaire de cores | Téléchargement et mise à jour des cores depuis l'UI, vérification des BIOS, dossiers système |
 | 4 | Bibliothèque et covers | Scan, identification, SQLite, covers (libretro-thumbnails → ScreenScraper → IGDB) |

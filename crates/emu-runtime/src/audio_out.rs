@@ -1,17 +1,59 @@
 //! Real audio output. The cpal stream is behind the `audio-cpal` feature (default on); built without it,
 //! `AudioOutput::open_or_null` always returns the silent output.
 
+use tracing::warn;
+
 use crate::audio::{AudioSink, NullSink};
 use crate::audio_ring::{AudioConfig, AudioStats};
 #[cfg(feature = "audio-cpal")]
-use crate::audio_ring::{AudioError, RingSink};
+use crate::audio_ring::{AudioError, OutputSample, RingReader, RingSink, audio_ring};
 
 /// Plays the core's audio on the default output device: `RingSink` + cpal stream whose callback owns the
 /// `RingReader`. `!Send` (owns the cpal stream): create and use it on the emulation thread.
 #[cfg(feature = "audio-cpal")]
 pub struct CpalSink {
-    // Placeholder until runtime-av implements it.
-    _stream: std::marker::PhantomData<(cpal::Stream, RingSink)>,
+    // Boxed so `AudioOutput::Device` stays small next to `Null`.
+    inner: Box<CpalInner>,
+    /// Keeps the type `!Send` whatever cpal's `Stream` is on this platform (documented contract).
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+#[cfg(feature = "audio-cpal")]
+struct CpalInner {
+    // Field order: the stream (and its callback holding the reader) is dropped before the sink.
+    _stream: cpal::Stream,
+    sink: RingSink,
+}
+
+#[cfg(feature = "audio-cpal")]
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut reader: RingReader,
+) -> Result<cpal::Stream, AudioError>
+where
+    T: cpal::SizedSample + OutputSample,
+{
+    use cpal::traits::DeviceTrait;
+
+    let channels = usize::from(config.channels);
+    let notify = reader.failure_notifier();
+    // Real-time callback: only ring reads and sample conversion (no allocation, lock or log).
+    let data_callback =
+        move |data: &mut [T], _: &cpal::OutputCallbackInfo| reader.fill(data, channels);
+    let error_callback = move |err: cpal::Error| {
+        use cpal::ErrorKind;
+        // Recoverable conditions: cpal keeps the stream running (ALSA recovers xruns via prepare()).
+        if !matches!(
+            err.kind(),
+            ErrorKind::Xrun | ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied
+        ) {
+            notify();
+        }
+    };
+    device
+        .build_output_stream::<T, _, _>(*config, data_callback, error_callback, None)
+        .map_err(|e| AudioError::Stream(e.to_string()))
 }
 
 #[cfg(feature = "audio-cpal")]
@@ -19,29 +61,64 @@ impl CpalSink {
     /// Default host → default output device → default output config (F32/I16/U16/I32, else
     /// `UnsupportedFormat`), `BufferSize::Default`, stream started. Never panics.
     pub fn open(input_rate: f64, config: &AudioConfig) -> Result<Self, AudioError> {
-        let _ = (input_rate, config);
-        todo!()
+        use cpal::SampleFormat;
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
+        let supported = device
+            .default_output_config()
+            .map_err(|e| AudioError::Config(e.to_string()))?;
+        let format = supported.sample_format();
+        let stream_config = supported.config(); // BufferSize::Default
+        if stream_config.channels == 0 {
+            return Err(AudioError::Config("device reports 0 channels".into()));
+        }
+
+        let (sink, reader) = audio_ring(input_rate, stream_config.sample_rate, config);
+        let stream = match format {
+            SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, reader),
+            SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, reader),
+            SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, reader),
+            SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, reader),
+            other => return Err(AudioError::UnsupportedFormat(other.to_string())),
+        }?;
+        stream
+            .play()
+            .map_err(|e| AudioError::Stream(e.to_string()))?;
+
+        tracing::info!(
+            "audio output: {} Hz, {} channel(s), {format}, latency target {} ms",
+            stream_config.sample_rate,
+            stream_config.channels,
+            config.latency.as_millis()
+        );
+        Ok(Self {
+            inner: Box::new(CpalInner {
+                _stream: stream,
+                sink,
+            }),
+            _not_send: std::marker::PhantomData,
+        })
     }
 
     pub fn device_rate(&self) -> u32 {
-        todo!()
+        self.inner.sink.device_rate()
     }
 
     pub fn set_input_rate(&mut self, input_rate: f64) {
-        let _ = input_rate;
-        todo!()
+        self.inner.sink.set_input_rate(input_rate);
     }
 
     pub fn stats(&self) -> AudioStats {
-        todo!()
+        self.inner.sink.stats()
     }
 }
 
 #[cfg(feature = "audio-cpal")]
 impl AudioSink for CpalSink {
     fn push_samples(&mut self, interleaved_stereo: &[i16]) {
-        let _ = interleaved_stereo;
-        todo!()
+        self.inner.sink.push_samples(interleaved_stereo);
     }
 }
 
@@ -58,8 +135,17 @@ impl AudioOutput {
     /// With `audio-cpal`: tries `CpalSink::open`, on error one `warn!` with the reason and `Null`.
     /// Without: one `warn!` (`AudioError::NotCompiled`) and `Null`. Never panics.
     pub fn open_or_null(input_rate: f64, config: &AudioConfig) -> Self {
-        let _ = (input_rate, config);
-        todo!()
+        #[cfg(feature = "audio-cpal")]
+        let result = CpalSink::open(input_rate, config).map(Self::Device);
+        #[cfg(not(feature = "audio-cpal"))]
+        let result: Result<Self, crate::audio_ring::AudioError> = {
+            let _ = (input_rate, config);
+            Err(crate::audio_ring::AudioError::NotCompiled)
+        };
+        result.unwrap_or_else(|err| {
+            warn!("audio disabled: {err}");
+            Self::null()
+        })
     }
 
     /// Silent output (`--no-audio`, tests).
@@ -68,24 +154,68 @@ impl AudioOutput {
     }
 
     pub fn is_device(&self) -> bool {
-        todo!()
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(_) => true,
+            Self::Null(_) => false,
+        }
     }
 
     /// No-op for `Null`.
     pub fn set_input_rate(&mut self, input_rate: f64) {
-        let _ = input_rate;
-        todo!()
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(sink) => sink.set_input_rate(input_rate),
+            Self::Null(_) => {
+                let _ = input_rate;
+            }
+        }
     }
 
     /// `AudioStats::default()` for `Null`.
     pub fn stats(&self) -> AudioStats {
-        todo!()
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(sink) => sink.stats(),
+            Self::Null(_) => AudioStats::default(),
+        }
     }
 }
 
 impl AudioSink for AudioOutput {
     fn push_samples(&mut self, interleaved_stereo: &[i16]) {
-        let _ = interleaved_stereo;
-        todo!()
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(sink) => sink.push_samples(interleaved_stereo),
+            Self::Null(sink) => sink.push_samples(interleaved_stereo),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_output_accepts_samples() {
+        let mut out = AudioOutput::null();
+        assert!(!out.is_device());
+        out.push_samples(&[1, 2, 3, 4]);
+        out.set_input_rate(32_040.0);
+        assert_eq!(out.stats(), AudioStats::default());
+    }
+
+    /// Opens the real default device: falls back to `Null` with a warning when there is none (this container).
+    /// `cargo test -p emu-runtime -- --ignored open_or_null --nocapture`
+    #[test]
+    #[ignore = "touches the host audio system"]
+    fn open_or_null_never_panics() {
+        let out = AudioOutput::open_or_null(32_040.0, &AudioConfig::default());
+        eprintln!("audio output is_device = {}", out.is_device());
+        #[cfg(feature = "audio-cpal")]
+        if let Err(err) = CpalSink::open(32_040.0, &AudioConfig::default()) {
+            eprintln!("CpalSink::open: {err}");
+        }
+        assert_eq!(out.stats().underruns, 0);
     }
 }
