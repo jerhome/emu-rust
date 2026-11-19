@@ -9,8 +9,9 @@ version = "0.0.1"
 # Shared versions; GL/windowing aligned with egui_glow 0.37 (ADR 0008).
 [workspace.dependencies]
 emu-libretro = { path = "crates/emu-libretro" }
-emu-runtime = { path = "crates/emu-runtime" }
-emu-ui = { path = "crates/emu-ui" }
+# default-features off so `emu-app --no-default-features` really drops cpal (feature `audio-cpal` chain).
+emu-runtime = { path = "crates/emu-runtime", default-features = false }
+emu-ui = { path = "crates/emu-ui", default-features = false }
 libloading = "0.9"
 thiserror = "2"
 tracing = "0.1"
@@ -19,6 +20,9 @@ glutin = "0.32.3"
 glutin-winit = "0.5"
 glow = "0.17"
 png = "0.18"
+# Phase 1b audio (docs/design/phase1b-docker.md). cpal pulls alsa-sys on Linux: build needs libasound2-dev + pkg-config.
+cpal = "0.18.2"
+rtrb = "0.4.1"
 
 [workspace.lints.rust]
 # Denied (not forbidden) so emu-libretro and emu-runtime can opt in with #![allow(unsafe_code)].

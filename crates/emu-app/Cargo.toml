@@ -8,6 +8,10 @@ publish = false
 name = "emu-rust"
 path = "src/main.rs"
 
+[features]
+default = ["audio-cpal"]
+audio-cpal = ["emu-ui/audio-cpal"]
+
 [dependencies]
 emu-ui = { workspace = true }
 

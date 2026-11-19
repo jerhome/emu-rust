@@ -20,6 +20,8 @@ pub struct LaunchOptions {
     pub exit_after_frames: Option<u64>,
     /// On exit, write the last emulated frame as PNG.
     pub dump_last_frame: Option<PathBuf>,
+    /// `false` (`--no-audio`): silent `AudioOutput::null()` without probing a device.
+    pub audio: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

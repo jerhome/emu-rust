@@ -2,7 +2,8 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-/// Destination for the core's interleaved stereo `i16` samples. Real output (`cpal`) arrives in phase 1b.
+/// Destination for the core's interleaved stereo `i16` samples, at the core's `timing.sample_rate`.
+/// Real output: `CpalSink` / `AudioOutput` (audio_out.rs).
 pub trait AudioSink {
     fn push_samples(&mut self, interleaved_stereo: &[i16]);
 }

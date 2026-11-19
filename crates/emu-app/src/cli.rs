@@ -55,6 +55,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         scale,
         exit_after_frames: frames,
         dump_last_frame: dump,
+        audio: true,
     }))
 }
 

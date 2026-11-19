@@ -4,12 +4,20 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+# Real audio output (cpal; on Linux the build needs libasound2-dev + pkg-config for alsa-sys).
+# `--no-default-features` builds a silent binary where ALSA headers are unavailable.
+default = ["audio-cpal"]
+audio-cpal = ["dep:cpal"]
+
 [dependencies]
+cpal = { workspace = true, optional = true }
 emu-libretro = { workspace = true }
 glow = { workspace = true }
 glutin = { workspace = true }
 glutin-winit = { workspace = true }
 png = { workspace = true }
+rtrb = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 winit = { workspace = true }

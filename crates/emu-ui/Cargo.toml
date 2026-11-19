@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+default = ["audio-cpal"]
+audio-cpal = ["emu-runtime/audio-cpal"]
+
 [dependencies]
 emu-runtime = { workspace = true }
 thiserror = { workspace = true }
