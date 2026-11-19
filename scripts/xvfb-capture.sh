@@ -24,6 +24,8 @@ Options:
   -h, --help        this help
 Needs: Xvfb; xwd and convert (ImageMagick) unless --dump-window. Software GL is forced (LIBGL_ALWAYS_SOFTWARE=1).
 The emu must still be running at capture time: raise --frames or lower --delay.
+emu-rust's own `--screen menu|keys|options` (after `--`; not the Xvfb --screen above) opens that screen
+only once --frames is reached, then exits at once: xwd cannot catch it, so it forces --dump-window mode.
 U
 }
 
@@ -45,6 +47,16 @@ while (($#)); do
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+# emu-rust --screen is only capturable by the app itself (see usage).
+if ((!dump)); then
+    for a in "${extra[@]}"; do
+        if [[ $a == --screen ]]; then
+            echo "note: emu-rust --screen given: switching to --dump-window mode" >&2
+            dump=1
+            break
+        fi
+    done
+fi
 [[ -n $core && -n $rom ]] || { echo "--core and --rom are required" >&2; usage >&2; exit 2; }
 [[ -f $core ]] || { echo "core not found: $core (run scripts/fetch-test-assets.sh)" >&2; exit 1; }
 [[ -f $rom ]] || { echo "rom not found: $rom (run scripts/fetch-test-assets.sh)" >&2; exit 1; }

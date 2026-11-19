@@ -70,6 +70,9 @@ jobs:
     # macos-13 was retired by GitHub (Dec 2025); macos-15-intel is the remaining x86_64 runner.
     runs-on: macos-15-intel
     timeout-minutes: 60
+    env:
+      # rustc and the `cc`-built C shim (ADR 0009) target 10.13 (Info.plist LSMinimumSystemVersion); test Mac: 12.7.6.
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,11 +102,54 @@ jobs:
       - name: Build release
         run: cargo build --release -p emu-app --target x86_64-apple-darwin
 
-      # TODO(phase 2b): package a signed-less .app bundle (Info.plist, icon, bundled dylibs) and upload it
-      # instead of the bare binary.
+      - name: Minimum macOS version (<= 12.0)
+        run: scripts/check-macos-minos.sh target/x86_64-apple-darwin/release/emu-rust 12.0
+
+      # Bare binary for CI; the .app bundle is built by release.yml (scripts/package-macos.sh).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: emu-rust-macos-x86_64
           path: target/x86_64-apple-darwin/release/emu-rust
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows (x86_64-pc-windows-msvc)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Test
+        # Mock-core tests stay `cfg(unix)` until the helper can build a .dll (ADR 0012).
+        run: cargo test --locked --workspace --target x86_64-pc-windows-msvc
+
+      - name: Build without default features
+        run: cargo build --locked --workspace --no-default-features --target x86_64-pc-windows-msvc
+
+      - name: Build release
+        # MSVC toolchain; console subsystem (ADR 0012).
+        run: cargo build --locked --release -p emu-app --target x86_64-pc-windows-msvc
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emu-rust-windows-x86_64
+          path: target/x86_64-pc-windows-msvc/release/emu-rust.exe
           if-no-files-found: error
           retention-days: 14

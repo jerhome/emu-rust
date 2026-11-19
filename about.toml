@@ -1,0 +1,29 @@
+# cargo-about configuration (ADR 0012): generates THIRD-PARTY-LICENSES.html for the release archives.
+# Only licenses listed here are accepted (in order of preference for `A OR B`); a new dependency whose license
+# cannot be satisfied fails the release build (`--fail`).
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    # option-ext (via directories): file-level copyleft, unmodified, source available on crates.io.
+    "MPL-2.0",
+    # epaint_default_fonts: bundled fonts.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+# Shipped targets only (keeps platform crates of other OSes out of the report).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# Workspace crates (publish = false) are emu-rust itself.
+private = { ignore = true }
+# Build scripts (cc, ...) and test helpers are not distributed.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

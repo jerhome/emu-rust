@@ -1,0 +1,366 @@
+# Release (ADR 0012, docs/design/release-0.1.md §2).
+# - push of a tag `v*`: builds the 3 archives + Docker image, publishes ghcr.io and a GitHub pre-release.
+# - workflow_dispatch: dry run by default (archives uploaded as workflow artifacts only; image built, not pushed).
+#   `dry_run: false` is only honoured on a tag ref (re-run of a failed publication).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload artifacts only (no GHCR push, no GitHub release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # cargo-about is pinned (ADR 0012); bump deliberately.
+  CARGO_ABOUT_VERSION: "0.9.3"
+
+jobs:
+  check-version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: v
+        name: Tag must equal the workspace version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version=$(scripts/workspace-version.sh)
+          publish=false
+          if [[ $EVENT == push || ( $EVENT == workflow_dispatch && $DRY_RUN == false ) ]]; then
+            if [[ $REF_TYPE != tag ]]; then
+              echo "::error::publishing requires a tag ref (got $REF_TYPE $REF_NAME)"; exit 1
+            fi
+            publish=true
+          fi
+          if [[ $REF_TYPE == tag && $REF_NAME != "v$version" ]]; then
+            echo "::error::tag $REF_NAME does not match workspace version $version (Cargo.toml)"; exit 1
+          fi
+          prerelease=false
+          [[ $version == 0.* || $version == *-* ]] && prerelease=true
+          echo "version=$version, publish=$publish, prerelease=$prerelease"
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          PUBLISH: ${{ steps.v.outputs.publish }}
+        run: |
+          mkdir -p dist
+          if [[ $PUBLISH == true ]]; then
+            scripts/release-notes.sh "$VERSION" > dist/release-notes.md
+          else
+            scripts/release-notes.sh "$VERSION" --allow-missing-changelog > dist/release-notes.md
+          fi
+          cat dist/release-notes.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  licenses:
+    name: Third-party licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version "$CARGO_ABOUT_VERSION" --features cli
+
+      - name: Generate THIRD-PARTY-LICENSES.html
+        # Fails on any license not accepted in about.toml.
+        run: |
+          mkdir -p dist
+          cargo about generate --locked --fail -c about.toml -o dist/THIRD-PARTY-LICENSES.html packaging/about.hbs
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: third-party-licenses
+          path: dist/THIRD-PARTY-LICENSES.html
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux x86_64 (ubuntu-22.04)
+    needs: [check-version, licenses]
+    # 22.04: glibc 2.35, runs on more distributions than a 24.04 build (ADR 0012).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libasound2-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+
+      # No build cache in release jobs: artifacts are built from a clean state.
+      - name: Build
+        run: cargo build --release --locked -p emu-app
+
+      - name: Smoke test
+        run: target/release/emu-rust --version | tee /dev/stderr | grep -qF "$VERSION"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-licenses
+          path: dist
+
+      - name: Package
+        run: scripts/package-linux.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emu-rust-${{ env.VERSION }}-linux-x86_64
+          path: dist/emu-rust-${{ env.VERSION }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  macos:
+    name: macOS Intel (macos-15-intel)
+    needs: [check-version, licenses]
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+      # Job-wide so rustc AND the `cc`-built C shim (ADR 0009) target 10.13, like Info.plist
+      # LSMinimumSystemVersion; the runner's SDK would otherwise default to a recent macOS (test Mac: 12.7.6).
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin
+
+      - name: Build
+        run: cargo build --release --locked -p emu-app --target x86_64-apple-darwin
+
+      - name: Minimum macOS version (<= 12.0)
+        run: scripts/check-macos-minos.sh target/x86_64-apple-darwin/release/emu-rust 12.0
+
+      - name: Smoke test
+        run: target/x86_64-apple-darwin/release/emu-rust --version | tee /dev/stderr | grep -qF "$VERSION"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-licenses
+          path: dist
+
+      - name: Package (.app, ad hoc signature, ditto)
+        run: scripts/package-macos.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emu-rust-${{ env.VERSION }}-macos-x86_64
+          path: dist/emu-rust-${{ env.VERSION }}-macos-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  windows:
+    name: Windows x86_64 (MSVC)
+    needs: [check-version, licenses]
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      # Console subsystem on purpose (ADR 0012): CLI-driven, logs on stderr.
+      - name: Build
+        run: cargo build --release --locked -p emu-app --target x86_64-pc-windows-msvc
+
+      - name: Smoke test
+        run: |
+          $out = & target/x86_64-pc-windows-msvc/release/emu-rust.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output $out
+          if (-not ($out -match [regex]::Escape($env:VERSION))) { Write-Error "version mismatch"; exit 1 }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-licenses
+          path: dist
+
+      - name: Package (zip)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "emu-rust-$env:VERSION-windows-x86_64"
+          $stage = "dist/$name"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage, "dist/$name.zip"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/emu-rust.exe, packaging/README.txt, LICENSE-MIT, LICENSE-APACHE, dist/THIRD-PARTY-LICENSES.html -Destination $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force $stage
+          Expand-Archive -Path "dist/$name.zip" -DestinationPath "$env:RUNNER_TEMP/check"
+          Get-ChildItem -Recurse "$env:RUNNER_TEMP/check" | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emu-rust-${{ env.VERSION }}-windows-x86_64
+          path: dist/emu-rust-${{ env.VERSION }}-windows-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  docker:
+    name: Docker image (ghcr.io, linux/amd64)
+    needs: check-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ needs.check-version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # 0.1.0, 0.1, latest (tags only); org.opencontainers.image.source is set from the repository.
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/runtime/Dockerfile
+          platforms: linux/amd64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,scope=runtime,mode=max
+
+  release:
+    name: GitHub pre-release
+    needs: [check-version, linux, macos, windows, docker]
+    if: needs.check-version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+      PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: emu-rust-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+
+      - name: SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          files=(emu-rust-*)
+          ls -l -- "${files[@]}"
+          # Exactly the 3 archives (Linux, macOS, Windows): nothing else may be published.
+          [[ ${#files[@]} -eq 3 ]] || { echo "::error::expected 3 archives, got ${#files[@]}"; exit 1; }
+          sha256sum -- "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update the release
+        run: |
+          tag="v$VERSION"
+          flags=()
+          [[ $PRERELEASE == true ]] && flags+=(--prerelease)
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # Re-run after a partial failure: replace the assets, keep the existing notes.
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --verify-tag --title "emu-rust $VERSION" \
+              --notes-file notes/release-notes.md "${flags[@]}"
+          fi

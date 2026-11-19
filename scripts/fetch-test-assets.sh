@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fetch the test assets used by the ignored integration tests (ADR 0007):
 #   - 240p Test Suite (Mega Drive) 1.21, GPL-2.0 homebrew, SHA256 pinned
-#   - genesis_plus_gx libretro core, libretro nightly, hash recorded on first download (TOFU)
+#   - 240p Test Suite (SNES) 1.02, GPL-2.0 homebrew (ArtemioUrbina/240pTestSuite), SHA256 pinned
+#   - genesis_plus_gx and snes9x libretro cores, libretro nightly, hash recorded on first download (TOFU)
 set -euo pipefail
 
 usage() {
@@ -11,7 +12,7 @@ Usage: scripts/fetch-test-assets.sh [--refresh-cores] [--help]
 Downloads test assets into tests/roms and tests/cores (both ignored by git).
 Idempotent: files already present and matching their hash are not downloaded again.
 
-  --refresh-cores  re-download the core and record its new SHA256 (TOFU)
+  --refresh-cores  re-download the cores and record its new SHA256 (TOFU)
   --help           show this help
 
 Requires: curl, unzip, sha256sum.
@@ -42,8 +43,15 @@ ROM_ZIP_NAME='240pSuite-GenesisMD-1.21.zip'
 ROM_NAME='240pSuite-1.21.bin'
 ROM_SHA256='1776009ab324c18e4f046b4781fed11b897281f407ec04f2ac43649bcebae28f'
 
-CORE_URL='https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip'
-CORE_NAME='genesis_plus_gx_libretro.so'
+SNES_ZIP_URL='https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download'
+SNES_ZIP_SHA256='6a0c79b68f33d3df1256f0c4db7dd32dfab41190726a6b35b76061b4edf7054b'
+SNES_ZIP_NAME='240pSuite-SNES-1.02.zip'
+SNES_MEMBER='240pSuite.sfc'
+SNES_NAME='240pSuite-SNES-1.02.sfc'
+SNES_SHA256='bf73e9f4a55da8c66379f1f6126fc14d55c56adbe007dbfebeec77475eca6949'
+
+CORE_BASE_URL='https://buildbot.libretro.com/nightly/linux/x86_64/latest'
+CORES=(genesis_plus_gx_libretro.so snes9x_libretro.so)
 
 MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
 
@@ -81,55 +89,64 @@ extract_one() {
     mv -f "$found" "$dest"
 }
 
-# ---- ROM (pinned); the zip is kept for the archive-loading tests ----
-rom_path="$roms_dir/$ROM_NAME"
-zip_path="$roms_dir/$ROM_ZIP_NAME"
-if [ -f "$zip_path" ] && [ "$(sha_of "$zip_path")" = "$ROM_ZIP_SHA256" ]; then
-    echo "ROM zip ok: $zip_path"
-else
-    echo "Downloading $ROM_ZIP_NAME ..."
-    part_files+=("$zip_path.part")
-    download_zip "$ROM_URL" "$zip_path.part"
-    if [ "$(sha_of "$zip_path.part")" != "$ROM_ZIP_SHA256" ]; then
-        rm -f "$zip_path.part"
-        echo "error: SHA256 mismatch for ROM zip" >&2
-        exit 1
+# fetch_rom ZIP_URL ZIP_SHA256 ZIP_NAME MEMBER ROM_NAME ROM_SHA256
+# The zip is kept next to the ROM for the archive-loading tests.
+fetch_rom() {
+    local url="$1" zip_sha="$2" zip_name="$3" member="$4" rom_name="$5" rom_sha="$6"
+    local rom_path="$roms_dir/$rom_name" zip_path="$roms_dir/$zip_name"
+    if [ -f "$zip_path" ] && [ "$(sha_of "$zip_path")" = "$zip_sha" ]; then
+        echo "ROM zip ok: $zip_path"
+    else
+        echo "Downloading $zip_name ..."
+        part_files+=("$zip_path.part")
+        download_zip "$url" "$zip_path.part"
+        if [ "$(sha_of "$zip_path.part")" != "$zip_sha" ]; then
+            rm -f "$zip_path.part"
+            echo "error: SHA256 mismatch for $zip_name" >&2
+            exit 1
+        fi
+        mv -f "$zip_path.part" "$zip_path"
+        echo "ROM zip installed: $zip_path"
     fi
-    mv -f "$zip_path.part" "$zip_path"
-    echo "ROM zip installed: $zip_path"
-fi
-if [ -f "$rom_path" ] && [ "$(sha_of "$rom_path")" = "$ROM_SHA256" ]; then
-    echo "ROM ok: $rom_path"
-else
-    part_files+=("$rom_path.part")
-    extract_one "$zip_path" "$ROM_NAME" "$rom_path.part"
-    if [ "$(sha_of "$rom_path.part")" != "$ROM_SHA256" ]; then
-        rm -f "$rom_path.part"
-        echo "error: SHA256 mismatch for $ROM_NAME" >&2
-        exit 1
+    if [ -f "$rom_path" ] && [ "$(sha_of "$rom_path")" = "$rom_sha" ]; then
+        echo "ROM ok: $rom_path"
+    else
+        part_files+=("$rom_path.part")
+        extract_one "$zip_path" "$member" "$rom_path.part"
+        if [ "$(sha_of "$rom_path.part")" != "$rom_sha" ]; then
+            rm -f "$rom_path.part"
+            echo "error: SHA256 mismatch for $rom_name" >&2
+            exit 1
+        fi
+        mv -f "$rom_path.part" "$rom_path"
+        echo "ROM installed: $rom_path"
     fi
-    mv -f "$rom_path.part" "$rom_path"
-    echo "ROM installed: $rom_path"
-fi
+}
 
-# ---- Core (TOFU) ----
-core_path="$cores_dir/$CORE_NAME"
-hash_path="$core_path.sha256"
-if [ "$refresh_cores" = 0 ] && [ -f "$core_path" ] && [ -f "$hash_path" ]; then
-    expected="$(cut -d' ' -f1 "$hash_path")"
-    [ "$(sha_of "$core_path")" = "$expected" ] \
-        || { echo "error: $CORE_NAME does not match $hash_path (use --refresh-cores to replace)" >&2; exit 1; }
-    echo "Core ok: $core_path ($expected)"
-else
-    echo "Downloading $CORE_NAME ..."
-    work="$(mktemp -d)"; tmp_dirs+=("$work")
-    download_zip "$CORE_URL" "$work/core.zip"
-    extract_one "$work/core.zip" "$CORE_NAME" "$work/$CORE_NAME"
-    # Copy next to the destination so the final mv is an atomic same-filesystem rename.
-    part_files+=("$core_path.part")
-    cp -f "$work/$CORE_NAME" "$core_path.part"
-    mv -f "$core_path.part" "$core_path"
-    sum="$(sha_of "$core_path")"
-    echo "$sum  $CORE_NAME" > "$hash_path"
-    echo "Core installed: $core_path (sha256 $sum, recorded as trusted on first use)"
-fi
+# fetch_core CORE_NAME (TOFU)
+fetch_core() {
+    local name="$1" core_path="$cores_dir/$1" work sum expected
+    local hash_path="$core_path.sha256"
+    if [ "$refresh_cores" = 0 ] && [ -f "$core_path" ] && [ -f "$hash_path" ]; then
+        expected="$(cut -d' ' -f1 "$hash_path")"
+        [ "$(sha_of "$core_path")" = "$expected" ] \
+            || { echo "error: $name does not match $hash_path (use --refresh-cores to replace)" >&2; exit 1; }
+        echo "Core ok: $core_path ($expected)"
+    else
+        echo "Downloading $name ..."
+        work="$(mktemp -d)"; tmp_dirs+=("$work")
+        download_zip "$CORE_BASE_URL/$name.zip" "$work/core.zip"
+        extract_one "$work/core.zip" "$name" "$work/$name"
+        # Copy next to the destination so the final mv is an atomic same-filesystem rename.
+        part_files+=("$core_path.part")
+        cp -f "$work/$name" "$core_path.part"
+        mv -f "$core_path.part" "$core_path"
+        sum="$(sha_of "$core_path")"
+        echo "$sum  $name" > "$hash_path"
+        echo "Core installed: $core_path (sha256 $sum, recorded as trusted on first use)"
+    fi
+}
+
+fetch_rom "$ROM_URL" "$ROM_ZIP_SHA256" "$ROM_ZIP_NAME" "$ROM_NAME" "$ROM_NAME" "$ROM_SHA256"
+fetch_rom "$SNES_ZIP_URL" "$SNES_ZIP_SHA256" "$SNES_ZIP_NAME" "$SNES_MEMBER" "$SNES_NAME" "$SNES_SHA256"
+for core in "${CORES[@]}"; do fetch_core "$core"; done

@@ -2,10 +2,13 @@
 #   docker compose -f docker/compose.yaml up --build emu-wslg    # Windows + WSL2 (WSLg)
 #   docker compose -f docker/compose.yaml up --build emu-x11     # Linux host with X11
 #   docker compose -f docker/compose.yaml up --build emu-novnc   # any host, browser at http://localhost:6080/vnc.html
+# Published image instead of a local build (ADR 0012):
+#   EMU_IMAGE=ghcr.io/jerhome/emu-rust:0.1.0 docker compose -f docker/compose.yaml up --no-build emu-wslg
 name: emu-rust
 
 x-base: &base
-  image: emu-rust:dev
+  # Default: local build tag. Set EMU_IMAGE to a ghcr.io tag and pass --no-build (or `pull`) to skip the build.
+  image: ${EMU_IMAGE:-emu-rust:dev}
   build:
     context: ..
     dockerfile: docker/runtime/Dockerfile

@@ -3,6 +3,24 @@
 Images : `dev` (toolchain, Xvfb) et `runtime` (build release, utilisateur `emu`, données dans `/data`). Voir ADR 0004.
 Commandes à lancer depuis la racine du dépôt.
 
+## Image publiée (GHCR)
+
+Chaque tag `v*` publie l'image runtime (`linux/amd64`) sur `ghcr.io/jerhome/emu-rust` : `:<version>` (ex. `0.1.0`),
+`:<majeur>.<mineur>` (`0.1`) et `:latest` (ADR 0012). `EMU_IMAGE` choisit l'image utilisée par `compose.yaml`
+(défaut : `emu-rust:dev`, construite localement) :
+
+```sh
+export EMU_IMAGE=ghcr.io/jerhome/emu-rust:0.1.0
+docker compose -f docker/compose.yaml --profile wslg pull
+docker compose -f docker/compose.yaml run --rm --no-build emu-wslg --core /data/cores/genesis_plus_gx_libretro.so --rom /data/roms/240pSuite-GenesisMD-1.21.zip
+```
+
+Sans `EMU_IMAGE`, `--build` reconstruit l'image depuis les sources comme avant. Avec `EMU_IMAGE` et `--build`, l'image
+locale construite porte le nom GHCR : préférer `--no-build`.
+
+Premier push : GHCR crée le paquet en **privé**. Une seule fois, sur GitHub : profil → *Packages* → `emu-rust` →
+*Package settings* → *Change visibility* → *Public* (sinon `docker login ghcr.io` avec un jeton `read:packages`).
+
 ## Données dans `/data` (volume `emu-rust_emu-data`)
 
 ```text
