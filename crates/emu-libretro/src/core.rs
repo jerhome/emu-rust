@@ -304,13 +304,14 @@ impl Core {
             }
             GameSource::Memory { path, data } => (path, Some(data)),
         };
-        let path = callbacks::path_to_cstring(&rom).ok_or_else(|| LibretroError::Io {
-            path: rom.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path contains a NUL byte",
-            ),
-        })?;
+        let path =
+            callbacks::path_to_cstring(&rom, "game path").ok_or_else(|| LibretroError::Io {
+                path: rom.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "path contains a NUL byte",
+                ),
+            })?;
         let info = sys::retro_game_info {
             path: path.as_ptr(),
             data: data

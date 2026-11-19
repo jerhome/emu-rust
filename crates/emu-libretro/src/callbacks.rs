@@ -113,10 +113,10 @@ pub(crate) struct EnvInstall {
 
 pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
     let state = EnvState {
-        system_dir: path_to_cstring(&config.system_dir),
-        save_dir: path_to_cstring(&config.save_dir),
-        assets_dir: path_to_cstring(&config.assets_dir),
-        libretro_path: path_to_cstring(core_path),
+        system_dir: path_to_cstring(&config.system_dir, "system_dir"),
+        save_dir: path_to_cstring(&config.save_dir, "save_dir"),
+        assets_dir: path_to_cstring(&config.assets_dir, "assets_dir"),
+        libretro_path: path_to_cstring(core_path, "core path"),
         overrides: config.variables.clone(),
         options: OptionStore::default(),
         update_display: None,
@@ -155,13 +155,22 @@ impl Drop for EnvInstall {
 }
 
 /// Converts a path to a C string; `None` if it contains an interior NUL.
-pub(crate) fn path_to_cstring(path: &Path) -> Option<CString> {
+///
+/// Paths that are not valid UTF-8 are logged (`label` names the path). On Windows they are converted lossily,
+/// because libretro expects UTF-8 there (not the ANSI code page); on Unix the raw bytes are passed unchanged.
+pub(crate) fn path_to_cstring(path: &Path, label: &str) -> Option<CString> {
+    if path.to_str().is_none() {
+        tracing::warn!(
+            path = %path.display(),
+            "{label} is not valid UTF-8{}",
+            if cfg!(windows) { ": converted lossily, the core may not find it" } else { "" }
+        );
+    }
     #[cfg(unix)]
     let bytes = {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().to_vec()
     };
-    // libretro expects UTF-8 paths on Windows (RetroArch converts them the same way).
     #[cfg(not(unix))]
     let bytes = path.to_string_lossy().into_owned().into_bytes();
     CString::new(bytes).ok()

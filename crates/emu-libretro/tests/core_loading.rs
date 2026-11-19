@@ -63,12 +63,13 @@ fn load_missing_library_fails_and_releases_guard() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn load_library_without_libretro_symbols_fails() {
     let _lock = lock();
     // Any system library that is not a libretro core.
-    let lib = if cfg!(target_os = "macos") {
+    let lib = if cfg!(target_os = "windows") {
+        "kernel32.dll"
+    } else if cfg!(target_os = "macos") {
         "/usr/lib/libSystem.B.dylib"
     } else {
         "libc.so.6"

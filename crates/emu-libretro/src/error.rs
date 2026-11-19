@@ -6,7 +6,9 @@ pub enum LibretroError {
     /// Libretro callbacks are process-global: only one `Core` may be alive (ADR 0008).
     #[error("another libretro core is already loaded in this process")]
     AlreadyLoaded,
-    #[error("cannot load core library {path}: {source}")]
+    #[error(
+        "cannot load core library {path} (missing file, wrong architecture or missing dependent library?): {source}"
+    )]
     Load {
         path: PathBuf,
         #[source]
