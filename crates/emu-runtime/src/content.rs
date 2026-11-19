@@ -11,6 +11,7 @@ use zip::ZipArchive;
 
 use crate::emulator::MAX_CONTENT_SIZE;
 use crate::error::RuntimeError;
+use crate::fsname::sanitize_component;
 
 /// Archives listing more entries are refused before any entry is inspected.
 pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 4096;
@@ -273,22 +274,11 @@ fn create_private(path: &Path) -> io::Result<File> {
 pub(crate) fn entry_file_name(raw: &[u8]) -> Option<String> {
     let base = raw.rsplit(|&b| b == b'/' || b == b'\\').next()?;
     let base = String::from_utf8_lossy(base);
-    let name: String = base
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    // Windows silently strips trailing dots and spaces, which could turn `x.bin.` into another name.
-    let name = name.trim_end_matches(['.', ' ']);
+    let name = sanitize_component(&base, usize::MAX);
     if name.is_empty() || name.len() > 200 {
         return None;
     }
-    Some(name.to_owned())
+    Some(name)
 }
 
 fn accepts(info: &SystemInfo, name: &str) -> bool {

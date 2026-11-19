@@ -107,11 +107,14 @@ impl GlWindow {
         }
         // SAFETY: the context is current and RENDERER is a valid string parameter in every GL version.
         let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
+        // SAFETY: as above, VERSION is valid in every GL version.
+        let version_string = unsafe { gl.get_parameter_string(glow::VERSION) };
         tracing::info!(
-            "OpenGL {}.{} ({}) on {renderer}",
+            "OpenGL {}.{} ({}) on {renderer}, GL_VERSION \"{version_string}\", scale factor {}",
             version.major,
             version.minor,
-            version.vendor_info
+            version.vendor_info,
+            window.scale_factor()
         );
 
         // SAFETY: the context is current on this thread (made current above, nothing else ran since).
@@ -137,7 +140,24 @@ impl GlWindow {
         &self.gl
     }
 
-    /// Call on `WindowEvent::Resized`. Zero sizes are ignored (minimised window).
+    /// Size of the drawable in physical pixels (what `draw_frame` and the GL viewport use). On HiDPI screens
+    /// (macOS Retina, Windows 150 %) this is `logical size * scale_factor`, never the logical size.
+    pub fn physical_size(&self) -> PhysicalSize<u32> {
+        self.window.inner_size()
+    }
+
+    /// Current display scale factor (1.0 on a standard screen).
+    pub fn scale_factor(&self) -> f64 {
+        self.window.scale_factor()
+    }
+
+    /// Call on `WindowEvent::ScaleFactorChanged` (window moved to another screen, display setting changed):
+    /// re-reads the physical size, because some platforms do not follow up with a `Resized` event.
+    pub fn scale_factor_changed(&self) {
+        self.resize(self.window.inner_size());
+    }
+
+    /// Call on `WindowEvent::Resized`; `size` must be physical pixels (as winit reports it). Zero sizes are ignored (minimised window).
     pub fn resize(&self, size: PhysicalSize<u32>) {
         if let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
             if let Err(e) = self.make_current() {
@@ -165,7 +185,7 @@ impl GlWindow {
     }
 
     /// Clears to black and draws the last uploaded frame; `aspect_ratio` comes from
-    /// `GameGeometry::display_aspect`. Call `swap_buffers` afterwards.
+    /// `GameGeometry::display_aspect`; `viewport` is in physical pixels (`physical_size`). Call `swap_buffers` afterwards.
     ///
     /// Contract (egui cohabitation): egui (`egui_glow::Painter`) paints over the frame between this call and
     /// `swap_buffers`, and may leave any state behind. This call (and `upload_frame`) sets every piece of GL

@@ -5,6 +5,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::fsname::sanitize_component;
+
 /// Savestate slots are `0..STATE_SLOTS`.
 pub const STATE_SLOTS: u8 = 10;
 
@@ -118,51 +120,31 @@ pub fn core_id_from_path(core: &Path) -> String {
             }
         })
         .collect();
+    // `CON`, `nul`... are valid ids but not valid file names on Windows.
+    let id = sanitize_component(&id, MAX_GAME_NAME_BYTES);
     if id.is_empty() { "core".to_owned() } else { id }
 }
 
 /// Game name used for save files: file stem of the content (the archive for a zip), with `/`, `\`, NUL and
-/// control characters replaced by `_`. `Sonic (World).zip` → `Sonic (World)`.
+/// control characters replaced by `_`, Windows reserved names prefixed (see `fsname`). `Sonic (World).zip` → `Sonic (World)`.
 pub fn game_name_from_path(rom: &Path) -> String {
     let stem = rom
         .file_stem()
         .map(|s| s.to_string_lossy())
         .unwrap_or_default();
-    let name: String = stem
-        .chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let name = truncate_utf8(&name, MAX_GAME_NAME_BYTES);
+    let name = sanitize_component(&stem, MAX_GAME_NAME_BYTES);
     // Never empty, so `<game>.srm` is not a hidden file. Names are always joined with an extension, so even
     // `..` stays a single path component.
     if name.is_empty() {
         "game".to_owned()
     } else {
-        name.to_owned()
+        name
     }
 }
 
 /// Keeps `<game>.state9` and `.<game>.srm.tmp-<pid>` (+ leading dot, pid up to 10 digits) under the 255-byte
 /// file name limit of common filesystems.
 const MAX_GAME_NAME_BYTES: usize = 200;
-
-/// Longest prefix of `s` that is at most `max` bytes, cut on a character boundary.
-fn truncate_utf8(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
 
 /// Reads at most `max + 1` bytes of `path`: a result longer than `max` means the file is bigger than allowed,
 /// without ever loading more than one byte past the bound.
@@ -466,6 +448,10 @@ mod tests {
         assert_eq!(name("a\\b\u{1}c.bin"), "a_b_c");
         assert_eq!(name(""), "game");
         assert_eq!(name("/"), "game");
+        assert_eq!(name("/roms/CON.zip"), "_CON");
+        assert_eq!(name("nul.tar.gz"), "_nul.tar");
+        assert_eq!(name("a:b?.zip"), "a_b_");
+        assert_eq!(core_id_from_path(Path::new("aux_libretro.so")), "_aux");
     }
 
     #[test]

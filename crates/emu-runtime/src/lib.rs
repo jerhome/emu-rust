@@ -8,6 +8,7 @@ mod content;
 mod emulator;
 mod error;
 mod frame;
+mod fsname;
 mod gl;
 mod input;
 mod pacing;
