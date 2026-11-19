@@ -1,0 +1,4 @@
+# sameboy + gb240p-0.23.gb, B at frame 300 on menu ROMs; core sha256 a82f691a5164aa459283ec02bb4050526f6ebd79b20d2c55f7d23804f9efe4a6
+frame=120 fingerprint=154ce6302fdfd6d3
+frame=300 fingerprint=463bcfc66195bf96
+frame=600 fingerprint=db8c6a7221ad8256

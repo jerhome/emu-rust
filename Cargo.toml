@@ -10,6 +10,8 @@ license = "MIT OR Apache-2.0"
 # Shared versions; GL/windowing aligned with egui_glow 0.37 (ADR 0008).
 [workspace.dependencies]
 emu-libretro = { path = "crates/emu-libretro" }
+emu-library = { path = "crates/emu-library" }
+emu-assets = { path = "crates/emu-assets" }
 # default-features off so `emu-app --no-default-features` really drops cpal (feature `audio-cpal` chain).
 emu-runtime = { path = "crates/emu-runtime", default-features = false }
 emu-ui = { path = "crates/emu-ui", default-features = false }

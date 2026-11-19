@@ -200,11 +200,13 @@ impl Fixture {
         let data = UiData {
             game: "jeu",
             core_id: "mock",
+            style: PadStyle::Generic,
             config: &self.config,
             slot,
             slots: &self.slots,
             options: &self.options,
             categories: &self.categories,
+            hosted: false,
             stats: None,
             now: Instant::now(),
         };

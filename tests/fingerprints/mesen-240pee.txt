@@ -1,0 +1,4 @@
+# mesen + 240pee-0.23.nes, B at frame 300 on menu ROMs; core sha256 552f8ab6ac1fd08bd555f589eb999be73a469c79ccfa929f884adb2cf3366b43
+frame=120 fingerprint=8b960153034ed0b4
+frame=300 fingerprint=8b960153034ed0b4
+frame=600 fingerprint=cee55dd9bd1c5504

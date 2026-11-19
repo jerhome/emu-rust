@@ -42,3 +42,8 @@ L'application ne télécharge jamais de ROM ni de BIOS commercial : fournissez v
 
 Au choix : [MIT](LICENSE-MIT) ou [Apache-2.0](LICENSE-APACHE). Les cores libretro ne sont pas distribués avec ce dépôt :
 chacun garde sa propre licence.
+
+Données embarquées : `crates/emu-assets/data/firmware.toml` (empreintes md5 de BIOS) est dérivé de
+[libretro-database](https://github.com/libretro/libretro-database) (`System.dat`, contributeurs de libretro-database),
+sous licence [CC-BY-SA-4.0](https://creativecommons.org/licenses/by-sa/4.0/) ; ce fichier reste sous la même licence.
+Attribution complète : `packaging/THIRD-PARTY-DATA.txt`.

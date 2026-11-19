@@ -66,7 +66,12 @@ pub(super) fn show(
             actions.push(UiAction::Open(Screen::CoreOptions));
         }
         ui.separator();
-        if button(ui, text::QUIT, true, &mut false) {
+        let quit = if data.hosted {
+            text::BACK_TO_LIBRARY
+        } else {
+            text::QUIT
+        };
+        if button(ui, quit, true, &mut false) {
             actions.push(UiAction::Quit);
         }
         ui.label(RichText::new(text::NAV_HINT).small().weak());

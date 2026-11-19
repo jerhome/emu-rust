@@ -3,8 +3,6 @@
 use egui::{Button, Context, Grid, RichText, ScrollArea};
 use emu_runtime::MAX_PORTS;
 
-use crate::keyboard::PadStyle;
-
 use super::{
     Overlay, Profile, UiAction, UiData, locked_banner, nav, profile_map, screen_window, stepper,
     text,
@@ -52,9 +50,9 @@ pub(super) fn show(
         }
         ui.separator();
 
-        let map = profile_map(data.config, data.core_id, overlay.profile);
+        let map = profile_map(data.config, data.core_id, data.style, overlay.profile);
         let port = overlay.port;
-        let style = PadStyle::from_core_id(data.core_id);
+        let style = data.style;
         ScrollArea::vertical()
             .max_height((max_height - 220.0).max(80.0))
             .show(ui, |ui| {

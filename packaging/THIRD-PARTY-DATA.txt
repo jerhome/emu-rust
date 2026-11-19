@@ -1,0 +1,20 @@
+Third-party data embedded in emu-rust
+=====================================
+
+Firmware reference hashes (crates/emu-assets/data/firmware.toml, embedded in the binary)
+
+  Title:    libretro-database, dat/System.dat (v1.19.0)
+  Author:   libretro-database contributors
+  Source:   https://github.com/libretro/libretro-database
+            commit 2a8de0276fd7d3095f2501c3de3799a14c37e910
+  License:  Creative Commons Attribution-ShareAlike 4.0 International (CC-BY-SA-4.0)
+            https://creativecommons.org/licenses/by-sa/4.0/
+
+  Changes: only the md5 checksums of some firmware (BIOS) files were extracted and
+  reorganised into a TOML table keyed by file name. No firmware file is included.
+
+  The embedded data file is a derivative work and is distributed under the same
+  license, CC-BY-SA-4.0. It is data only: it does not change the license of the
+  emu-rust program (MIT OR Apache-2.0).
+
+Crate dependencies are listed separately in THIRD-PARTY-LICENSES.html.

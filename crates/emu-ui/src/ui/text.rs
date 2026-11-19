@@ -17,6 +17,7 @@ pub const SLOT_EMPTY: &str = "vide";
 pub const KEYS: &str = "Configuration des touches";
 pub const CORE_OPTIONS: &str = "Options du core";
 pub const QUIT: &str = "Quitter";
+pub const BACK_TO_LIBRARY: &str = "Retour à la bibliothèque";
 pub const BACK: &str = "Retour";
 pub const NAV_HINT: &str = "Flèches / Tab : naviguer · Entrée : valider · Échap : retour";
 

@@ -1,0 +1,4 @@
+# mgba + gb240p-0.23.gb, B at frame 300 on menu ROMs; core sha256 c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc
+frame=120 fingerprint=ed9cfe1e418af91e
+frame=300 fingerprint=ed9cfe1e418af91e
+frame=600 fingerprint=af73a0784301189b

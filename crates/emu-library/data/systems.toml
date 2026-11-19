@@ -1,0 +1,65 @@
+# System catalog (ADR 0006, ADR 0014). `id` is persisted (database, config, folder names): never rename one.
+# `database`: libretro database name = No-Intro DAT file name = libretro-thumbnails folder = system key of the
+# core manager (`emu-assets/data/cores.toml`, ADR 0013), which alone lists the cores of each system.
+# `header`: "ines" (strip 16 bytes when the file starts with "NES\x1A"), "snes_copier" (strip 512 bytes when
+# size % 1024 == 512).
+# `screenscraper` / `igdb`: platform ids, to be checked against systemesListe.php and the IGDB platforms endpoint.
+
+[[system]]
+id = "megadrive"
+name = "Mega Drive / Genesis"
+extensions = ["md", "gen", "smd", "bin"]
+database = "Sega - Mega Drive - Genesis"
+screenscraper = 1
+igdb = 29
+
+[[system]]
+id = "snes"
+name = "Super Nintendo"
+extensions = ["sfc", "smc"]
+header = "snes_copier"
+database = "Nintendo - Super Nintendo Entertainment System"
+screenscraper = 4
+igdb = 19
+
+[[system]]
+id = "nes"
+name = "NES / Famicom"
+extensions = ["nes", "unf", "unif"]
+header = "ines"
+database = "Nintendo - Nintendo Entertainment System"
+screenscraper = 3
+igdb = 18
+
+[[system]]
+id = "gb"
+name = "Game Boy"
+extensions = ["gb"]
+database = "Nintendo - Game Boy"
+screenscraper = 9
+igdb = 33
+
+[[system]]
+id = "gbc"
+name = "Game Boy Color"
+# `.gb` too: Color games are often named `.gb`; the folder (`roms/gbc/`) or the GBC DAT then wins over `gb`.
+extensions = ["gbc", "gb"]
+database = "Nintendo - Game Boy Color"
+screenscraper = 10
+igdb = 22
+
+[[system]]
+id = "gamegear"
+name = "Game Gear"
+extensions = ["gg"]
+database = "Sega - Game Gear"
+screenscraper = 21
+igdb = 35
+
+[[system]]
+id = "mastersystem"
+name = "Master System"
+extensions = ["sms"]
+database = "Sega - Master System - Mark III"
+screenscraper = 2
+igdb = 64

@@ -1,0 +1,4 @@
+# fceumm + 240pee-0.23.nes, B at frame 300 on menu ROMs; core sha256 b8443cb8169da6c1f86804e2b6066be531d8f724105aabed5aa8dfd6cb1f74db
+frame=120 fingerprint=183ae1c3e1a440e7
+frame=300 fingerprint=183ae1c3e1a440e7
+frame=600 fingerprint=2dc73853733b68e3

@@ -1,0 +1,59 @@
+# Reference md5 of firmware (BIOS) files used by the 1.0 cores, for files whose `.info` gives no hash
+# (ADR 0013 §8). Hashes only: nothing is ever downloaded (ADR 0005); users provide the files in `system/`.
+# Source: libretro-database `dat/System.dat` (v1.19.0, commit 2a8de0276fd7d3095f2501c3de3799a14c37e910,
+# 2026-10-24), sections listed below. Keys: path relative to the system directory, as in `.info` files.
+# License: libretro-database is licensed CC-BY-SA-4.0 (LICENSE at the commit above,
+# https://github.com/libretro/libretro-database). The entries below are derived from it and are distributed under
+# the same license, with attribution to the libretro-database contributors.
+# Several md5 per path are allowed (regional variants).
+
+[firmware]
+# Nintendo - Famicom Disk System
+"disksys.rom" = ["ca30b50f880eb660a320674ed365ef7a"]
+# Nintendo - Gameboy
+"dmg_boot.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
+"gb_bios.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
+"dmg_rom.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
+# Nintendo - Game Boy Advance
+"gba_bios.bin" = ["a860e8c0b6d573d191e4ec7db1b1e4f6"]
+# Nintendo - Gameboy Color
+"cgb_boot.bin" = ["dbfce9db9deaa2567f6a84fde55f9680"]
+"gbc_bios.bin" = ["dbfce9db9deaa2567f6a84fde55f9680"]
+"cgb_bios.bin" = ["dbfce9db9deaa2567f6a84fde55f9680"]
+# Nintendo - Satellaview
+"BS-X.bin" = ["fed4d8242cfbed61343d53d48432aced"]
+"BS-X (En).bin" = ["33b62505da6ca4525e3839db4e1a7bca"]
+"BS-X (En) (DRM-Free).bin" = ["4ed9648505ab33a4daec93707b16caba"]
+# Nintendo - SuFami Turbo
+"STBIOS.bin" = ["d3a44ba7d42a74d3ac58cb9c14c6a5ca"]
+# Nintendo - Super Game Boy
+"SGB1.sfc" = ["b15ddb15721c657d82c5bab6db982ee9"]
+"SGB2.sfc" = ["8ecd73eb4edf7ed7e81aef1be80031d5"]
+"sgb1.program.rom" = ["b15ddb15721c657d82c5bab6db982ee9"]
+"sgb2.program.rom" = ["8ecd73eb4edf7ed7e81aef1be80031d5"]
+"sgb2_bios.bin" = ["e0430bca9925fb9882148fd2dc2418c1"]
+"sgb_bios.bin" = ["d574d4f9c12f305074798f54c091a8b4"]
+"SGB1.sfc/sgb1.boot.rom" = ["d574d4f9c12f305074798f54c091a8b4"]
+"SGB2.sfc/sgb2.boot.rom" = ["e0430bca9925fb9882148fd2dc2418c1"]
+"sgb_boot.bin" = ["d574d4f9c12f305074798f54c091a8b4"]
+"sgb.boot.rom" = ["d574d4f9c12f305074798f54c091a8b4"]
+"sgb2_boot.bin" = ["e0430bca9925fb9882148fd2dc2418c1"]
+"SGB1.sfc/program.rom" = ["b15ddb15721c657d82c5bab6db982ee9"]
+"SGB2.sfc/program.rom" = ["8ecd73eb4edf7ed7e81aef1be80031d5"]
+# Sega - Game Gear
+"bios.gg" = ["672e104c3be3a238301aceffc3b23fd6"]
+# Sega - Master System - Mark III
+"bios.sms" = ["840481177270d5642a14ca71ee72844c"]
+"bios_E.sms" = ["840481177270d5642a14ca71ee72844c"]
+"bios_J.sms" = ["24a519c53f67b00640d0048ef7089105"]
+"bios_U.sms" = ["840481177270d5642a14ca71ee72844c"]
+# Sega - Mega CD - Sega CD
+"bios_CD_E.bin" = ["e66fa1dc5820d254611fdcdba0662372"]
+"bios_CD_J.bin" = ["278a9397d192149e84e820ac621a8edd"]
+"bios_CD_U.bin" = ["2efd74e3232ff260e371b99f84024f7f"]
+# Sega - Mega Drive - Genesis
+"areplay.bin" = ["a0028b3043f9d59ceeb03da5b073b30d"]
+"bios_MD.bin" = ["d3293ebaaa7f4eb2a6766b68a0fb4609"]
+"ggenie.bin" = ["e8af7fe115a75c849f6aab3701e7799b"]
+"sk.bin" = ["4ea493ea4e9f6c9ebfccbdb15110367e"]
+"sk2chip.bin" = ["b4e76e416b887f4e7413ba76fa735f16"]

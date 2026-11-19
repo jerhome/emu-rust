@@ -3,6 +3,12 @@ emu-rust - frontend libretro (usage personnel)
 
 Aucun core, BIOS ni jeu n'est fourni. Vous fournissez le core libretro et la ROM.
 
+0. 1.0 (à venir) : cores depuis l'application
+---------------------------------------------
+À partir de la 1.0, les cores s'installent sans manipulation manuelle : écran Cores de l'application, ou
+  emu-rust --install-core recommended
+Tant que la 1.0 n'est pas sortie, utilisez la méthode manuelle ci-dessous (qui restera possible : --core accepte un chemin).
+
 1. Télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :
@@ -56,3 +62,4 @@ Linux : dépendances (Debian/Ubuntu) :
 
 Licence : MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Licences des dépendances : THIRD-PARTY-LICENSES.html.
+Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0) : THIRD-PARTY-DATA.txt.

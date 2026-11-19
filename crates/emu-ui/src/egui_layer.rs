@@ -48,6 +48,10 @@ impl EguiLayer {
         })
     }
 
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
+
     /// Feeds a window event; returns whether egui wants a repaint.
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         self.state.on_window_event(window, event).repaint
@@ -65,6 +69,21 @@ impl EguiLayer {
     pub fn run(&mut self, window: &Window, ui: impl FnMut(&Context)) -> std::time::Duration {
         let raw = self.state.take_egui_input(window);
         let output = self.ctx.run_pass(raw, ui);
+        self.finish_pass(window, output)
+    }
+
+    /// Like `run`, for a full-window root `Ui` (panels).
+    pub fn run_ui(
+        &mut self,
+        window: &Window,
+        ui: impl FnMut(&mut egui::Ui),
+    ) -> std::time::Duration {
+        let raw = self.state.take_egui_input(window);
+        let output = self.ctx.run_ui(raw, ui);
+        self.finish_pass(window, output)
+    }
+
+    fn finish_pass(&mut self, window: &Window, output: egui::FullOutput) -> std::time::Duration {
         self.state
             .handle_platform_output(window, output.platform_output);
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);

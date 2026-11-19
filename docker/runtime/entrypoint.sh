@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# No argument: emu-rust opens the game library (1.0); --core/--rom are never forced here.
 # EMU_DISPLAY=host (default): use the display/audio passed in by compose (WSLg, X11 or Wayland).
 # EMU_DISPLAY=novnc: start a virtual screen reachable at http://<host>:6080/vnc.html (no sound).
 set -euo pipefail
@@ -6,7 +7,8 @@ set -euo pipefail
 # Data root (ADR 0011): subfolders exist even on a volume created by an older image.
 data="${EMU_DATA_DIR:-/data}"
 export EMU_DATA_DIR="$data"
-mkdir -p "$data/saves" "$data/states" "$data/assets"
+# library.sqlite (+ -wal/-shm) lives in $data itself and is created by the app.
+mkdir -p "$data/saves" "$data/states" "$data/assets" "$data/cores" "$data/covers" "$data/database"
 # config.toml holds credentials later on: keep it private (the app also enforces 0600).
 if [[ -f "$data/config.toml" ]]; then chmod 600 "$data/config.toml"; fi
 
@@ -28,7 +30,7 @@ if [[ "${EMU_DISPLAY:-host}" == "novnc" ]]; then
     x11vnc -display :99 -forever -shared -nopw -localhost -quiet &
     websockify --web /usr/share/novnc 6080 localhost:5900 &
     if [[ "${EMU_KEEP_ALIVE:-0}" == "1" ]]; then
-        # Keep the virtual screen up for debugging even if emu-rust exits (e.g. no --core given).
+        # Keep the virtual screen up for debugging even if emu-rust exits (e.g. a crash at startup).
         /usr/local/bin/emu-rust "${args[@]}" || true
         wait
     fi

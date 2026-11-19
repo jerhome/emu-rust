@@ -1,6 +1,7 @@
 //! `emu-rust` binary: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
 
 mod cli;
+mod cores_cli;
 mod diagnostics;
 
 use std::process::ExitCode;
@@ -17,25 +18,40 @@ fn init_tracing() {
         .init();
 }
 
-fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
+/// Data directories (overrides applied, folders created) and `config.toml`.
+fn prepare(
+    data_dir: Option<std::path::PathBuf>,
+    system_dir: Option<std::path::PathBuf>,
+    save_dir: Option<std::path::PathBuf>,
+) -> Result<(emu_ui::DataDirs, emu_ui::Config), String> {
     let standard =
         directories::ProjectDirs::from("", "", "emu-rust").map(|d| d.data_dir().to_path_buf());
-    let root = cli::resolve_root(cli.data_dir, std::env::var_os("EMU_DATA_DIR"), standard)?;
+    let root = cli::resolve_root(data_dir, std::env::var_os("EMU_DATA_DIR"), standard)?;
     tracing::info!("racine des données : {}", root.display());
     let mut dirs = emu_ui::DataDirs::under(&root);
-    if let Some(d) = cli.system_dir {
+    if let Some(d) = system_dir {
         dirs.system =
             std::path::absolute(&d).map_err(|e| format!("--system-dir {} : {e}", d.display()))?;
     }
-    if let Some(d) = cli.save_dir {
+    if let Some(d) = save_dir {
         dirs.saves =
             std::path::absolute(&d).map_err(|e| format!("--save-dir {} : {e}", d.display()))?;
     }
     dirs.create_all()
         .map_err(|e| format!("impossible de créer {} : {e}", dirs.root.display()))?;
     let config = emu_ui::Config::load_or_default(&dirs.config_file);
+    Ok((dirs, config))
+}
+
+fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
+    let (dirs, config) = prepare(cli.data_dir, cli.system_dir, cli.save_dir)?;
+    let core = match cli.core {
+        cli::CoreSpec::Path(path) => path,
+        cli::CoreSpec::Managed(id) => cores_cli::managed_core_path(&id, &dirs, &config)?,
+    };
+    diagnostics::check_core(&core)?;
     Ok(emu_ui::LaunchOptions {
-        core: cli.core,
+        core,
         rom: cli.rom,
         dirs,
         config,
@@ -48,43 +64,13 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     })
 }
 
-fn main() -> ExitCode {
-    init_tracing();
-    let cli = match cli::parse(std::env::args_os().skip(1)) {
-        Ok(cli::Command::Run(c)) => c,
-        Ok(cli::Command::Help) => {
-            println!("{}", cli::USAGE);
-            return ExitCode::SUCCESS;
-        }
-        Ok(cli::Command::Version) => {
-            println!("{}", cli::version_line());
-            return ExitCode::SUCCESS;
-        }
-        Ok(cli::Command::NoArgs) => {
-            eprintln!(
-                "{}\nAucun jeu à lancer : l'interface sans arguments n'est pas disponible dans cette version.\n\n{}",
-                cli::version_line(),
-                cli::USAGE
-            );
-            return ExitCode::from(2);
-        }
-        Err(e) => {
-            eprintln!("erreur : {e}\n\n{}", cli::USAGE);
-            return ExitCode::from(2);
-        }
-    };
-    if let Err(e) = diagnostics::check_core(&cli.core) {
-        eprintln!("erreur : {e}");
-        return ExitCode::FAILURE;
-    }
-    let options = match build_options(*cli) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("erreur : {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match emu_ui::run(options) {
+fn fail(message: &str) -> ExitCode {
+    eprintln!("erreur : {message}");
+    ExitCode::FAILURE
+}
+
+fn report(result: Result<(), emu_ui::UiError>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("erreur : {e}");
@@ -92,6 +78,45 @@ fn main() -> ExitCode {
                 eprintln!("{}", diagnostics::load_failure_hint());
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    init_tracing();
+    match cli::parse(std::env::args_os().skip(1)) {
+        Ok(cli::Command::Help) => {
+            println!("{}", cli::USAGE);
+            ExitCode::SUCCESS
+        }
+        Ok(cli::Command::Version) => {
+            println!("{}", cli::version_line());
+            ExitCode::SUCCESS
+        }
+        Ok(cli::Command::Cores(c)) => match prepare(c.data_dir, None, None)
+            .and_then(|(dirs, config)| cores_cli::run(&c.action, &dirs, &config))
+        {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => fail(&e),
+        },
+        Ok(cli::Command::Library(l)) => match prepare(l.data_dir, l.system_dir, l.save_dir) {
+            Ok((dirs, config)) => report(emu_ui::run_library(emu_ui::LibraryOptions {
+                dirs,
+                config,
+                audio: l.audio,
+                screen: l.screen,
+                dump_window: l.dump_window,
+            })),
+            Err(e) => fail(&e),
+        },
+        Ok(cli::Command::Run(c)) => match build_options(*c) {
+            Ok(options) => report(emu_ui::run(options)),
+            Err(e) => fail(&e),
+        },
+        Err(e) => {
+            eprintln!("erreur : {e}\n\n{}", cli::USAGE);
+            ExitCode::from(2)
         }
     }
 }

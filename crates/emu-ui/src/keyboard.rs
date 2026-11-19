@@ -1,22 +1,97 @@
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 use emu_runtime::{InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 use winit::keyboard::KeyCode;
 
-/// Which physical pad a core emulates; picks the default layout and the button names shown.
+/// Which physical pad a game uses; picks the default layout and the button names shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadStyle {
     MegaDrive,
+    MasterSystem,
+    GameGear,
     Snes,
+    GameBoy,
+    Nes,
     Generic,
 }
 
 impl PadStyle {
+    /// Style implied by the core alone (a multi-system core gets its main system).
     pub fn from_core_id(core_id: &str) -> Self {
         match core_id {
             "genesis_plus_gx" | "picodrive" => Self::MegaDrive,
             "snes9x" | "bsnes" | "mesen-s" => Self::Snes,
+            "gambatte" | "sameboy" | "mgba_gb" => Self::GameBoy,
+            "nestopia" | "fceumm" | "mesen" | "quicknes" => Self::Nes,
             _ => Self::Generic,
+        }
+    }
+
+    /// Style implied by a content file extension (case-insensitive, no dot), if it is unambiguous
+    /// enough to override the core.
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "sms" => Some(Self::MasterSystem),
+            "gg" => Some(Self::GameGear),
+            "gb" | "gbc" => Some(Self::GameBoy),
+            "nes" | "fds" | "unf" | "unif" => Some(Self::Nes),
+            "md" | "gen" | "bin" | "smd" => Some(Self::MegaDrive),
+            "sfc" | "smc" => Some(Self::Snes),
+            _ => None,
+        }
+    }
+
+    /// Style for `core_id` playing `content`: the content extension (for a `.zip`, the first entry
+    /// with a known extension), else the core's own style. `.bin` is ambiguous, so it only counts
+    /// when the core itself does not point at another system.
+    pub fn detect(core_id: &str, content: &Path) -> Self {
+        let core_style = Self::from_core_id(core_id);
+        let ext = content
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let from_ext = if ext.eq_ignore_ascii_case("zip") {
+            zip_entry_names(content)
+                .iter()
+                .find_map(|n| Self::from_extension(n.rsplit_once('.')?.1))
+        } else {
+            Self::from_extension(&ext)
+        };
+        match from_ext {
+            Some(Self::MegaDrive)
+                if ext.eq_ignore_ascii_case("bin")
+                    && !matches!(core_style, Self::MegaDrive | Self::Generic) =>
+            {
+                core_style
+            }
+            Some(style) => style,
+            None => core_style,
+        }
+    }
+
+    /// Key of the `[input.keyboard.<profile>]` table: the core id, plus a suffix when the system
+    /// is not the core's main one (genesis_plus_gx on a Master System game), so each system keeps
+    /// its own layout.
+    pub fn profile_key(self, core_id: &str) -> String {
+        if self == Self::from_core_id(core_id) {
+            core_id.to_owned()
+        } else {
+            format!("{core_id}-{}", self.slug())
+        }
+    }
+
+    fn slug(self) -> &'static str {
+        match self {
+            Self::MegaDrive => "md",
+            Self::MasterSystem => "sms",
+            Self::GameGear => "gg",
+            Self::Snes => "snes",
+            Self::GameBoy => "gb",
+            Self::Nes => "nes",
+            Self::Generic => "generic",
         }
     }
 
@@ -28,6 +103,7 @@ impl PadStyle {
             (_, B::Down) => "Bas",
             (_, B::Left) => "Gauche",
             (_, B::Right) => "Droite",
+            (Self::MasterSystem, B::Start) => "Pause",
             (_, B::Start) => "Start",
             (Self::MegaDrive, B::Select) => "Mode",
             (Self::MegaDrive, B::Y) => "A",
@@ -36,6 +112,9 @@ impl PadStyle {
             (Self::MegaDrive, B::L) => "X",
             (Self::MegaDrive, B::X) => "Y",
             (Self::MegaDrive, B::R) => "Z",
+            // genesis_plus_gx two-button pad: libretro B = button 1, A = button 2.
+            (Self::MasterSystem | Self::GameGear, B::B) => "1",
+            (Self::MasterSystem | Self::GameGear, B::A) => "2",
             (_, B::Select) => "Select",
             (_, B::A) => "A",
             (_, B::B) => "B",
@@ -68,6 +147,19 @@ impl PadStyle {
                 B::L,
                 B::X,
                 B::R,
+            ],
+            Self::MasterSystem | Self::GameGear => {
+                &[B::Up, B::Down, B::Left, B::Right, B::Start, B::B, B::A]
+            }
+            Self::GameBoy | Self::Nes => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::A,
+                B::B,
             ],
             Self::Snes => &[
                 B::Up,
@@ -114,6 +206,43 @@ impl PadStyle {
     }
 }
 
+/// Entry names of a zip archive (central directory only; empty on any error or Zip64).
+fn zip_entry_names(path: &Path) -> Vec<String> {
+    fn read(path: &Path) -> Option<Vec<String>> {
+        const MAX_DIR: u64 = 4 << 20;
+        let u16_at = |b: &[u8], i: usize| usize::from(u16::from_le_bytes([b[i], b[i + 1]]));
+        let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let mut f = File::open(path).ok()?;
+        let len = f.metadata().ok()?.len();
+        let tail_len = len.min(22 + 65535);
+        f.seek(SeekFrom::Start(len - tail_len)).ok()?;
+        let mut tail = vec![0; usize::try_from(tail_len).ok()?];
+        f.read_exact(&mut tail).ok()?;
+        let eocd = tail.windows(4).rposition(|w| w == b"PK\x05\x06")?;
+        let eocd = tail.get(eocd..eocd + 22)?;
+        let (dir_size, dir_off) = (u64::from(u32_at(eocd, 12)), u64::from(u32_at(eocd, 16)));
+        if dir_size > MAX_DIR {
+            return None;
+        }
+        f.seek(SeekFrom::Start(dir_off)).ok()?;
+        let mut dir = vec![0; usize::try_from(dir_size).ok()?];
+        f.read_exact(&mut dir).ok()?;
+        let (mut names, mut i) = (Vec::new(), 0);
+        while dir.get(i..i + 46).is_some_and(|h| &h[..4] == b"PK\x01\x02") {
+            let (n, extra, comment) = (
+                u16_at(&dir, i + 28),
+                u16_at(&dir, i + 30),
+                u16_at(&dir, i + 32),
+            );
+            let name = dir.get(i + 46..i + 46 + n)?;
+            names.push(String::from_utf8_lossy(name).into_owned());
+            i += 46 + n + extra + comment;
+        }
+        Some(names)
+    }
+    read(path).unwrap_or_default()
+}
+
 /// Physical key → (port, libretro button). Serialized by key/button names (see `config.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyMap {
@@ -129,6 +258,8 @@ impl KeyMap {
     pub fn default_for(style: PadStyle) -> Self {
         match style {
             PadStyle::MegaDrive => Self::genesis_default(),
+            PadStyle::MasterSystem | PadStyle::GameGear => Self::sega_8bit_default(),
+            PadStyle::GameBoy | PadStyle::Nes => Self::nintendo_8bit_default(),
             PadStyle::Snes => Self::snes_default(),
             PadStyle::Generic => Self::generic_default(),
         }
@@ -157,6 +288,41 @@ impl KeyMap {
             (K::KeyA, 0, B::L),
             (K::KeyS, 0, B::X),
             (K::KeyD, 0, B::R),
+        ])
+    }
+
+    /// Port 0, Master System / Game Gear (genesis_plus_gx). Libretro B = button 1 (confirms in
+    /// the Game Gear menus, verified headless), A = button 2. To match the SNES, X (confirm) is
+    /// button 1 and Z is button 2. Enter = Start (Game Gear) or the console's Pause (Master
+    /// System; the Pause mapping is the core's INPUT_START, not verified). No Select key.
+    pub fn sega_8bit_default() -> Self {
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::new(vec![
+            (K::ArrowUp, 0, B::Up),
+            (K::ArrowDown, 0, B::Down),
+            (K::ArrowLeft, 0, B::Left),
+            (K::ArrowRight, 0, B::Right),
+            (K::Enter, 0, B::Start),
+            (K::KeyX, 0, B::B),
+            (K::KeyZ, 0, B::A),
+        ])
+    }
+
+    /// Port 0, Game Boy / NES: libretro A and B are the real A and B, on the SNES keys
+    /// (X = A confirms, Z = B). Enter = Start, Right Shift = Select.
+    pub fn nintendo_8bit_default() -> Self {
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::new(vec![
+            (K::ArrowUp, 0, B::Up),
+            (K::ArrowDown, 0, B::Down),
+            (K::ArrowLeft, 0, B::Left),
+            (K::ArrowRight, 0, B::Right),
+            (K::Enter, 0, B::Start),
+            (K::ShiftRight, 0, B::Select),
+            (K::KeyX, 0, B::A),
+            (K::KeyZ, 0, B::B),
         ])
     }
 
@@ -271,6 +437,126 @@ impl InputBackend for KeyboardInput {
 
 #[cfg(test)]
 mod tests {
+    const ALL_STYLES: [PadStyle; 7] = [
+        PadStyle::MegaDrive,
+        PadStyle::MasterSystem,
+        PadStyle::GameGear,
+        PadStyle::Snes,
+        PadStyle::GameBoy,
+        PadStyle::Nes,
+        PadStyle::Generic,
+    ];
+
+    /// Minimal zip: central directory + end record only (all `zip_entry_names` reads).
+    fn fake_zip(names: &[&str]) -> Vec<u8> {
+        let mut dir = Vec::new();
+        for n in names {
+            let mut h = vec![0u8; 46];
+            h[..4].copy_from_slice(b"PK\x01\x02");
+            h[28..30].copy_from_slice(&(n.len() as u16).to_le_bytes());
+            dir.extend(h);
+            dir.extend(n.as_bytes());
+        }
+        let mut out = dir.clone();
+        let mut e = vec![0u8; 22];
+        e[..4].copy_from_slice(b"PK\x05\x06");
+        e[10..12].copy_from_slice(&(names.len() as u16).to_le_bytes());
+        e[12..16].copy_from_slice(&(dir.len() as u32).to_le_bytes());
+        out.extend(e);
+        out
+    }
+
+    #[test]
+    fn style_from_content_extension() {
+        let d = |core: &str, file: &str| PadStyle::detect(core, Path::new(file));
+        assert_eq!(d("genesis_plus_gx", "a.sms"), PadStyle::MasterSystem);
+        assert_eq!(d("genesis_plus_gx", "a.GG"), PadStyle::GameGear);
+        assert_eq!(d("genesis_plus_gx", "a.md"), PadStyle::MegaDrive);
+        assert_eq!(d("genesis_plus_gx", "a.smd"), PadStyle::MegaDrive);
+        assert_eq!(d("x", "a.gbc"), PadStyle::GameBoy);
+        assert_eq!(d("x", "a.gb"), PadStyle::GameBoy);
+        for e in ["nes", "fds", "unf"] {
+            let file = format!("a.{e}");
+            assert_eq!(d("x", &file), PadStyle::Nes);
+        }
+        assert_eq!(d("x", "a.sfc"), PadStyle::Snes);
+        assert_eq!(d("x", "a.smc"), PadStyle::Snes);
+        // Unknown extension: the core decides. `.bin` does not override a SNES core.
+        assert_eq!(d("snes9x", "a.rom"), PadStyle::Snes);
+        assert_eq!(d("snes9x", "a.bin"), PadStyle::Snes);
+        assert_eq!(d("x", "a.bin"), PadStyle::MegaDrive);
+        assert_eq!(d("x", "a.rom"), PadStyle::Generic);
+    }
+
+    #[test]
+    fn style_from_zip_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, entries: &[&str]| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, fake_zip(entries)).unwrap();
+            p
+        };
+        let sms = write("a.zip", &["readme.txt", "Game.SMS"]);
+        assert_eq!(
+            PadStyle::detect("genesis_plus_gx", &sms),
+            PadStyle::MasterSystem
+        );
+        let none = write("b.zip", &["readme.txt"]);
+        assert_eq!(
+            PadStyle::detect("genesis_plus_gx", &none),
+            PadStyle::MegaDrive
+        );
+        let bad = dir.path().join("c.zip");
+        std::fs::write(&bad, b"not a zip").unwrap();
+        assert_eq!(PadStyle::detect("snes9x", &bad), PadStyle::Snes);
+        assert_eq!(
+            PadStyle::detect("snes9x", &dir.path().join("missing.zip")),
+            PadStyle::Snes
+        );
+    }
+
+    #[test]
+    fn profile_key_separates_systems_of_one_core() {
+        assert_eq!(
+            PadStyle::MegaDrive.profile_key("genesis_plus_gx"),
+            "genesis_plus_gx"
+        );
+        assert_eq!(
+            PadStyle::MasterSystem.profile_key("genesis_plus_gx"),
+            "genesis_plus_gx-sms"
+        );
+        assert_eq!(
+            PadStyle::GameGear.profile_key("genesis_plus_gx"),
+            "genesis_plus_gx-gg"
+        );
+        assert_eq!(PadStyle::GameBoy.profile_key("gambatte"), "gambatte");
+        assert_eq!(PadStyle::Nes.profile_key("unknown"), "unknown-nes");
+    }
+
+    #[test]
+    fn eight_bit_button_names_and_layouts() {
+        use JoypadButton as B;
+        assert_eq!(PadStyle::MasterSystem.button_name(B::B), "1");
+        assert_eq!(PadStyle::MasterSystem.button_name(B::A), "2");
+        assert_eq!(PadStyle::MasterSystem.button_name(B::Start), "Pause");
+        assert_eq!(PadStyle::GameGear.button_name(B::B), "1");
+        assert_eq!(PadStyle::GameGear.button_name(B::Start), "Start");
+        for s in [PadStyle::GameBoy, PadStyle::Nes] {
+            assert_eq!(s.button_name(B::A), "A");
+            assert_eq!(s.button_name(B::B), "B");
+            assert_eq!(s.button_name(B::Select), "Select");
+            // Confirm key is X, as on the SNES.
+            assert_eq!(
+                KeyMap::default_for(s).keys_for(0, B::A),
+                vec![KeyCode::KeyX]
+            );
+        }
+        assert_eq!(
+            KeyMap::default_for(PadStyle::GameGear).keys_for(0, B::B),
+            vec![KeyCode::KeyX]
+        );
+    }
+
     #[test]
     fn pad_style_from_core_id() {
         assert_eq!(
@@ -305,7 +591,7 @@ mod tests {
         assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyQ]);
         assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyW]);
         // Every button shown on the key screen has a key, and no key is bound twice.
-        for style in [PadStyle::MegaDrive, PadStyle::Snes, PadStyle::Generic] {
+        for style in ALL_STYLES {
             let m = KeyMap::default_for(style);
             for b in style.buttons() {
                 assert!(!m.keys_for(0, *b).is_empty(), "{style:?} {b:?}");

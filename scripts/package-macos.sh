@@ -13,7 +13,7 @@ OUT_DIR=${OUT_DIR:-dist}
 VERSION=${VERSION:-$(scripts/workspace-version.sh)}
 
 name="emu-rust-${VERSION}-macos-x86_64"
-for f in "$BIN" "$LICENSES" packaging/README.txt packaging/macos/Info.plist LICENSE-MIT LICENSE-APACHE; do
+for f in "$BIN" "$LICENSES" packaging/README.txt packaging/THIRD-PARTY-DATA.txt packaging/macos/Info.plist LICENSE-MIT LICENSE-APACHE; do
     [[ -f $f ]] || { echo "missing: $f" >&2; exit 1; }
 done
 lipo -archs "$BIN" | grep -qx x86_64 || { echo "$BIN is not an x86_64-only Mach-O binary" >&2; exit 1; }
@@ -28,7 +28,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 install -m 755 "$BIN" "$app/Contents/MacOS/emu-rust"
-install -m 644 packaging/README.txt LICENSE-MIT LICENSE-APACHE "$LICENSES" "$stage/"
+install -m 644 packaging/README.txt packaging/THIRD-PARTY-DATA.txt LICENSE-MIT LICENSE-APACHE "$LICENSES" "$stage/"
 
 # Ad hoc signature (ADR 0012): seals Info.plist to the executable; no Developer ID, no notarization.
 codesign --force --sign - --timestamp=none "$app"
