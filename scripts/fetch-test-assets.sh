@@ -44,6 +44,8 @@ ROM_SHA256='1776009ab324c18e4f046b4781fed11b897281f407ec04f2ac43649bcebae28f'
 CORE_URL='https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip'
 CORE_NAME='genesis_plus_gx_libretro.so'
 
+MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
+
 tmp_dirs=()
 cleanup() { for d in "${tmp_dirs[@]}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -52,7 +54,8 @@ sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 
 # download_zip URL DEST_ZIP
 download_zip() {
-    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 -o "$2" "$1"
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error \
+        --retry 3 --connect-timeout 15 --max-time 300 --max-filesize 64M -o "$2" "$1"
 }
 
 # extract_one ZIP MEMBER DEST : unzip into a fresh temp dir, move only the expected file.
@@ -60,6 +63,12 @@ extract_one() {
     local zip="$1" member="$2" dest="$3" work
     work="$(mktemp -d)"
     tmp_dirs+=("$work")
+    # Refuse zip bombs: check the total uncompressed size announced by the archive.
+    local total
+    total="$(unzip -Zt "$zip" | awk '{print $3}' | head -n 1)"
+    case "$total" in ''|*[!0-9]*) echo "error: cannot read archive size" >&2; exit 1 ;; esac
+    [ "$total" -le "$MAX_UNZIPPED_BYTES" ] \
+        || { echo "error: archive too large once extracted ($total bytes)" >&2; exit 1; }
     unzip -q -o "$zip" -d "$work"
     local found
     found="$(find "$work" -type f -name "$member" | head -n 1)"
@@ -99,7 +108,10 @@ else
     echo "Downloading $CORE_NAME ..."
     work="$(mktemp -d)"; tmp_dirs+=("$work")
     download_zip "$CORE_URL" "$work/core.zip"
-    extract_one "$work/core.zip" "$CORE_NAME" "$core_path"
+    extract_one "$work/core.zip" "$CORE_NAME" "$work/$CORE_NAME"
+    # Copy next to the destination so the final mv is an atomic same-filesystem rename.
+    cp -f "$work/$CORE_NAME" "$core_path.part"
+    mv -f "$core_path.part" "$core_path"
     sum="$(sha_of "$core_path")"
     echo "$sum  $CORE_NAME" > "$hash_path"
     echo "Core installed: $core_path (sha256 $sum, recorded as trusted on first use)"

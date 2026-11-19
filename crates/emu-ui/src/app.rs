@@ -2,9 +2,7 @@
 
 use std::time::Instant;
 
-use emu_runtime::{
-    Emulator, EmulatorOptions, FramePacer, FrameRenderer, GlWindow, NullSink, Scaling,
-};
+use emu_runtime::{Emulator, EmulatorOptions, FramePacer, GlWindow, NullSink, Scaling};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -14,9 +12,8 @@ use winit::window::{WindowAttributes, WindowId};
 
 use crate::{KeyMap, KeyboardInput, LaunchOptions, UiError};
 
-// Field order is the drop order: renderer, then window/context, then the emulator (ADR 0008).
+// Field order is the drop order: window/context (with its renderer), then the emulator (ADR 0008).
 struct App {
-    renderer: Option<FrameRenderer>,
     window: Option<GlWindow>,
     emulator: Emulator,
     pacer: Option<FramePacer>,
@@ -38,7 +35,6 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
     )?;
     let event_loop = EventLoop::new().map_err(|e| UiError::EventLoop(e.to_string()))?;
     let mut app = App {
-        renderer: None,
         window: None,
         emulator,
         pacer: None,
@@ -48,7 +44,6 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
         error: None,
     };
     let result = event_loop.run_app(&mut app);
-    app.renderer = None;
     app.window = None;
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     if let Some(e) = app.error.take() {
@@ -77,9 +72,10 @@ impl App {
             pacer.set_fps(self.emulator.av_info().timing.fps);
         }
         if status.video_updated
-            && let Some(r) = &mut self.renderer
+            && let Some(w) = &mut self.window
+            && let Err(e) = w.upload_frame(self.emulator.frame())
         {
-            r.upload(self.emulator.frame());
+            tracing::warn!("frame upload failed: {e}");
         }
         if let Some(w) = &self.window {
             w.window().request_redraw();
@@ -94,18 +90,18 @@ impl App {
     }
 
     fn redraw(&mut self) {
-        let (Some(w), Some(r)) = (&self.window, &mut self.renderer) else {
+        let Some(w) = &mut self.window else {
             return;
         };
         let size = w.window().inner_size();
         if size.width == 0 || size.height == 0 {
             return;
         }
-        r.draw(
-            size,
-            self.emulator.av_info().geometry.display_aspect(),
-            Scaling::Integer,
-        );
+        let aspect = self.emulator.av_info().geometry.display_aspect();
+        if let Err(e) = w.draw_frame(size, aspect, Scaling::Integer) {
+            tracing::warn!("draw failed: {e}");
+            return;
+        }
         if let Err(e) = w.swap_buffers() {
             tracing::warn!("swap_buffers failed: {e}");
         }
@@ -131,10 +127,6 @@ impl ApplicationHandler for App {
             Ok(w) => w,
             Err(e) => return self.fail(event_loop, e),
         };
-        match FrameRenderer::new(&window) {
-            Ok(r) => self.renderer = Some(r),
-            Err(e) => return self.fail(event_loop, e),
-        }
         self.window = Some(window);
         let now = Instant::now();
         self.pacer = Some(FramePacer::new(fps, now));

@@ -1,5 +1,7 @@
 use std::ffi::CStr;
+use std::marker::PhantomData;
 use std::num::NonZeroU32;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
 use glow::HasContext;
@@ -22,14 +24,27 @@ use crate::frame::FrameRgba;
 
 const MIN_GL: (u8, u8) = (3, 3);
 
-/// A winit window with its OpenGL 3.3 core context and surface (ADR 0002, ADR 0008).
-/// All GL `unsafe` stays in emu-runtime; callers only get safe handles.
+/// A winit window with its OpenGL 3.3 core context and surface (ADR 0002, ADR 0008), plus the renderer that
+/// draws the emulated frame into it. All GL `unsafe` stays in emu-runtime; callers only get safe handles.
+///
+/// The renderer is owned here so its GL objects can never outlive the context nor be used with another
+/// context current: every entry point makes this window's context current first.
+///
+/// `GlWindow` is neither `Send` nor `Sync`: a GL context is bound to the thread that made it current.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<emu_runtime::GlWindow>();
+/// ```
 pub struct GlWindow {
-    // Field order is drop order: GL objects and surface go before the context, the window last.
+    // Field order is drop order (after `Drop::drop` released the renderer's objects): surface before context,
+    // the window last.
+    renderer: FrameRenderer,
     gl: Arc<glow::Context>,
     surface: Surface<WindowSurface>,
     context: PossiblyCurrentContext,
     window: Window,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl GlWindow {
@@ -42,12 +57,7 @@ impl GlWindow {
         let gl_err =
             |what: &str, e: &dyn std::fmt::Display| RuntimeError::Gl(format!("{what}: {e}"));
 
-        let (window, config) = DisplayBuilder::new()
-            .with_window_attributes(Some(attributes))
-            .build(event_loop, ConfigTemplateBuilder::new(), pick_config)
-            .map_err(|e| gl_err("cannot create window or find a GL config", &e))?;
-        let window =
-            window.ok_or_else(|| RuntimeError::Gl("display builder returned no window".into()))?;
+        let (window, config) = build_display(event_loop, attributes)?;
         let raw_window = window
             .window_handle()
             .map_err(|e| gl_err("window handle unavailable", &e))?
@@ -104,11 +114,16 @@ impl GlWindow {
             version.vendor_info
         );
 
+        // SAFETY: the context is current on this thread (made current above, nothing else ran since).
+        let renderer = unsafe { FrameRenderer::new(&gl)? };
+
         Ok(Self {
+            renderer,
             gl: Arc::new(gl),
             surface,
             context,
             window,
+            _not_send: PhantomData,
         })
     }
 
@@ -133,15 +148,92 @@ impl GlWindow {
             .swap_buffers(&self.context)
             .map_err(|e| RuntimeError::Gl(format!("swap_buffers failed: {e}")))
     }
+
+    /// Uploads `frame` into the renderer's texture (reallocated only when the size changes).
+    pub fn upload_frame(&mut self, frame: &FrameRgba) -> Result<(), RuntimeError> {
+        self.make_current()?;
+        // SAFETY: this window's context was just made current on this thread (`Self` is !Send, so it cannot
+        // change thread), and the renderer's objects were created with that context.
+        unsafe { self.renderer.upload(&self.gl, frame) };
+        Ok(())
+    }
+
+    /// Clears to black and draws the last uploaded frame; `aspect_ratio` comes from
+    /// `GameGeometry::display_aspect`. Call `swap_buffers` afterwards.
+    pub fn draw_frame(
+        &mut self,
+        viewport: PhysicalSize<u32>,
+        aspect_ratio: f32,
+        scaling: Scaling,
+    ) -> Result<(), RuntimeError> {
+        self.make_current()?;
+        // SAFETY: as in `upload_frame`.
+        unsafe {
+            self.renderer
+                .draw(&self.gl, viewport, aspect_ratio, scaling)
+        };
+        Ok(())
+    }
+
+    /// No-op when already current (the common case: one window per thread). Needed because another context
+    /// (a second `GlWindow`, a core's HW context later) may have been made current on this thread.
+    fn make_current(&self) -> Result<(), RuntimeError> {
+        if self.context.is_current() {
+            return Ok(());
+        }
+        self.context
+            .make_current(&self.surface)
+            .map_err(|e| RuntimeError::Gl(format!("cannot make GL context current: {e}")))
+    }
 }
 
-/// Plain opaque window: no multisampling, no transparency needed.
-fn pick_config(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
-    configs
-        .min_by_key(|c| (c.num_samples(), c.supports_transparency().unwrap_or(false)))
-        // The picker cannot report an error; an empty list means the system has no usable GL at all
-        // (GLX errors out before calling us, EGL may not).
-        .expect("no OpenGL framebuffer configuration available")
+impl Drop for GlWindow {
+    fn drop(&mut self) {
+        match self.make_current() {
+            // SAFETY: the context is alive (fields are dropped after this) and current on this thread; the
+            // renderer's objects were created with it and are not used afterwards.
+            Ok(()) => unsafe { self.renderer.delete(&self.gl) },
+            // Destroying the context below frees its objects anyway.
+            Err(e) => tracing::warn!("cannot release renderer GL objects: {e}"),
+        }
+    }
+}
+
+/// Unwind payload used to leave the config picker, which has no way to report an error.
+struct NoGlConfig;
+
+fn build_display(
+    event_loop: &ActiveEventLoop,
+    attributes: WindowAttributes,
+) -> Result<(Window, Config), RuntimeError> {
+    // `resume_unwind` skips the panic hook, so nothing is printed; only frames of glutin-winit (pure Rust) sit
+    // between the picker and this `catch_unwind`, no FFI boundary is crossed.
+    let built = panic::catch_unwind(AssertUnwindSafe(|| {
+        DisplayBuilder::new()
+            .with_window_attributes(Some(attributes))
+            .build(event_loop, ConfigTemplateBuilder::new(), |configs| {
+                pick_config(configs).unwrap_or_else(|| panic::resume_unwind(Box::new(NoGlConfig)))
+            })
+            .map_err(|e| RuntimeError::Gl(format!("cannot create window or find a GL config: {e}")))
+    }));
+    let (window, config) = match built {
+        Ok(result) => result?,
+        Err(payload) if payload.is::<NoGlConfig>() => {
+            return Err(RuntimeError::Gl(
+                "no OpenGL framebuffer configuration available".into(),
+            ));
+        }
+        Err(payload) => panic::resume_unwind(payload),
+    };
+    let window =
+        window.ok_or_else(|| RuntimeError::Gl("display builder returned no window".into()))?;
+    Ok((window, config))
+}
+
+/// Plain opaque window: no multisampling, no transparency needed. `None` when the system has no usable GL
+/// configuration (GLX errors out before calling the picker, EGL may not).
+fn pick_config(configs: Box<dyn Iterator<Item = Config> + '_>) -> Option<Config> {
+    configs.min_by_key(|c| (c.num_samples(), c.supports_transparency().unwrap_or(false)))
 }
 
 fn create_context(
@@ -203,23 +295,25 @@ void main() {
 }
 ";
 
-/// Draws the emulated frame as a textured quad with letterboxing. Must be dropped before its `GlWindow`.
-pub struct FrameRenderer {
-    gl: Arc<glow::Context>,
+/// Draws the emulated frame as a textured quad with letterboxing. Owned by `GlWindow`, which guarantees the
+/// preconditions of every method: its context is alive and current on the calling thread.
+struct FrameRenderer {
     program: glow::Program,
     vertex_array: glow::VertexArray,
     texture: glow::Texture,
     /// Size of the texture storage; `(0, 0)` until the first non-empty upload.
     texture_size: (u32, u32),
+    _not_send: PhantomData<*const ()>,
 }
 
 impl FrameRenderer {
-    pub fn new(window: &GlWindow) -> Result<Self, RuntimeError> {
-        let gl = Arc::clone(window.gl());
-        // SAFETY: `window`'s context is current on this thread (made current in `GlWindow::new`, and the
-        // window is !Send); every object created here is deleted in `Drop` with the same context.
+    /// # Safety
+    /// A GL >= 3.3 context must be current on the calling thread, and stay alive and current for every later
+    /// call on the returned renderer, including `delete`.
+    unsafe fn new(gl: &glow::Context) -> Result<Self, RuntimeError> {
+        // SAFETY: guaranteed by the caller; every object created here is either returned or deleted.
         unsafe {
-            let program = link_program(&gl)?;
+            let program = link_program(gl)?;
             let vertex_array = gl.create_vertex_array().map_err(|e| {
                 gl.delete_program(program);
                 RuntimeError::Gl(format!("glGenVertexArrays: {e}"))
@@ -246,17 +340,18 @@ impl FrameRenderer {
             gl.use_program(None);
 
             Ok(Self {
-                gl,
                 program,
                 vertex_array,
                 texture,
                 texture_size: (0, 0),
+                _not_send: PhantomData,
             })
         }
     }
 
-    /// Uploads `frame` into the texture (reallocated only when the size changes).
-    pub fn upload(&mut self, frame: &FrameRgba) {
+    /// # Safety
+    /// The context this renderer was created with must be current on the calling thread.
+    unsafe fn upload(&mut self, gl: &glow::Context, frame: &FrameRgba) {
         let (width, height) = (frame.width(), frame.height());
         if width == 0 || height == 0 {
             return;
@@ -264,10 +359,9 @@ impl FrameRenderer {
         let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else {
             return;
         };
-        let gl = &self.gl;
-        // SAFETY: the context is current (see `new`); `frame.pixels()` holds exactly `width * height * 4`
-        // bytes (FrameRgba invariant), matching the RGBA/UNSIGNED_BYTE upload with unpack alignment 4 and
-        // no row length override.
+        // SAFETY: context guaranteed by the caller; `frame.pixels()` holds exactly `width * height * 4` bytes
+        // (FrameRgba invariant), matching the RGBA/UNSIGNED_BYTE upload with unpack alignment 4 and no row
+        // length override.
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
@@ -303,17 +397,23 @@ impl FrameRenderer {
         }
     }
 
-    /// Clears to black and draws the last uploaded frame; `aspect_ratio` comes from `GameGeometry::display_aspect`.
-    pub fn draw(&mut self, viewport: PhysicalSize<u32>, aspect_ratio: f32, scaling: Scaling) {
+    /// # Safety
+    /// The context this renderer was created with must be current on the calling thread.
+    unsafe fn draw(
+        &self,
+        gl: &glow::Context,
+        viewport: PhysicalSize<u32>,
+        aspect_ratio: f32,
+        scaling: Scaling,
+    ) {
         let full = (0, 0, clamp_i32(viewport.width), clamp_i32(viewport.height));
         let target = target_rect(viewport, self.texture_size, aspect_ratio, scaling);
         let filter = match scaling {
             Scaling::Integer => glow::NEAREST,
             Scaling::Fit => glow::LINEAR,
         } as i32;
-        let gl = &self.gl;
-        // SAFETY: the context is current (see `new`); all objects used were created by this renderer and are
-        // alive until `Drop`. State this pass depends on is set explicitly, since egui shares the context.
+        // SAFETY: context guaranteed by the caller; all objects used were created by this renderer and are
+        // alive until `delete`. State this pass depends on is set explicitly, since egui shares the context.
         unsafe {
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
@@ -341,16 +441,16 @@ impl FrameRenderer {
             gl.use_program(None);
         }
     }
-}
 
-impl Drop for FrameRenderer {
-    fn drop(&mut self) {
-        // SAFETY: objects were created with this context, which is still alive (the renderer must be dropped
-        // before its `GlWindow`, documented on the type) and current on this thread.
+    /// # Safety
+    /// The context this renderer was created with must be current on the calling thread; the renderer must not
+    /// be used afterwards.
+    unsafe fn delete(&mut self, gl: &glow::Context) {
+        // SAFETY: guaranteed by the caller.
         unsafe {
-            self.gl.delete_texture(self.texture);
-            self.gl.delete_vertex_array(self.vertex_array);
-            self.gl.delete_program(self.program);
+            gl.delete_texture(self.texture);
+            gl.delete_vertex_array(self.vertex_array);
+            gl.delete_program(self.program);
         }
     }
 }

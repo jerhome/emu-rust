@@ -279,8 +279,11 @@ unsafe fn frame_from_raw<'a>(
     let len = pitch
         .checked_mul(usize::try_from(height - 1).ok()?)?
         .checked_add(row)?;
-    // SAFETY: non-null, not the HW sentinel; size and lifetime per this function's contract. `u8` has no
-    // alignment requirement.
+    if isize::try_from(len).is_err() {
+        return None;
+    }
+    // SAFETY: non-null, not the HW sentinel; size and lifetime per this function's contract; `len` was just
+    // checked to be <= isize::MAX as `from_raw_parts` requires. `u8` has no alignment requirement.
     let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
     Some(Some(VideoFrame {
         data,
@@ -328,11 +331,16 @@ pub(crate) unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usi
         if data.is_null() || frames == 0 {
             return 0;
         }
-        let Some(len) = frames.checked_mul(2) else {
+        // The slice must span at most isize::MAX bytes (`from_raw_parts` precondition).
+        let Some(len) = frames.checked_mul(2).filter(|len| {
+            len.checked_mul(size_of::<i16>())
+                .is_some_and(|b| isize::try_from(b).is_ok())
+        }) else {
             return 0;
         };
         // SAFETY: libretro guarantees `frames` stereo frames (2 × i16 each) at `data`, which is non-null and
-        // i16-aligned per the C type; the slice does not outlive this call.
+        // i16-aligned per the C type; the byte size was checked to be <= isize::MAX above; the slice does not
+        // outlive this call.
         let samples = unsafe { std::slice::from_raw_parts(data, len) };
         with_handler((), |handler| handler.audio_samples(samples));
         frames
@@ -642,6 +650,15 @@ pub(crate) fn av_info_from_raw(av: &sys::retro_system_av_info) -> AvInfo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frame_from_raw_rejects_oversized_length() {
+        let byte = 0u8;
+        let ptr = (&raw const byte).cast::<c_void>();
+        // SAFETY: the length check fails before any read of `ptr`.
+        let r = unsafe { frame_from_raw(ptr, 1, 3, isize::MAX as usize, PixelFormat::Rgb565) };
+        assert!(r.is_none());
+    }
+
     use super::*;
     use std::path::PathBuf;
 

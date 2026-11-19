@@ -15,6 +15,6 @@ pub use crate::audio::{AudioSink, CollectSink, NullSink, write_wav};
 pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus};
 pub use crate::error::RuntimeError;
 pub use crate::frame::{FrameRgba, convert_frame};
-pub use crate::gl::{FrameRenderer, GlWindow, Scaling};
+pub use crate::gl::{GlWindow, Scaling};
 pub use crate::input::{InputBackend, InputFrame, MAX_PORTS, NullInput, PadState, ScriptedInput};
 pub use crate::timing::FramePacer;

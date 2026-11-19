@@ -80,7 +80,14 @@ pub fn convert_frame(src: &VideoFrame<'_>, dst: &mut FrameRgba) {
     let width = src.width as usize;
     let height = src.height as usize;
     let bpp = src.format.bytes_per_pixel();
-    let row_bytes = width * bpp;
+    // Geometry comes from the core: overflow means a corrupt frame, not something to wrap or panic on.
+    let (Some(row_bytes), Some(dst_len)) = (
+        width.checked_mul(bpp),
+        width.checked_mul(height).and_then(|n| n.checked_mul(4)),
+    ) else {
+        tracing::warn!(width, height, "ignoring video frame with overflowing size");
+        return;
+    };
     let required = match height {
         0 => 0,
         h => src.pitch.saturating_mul(h - 1).saturating_add(row_bytes),
@@ -99,7 +106,7 @@ pub fn convert_frame(src: &VideoFrame<'_>, dst: &mut FrameRgba) {
     dst.width = src.width;
     dst.height = src.height;
     // `resize` keeps the allocation when the size is unchanged: no per-frame allocation.
-    dst.pixels.resize(width * height * 4, 0);
+    dst.pixels.resize(dst_len, 0);
     if row_bytes == 0 {
         return;
     }
@@ -252,6 +259,22 @@ mod tests {
             height: 2,
             pitch: 4,
             format: PixelFormat::Rgb565,
+        };
+        let mut dst = frame_of(&[1, 2, 3, 4], 1, 1, 4, PixelFormat::Xrgb8888);
+        let before = dst.clone();
+        convert_frame(&src, &mut dst);
+        assert_eq!(dst, before);
+    }
+
+    #[test]
+    fn overflowing_geometry_is_ignored() {
+        let data = [0u8; 4];
+        let src = VideoFrame {
+            data: &data,
+            width: u32::MAX,
+            height: u32::MAX,
+            pitch: 0,
+            format: PixelFormat::Xrgb8888,
         };
         let mut dst = frame_of(&[1, 2, 3, 4], 1, 1, 4, PixelFormat::Xrgb8888);
         let before = dst.clone();
