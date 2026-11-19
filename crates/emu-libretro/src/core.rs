@@ -171,7 +171,8 @@ unsafe fn system_info_from_raw(raw: &sys::retro_system_info) -> SystemInfo {
 }
 
 impl Core {
-    /// Opens the library, checks `retro_api_version`, installs callbacks, then calls `retro_init`.
+    /// Opens the library, checks `retro_api_version`, sets the environment, calls `retro_init`, then installs the
+    /// AV/input callbacks (RetroArch order; some cores, e.g. Mesen, crash if they are set before `retro_init`).
     pub fn load(path: &Path, config: CoreConfig) -> Result<Self, LibretroError> {
         let guard = ProcessGuard::acquire()?;
         // SAFETY: loading a libretro core runs its initialisers; cores are trusted native code chosen by the
@@ -194,16 +195,18 @@ impl Core {
         // Cores may call the environment from inside retro_set_environment, so the state goes first.
         let env = callbacks::install_env(&config, path);
         // SAFETY: `api` is valid while `library` lives. The callbacks are `'static` functions that tolerate
-        // being called at any time (they answer neutrally when no handler is installed). Per libretro.h,
-        // retro_set_environment precedes retro_init and the other setters precede the first retro_run.
+        // being called at any time (they answer neutrally when no handler is installed). Order follows
+        // RetroArch: libretro.h only requires retro_set_environment before retro_init; the other setters
+        // come after it because some cores (Mesen) store them in objects created by retro_init and crash
+        // otherwise. They still precede retro_load_game and the first retro_run.
         unsafe {
             (api.set_environment)(callbacks::environment);
+            (api.init)();
             (api.set_video_refresh)(callbacks::video_refresh);
             (api.set_audio_sample)(callbacks::audio_sample);
             (api.set_audio_sample_batch)(callbacks::audio_sample_batch);
             (api.set_input_poll)(callbacks::input_poll);
             (api.set_input_state)(callbacks::input_state);
-            (api.init)();
         }
 
         let mut raw = sys::retro_system_info {

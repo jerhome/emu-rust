@@ -57,3 +57,9 @@ qu'`emu-ui` ne dépende pas d'`emu-libretro`. `emu-app` ne dépend que d'`emu-ui
   un thread d'émulation… » est caduque.
 - egui (`egui_glow::Painter`) reçoit `GlWindow::gl()` après `make_current()` ; `GlWindow::draw_frame` repositionne tout
   l'état GL qu'il utilise (egui le modifie entre deux images).
+
+## Amendement (2026-11-20) : ordre d'initialisation
+
+`Core::load` appelle `retro_set_environment`, puis `retro_init`, puis seulement les setters vidéo, audio et entrées
+(ordre de RetroArch). libretro.h n'impose que `retro_set_environment` avant `retro_init` ; appeler les autres setters avant
+fait planter certains cores (Mesen). Nos callbacks restent `'static` et neutres sans gestionnaire installé.
