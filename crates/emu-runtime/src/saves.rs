@@ -454,7 +454,11 @@ mod tests {
         assert_eq!(name("/"), "game");
         assert_eq!(name("/roms/CON.zip"), "_CON");
         assert_eq!(name("nul.tar.gz"), "_nul.tar");
+        // `a:` is a drive prefix on Windows.
+        #[cfg(not(windows))]
         assert_eq!(name("a:b?.zip"), "a_b_");
+        #[cfg(windows)]
+        assert_eq!(name("a:b?.zip"), "b_");
         assert_eq!(core_id_from_path(Path::new("aux_libretro.so")), "_aux");
     }
 
