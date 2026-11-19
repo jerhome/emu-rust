@@ -57,3 +57,7 @@ format des DAT, sort d'une base corrompue, pile HTTP/TLS exacte, décodage d'ima
 - ScreenScraper exige aussi des identifiants **développeur** : le projet n'en publie pas ; l'utilisateur les saisit
   ou la source reste désactivée.
 - Une base perdue ne coûte que favoris et historique ; elle se reconstruit par un nouveau scan.
+
+## Amendement 2026-11-19 (revue L1)
+
+Schéma final : `game.path` UNIQUE, `file_size` vs `size`, `pinned` (`SCHEMA_VERSION = 2`) ; zip > 1 Gio refusé ; `gbc` accepte `.gb`. Détails dans `docs/design/v1.0-bibliotheque.md`.
