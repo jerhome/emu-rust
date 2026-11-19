@@ -28,7 +28,7 @@
 | Version | Contenu | Processus |
 |---|---|---|
 | 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; **Super Nintendo (snes9x) et Mega Drive (genesis_plus_gx) doivent être irréprochables**. Cores à télécharger à la main (liens dans les notes) | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur → corrections |
-| 0.1.x (stable) | 0.1 corrigée après essais + **téléchargement automatique des cores** genesis_plus_gx et snes9x pour l'OS courant (buildbot, HTTPS rustls, zip durci existant) : premier morceau du gestionnaire de cores | Release stable (non pré-release) |
+| 0.1.x (stable) | 0.1 corrigée après essais ; cores toujours téléchargés à la main (liens dans les notes) | Release stable (non pré-release) |
 | 0.2 … 0.x | Étapes vers la 1.0 (ordre à définir ensemble) | — |
 | 1.0 | **Petites consoles** (pistes : NES, Master System / Game Gear, Game Boy / Color, PC Engine…), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release, essais, stable |
 | 2.0 | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
