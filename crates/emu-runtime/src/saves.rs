@@ -445,7 +445,11 @@ mod tests {
         let name = |p: &str| game_name_from_path(Path::new(p));
         assert_eq!(name("/roms/Sonic (World).zip"), "Sonic (World)");
         assert_eq!(name("roms/Ys.Book.I.sfc"), "Ys.Book.I");
+        // `\\` is a path separator on Windows only, so the stem differs there.
+        #[cfg(not(windows))]
         assert_eq!(name("a\\b\u{1}c.bin"), "a_b_c");
+        #[cfg(windows)]
+        assert_eq!(name("a\\b\u{1}c.bin"), "b_c");
         assert_eq!(name(""), "game");
         assert_eq!(name("/"), "game");
         assert_eq!(name("/roms/CON.zip"), "_CON");
