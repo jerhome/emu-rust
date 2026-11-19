@@ -3,6 +3,13 @@
 # EMU_DISPLAY=novnc: start a virtual screen reachable at http://<host>:6080/vnc.html (no sound).
 set -euo pipefail
 
+# ALSA default -> PulseAudio only if a server is configured; otherwise no sound, no blocking.
+if [[ -n "${PULSE_SERVER:-}" ]]; then
+    printf 'pcm.!default pulse\nctl.!default pulse\n' > "$HOME/.asoundrc"
+else
+    rm -f "$HOME/.asoundrc"
+fi
+
 if [[ "${EMU_DISPLAY:-host}" == "novnc" ]]; then
     export DISPLAY=:99
     unset WAYLAND_DISPLAY
