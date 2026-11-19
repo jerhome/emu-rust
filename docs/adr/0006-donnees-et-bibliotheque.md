@@ -27,3 +27,8 @@ Racine de données (`EMU_DATA_DIR`, sinon dossier standard via le crate `directo
 
 - Résolution de la racine, dossier `assets/`, identifiant de core, nommage SRAM / savestates, format des savestates,
   écritures atomiques et règles de `config.toml` : **ADR 0011**.
+
+## Amendement 2026-11-19 — version 1.0
+
+- Catalogue des systèmes, format des DAT, schéma et corruption de la base, jaquettes, secrets : **ADR 0014**.
+  Arborescence ajoutée : `database/no-intro/` (DAT téléchargés) ; `covers/<système>/boxart/`.

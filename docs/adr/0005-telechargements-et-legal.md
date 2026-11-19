@@ -23,3 +23,9 @@ Statut : accepté (2026-11-19)
 - Les cores sont du code natif exécuté : uniquement depuis le buildbot officiel, URL non modifiable sans action explicite.
 - Respect des quotas d'API (ScreenScraper, IGDB) : file d'attente, cache local, `User-Agent` générique.
 - Identifiants dans la config utilisateur (permissions `600`), jamais loggés ni commités.
+
+## Amendement 2026-11-19 — version 1.0
+
+- Pile HTTP/TLS exacte (`reqwest` + `rustls` / `ring`), DAT No-Intro au format clrmamepro, limites des images : **ADR 0014**.
+- Gestionnaire de cores (canal nightly, intégrité CRC32 d'index + SHA-256 local vérifié avant chargement, version
+  précédente conservée, extraction en mémoire, aucune requête au démarrage) : **ADR 0013**.
