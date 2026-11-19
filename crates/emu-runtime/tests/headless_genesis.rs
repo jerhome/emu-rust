@@ -110,8 +110,9 @@ fn run_session(input: &mut dyn InputBackend, tag: Option<&str>) -> Session {
 fn scripted() -> ScriptedInput {
     ScriptedInput::new()
         .press(0, JoypadButton::Down, 400..410)
-        .press(0, JoypadButton::A, 450..460)
-        .press(0, JoypadButton::Start, 500..510)
+        // genesis_plus_gx 3-button pad: libretro Y is Mega Drive A (confirm), libretro B is
+        // Mega Drive B (back), libretro A is Mega Drive C (no effect in the 240pSuite menu).
+        .press(0, JoypadButton::Y, 450..460)
 }
 
 fn core_hash() -> String {
@@ -227,6 +228,14 @@ fn input_changes_the_picture() {
         last(&idle).1,
         last(&played).1,
         "scripted input had no visible effect at frame {TOTAL_FRAMES}"
+    );
+    // Same script without the confirm press: the sub-menu must make the picture differ.
+    let mut no_confirm = ScriptedInput::new().press(0, JoypadButton::Down, 400..410);
+    let down_only = run_session(&mut no_confirm, None);
+    assert_ne!(
+        last(&down_only).1,
+        last(&played).1,
+        "confirm press (libretro Y) did not open the sub-menu"
     );
 }
 

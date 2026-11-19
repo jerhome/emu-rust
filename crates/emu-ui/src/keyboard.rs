@@ -14,8 +14,13 @@ impl KeyMap {
         Self { bindings }
     }
 
-    /// Port 0, genesis_plus_gx layout: arrows = D-pad, Enter = Start, Right Shift = Select (Mode),
-    /// Z/X/C = Y/B/A (MD A/B/C), A/S/D = L/X/R (MD X/Y/Z).
+    /// Port 0, genesis_plus_gx layout. The core maps libretro buttons onto the Mega Drive pad
+    /// as Y -> A, B -> B, A -> C, Start -> Start (verified headless on the 240p Test Suite:
+    /// libretro Y confirms a menu entry, libretro B goes back, libretro A does nothing there).
+    /// 6-button pad (not enabled by default in the core): L -> X, X -> Y, R -> Z, Select -> Mode.
+    ///
+    /// Keys: arrows = D-pad, Enter = Start, Right Shift = Mode, Z/X/C = MD A/B/C (so Z confirms),
+    /// A/S/D = MD X/Y/Z.
     pub fn genesis_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
@@ -94,6 +99,22 @@ mod tests {
         let keys: HashSet<_> = map.bindings().iter().map(|b| b.0).collect();
         assert_eq!(keys.len(), map.bindings().len());
         assert!(map.bindings().iter().all(|b| b.1 < MAX_PORTS));
+    }
+
+    #[test]
+    fn genesis_face_buttons_hit_megadrive_abc() {
+        let press = |key| {
+            let mut kb = KeyboardInput::new(KeyMap::genesis_default());
+            kb.handle_key(key, true);
+            let mut frame = InputFrame::default();
+            kb.poll(0, &mut frame);
+            frame.pads[0].bits()
+        };
+        // MD A, B, C = libretro Y, B, A in genesis_plus_gx.
+        assert_eq!(press(KeyCode::KeyZ), 1 << JoypadButton::Y as u32);
+        assert_eq!(press(KeyCode::KeyX), 1 << JoypadButton::B as u32);
+        assert_eq!(press(KeyCode::KeyC), 1 << JoypadButton::A as u32);
+        assert_eq!(press(KeyCode::Enter), 1 << JoypadButton::Start as u32);
     }
 
     #[test]
