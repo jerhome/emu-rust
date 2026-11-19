@@ -270,7 +270,7 @@ jobs:
 
   docker:
     name: Docker image (ghcr.io, linux/amd64)
-    needs: check-version
+    needs: [check-version, linux, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -313,8 +313,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha,scope=runtime
-          cache-to: type=gha,scope=runtime,mode=max
+          # No cache when publishing; the GHA cache is only used in dry runs.
+          no-cache: ${{ env.PUBLISH == 'true' }}
+          cache-from: ${{ env.PUBLISH != 'true' && 'type=gha,scope=runtime' || '' }}
+          cache-to: ${{ env.PUBLISH != 'true' && 'type=gha,scope=runtime,mode=max' || '' }}
 
   release:
     name: GitHub pre-release

@@ -46,17 +46,17 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
         # xvfb: some tests open an X display; the mock core is built with the system C compiler (ADR 0009).
-        run: xvfb-run -a cargo test --workspace
+        run: xvfb-run -a cargo test --locked --workspace
 
       - name: Build without default features
-        run: cargo build --workspace --no-default-features
+        run: cargo build --locked --workspace --no-default-features
 
       - name: Build release
-        run: cargo build --release -p emu-app
+        run: cargo build --locked --release -p emu-app
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -90,17 +90,17 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
 
       - name: Test
         # Mock-core tests are `cfg(target_os = "linux")` and compile out here until the helper supports .dylib.
-        run: cargo test --workspace --target x86_64-apple-darwin
+        run: cargo test --locked --workspace --target x86_64-apple-darwin
 
       - name: Build without default features
-        run: cargo build --workspace --no-default-features --target x86_64-apple-darwin
+        run: cargo build --locked --workspace --no-default-features --target x86_64-apple-darwin
 
       - name: Build release
-        run: cargo build --release -p emu-app --target x86_64-apple-darwin
+        run: cargo build --locked --release -p emu-app --target x86_64-apple-darwin
 
       - name: Minimum macOS version (<= 12.0)
         run: scripts/check-macos-minos.sh target/x86_64-apple-darwin/release/emu-rust 12.0

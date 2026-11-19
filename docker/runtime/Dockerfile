@@ -2,7 +2,8 @@
 # Build context: repository root. Example: docker compose -f docker/compose.yaml build
 
 # C compiler: emu-libretro builds log_shim.c through the `cc` crate (ADR 0009). Build stage only.
-FROM rust:1.100-bookworm AS build
+# rust:1.100-bookworm
+FROM rust@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config cmake clang \
         libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
@@ -12,7 +13,8 @@ WORKDIR /src
 COPY . .
 RUN cargo build --release --locked -p emu-app
 
-FROM debian:bookworm-slim
+# debian:bookworm-slim
+FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libx11-6 libxcursor1 libxrandr2 libxi6 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-egl1 \

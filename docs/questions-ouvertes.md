@@ -58,3 +58,4 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-19 | 0.1 (P1) | macOS : version minimale. | `MACOSX_DEPLOYMENT_TARGET=10.13` au niveau des jobs macOS (CI et release, couvre rustc et `cc`) ; `scripts/check-macos-minos.sh` échoue si `minos` > 12.0 (Mac d'essai : 12.7.6). | décidé |
 | 2026-11-19 | 0.1 (P1) | Test de fumée des artefacts. | Chaque job de release exécute `emu-rust --version` et exige la version du workspace dans la sortie. | décidé (défaut) |
 | 2026-11-19 | 0.1 (P1) | `xvfb-capture.sh` : `--screen` d'emu-rust en mode xwd. | `--screen` après `--` bascule automatiquement en mode `--dump-window` (l'écran n'existe qu'en fin de `--frames`, l'app quitte aussitôt). | décidé |
+| 2026-11-19 | 6 | Cache GHA pour l'image Docker publiée (le design en prévoyait un) ? | Pas de cache en release : `no-cache` et pas de `cache-to` à la publication ; cache GHA conservé en dry run seulement. | décidé |
