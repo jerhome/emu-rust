@@ -1,3 +1,5 @@
+// The mock core only builds on Unix; on Windows most helpers are unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 //! `Emulator` phase 2 (SRAM, savestates, zip, options) against the mock core (ADR 0009). Unix only: the mock
 //! core is built with the system C compiler.
 #![cfg(unix)]

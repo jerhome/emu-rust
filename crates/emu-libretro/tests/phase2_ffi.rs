@@ -1,3 +1,5 @@
+// The mock core only builds on Unix; on Windows most helpers are unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 //! Phase 2 FFI features (options, savestates, memory, messages, in-memory content) on the mock core
 //! (ADR 0009, not ignored) and on genesis_plus_gx (`#[ignore]`, ADR 0007). One `Core` per process (ADR 0008):
 //! every test takes `LOCK`.

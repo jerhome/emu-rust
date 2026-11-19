@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 /// Compile-time variants of the mock core.

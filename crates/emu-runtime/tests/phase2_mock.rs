@@ -1,3 +1,5 @@
+// The mock core only builds on Unix; on Windows most helpers are unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 //! Phase 2 end-to-end scenarios on the mock core (docs/design/phase2-frontend.md §3): `Pacer` + `RingSink` on a
 //! simulated clock, pixel formats, core-driven option changes, savestates across processes, damaged `.srm`
 //! files. Unix only (the mock core is built with the system C compiler). Not `#[ignore]`.
