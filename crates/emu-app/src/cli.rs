@@ -6,10 +6,11 @@ use std::path::PathBuf;
 
 use emu_ui::{MAX_SCALE, MIN_SCALE, Screen};
 
-pub const USAGE: &str = "Usage : emu-rust --core <core.so> --rom <fichier> [--data-dir DIR] [--system-dir DIR]\n\
+pub const USAGE: &str = "Usage : emu-rust --core <core> --rom <fichier> [--data-dir DIR] [--system-dir DIR]\n\
                          \x20                [--save-dir DIR] [--scale N] [--no-audio] [--frames N]\n\
                          \x20                [--dump-frame sortie.png] [--screen menu|keys|options]\n\
                          \x20                [--dump-window sortie.png]\n\
+                         \x20      emu-rust --version | --help\n\
                          Racine de données : --data-dir, sinon EMU_DATA_DIR, sinon le dossier standard.";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +32,14 @@ pub struct Cli {
 pub enum Command {
     Run(Box<Cli>),
     Help,
+    Version,
+    /// No argument at all (e.g. a double-click on the executable): nothing to launch.
+    NoArgs,
+}
+
+/// `emu-rust <version>`, from the crate version.
+pub fn version_line() -> String {
+    format!("emu-rust {}", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, String> {
@@ -50,14 +59,21 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         dump_window: None,
     };
 
-    let mut it = args.into_iter();
+    let mut it = args.into_iter().peekable();
+    if it.peek().is_none() {
+        return Ok(Command::NoArgs);
+    }
     while let Some(arg) = it.next() {
         let name = arg.to_string_lossy().into_owned();
         if name == "--help" || name == "-h" {
             return Ok(Command::Help);
         }
-        let value =
-            |it: &mut I::IntoIter| it.next().ok_or_else(|| format!("{name} attend une valeur"));
+        if name == "--version" || name == "-V" {
+            return Ok(Command::Version);
+        }
+        let value = |it: &mut std::iter::Peekable<I::IntoIter>| {
+            it.next().ok_or_else(|| format!("{name} attend une valeur"))
+        };
         match name.as_str() {
             "--core" => core = Some(PathBuf::from(value(&mut it)?)),
             "--rom" => rom = Some(PathBuf::from(value(&mut it)?)),
@@ -190,6 +206,10 @@ mod tests {
         assert!(p(&["--core", "c", "--rom", "r", "--screen", "x"]).is_err());
         assert!(p(&["--bogus"]).unwrap_err().contains("inconnue"));
         assert_eq!(p(&["--help"]).unwrap(), Command::Help);
+        assert_eq!(p(&["--version"]).unwrap(), Command::Version);
+        assert_eq!(p(&["-V"]).unwrap(), Command::Version);
+        assert_eq!(p(&[]).unwrap(), Command::NoArgs);
+        assert!(version_line().starts_with("emu-rust "));
     }
 
     #[test]

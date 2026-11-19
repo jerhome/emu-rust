@@ -8,7 +8,7 @@ use emu_runtime::{
     LogLevel, MAX_BURST, PaceDecision, Pacer, STATE_SLOTS, Scaling, SyncMode, core_id_from_path,
 };
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -665,7 +665,7 @@ impl App {
         let Some(w) = &mut self.window else {
             return;
         };
-        let size = w.window().inner_size();
+        let size = w.physical_size();
         if size.width == 0 || size.height == 0 {
             return;
         }
@@ -704,7 +704,8 @@ impl ApplicationHandler for App {
                 .scale
                 .unwrap_or(self.options.config.video.scale),
         );
-        let size = PhysicalSize::new(base.0.saturating_mul(scale), base.1.saturating_mul(scale));
+        // Logical pixels: the window keeps the same apparent size on HiDPI screens.
+        let size = LogicalSize::new(base.0.saturating_mul(scale), base.1.saturating_mul(scale));
         let attrs = WindowAttributes::default()
             .with_title("emu-rust")
             .with_inner_size(size);
@@ -791,6 +792,12 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(w) = &self.window {
                     w.resize(size);
+                    w.window().request_redraw();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(w) = &self.window {
+                    w.scale_factor_changed();
                     w.window().request_redraw();
                 }
             }

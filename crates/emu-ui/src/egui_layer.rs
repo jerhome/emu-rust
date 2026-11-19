@@ -92,7 +92,7 @@ impl EguiLayer {
             tracing::warn!("egui non dessiné : {e}");
             return;
         }
-        let size = window.window().inner_size();
+        let size = window.physical_size();
         self.painter.paint_and_update_textures(
             [size.width, size.height],
             p.pixels_per_point,

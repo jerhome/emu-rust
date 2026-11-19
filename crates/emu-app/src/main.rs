@@ -1,6 +1,7 @@
 //! `emu-rust` binary: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
 
 mod cli;
+mod diagnostics;
 
 use std::process::ExitCode;
 
@@ -55,11 +56,27 @@ fn main() -> ExitCode {
             println!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
         }
+        Ok(cli::Command::Version) => {
+            println!("{}", cli::version_line());
+            return ExitCode::SUCCESS;
+        }
+        Ok(cli::Command::NoArgs) => {
+            eprintln!(
+                "{}\nAucun jeu à lancer : l'interface sans arguments n'est pas disponible dans cette version.\n\n{}",
+                cli::version_line(),
+                cli::USAGE
+            );
+            return ExitCode::from(2);
+        }
         Err(e) => {
             eprintln!("erreur : {e}\n\n{}", cli::USAGE);
             return ExitCode::from(2);
         }
     };
+    if let Err(e) = diagnostics::check_core(&cli.core) {
+        eprintln!("erreur : {e}");
+        return ExitCode::FAILURE;
+    }
     let options = match build_options(*cli) {
         Ok(o) => o,
         Err(e) => {
@@ -71,6 +88,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("erreur : {e}");
+            if matches!(e, emu_ui::UiError::Runtime(_)) {
+                eprintln!("{}", diagnostics::load_failure_hint());
+            }
             ExitCode::FAILURE
         }
     }
