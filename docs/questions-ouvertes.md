@@ -14,3 +14,4 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-19 | 1b | Backend Linux de `cpal` : ALSA (+ plugin pulse) ou feature `pulseaudio` native (pur Rust, cpal 0.18) ? | ALSA par défaut, déjà câblé dans l'image (`libasound2-plugins`, `.asoundrc`) ; feature `pulseaudio` à réévaluer si WSLg pose problème. | décidé (défaut) |
 | 2026-11-19 | 1b | `audio-cpal` activée par défaut ? | Oui depuis l'ajout de `libasound2-dev` au conteneur de Claude ; `--no-default-features` donne un binaire silencieux. | décidé (défaut) |
 - P1 : `sound-check` refuse de tourner sans PULSE_SERVER/socket (message clair) ; `--no-audio` ajouté par l'entrypoint en mode noVNC uniquement. Non bloquant.
+| 2026-11-19 | 6 | Licence du dépôt public `jerhome/emu-rust` : aucune pour l'instant (= tous droits réservés). | `MIT OR Apache-2.0`, validé par l'utilisateur. | résolu |

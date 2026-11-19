@@ -27,3 +27,8 @@ cargo run -p emu-app
 ```
 
 L'application ne télécharge jamais de ROM ni de BIOS commercial : fournissez vos propres fichiers.
+
+## Licence
+
+Au choix : [MIT](LICENSE-MIT) ou [Apache-2.0](LICENSE-APACHE). Les cores libretro ne sont pas distribués avec ce dépôt :
+chacun garde sa propre licence.
