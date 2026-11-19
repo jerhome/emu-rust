@@ -23,10 +23,12 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     tracing::info!("racine des données : {}", root.display());
     let mut dirs = emu_ui::DataDirs::under(&root);
     if let Some(d) = cli.system_dir {
-        dirs.system = d;
+        dirs.system =
+            std::path::absolute(&d).map_err(|e| format!("--system-dir {} : {e}", d.display()))?;
     }
     if let Some(d) = cli.save_dir {
-        dirs.saves = d;
+        dirs.saves =
+            std::path::absolute(&d).map_err(|e| format!("--save-dir {} : {e}", d.display()))?;
     }
     dirs.create_all()
         .map_err(|e| format!("impossible de créer {} : {e}", dirs.root.display()))?;

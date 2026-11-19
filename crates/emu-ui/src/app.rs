@@ -771,7 +771,16 @@ impl ApplicationHandler for App {
             }
             return;
         }
-        if let (Some(egui), Some(w)) = (&mut self.egui, &self.window)
+        // Pointer events are never consumed while nothing is drawn: forwarding them would queue them forever.
+        let forward = self.overlay.visible()
+            || matches!(
+                event,
+                WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::Focused(_)
+            );
+        if forward
+            && let (Some(egui), Some(w)) = (&mut self.egui, &self.window)
             && egui.on_window_event(w.window(), &event)
             && self.overlay.is_open()
         {

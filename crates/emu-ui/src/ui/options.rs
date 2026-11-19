@@ -19,7 +19,7 @@ pub(super) fn show(
         locked_banner(ui, data, overlay, actions);
         let w = ui.available_width();
         let groups = group_options(data.options, data.categories);
-        let mut focused_info: Option<&str> = None;
+        let mut focused_info: Option<String> = None;
         if groups.is_empty() {
             ui.label(text::OPTIONS_NONE);
         } else {
@@ -35,19 +35,21 @@ pub(super) fn show(
                                 ui.label(RichText::new(title).strong().size(16.0));
                                 ui.end_row();
                                 for opt in opts {
-                                    ui.label(&opt.label);
-                                    let value = opt
-                                        .values
-                                        .iter()
-                                        .find(|v| v.value == opt.current)
-                                        .map_or(opt.current.as_str(), |v| v.label.as_str());
+                                    ui.label(text::sanitize_core_text(&opt.label));
+                                    let value = text::sanitize_core_text(
+                                        opt.values
+                                            .iter()
+                                            .find(|v| v.value == opt.current)
+                                            .map_or(opt.current.as_str(), |v| v.label.as_str()),
+                                    );
                                     let resp = ui.add(
                                         Button::new(format!("<  {value}  >"))
                                             .min_size([w * 0.45, ROW_HEIGHT].into()),
                                     );
                                     nav(&resp, &mut overlay.focus_first);
                                     if resp.has_focus() {
-                                        focused_info = opt.info.as_deref();
+                                        focused_info =
+                                            opt.info.as_deref().map(text::sanitize_core_text);
                                     }
                                     let delta = stepper(ui, &resp);
                                     if delta != 0
@@ -66,7 +68,7 @@ pub(super) fn show(
         }
         ui.separator();
         // Shown for the focused row: no hover needed.
-        ui.label(RichText::new(focused_info.unwrap_or(text::OPTIONS_HINT)).weak());
+        ui.label(RichText::new(focused_info.as_deref().unwrap_or(text::OPTIONS_HINT)).weak());
         if !groups.is_empty() {
             let resp = ui.add(Button::new(text::OPTIONS_DEFAULTS).min_size([w, ROW_HEIGHT].into()));
             nav(&resp, &mut false);

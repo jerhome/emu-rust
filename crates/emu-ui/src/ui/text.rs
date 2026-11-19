@@ -251,9 +251,40 @@ pub fn format_unix_utc(secs: u64) -> String {
     )
 }
 
+const MAX_CORE_TEXT: usize = 512;
+
+/// Text supplied by a core: cut to ~512 bytes (on a char boundary), control characters other than `\n` replaced.
+pub fn sanitize_core_text(s: &str) -> String {
+    let mut end = s.len().min(MAX_CORE_TEXT);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end]
+        .chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_text_is_bounded_and_clean() {
+        let long = "é".repeat(400);
+        let out = sanitize_core_text(&long);
+        assert!(out.len() <= MAX_CORE_TEXT && out.chars().all(|c| c == 'é'));
+        assert_eq!(
+            sanitize_core_text("a\u{1b}[31mb\nc\0"),
+            "a\u{FFFD}[31mb\nc\u{FFFD}"
+        );
+    }
 
     #[test]
     fn dates() {

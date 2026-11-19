@@ -42,7 +42,7 @@ impl Osd {
     ) {
         let duration = duration.clamp(MIN_DURATION, MAX_DURATION);
         self.items.push_back(Item {
-            text: text.into(),
+            text: text::sanitize_core_text(&text.into()),
             level,
             until: now + duration,
         });

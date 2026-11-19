@@ -233,7 +233,29 @@ fn parse_error(text: &str, e: &toml::de::Error) -> ConfigError {
         let column = before.iter().rev().take_while(|b| **b != b'\n').count() + 1;
         format!(" (ligne {line}, colonne {column})")
     });
-    ConfigError::Parse(format!("{}{}", e.message(), position.unwrap_or_default()))
+    ConfigError::Parse(format!(
+        "{}{}",
+        safe_message(e.message()),
+        position.unwrap_or_default()
+    ))
+}
+
+/// serde errors quote the offending value (future secret fields): keep only the kind of error.
+fn safe_message(message: &str) -> &str {
+    const SERDE_PREFIXES: [&str; 7] = [
+        "invalid type",
+        "invalid value",
+        "invalid length",
+        "unknown variant",
+        "unknown field",
+        "missing field",
+        "duplicate field",
+    ];
+    if SERDE_PREFIXES.iter().any(|p| message.starts_with(p)) {
+        "type invalide"
+    } else {
+        message
+    }
 }
 
 /// ADR 0011: the file is private. A looser existing mode is tightened (only the path is logged).
@@ -248,7 +270,7 @@ fn enforce_private(path: &Path, file: &std::fs::File) {
             "{} était lisible par d'autres : droits ramenés à 600",
             path.display()
         );
-        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
             tracing::warn!("{} : droits non modifiables : {e}", path.display());
         }
     }
@@ -648,6 +670,21 @@ button = "a"
         };
         assert!(!msg.contains("hunter2"), "{msg}");
         assert!(msg.contains("ligne 3"), "{msg}");
+    }
+
+    #[test]
+    fn serde_error_never_echoes_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[video]\nvsync = \"hunter2\"\n").unwrap();
+        let Err(ConfigError::Parse(msg)) = Config::load(&path) else {
+            panic!("parse error expected");
+        };
+        assert!(!msg.contains("hunter2"), "{msg}");
+        assert!(
+            msg.contains("type invalide") && msg.contains("ligne 2"),
+            "{msg}"
+        );
     }
 
     #[test]
