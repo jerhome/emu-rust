@@ -592,6 +592,7 @@ version = "0.0.1"
 dependencies = [
  "directories",
  "emu-ui",
+ "tracing",
  "tracing-subscriber",
 ]
 

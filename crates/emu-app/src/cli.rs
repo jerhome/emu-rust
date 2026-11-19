@@ -1,28 +1,54 @@
-//! Hand-written argument parser (no `clap` for five options). Messages are user-facing French.
+//! Hand-written argument parser (no `clap` for a dozen options). Messages are user-facing French.
+//! Pure: data directories and `config.toml` are resolved afterwards by `main`.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use emu_ui::LaunchOptions;
+use emu_ui::{MAX_SCALE, MIN_SCALE, Screen};
 
-pub const USAGE: &str = "Usage : emu-rust --core <core.so> --rom <fichier> [--scale N] [--frames N]\n\
-                         \x20                [--dump-frame sortie.png] [--system-dir DIR] [--save-dir DIR] [--no-audio]";
+pub const USAGE: &str = "Usage : emu-rust --core <core.so> --rom <fichier> [--data-dir DIR] [--system-dir DIR]\n\
+                         \x20                [--save-dir DIR] [--scale N] [--no-audio] [--frames N]\n\
+                         \x20                [--dump-frame sortie.png] [--screen menu|keys|options]\n\
+                         \x20                [--dump-window sortie.png]\n\
+                         Racine de données : --data-dir, sinon EMU_DATA_DIR, sinon le dossier standard.";
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Cli {
+    pub core: PathBuf,
+    pub rom: PathBuf,
+    pub data_dir: Option<PathBuf>,
+    pub system_dir: Option<PathBuf>,
+    pub save_dir: Option<PathBuf>,
+    pub scale: Option<u32>,
+    pub audio: bool,
+    pub frames: Option<u64>,
+    pub dump_frame: Option<PathBuf>,
+    pub screen: Option<Screen>,
+    pub dump_window: Option<PathBuf>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    Run(LaunchOptions),
+    Run(Box<Cli>),
     Help,
 }
 
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, String> {
     let mut core = None;
     let mut rom = None;
-    let mut scale = 3u32;
-    let mut frames = None;
-    let mut dump = None;
-    let mut system_dir = PathBuf::from("./data/system");
-    let mut save_dir = PathBuf::from("./data/saves");
-    let mut audio = true;
+    let mut cli = Cli {
+        core: PathBuf::new(),
+        rom: PathBuf::new(),
+        data_dir: None,
+        system_dir: None,
+        save_dir: None,
+        scale: None,
+        audio: true,
+        frames: None,
+        dump_frame: None,
+        screen: None,
+        dump_window: None,
+    };
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -35,30 +61,50 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         match name.as_str() {
             "--core" => core = Some(PathBuf::from(value(&mut it)?)),
             "--rom" => rom = Some(PathBuf::from(value(&mut it)?)),
-            "--dump-frame" => dump = Some(PathBuf::from(value(&mut it)?)),
-            "--system-dir" => system_dir = PathBuf::from(value(&mut it)?),
-            "--save-dir" => save_dir = PathBuf::from(value(&mut it)?),
-            "--no-audio" => audio = false,
-            "--scale" => {
-                scale = number(&name, &value(&mut it)?)?;
-                if scale == 0 {
-                    return Err("--scale doit être ≥ 1".into());
-                }
+            "--data-dir" => cli.data_dir = Some(PathBuf::from(value(&mut it)?)),
+            "--dump-frame" => cli.dump_frame = Some(PathBuf::from(value(&mut it)?)),
+            "--dump-window" => cli.dump_window = Some(PathBuf::from(value(&mut it)?)),
+            "--system-dir" => cli.system_dir = Some(PathBuf::from(value(&mut it)?)),
+            "--save-dir" => cli.save_dir = Some(PathBuf::from(value(&mut it)?)),
+            "--no-audio" => cli.audio = false,
+            "--screen" => {
+                cli.screen = Some(match value(&mut it)?.to_string_lossy().as_ref() {
+                    "menu" => Screen::Menu,
+                    "keys" => Screen::Keys,
+                    "options" => Screen::CoreOptions,
+                    _ => return Err("--screen attend menu, keys ou options".into()),
+                });
             }
-            "--frames" => frames = Some(number(&name, &value(&mut it)?)?),
+            "--scale" => {
+                let scale: u32 = number(&name, &value(&mut it)?)?;
+                if !(MIN_SCALE..=MAX_SCALE).contains(&scale) {
+                    return Err(format!(
+                        "--scale doit être entre {MIN_SCALE} et {MAX_SCALE}"
+                    ));
+                }
+                cli.scale = Some(scale);
+            }
+            "--frames" => cli.frames = Some(number(&name, &value(&mut it)?)?),
             _ => return Err(format!("option inconnue : {name}")),
         }
     }
-    Ok(Command::Run(LaunchOptions {
-        core: core.ok_or("--core est obligatoire")?,
-        rom: rom.ok_or("--rom est obligatoire")?,
-        system_dir,
-        save_dir,
-        scale,
-        exit_after_frames: frames,
-        dump_last_frame: dump,
-        audio,
-    }))
+    cli.core = core.ok_or("--core est obligatoire")?;
+    cli.rom = rom.ok_or("--rom est obligatoire")?;
+    Ok(Command::Run(Box::new(cli)))
+}
+
+/// Data root: `--data-dir`, then `EMU_DATA_DIR` (if non-empty), then the platform data directory. Made
+/// absolute (a relative root would otherwise follow the working directory).
+pub fn resolve_root(
+    cli: Option<PathBuf>,
+    env: Option<OsString>,
+    standard: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let root = cli
+        .or_else(|| env.filter(|v| !v.is_empty()).map(PathBuf::from))
+        .or(standard)
+        .ok_or_else(|| "dossier de données introuvable : utiliser --data-dir".to_owned())?;
+    std::path::absolute(&root).map_err(|e| format!("{} : chemin invalide : {e}", root.display()))
 }
 
 fn number<T: std::str::FromStr>(name: &str, v: &OsString) -> Result<T, String> {
@@ -80,11 +126,11 @@ mod tests {
         let Command::Run(o) = p(&["--core", "c.so", "--rom", "r.bin"]).unwrap() else {
             panic!()
         };
-        assert_eq!(o.scale, 3);
+        assert_eq!(o.scale, None);
         assert!(o.audio);
-        assert_eq!(o.exit_after_frames, None);
-        assert_eq!(o.system_dir, PathBuf::from("./data/system"));
-        assert_eq!(o.save_dir, PathBuf::from("./data/saves"));
+        assert_eq!(o.frames, None);
+        assert_eq!(o.data_dir, None);
+        assert_eq!(o.screen, None);
     }
 
     #[test]
@@ -104,15 +150,24 @@ mod tests {
             "s",
             "--save-dir",
             "v",
+            "--data-dir",
+            "d",
+            "--screen",
+            "keys",
+            "--dump-window",
+            "w.png",
         ])
         .unwrap() else {
             panic!()
         };
-        assert_eq!(o.scale, 2);
-        assert_eq!(o.exit_after_frames, Some(600));
-        assert_eq!(o.dump_last_frame, Some(PathBuf::from("o.png")));
-        assert_eq!(o.system_dir, PathBuf::from("s"));
-        assert_eq!(o.save_dir, PathBuf::from("v"));
+        assert_eq!(o.scale, Some(2));
+        assert_eq!(o.frames, Some(600));
+        assert_eq!(o.dump_frame, Some(PathBuf::from("o.png")));
+        assert_eq!(o.system_dir, Some(PathBuf::from("s")));
+        assert_eq!(o.save_dir, Some(PathBuf::from("v")));
+        assert_eq!(o.data_dir, Some(PathBuf::from("d")));
+        assert_eq!(o.screen, Some(Screen::Keys));
+        assert_eq!(o.dump_window, Some(PathBuf::from("w.png")));
     }
 
     #[test]
@@ -129,8 +184,22 @@ mod tests {
         assert!(p(&["--core", "c"]).unwrap_err().contains("--rom"));
         assert!(p(&["--core"]).is_err());
         assert!(p(&["--core", "c", "--rom", "r", "--scale", "0"]).is_err());
+        assert!(p(&["--core", "c", "--rom", "r", "--scale", "17"]).is_err());
+        assert!(p(&["--core", "c", "--rom", "r", "--scale", "4294967295"]).is_err());
         assert!(p(&["--core", "c", "--rom", "r", "--frames", "x"]).is_err());
+        assert!(p(&["--core", "c", "--rom", "r", "--screen", "x"]).is_err());
         assert!(p(&["--bogus"]).unwrap_err().contains("inconnue"));
         assert_eq!(p(&["--help"]).unwrap(), Command::Help);
+    }
+
+    #[test]
+    fn root_precedence() {
+        let s = |x: &str| Some(PathBuf::from(x));
+        let abs = |x: &str| std::path::absolute(x).unwrap();
+        let e = |x: &str| Some(OsString::from(x));
+        assert_eq!(resolve_root(s("a"), e("b"), s("c")).unwrap(), abs("a"));
+        assert_eq!(resolve_root(None, e("b"), s("c")).unwrap(), abs("b"));
+        assert_eq!(resolve_root(None, e(""), s("c")).unwrap(), abs("c"));
+        assert!(resolve_root(None, None, None).is_err());
     }
 }

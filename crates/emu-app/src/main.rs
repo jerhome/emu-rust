@@ -1,6 +1,4 @@
-//! `emu-rust` binary. Phase 1 CLI (see docs/design/phase1-poc.md):
-//! `emu-rust --core <core.so> --rom <file> [--scale N] [--frames N] [--dump-frame out.png]
-//!           [--system-dir DIR] [--save-dir DIR]`
+//! `emu-rust` binary: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
 
 mod cli;
 
@@ -18,10 +16,39 @@ fn init_tracing() {
         .init();
 }
 
+fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
+    let standard =
+        directories::ProjectDirs::from("", "", "emu-rust").map(|d| d.data_dir().to_path_buf());
+    let root = cli::resolve_root(cli.data_dir, std::env::var_os("EMU_DATA_DIR"), standard)?;
+    tracing::info!("racine des données : {}", root.display());
+    let mut dirs = emu_ui::DataDirs::under(&root);
+    if let Some(d) = cli.system_dir {
+        dirs.system = d;
+    }
+    if let Some(d) = cli.save_dir {
+        dirs.saves = d;
+    }
+    dirs.create_all()
+        .map_err(|e| format!("impossible de créer {} : {e}", dirs.root.display()))?;
+    let config = emu_ui::Config::load_or_default(&dirs.config_file);
+    Ok(emu_ui::LaunchOptions {
+        core: cli.core,
+        rom: cli.rom,
+        dirs,
+        config,
+        scale: cli.scale,
+        audio: cli.audio,
+        exit_after_frames: cli.frames,
+        dump_last_frame: cli.dump_frame,
+        screen: cli.screen,
+        dump_window: cli.dump_window,
+    })
+}
+
 fn main() -> ExitCode {
     init_tracing();
-    let options = match cli::parse(std::env::args_os().skip(1)) {
-        Ok(cli::Command::Run(o)) => o,
+    let cli = match cli::parse(std::env::args_os().skip(1)) {
+        Ok(cli::Command::Run(c)) => c,
         Ok(cli::Command::Help) => {
             println!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
@@ -31,12 +58,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    for dir in [&options.system_dir, &options.save_dir] {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("erreur : impossible de créer {} : {e}", dir.display());
+    let options = match build_options(*cli) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("erreur : {e}");
             return ExitCode::FAILURE;
         }
-    }
+    };
     match emu_ui::run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

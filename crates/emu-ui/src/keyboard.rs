@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use emu_runtime::{InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 use winit::keyboard::KeyCode;
 
-/// Physical key → (port, libretro button). Configurable from the UI in phase 2.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Physical key → (port, libretro button). Serialized by key/button names (see `config.rs`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyMap {
     bindings: Vec<(KeyCode, usize, JoypadButton)>,
 }
@@ -42,6 +42,28 @@ impl KeyMap {
 
     pub fn bindings(&self) -> &[(KeyCode, usize, JoypadButton)] {
         &self.bindings
+    }
+
+    /// Binds `key`; one key carries one binding, so any previous binding of that key is replaced.
+    pub fn bind(&mut self, key: KeyCode, port: usize, button: JoypadButton) {
+        self.unbind(key);
+        self.bindings.push((key, port, button));
+    }
+
+    /// Removes the binding of `key`; returns whether there was one.
+    pub fn unbind(&mut self, key: KeyCode) -> bool {
+        let before = self.bindings.len();
+        self.bindings.retain(|(k, _, _)| *k != key);
+        self.bindings.len() != before
+    }
+
+    /// Keys currently bound to (`port`, `button`), in binding order.
+    pub fn keys_for(&self, port: usize, button: JoypadButton) -> Vec<KeyCode> {
+        self.bindings
+            .iter()
+            .filter(|(_, p, b)| *p == port && *b == button)
+            .map(|(k, _, _)| *k)
+            .collect()
     }
 }
 
@@ -143,6 +165,16 @@ mod tests {
         let mut frame = InputFrame::default();
         kb.poll(1, &mut frame);
         assert_eq!(frame.pads[0].bits(), 0);
+    }
+
+    #[test]
+    fn bind_replaces_key_and_unbind_removes() {
+        let mut map = KeyMap::genesis_default();
+        map.bind(KeyCode::KeyZ, 1, JoypadButton::Start);
+        assert!(map.keys_for(0, JoypadButton::Y).is_empty());
+        assert_eq!(map.keys_for(1, JoypadButton::Start), vec![KeyCode::KeyZ]);
+        assert!(map.unbind(KeyCode::KeyZ));
+        assert!(!map.unbind(KeyCode::KeyZ));
     }
 
     #[test]
