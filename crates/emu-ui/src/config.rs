@@ -9,7 +9,7 @@ use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
-use crate::keyboard::KeyMap;
+use crate::keyboard::{KeyMap, PadStyle};
 
 /// Profile used when a core has no profile of its own.
 pub const DEFAULT_PROFILE: &str = "default";
@@ -375,14 +375,14 @@ impl Config {
         self.locked = false;
     }
 
-    /// Core profile, else `"default"`, else the built-in layout.
+    /// Core profile, else `"default"`, else the built-in layout of the core's system.
     pub fn keymap_for(&self, core_id: &str) -> KeyMap {
         self.input
             .keyboard
             .get(core_id)
             .or_else(|| self.input.keyboard.get(DEFAULT_PROFILE))
             .cloned()
-            .unwrap_or_else(KeyMap::genesis_default)
+            .unwrap_or_else(|| KeyMap::default_for(PadStyle::from_core_id(core_id)))
     }
 
     pub fn set_keymap(&mut self, profile: &str, map: KeyMap) {
@@ -550,7 +550,9 @@ button = "a"
     #[test]
     fn keymap_fallbacks() {
         let mut cfg = Config::default();
-        assert_eq!(cfg.keymap_for("x"), KeyMap::genesis_default());
+        assert_eq!(cfg.keymap_for("x"), KeyMap::generic_default());
+        assert_eq!(cfg.keymap_for("genesis_plus_gx"), KeyMap::genesis_default());
+        assert_eq!(cfg.keymap_for("snes9x"), KeyMap::snes_default());
         let mut d = KeyMap::default();
         d.bind(KeyCode::KeyQ, 0, JoypadButton::A);
         cfg.set_keymap(DEFAULT_PROFILE, d.clone());

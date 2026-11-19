@@ -1,6 +1,8 @@
 //! Every user-facing string of the egui layer, in one place for a future translation.
 
 use emu_runtime::JoypadButton;
+
+use crate::keyboard::PadStyle;
 use winit::keyboard::KeyCode;
 
 use crate::hotkeys::HotkeyAction;
@@ -97,31 +99,36 @@ pub fn option_failed(e: &dyn std::fmt::Display) -> String {
     format!("Option refusée : {e}")
 }
 
-pub fn keys_capture(port: usize, button: JoypadButton) -> String {
+pub fn keys_capture(style: PadStyle, port: usize, button: JoypadButton) -> String {
     format!(
         "Appuyez sur une touche pour « {} {} »… (Échap : annuler, Retour arrière : effacer)",
         port_label(port),
-        button_label(button)
+        style.button_name(button)
     )
 }
 
-pub fn keys_bound(key: KeyCode, port: usize, button: JoypadButton) -> String {
+pub fn keys_bound(style: PadStyle, key: KeyCode, port: usize, button: JoypadButton) -> String {
     format!(
         "{} → {} {}.",
         key_label(key),
         port_label(port),
-        button_label(button)
+        style.button_name(button)
     )
 }
 
-pub fn keys_moved(key: KeyCode, from: (usize, JoypadButton), to: (usize, JoypadButton)) -> String {
+pub fn keys_moved(
+    style: PadStyle,
+    key: KeyCode,
+    from: (usize, JoypadButton),
+    to: (usize, JoypadButton),
+) -> String {
     format!(
         "Conflit : {} était liée à {} {} ; elle passe à {} {}.",
         key_label(key),
         port_label(from.0),
-        button_label(from.1),
+        style.button_name(from.1),
         port_label(to.0),
-        button_label(to.1)
+        style.button_name(to.1)
     )
 }
 
@@ -150,28 +157,6 @@ pub fn stats_xruns(underruns: u64, dropped: u64) -> String {
 
 pub fn stats_frame(frame: u64) -> String {
     format!("Image n° {frame}")
-}
-
-pub fn button_label(button: JoypadButton) -> &'static str {
-    use JoypadButton as B;
-    match button {
-        B::Up => "Haut",
-        B::Down => "Bas",
-        B::Left => "Gauche",
-        B::Right => "Droite",
-        B::Start => "Start",
-        B::Select => "Select",
-        B::A => "A",
-        B::B => "B",
-        B::X => "X",
-        B::Y => "Y",
-        B::L => "L",
-        B::R => "R",
-        B::L2 => "L2",
-        B::R2 => "R2",
-        B::L3 => "L3",
-        B::R3 => "R3",
-    }
 }
 
 pub fn hotkey_label(action: HotkeyAction) -> &'static str {

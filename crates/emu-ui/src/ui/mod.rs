@@ -21,7 +21,7 @@ pub use self::osd::{Osd, OsdLevel};
 use crate::Screen;
 use crate::config::{Config, DEFAULT_PROFILE, Hotkeys};
 use crate::hotkeys::HotkeyAction;
-use crate::keyboard::KeyMap;
+use crate::keyboard::{KeyMap, PadStyle};
 
 /// Which `[input.keyboard.<profile>]` the key screen edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub fn profile_map(config: &Config, core_id: &str, profile: Profile) -> KeyMap {
             .keyboard
             .get(DEFAULT_PROFILE)
             .cloned()
-            .unwrap_or_else(KeyMap::genesis_default),
+            .unwrap_or_else(|| KeyMap::default_for(PadStyle::from_core_id(core_id))),
     }
 }
 

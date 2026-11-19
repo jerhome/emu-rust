@@ -17,7 +17,7 @@ use winit::window::{Fullscreen, WindowAttributes, WindowId};
 use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::egui_layer::EguiLayer;
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
-use crate::keyboard::KeyMap;
+use crate::keyboard::{KeyMap, PadStyle};
 use crate::ui::{
     self, CaptureOutcome, OsdLevel, Overlay, StatsView, UiAction, UiData, apply_capture,
     profile_map, text,
@@ -115,9 +115,11 @@ pub(crate) fn run(mut options: LaunchOptions) -> Result<(), UiError> {
         AudioOutput::null()
     };
     let keymap = options.config.keymap_for(&core_id);
+    let style = PadStyle::from_core_id(&core_id);
     tracing::info!(
-        "{} touches liées (profil de {core_id})",
-        keymap.bindings().len()
+        "{} touches liées (profil de {core_id}, manette {style:?}) : {}",
+        keymap.bindings().len(),
+        style.describe(&keymap)
     );
     if options.dump_window.is_some() || options.screen.is_some() {
         options
@@ -312,6 +314,7 @@ impl App {
         let Some((profile, port, button)) = self.overlay.capture() else {
             return;
         };
+        let style = PadStyle::from_core_id(&self.core_id);
         let config = &self.options.config;
         let mut map = profile_map(config, &self.core_id, profile);
         let outcome = apply_capture(&mut map, &config.hotkeys, key, port, button);
@@ -321,8 +324,10 @@ impl App {
             CaptureOutcome::Refused(action) => text::keys_refused(key, action),
             CaptureOutcome::Bound {
                 moved_from: Some(from),
-            } => text::keys_moved(key, from, (port, button)),
-            CaptureOutcome::Bound { moved_from: None } => text::keys_bound(key, port, button),
+            } => text::keys_moved(style, key, from, (port, button)),
+            CaptureOutcome::Bound { moved_from: None } => {
+                text::keys_bound(style, key, port, button)
+            }
         };
         if matches!(
             outcome,
@@ -442,9 +447,10 @@ impl App {
                 }
                 UiAction::RestoreKeys(profile) => {
                     let key = profile.key(&self.core_id).to_owned();
-                    self.options
-                        .config
-                        .set_keymap(&key, KeyMap::genesis_default());
+                    self.options.config.set_keymap(
+                        &key,
+                        KeyMap::default_for(PadStyle::from_core_id(&self.core_id)),
+                    );
                     self.config_dirty = true;
                     self.rebuild_keyboard();
                     self.overlay.set_notice(text::KEYS_RESTORED);

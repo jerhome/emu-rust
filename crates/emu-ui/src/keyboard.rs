@@ -3,6 +3,117 @@ use std::collections::HashSet;
 use emu_runtime::{InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 use winit::keyboard::KeyCode;
 
+/// Which physical pad a core emulates; picks the default layout and the button names shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadStyle {
+    MegaDrive,
+    Snes,
+    Generic,
+}
+
+impl PadStyle {
+    pub fn from_core_id(core_id: &str) -> Self {
+        match core_id {
+            "genesis_plus_gx" | "picodrive" => Self::MegaDrive,
+            "snes9x" | "bsnes" | "mesen-s" => Self::Snes,
+            _ => Self::Generic,
+        }
+    }
+
+    /// Name of a libretro button on this system's pad.
+    pub fn button_name(self, button: JoypadButton) -> &'static str {
+        use JoypadButton as B;
+        match (self, button) {
+            (_, B::Up) => "Haut",
+            (_, B::Down) => "Bas",
+            (_, B::Left) => "Gauche",
+            (_, B::Right) => "Droite",
+            (_, B::Start) => "Start",
+            (Self::MegaDrive, B::Select) => "Mode",
+            (Self::MegaDrive, B::Y) => "A",
+            (Self::MegaDrive, B::B) => "B",
+            (Self::MegaDrive, B::A) => "C",
+            (Self::MegaDrive, B::L) => "X",
+            (Self::MegaDrive, B::X) => "Y",
+            (Self::MegaDrive, B::R) => "Z",
+            (_, B::Select) => "Select",
+            (_, B::A) => "A",
+            (_, B::B) => "B",
+            (_, B::X) => "X",
+            (_, B::Y) => "Y",
+            (_, B::L) => "L",
+            (_, B::R) => "R",
+            (_, B::L2) => "L2",
+            (_, B::R2) => "R2",
+            (_, B::L3) => "L3",
+            (_, B::R3) => "R3",
+        }
+    }
+
+    /// Buttons listed on the key screen, in display order.
+    pub fn buttons(self) -> &'static [JoypadButton] {
+        use JoypadButton as B;
+        match self {
+            // MD A, B, C, X, Y, Z, Mode.
+            Self::MegaDrive => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::Y,
+                B::B,
+                B::A,
+                B::L,
+                B::X,
+                B::R,
+            ],
+            Self::Snes => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::A,
+                B::B,
+                B::X,
+                B::Y,
+                B::L,
+                B::R,
+            ],
+            Self::Generic => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::A,
+                B::B,
+                B::X,
+                B::Y,
+                B::L,
+                B::R,
+                B::L2,
+                B::R2,
+                B::L3,
+                B::R3,
+            ],
+        }
+    }
+
+    /// One line per binding for the startup log, e.g. `Z=B`.
+    pub fn describe(self, map: &KeyMap) -> String {
+        map.bindings()
+            .iter()
+            .map(|(k, p, b)| format!("J{}:{:?}={}", p + 1, k, self.button_name(*b)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// Physical key → (port, libretro button). Serialized by key/button names (see `config.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyMap {
@@ -12,6 +123,15 @@ pub struct KeyMap {
 impl KeyMap {
     pub fn new(bindings: Vec<(KeyCode, usize, JoypadButton)>) -> Self {
         Self { bindings }
+    }
+
+    /// Built-in layout for a pad style.
+    pub fn default_for(style: PadStyle) -> Self {
+        match style {
+            PadStyle::MegaDrive => Self::genesis_default(),
+            PadStyle::Snes => Self::snes_default(),
+            PadStyle::Generic => Self::generic_default(),
+        }
     }
 
     /// Port 0, genesis_plus_gx layout. The core maps libretro buttons onto the Mega Drive pad
@@ -38,6 +158,44 @@ impl KeyMap {
             (K::KeyS, 0, B::X),
             (K::KeyD, 0, B::R),
         ])
+    }
+
+    /// Port 0, SNES layout (snes9x, bsnes, mesen-s: libretro buttons are the SNES buttons).
+    /// The face keys follow the physical pad on the QWERTY home rows: bottom row Z = B, X = A
+    /// (A confirms, as on Nintendo games, and sits under the right hand like Z on Mega Drive);
+    /// upper row A = Y, S = X; shoulders Q = L, W = R.
+    ///
+    /// Keys: arrows = D-pad, Enter = Start, Right Shift = Select.
+    pub fn snes_default() -> Self {
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::new(vec![
+            (K::ArrowUp, 0, B::Up),
+            (K::ArrowDown, 0, B::Down),
+            (K::ArrowLeft, 0, B::Left),
+            (K::ArrowRight, 0, B::Right),
+            (K::Enter, 0, B::Start),
+            (K::ShiftRight, 0, B::Select),
+            (K::KeyZ, 0, B::B),
+            (K::KeyX, 0, B::A),
+            (K::KeyA, 0, B::Y),
+            (K::KeyS, 0, B::X),
+            (K::KeyQ, 0, B::L),
+            (K::KeyW, 0, B::R),
+        ])
+    }
+
+    /// Port 0, plain RetroPad for unknown cores: the SNES layout (RetroPad is SNES-shaped) plus
+    /// E/R = L2/R2 and F/G = L3/R3 for PlayStation-like cores.
+    pub fn generic_default() -> Self {
+        use JoypadButton as B;
+        use KeyCode as K;
+        let mut map = Self::snes_default();
+        map.bind(K::KeyE, 0, B::L2);
+        map.bind(K::KeyR, 0, B::R2);
+        map.bind(K::KeyF, 0, B::L3);
+        map.bind(K::KeyG, 0, B::R3);
+        map
     }
 
     pub fn bindings(&self) -> &[(KeyCode, usize, JoypadButton)] {
@@ -113,6 +271,52 @@ impl InputBackend for KeyboardInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pad_style_from_core_id() {
+        assert_eq!(
+            PadStyle::from_core_id("genesis_plus_gx"),
+            PadStyle::MegaDrive
+        );
+        assert_eq!(PadStyle::from_core_id("picodrive"), PadStyle::MegaDrive);
+        for id in ["snes9x", "bsnes", "mesen-s"] {
+            assert_eq!(PadStyle::from_core_id(id), PadStyle::Snes);
+        }
+        assert_eq!(PadStyle::from_core_id("whatever"), PadStyle::Generic);
+    }
+
+    #[test]
+    fn button_names_per_system() {
+        use JoypadButton as B;
+        assert_eq!(PadStyle::MegaDrive.button_name(B::Y), "A");
+        assert_eq!(PadStyle::MegaDrive.button_name(B::A), "C");
+        assert_eq!(PadStyle::MegaDrive.button_name(B::Select), "Mode");
+        assert_eq!(PadStyle::Snes.button_name(B::Y), "Y");
+        assert_eq!(PadStyle::Snes.button_name(B::Select), "Select");
+    }
+
+    #[test]
+    fn snes_default_layout() {
+        use JoypadButton as B;
+        let m = KeyMap::snes_default();
+        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyX]);
+        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyZ]);
+        assert_eq!(m.keys_for(0, B::Y), vec![KeyCode::KeyA]);
+        assert_eq!(m.keys_for(0, B::X), vec![KeyCode::KeyS]);
+        assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyQ]);
+        assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyW]);
+        // Every button shown on the key screen has a key, and no key is bound twice.
+        for style in [PadStyle::MegaDrive, PadStyle::Snes, PadStyle::Generic] {
+            let m = KeyMap::default_for(style);
+            for b in style.buttons() {
+                assert!(!m.keys_for(0, *b).is_empty(), "{style:?} {b:?}");
+            }
+            let mut keys: Vec<_> = m.bindings().iter().map(|(k, _, _)| *k).collect();
+            keys.sort_by_key(|k| format!("{k:?}"));
+            keys.dedup();
+            assert_eq!(keys.len(), m.bindings().len());
+        }
+    }
+
     use super::*;
 
     #[test]

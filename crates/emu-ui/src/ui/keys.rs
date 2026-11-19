@@ -1,7 +1,9 @@
 //! Key configuration screen: one row per libretro button, re-bound by pressing a key.
 
 use egui::{Button, Context, Grid, RichText, ScrollArea};
-use emu_runtime::{JoypadButton, MAX_PORTS};
+use emu_runtime::MAX_PORTS;
+
+use crate::keyboard::PadStyle;
 
 use super::{
     Overlay, Profile, UiAction, UiData, locked_banner, nav, profile_map, screen_window, stepper,
@@ -9,29 +11,6 @@ use super::{
 };
 
 const ROW_HEIGHT: f32 = 24.0;
-/// Display order: D-pad, Start / Select, face buttons, shoulders.
-const ORDER: [JoypadButton; 16] = {
-    use JoypadButton as B;
-    [
-        B::Up,
-        B::Down,
-        B::Left,
-        B::Right,
-        B::Start,
-        B::Select,
-        B::A,
-        B::B,
-        B::X,
-        B::Y,
-        B::L,
-        B::R,
-        B::L2,
-        B::R2,
-        B::L3,
-        B::R3,
-    ]
-};
-
 pub(super) fn show(
     ctx: &Context,
     overlay: &mut Overlay,
@@ -75,6 +54,7 @@ pub(super) fn show(
 
         let map = profile_map(data.config, data.core_id, overlay.profile);
         let port = overlay.port;
+        let style = PadStyle::from_core_id(data.core_id);
         ScrollArea::vertical()
             .max_height((max_height - 220.0).max(80.0))
             .show(ui, |ui| {
@@ -82,8 +62,8 @@ pub(super) fn show(
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
-                        for button in ORDER {
-                            ui.label(text::button_label(button));
+                        for &button in style.buttons() {
+                            ui.label(style.button_name(button));
                             let label = if overlay.capture == Some(button) {
                                 "…".to_owned()
                             } else {
@@ -102,7 +82,7 @@ pub(super) fn show(
                             nav(&resp, &mut false);
                             if resp.clicked() {
                                 overlay.capture = Some(button);
-                                overlay.notice = Some(text::keys_capture(port, button));
+                                overlay.notice = Some(text::keys_capture(style, port, button));
                             }
                             ui.end_row();
                         }

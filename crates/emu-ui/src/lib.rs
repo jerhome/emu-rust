@@ -14,7 +14,7 @@ pub use crate::config::{
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
-pub use crate::keyboard::{KeyMap, KeyboardInput};
+pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle};
 
 /// Screen to open for a deterministic capture (`--screen`); rendered by the egui layer (task U2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
