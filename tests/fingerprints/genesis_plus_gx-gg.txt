@@ -1,0 +1,4 @@
+# genesis_plus_gx + waternet-1.0.gg, no input; core sha256 ac060194c55aa6b596a9cc1b8fdacad8fb13349f52a1a7f4d51b8a321bad0551
+frame=120 fingerprint=407eef82648c5665
+frame=300 fingerprint=407eef82648c5665
+frame=600 fingerprint=407eef82648c5665

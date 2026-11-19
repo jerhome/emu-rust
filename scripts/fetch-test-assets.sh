@@ -2,6 +2,8 @@
 # Fetch the test assets used by the ignored integration tests (ADR 0007):
 #   - 240p Test Suite (Mega Drive) 1.21, GPL-2.0 homebrew, SHA256 pinned
 #   - 240p Test Suite (SNES) 1.02, GPL-2.0 homebrew (ArtemioUrbina/240pTestSuite), SHA256 pinned
+#   - Sub Rescue 0.3 (haroldo-ok, MIT), Master System homebrew, SHA256 pinned
+#   - Waternet 1.0 (joyrider3774, MIT), native Game Gear homebrew, SHA256 pinned
 #   - genesis_plus_gx and snes9x libretro cores, libretro nightly, hash recorded on first download (TOFU)
 set -euo pipefail
 
@@ -49,6 +51,22 @@ SNES_ZIP_NAME='240pSuite-SNES-1.02.zip'
 SNES_MEMBER='240pSuite.sfc'
 SNES_NAME='240pSuite-SNES-1.02.sfc'
 SNES_SHA256='bf73e9f4a55da8c66379f1f6126fc14d55c56adbe007dbfebeec77475eca6949'
+
+# Sub Rescue: https://github.com/haroldo-ok/sub-rescue (LICENSE = MIT)
+SR_ZIP_URL='https://github.com/haroldo-ok/sub-rescue/releases/download/v0.3/sub_rescue-0.3.zip'
+SR_ZIP_SHA256='fabe39d19f3280af06d3bc3058368d5016c9ae7a796319a2f1ecfe89e64b3f69'
+SR_ZIP_NAME='sub_rescue-0.3.zip'
+SR_MEMBER='sub_rescue-0.3.sms'
+SR_NAME='sub_rescue-0.3.sms'
+SR_SHA256='5d8013936eab3390826692f8fcc974e08e535371a97c47953b8d003b76866741'
+
+# Waternet: https://github.com/joyrider3774/waternet (LICENSE = MIT, also shipped in the zip)
+GG_ZIP_URL='https://github.com/joyrider3774/waternet/releases/download/v1.0/Waternet.Sega.Game.Gear.zip'
+GG_ZIP_SHA256='16a06f51168717c252b08687abe6dd5980a4090d5cbe228f5e01d4ed28579fee'
+GG_ZIP_NAME='Waternet-GameGear-1.0.zip'
+GG_MEMBER='waternet.gg'
+GG_NAME='waternet-1.0.gg'
+GG_SHA256='ab9f288e2b556263cddd7856deb67269cfe08ac1e6729ca9e44c5e2c19bb1d8c'
 
 CORE_BASE_URL='https://buildbot.libretro.com/nightly/linux/x86_64/latest'
 CORES=(genesis_plus_gx_libretro.so snes9x_libretro.so)
@@ -149,4 +167,6 @@ fetch_core() {
 
 fetch_rom "$ROM_URL" "$ROM_ZIP_SHA256" "$ROM_ZIP_NAME" "$ROM_NAME" "$ROM_NAME" "$ROM_SHA256"
 fetch_rom "$SNES_ZIP_URL" "$SNES_ZIP_SHA256" "$SNES_ZIP_NAME" "$SNES_MEMBER" "$SNES_NAME" "$SNES_SHA256"
+fetch_rom "$SR_ZIP_URL" "$SR_ZIP_SHA256" "$SR_ZIP_NAME" "$SR_MEMBER" "$SR_NAME" "$SR_SHA256"
+fetch_rom "$GG_ZIP_URL" "$GG_ZIP_SHA256" "$GG_ZIP_NAME" "$GG_MEMBER" "$GG_NAME" "$GG_SHA256"
 for core in "${CORES[@]}"; do fetch_core "$core"; done

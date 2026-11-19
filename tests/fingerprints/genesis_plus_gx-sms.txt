@@ -1,0 +1,4 @@
+# genesis_plus_gx + sub_rescue-0.3.sms, no input; core sha256 ac060194c55aa6b596a9cc1b8fdacad8fb13349f52a1a7f4d51b8a321bad0551
+frame=120 fingerprint=47f121d9c2ade123
+frame=300 fingerprint=b5f3d152e3794c8d
+frame=600 fingerprint=2d8c540bbc3521ef
