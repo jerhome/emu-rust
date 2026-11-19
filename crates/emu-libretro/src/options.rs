@@ -20,12 +20,16 @@ pub(crate) struct OptionDecl {
     pub values: Vec<CoreOptionValue>,
     /// Always one of `values`.
     pub default: String,
+    /// Original bytes of `key` (`key` itself is lossy, for display): `GET_VARIABLE` / `SET_VARIABLE` match on these.
+    pub key_raw: CString,
+    /// Original bytes of each of `values`, same order.
+    pub values_raw: Vec<CString>,
 }
 
 struct OptionEntry {
     decl: OptionDecl,
     key_c: CString,
-    /// Same order as `decl.values`.
+    /// Original bytes, same order as `decl.values`.
     values_c: Vec<CString>,
     current: usize,
     visible: bool,
@@ -34,6 +38,9 @@ struct OptionEntry {
 #[derive(Default)]
 pub(crate) struct OptionStore {
     entries: Vec<OptionEntry>,
+    /// Entries replaced by a re-declaration, kept alive until the store is dropped: the core may still hold
+    /// `GET_VARIABLE` pointers into them (RetroArch behaves the same way).
+    retired: Vec<OptionEntry>,
     categories: Vec<CoreOptionCategory>,
     /// Answered (then cleared) by `GET_VARIABLE_UPDATE`.
     updated: bool,
@@ -52,24 +59,48 @@ unsafe fn opt_string(ptr: *const c_char) -> Option<String> {
     (!s.is_empty()).then(|| s.into_owned())
 }
 
+/// Like `opt_string` but keeps the original bytes.
+///
+/// # Safety
+/// `ptr` is null or a valid NUL-terminated string.
+unsafe fn opt_cstring(ptr: *const c_char) -> Option<CString> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: non-null and NUL-terminated per contract; copied immediately.
+    let s = unsafe { CStr::from_ptr(ptr) }.to_owned();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Display values and original bytes (same length and order).
+///
 /// # Safety
 /// Every non-null `value` / `label` pointer in `values` is a valid NUL-terminated string.
 unsafe fn parse_values(
     values: &[sys::retro_core_option_value; sys::RETRO_NUM_CORE_OPTION_VALUES_MAX],
-) -> Vec<CoreOptionValue> {
+) -> (Vec<CoreOptionValue>, Vec<CString>) {
     values
         .iter()
         // The list ends at the first null value (or at the array bound).
         .take_while(|v| !v.value.is_null())
         .filter_map(|v| {
             // SAFETY: per this function's contract.
-            let (value, label) = unsafe { (opt_string(v.value)?, opt_string(v.label)) };
-            Some(CoreOptionValue {
-                label: label.unwrap_or_else(|| value.clone()),
-                value,
-            })
+            let (value, raw, label) = unsafe {
+                (
+                    opt_string(v.value)?,
+                    opt_cstring(v.value)?,
+                    opt_string(v.label),
+                )
+            };
+            Some((
+                CoreOptionValue {
+                    label: label.unwrap_or_else(|| value.clone()),
+                    value,
+                },
+                raw,
+            ))
         })
-        .collect()
+        .unzip()
 }
 
 /// `default` if it names one of `values`, else the first value.
@@ -99,8 +130,14 @@ pub(crate) unsafe fn parse_legacy(mut vars: *const sys::retro_variable) -> Vec<O
         // SAFETY: the terminator has not been reached, so the next element is still in the array.
         vars = unsafe { vars.add(1) };
         // SAFETY: non-null strings are valid per contract.
-        let (Some(key), Some(raw)) = (unsafe { (opt_string(var.key), opt_string(var.value)) })
-        else {
+        let (Some(key), Some(key_raw), Some(raw), Some(raw_c)) = (unsafe {
+            (
+                opt_string(var.key),
+                opt_cstring(var.key),
+                opt_string(var.value),
+                opt_cstring(var.value),
+            )
+        }) else {
             continue;
         };
         let Some((label, values)) = parse_variable_value(&raw) else {
@@ -114,6 +151,14 @@ pub(crate) unsafe fn parse_legacy(mut vars: *const sys::retro_variable) -> Vec<O
                 label: v.to_owned(),
             })
             .collect();
+        // Same split on the original bytes; falls back to the lossy form if the two disagree.
+        let mut values_raw = split_raw_values(raw_c.as_bytes());
+        if values_raw.len() != values.len() {
+            values_raw = values
+                .iter()
+                .filter_map(|v| CString::new(v.value.as_str()).ok())
+                .collect();
+        }
         out.push(OptionDecl {
             key,
             label: label.to_owned(),
@@ -121,9 +166,22 @@ pub(crate) unsafe fn parse_legacy(mut vars: *const sys::retro_variable) -> Vec<O
             category: None,
             default: values[0].value.clone(),
             values,
+            key_raw,
+            values_raw,
         });
     }
     out
+}
+
+/// Byte-level counterpart of `parse_variable_value` for the values part.
+fn split_raw_values(raw: &[u8]) -> Vec<CString> {
+    let Some(pos) = raw.iter().position(|&b| b == b';') else {
+        return Vec::new();
+    };
+    let rest = raw[pos + 1..].trim_ascii_start();
+    rest.split(|&b| b == b'|')
+        .filter_map(|v| CString::new(v).ok())
+        .collect()
 }
 
 /// Splits a legacy `SET_VARIABLES` value `"Description; a|b|c"` into its description and values.
@@ -158,16 +216,19 @@ pub(crate) unsafe fn parse_v1(
         // SAFETY: the terminator has not been reached.
         defs = unsafe { defs.add(1) };
         // SAFETY: non-null strings are valid per contract.
-        let (key, label, info, values, default) = unsafe {
+        let (key, key_raw, label, info, (values, values_raw), default) = unsafe {
             (
                 opt_string(def.key),
+                opt_cstring(def.key),
                 opt_string(def.desc),
                 opt_string(def.info),
                 parse_values(&def.values),
                 opt_string(def.default_value),
             )
         };
-        let Some(key) = key else { continue };
+        let (Some(key), Some(key_raw)) = (key, key_raw) else {
+            continue;
+        };
         let Some(default) = pick_default(&values, default) else {
             tracing::debug!(key, "core option declared without values");
             continue;
@@ -179,6 +240,8 @@ pub(crate) unsafe fn parse_v1(
             category: None,
             values,
             default,
+            key_raw,
+            values_raw,
         });
     }
     out
@@ -231,9 +294,10 @@ pub(crate) unsafe fn parse_v2(
         // SAFETY: the terminator has not been reached.
         defs = unsafe { defs.add(1) };
         // SAFETY: non-null strings are valid per contract.
-        let (key, desc, desc_cat, info, info_cat, category, values, default) = unsafe {
+        let (key, key_raw, desc, desc_cat, info, info_cat, category, (values, values_raw), default) = unsafe {
             (
                 opt_string(def.key),
+                opt_cstring(def.key),
                 opt_string(def.desc),
                 opt_string(def.desc_categorized),
                 opt_string(def.info),
@@ -243,7 +307,9 @@ pub(crate) unsafe fn parse_v2(
                 opt_string(def.default_value),
             )
         };
-        let Some(key) = key else { continue };
+        let (Some(key), Some(key_raw)) = (key, key_raw) else {
+            continue;
+        };
         let Some(default) = pick_default(&values, default) else {
             tracing::debug!(key, "core option declared without values");
             continue;
@@ -262,6 +328,8 @@ pub(crate) unsafe fn parse_v2(
             category,
             values,
             default,
+            key_raw,
+            values_raw,
         });
     }
     (categories, decls)
@@ -278,21 +346,14 @@ impl OptionStore {
     ) {
         let previous = std::mem::take(&mut self.entries);
         for decl in decls {
-            if self.entries.iter().any(|e| e.decl.key == decl.key) {
+            if self.entries.iter().any(|e| e.key_c == decl.key_raw) {
                 tracing::debug!(key = decl.key, "duplicate core option ignored");
                 continue;
             }
-            let (Ok(key_c), Ok(values_c)) = (
-                CString::new(decl.key.as_str()),
-                decl.values
-                    .iter()
-                    .map(|v| CString::new(v.value.as_str()))
-                    .collect::<Result<Vec<_>, _>>(),
-            ) else {
-                continue;
-            };
+            let key_c = decl.key_raw.clone();
+            let values_c = decl.values_raw.clone();
             let index_of = |value: &str| decl.values.iter().position(|v| v.value == value);
-            let old = previous.iter().find(|e| e.decl.key == decl.key);
+            let old = previous.iter().find(|e| e.key_c == key_c);
             let kept = old.and_then(|e| index_of(&e.decl.values[e.current].value));
             let overridden = overrides
                 .iter()
@@ -320,10 +381,12 @@ impl OptionStore {
                 decl,
             });
         }
+        self.retired.extend(previous);
         self.categories = categories;
     }
 
-    /// Pointer answered to `GET_VARIABLE`; valid until the next `declare` or until the store is dropped.
+    /// Pointer answered to `GET_VARIABLE`; valid until the store is dropped (entries replaced by `declare` are
+    /// retired, not freed).
     pub(crate) fn get(&self, key: &CStr) -> Option<*const c_char> {
         self.entries
             .iter()
@@ -497,6 +560,8 @@ mod tests {
                     category: None,
                     values: vec![v("on", "On"), v("off", "off")],
                     default: "off".into(),
+                    key_raw: c"opt_a".to_owned(),
+                    values_raw: vec![c"on".to_owned(), c"off".to_owned()],
                 },
                 OptionDecl {
                     key: "opt_b".into(),
@@ -505,6 +570,8 @@ mod tests {
                     category: None,
                     values: vec![v("1", "1"), v("2", "2")],
                     default: "1".into(),
+                    key_raw: c"opt_b".to_owned(),
+                    values_raw: vec![c"1".to_owned(), c"2".to_owned()],
                 },
             ]
         );
@@ -590,6 +657,8 @@ mod tests {
             category: None,
             values: values.iter().map(|x| v(x, x)).collect(),
             default: default.into(),
+            key_raw: CString::new(key).unwrap(),
+            values_raw: values.iter().map(|x| CString::new(*x).unwrap()).collect(),
         }
     }
 
@@ -660,5 +729,41 @@ mod tests {
         assert_eq!(snap[1].current, "z");
         assert!(!snap[1].visible);
         assert!(snap[0].visible);
+    }
+
+    #[test]
+    fn non_utf8_bytes_are_preserved_and_redeclared_pointers_stay_valid() {
+        let bad: &CStr = c"caf\xe9";
+        let defs = [sys::retro_core_option_definition {
+            key: bad.as_ptr(),
+            desc: null(),
+            info: null(),
+            values: values(&[(bad, None), (c"b", None)]),
+            default_value: null(),
+        }];
+        // SAFETY: one definition then a null-key terminator-less array bounded by the zeroed tail below.
+        let decls = unsafe {
+            let mut v = defs.to_vec();
+            v.push(sys::retro_core_option_definition {
+                key: null(),
+                desc: null(),
+                info: null(),
+                values: values(&[]),
+                default_value: null(),
+            });
+            parse_v1(v.as_ptr())
+        };
+        assert_eq!(decls[0].key, "caf\u{fffd}");
+        let mut store = OptionStore::default();
+        store.declare(Vec::new(), decls.clone(), &[]);
+        let ptr = store.get(bad).unwrap();
+        // SAFETY: points into the store.
+        assert_eq!(unsafe { CStr::from_ptr(ptr) }, bad);
+        assert!(store.set_from_core(bad, c"b"));
+        assert!(store.set_from_core(bad, bad));
+        // Re-declaration retires the old strings instead of freeing them.
+        store.declare(Vec::new(), decls, &[]);
+        // SAFETY: the previous allocation is retired, still alive.
+        assert_eq!(unsafe { CStr::from_ptr(ptr) }, bad);
     }
 }

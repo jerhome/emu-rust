@@ -154,6 +154,11 @@ mod mock {
             core.unserialize(&buf[..10]),
             Err(LibretroError::UnserializeFailed)
         ));
+        // Refused by the frontend: a fixed-size core would otherwise read past the end of the slice.
+        assert!(matches!(
+            core.unserialize(&buf[..buf.len() - 1]),
+            Err(LibretroError::UnserializeFailed)
+        ));
         assert!(!core.serialization_quirks().contains(1));
     }
 

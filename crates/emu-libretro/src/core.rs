@@ -364,6 +364,9 @@ impl Core {
                 .contains(SerializationQuirks::MUST_INITIALIZE)
     }
 
+    /// Largest state accepted from a core; a bigger `retro_serialize_size` is treated as a bug in the core.
+    const MAX_SERIALIZE_SIZE: usize = 256 * 1024 * 1024;
+
     /// Replaces `out` with the serialized state (`out` is resized to `serialize_size`; its capacity is
     /// reused, so a caller keeping the buffer does not allocate per call).
     pub fn serialize(&mut self, out: &mut Vec<u8>) -> Result<(), LibretroError> {
@@ -376,6 +379,9 @@ impl Core {
         let size = self.serialize_size();
         if size == 0 {
             return Err(LibretroError::SerializeUnsupported);
+        }
+        if size > Self::MAX_SERIALIZE_SIZE {
+            return Err(LibretroError::SerializeFailed);
         }
         out.clear();
         out.resize(size, 0);
@@ -398,6 +404,14 @@ impl Core {
             return Err(LibretroError::SerializeUnsupported);
         }
         if !self.serialization_allowed() {
+            return Err(LibretroError::UnserializeFailed);
+        }
+        // A fixed-size core reads `serialize_size()` bytes whatever `size` says.
+        if !self
+            .serialization_quirks()
+            .contains(SerializationQuirks::CORE_VARIABLE_SIZE)
+            && data.len() < self.serialize_size()
+        {
             return Err(LibretroError::UnserializeFailed);
         }
         // SAFETY: `data` is readable for `data.len()` bytes during the call; the core copies what it needs
