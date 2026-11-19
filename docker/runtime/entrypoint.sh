@@ -10,6 +10,11 @@ if [[ "${EMU_DISPLAY:-host}" == "novnc" ]]; then
     for _ in $(seq 50); do [[ -e /tmp/.X11-unix/X99 ]] && break; sleep 0.1; done
     x11vnc -display :99 -forever -shared -nopw -localhost -quiet &
     websockify --web /usr/share/novnc 6080 localhost:5900 &
+    if [[ "${EMU_KEEP_ALIVE:-0}" == "1" ]]; then
+        # Keep the virtual screen up for debugging even if emu-rust exits (e.g. no --core given).
+        /usr/local/bin/emu-rust "$@" || true
+        wait
+    fi
 fi
 
 exec /usr/local/bin/emu-rust "$@"

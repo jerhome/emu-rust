@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ALSA -> PulseAudio so WSLg / host PulseAudio receive the sound.
 RUN printf 'pcm.!default pulse\nctl.!default pulse\n' > /etc/asound.conf
 
-RUN useradd --create-home --uid 1000 emu && mkdir -p /data && chown emu:emu /data
+RUN useradd --create-home --uid 1000 emu && mkdir -p /data /tmp/.X11-unix && chown emu:emu /data && chmod 1777 /tmp/.X11-unix
 COPY --from=build /src/target/release/emu-rust /usr/local/bin/emu-rust
 COPY docker/runtime/entrypoint.sh /usr/local/bin/entrypoint.sh
 
