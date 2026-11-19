@@ -1,3 +1,5 @@
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -7,10 +9,14 @@ use emu_libretro::{
 };
 
 use crate::audio::AudioSink;
+use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
 use crate::input::{InputBackend, InputFrame};
-use crate::saves::StateHeader;
+use crate::saves::{
+    FileMode, STATE_SLOTS, StateFileError, StateHeader, core_id_from_path, decode_state,
+    encode_state, game_name_from_path, write_atomic,
+};
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
 pub const MAX_CONTENT_SIZE: u64 = 512 * 1024 * 1024;
@@ -49,23 +55,103 @@ pub struct Emulator {
     frame: FrameRgba,
     input: InputFrame,
     frame_count: u64,
+    core_id: String,
+    game_name: String,
+    save_root: PathBuf,
+    state_root: PathBuf,
+    /// SRAM as last restored or written; `flush_sram` writes only when the core's copy differs.
+    sram_snapshot: Vec<u8>,
+    /// Backs `GameSource::Path` for archives extracted for a `need_fullpath` core. Removed in `Drop` after the
+    /// game is unloaded (Windows cannot delete a file the core still holds open).
+    content_dir: Option<tempfile::TempDir>,
+}
+
+/// Copies the `.srm` file into the core's SRAM (right after `retro_load_game`); returns the resulting SRAM,
+/// which counts as already flushed. A read error other than "not found" fails the load: carrying on would
+/// overwrite the user's save with a blank one at the next flush.
+fn restore_sram(core: &mut Core, path: &Path) -> Result<Vec<u8>, RuntimeError> {
+    let Some(sram) = core.memory_mut(MemoryKind::SaveRam) else {
+        return Ok(Vec::new());
+    };
+    match fs::read(path) {
+        Ok(saved) => {
+            let n = saved.len().min(sram.len());
+            sram[..n].copy_from_slice(&saved[..n]);
+            if saved.len() > sram.len() {
+                tracing::warn!(
+                    "{} is larger than the core's SRAM ({} > {} bytes): truncated",
+                    path.display(),
+                    saved.len(),
+                    sram.len()
+                );
+            } else {
+                tracing::info!("SRAM restored from {}", path.display());
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err(path)(e)),
+    }
+    Ok(sram.to_vec())
+}
+
+fn io_err(path: &Path) -> impl FnOnce(io::Error) -> RuntimeError + '_ {
+    move |source| RuntimeError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 impl Emulator {
-    /// Loads the core then the game. Fails with `AlreadyLoaded` if another session is alive in the process.
+    /// Loads the core then the game (contract below, "Phase 2"). Fails with `AlreadyLoaded` if another
+    /// session is alive in the process.
     pub fn load(core: &Path, rom: &Path, options: EmulatorOptions) -> Result<Self, RuntimeError> {
+        Self::load_with_limits(core, rom, options, Limits::DEFAULT)
+    }
+
+    fn load_with_limits(
+        core_path: &Path,
+        rom: &Path,
+        options: EmulatorOptions,
+        limits: Limits,
+    ) -> Result<Self, RuntimeError> {
+        let core_id = core_id_from_path(core_path);
+        let game_name = game_name_from_path(rom);
+        let core_save_dir = options.save_dir.join(&core_id);
+        fs::create_dir_all(&core_save_dir).map_err(io_err(&core_save_dir))?;
+        let core_state_dir = options.state_dir.join(&core_id);
+        fs::create_dir_all(&core_state_dir).map_err(io_err(&core_state_dir))?;
+
         let config = CoreConfig {
             system_dir: options.system_dir,
-            save_dir: options.save_dir,
+            save_dir: core_save_dir,
             assets_dir: options.assets_dir,
             variables: options.core_variables,
         };
-        let mut core = Core::load(core, config)?;
-        let av_info = core.load_game(rom)?;
+        let mut core = Core::load(core_path, config)?;
+        let content = content::prepare(rom, core.system_info(), limits)?;
+        let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
+        let loaded = core
+            .load_game_from(content.source)
+            .map_err(RuntimeError::from)
+            .and_then(|av_info| Ok((av_info, restore_sram(&mut core, &sram_path)?)));
+        let (av_info, sram_snapshot) = match loaded {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                // Unload the core before the temporary content goes away. No `Emulator` exists yet, so no
+                // SRAM flush can overwrite a save file that failed to load.
+                drop(core);
+                if let Some(dir) = content.temp_dir {
+                    content::remove_temp_dir(dir);
+                }
+                return Err(e);
+            }
+        };
         let info = core.system_info();
         tracing::info!(
             core = %info.library_name,
             version = %info.library_version,
+            core_id = %core_id,
+            game = %game_name,
             width = av_info.geometry.base_width,
             height = av_info.geometry.base_height,
             fps = av_info.timing.fps,
@@ -78,6 +164,12 @@ impl Emulator {
             frame: FrameRgba::default(),
             input: InputFrame::default(),
             frame_count: 0,
+            core_id,
+            game_name,
+            save_root: options.save_dir,
+            state_root: options.state_dir,
+            sram_snapshot,
+            content_dir: content.temp_dir,
         })
     }
 
@@ -151,80 +243,161 @@ impl Emulator {
 
     /// `core_id_from_path` of the core library.
     pub fn core_id(&self) -> &str {
-        todo!()
+        &self.core_id
     }
 
     /// `game_name_from_path` of the content path given to `load`.
     pub fn game_name(&self) -> &str {
-        todo!()
+        &self.game_name
     }
 
     /// Where SRAM is persisted (whether or not the core exposes any).
     pub fn sram_path(&self) -> PathBuf {
-        todo!()
+        crate::saves::sram_path(&self.save_root, &self.core_id, &self.game_name)
     }
 
     /// Path of savestate `slot`; `InvalidSlot` if `slot >= STATE_SLOTS`.
     pub fn state_path(&self, slot: u8) -> Result<PathBuf, RuntimeError> {
-        todo!("{slot}")
+        if slot >= STATE_SLOTS {
+            return Err(RuntimeError::InvalidSlot(slot));
+        }
+        Ok(crate::saves::state_path(
+            &self.state_root,
+            &self.core_id,
+            &self.game_name,
+            slot,
+        ))
     }
 
     /// Writes SRAM with `write_atomic` if it differs from what was last loaded or written. Returns `true` if
     /// a file was written; `Ok(false)` when unchanged or the core exposes no SRAM.
     pub fn flush_sram(&mut self) -> Result<bool, RuntimeError> {
-        todo!()
+        let path = self.sram_path();
+        let Some(sram) = self.core.memory(MemoryKind::SaveRam) else {
+            return Ok(false);
+        };
+        if sram == self.sram_snapshot.as_slice() {
+            return Ok(false);
+        }
+        write_atomic(&path, sram, FileMode::Default).map_err(io_err(&path))?;
+        self.sram_snapshot.clear();
+        self.sram_snapshot.extend_from_slice(sram);
+        tracing::debug!("SRAM written to {}", path.display());
+        Ok(true)
     }
 
     /// Core memory region (tests, future cheats / achievements).
     pub fn memory(&self, kind: MemoryKind) -> Option<&[u8]> {
-        todo!("{kind:?}")
+        self.core.memory(kind)
     }
 
     /// Raw core serialization (no container): in-memory snapshots for tests and future rewind.
     pub fn serialize_state(&mut self) -> Result<Vec<u8>, RuntimeError> {
-        todo!()
+        let mut out = Vec::new();
+        self.core.serialize(&mut out)?;
+        Ok(out)
     }
 
     pub fn unserialize_state(&mut self, data: &[u8]) -> Result<(), RuntimeError> {
-        todo!("{}", data.len())
+        self.core.unserialize(data)?;
+        Ok(())
     }
 
     /// `encode_state` + `write_atomic` to `state_path(slot)`; returns the path.
     pub fn save_state(&mut self, slot: u8) -> Result<PathBuf, RuntimeError> {
-        todo!("{slot}")
+        let path = self.state_path(slot)?;
+        let payload = self.serialize_state()?;
+        let header = StateHeader {
+            core_id: self.core_id.clone(),
+            core_version: self.core.system_info().library_version.clone(),
+            game: self.game_name.clone(),
+            created_unix: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        };
+        write_atomic(&path, &encode_state(&header, &payload), FileMode::Default)
+            .map_err(io_err(&path))?;
+        tracing::info!(slot, "state saved to {}", path.display());
+        Ok(path)
     }
 
     /// Reads, `decode_state`s (`WrongCore` if another core id), warns on core version mismatch, then
     /// unserializes. On any error the running game is left untouched.
     pub fn load_state(&mut self, slot: u8) -> Result<(), RuntimeError> {
-        todo!("{slot}")
+        let path = self.state_path(slot)?;
+        let bytes = fs::read(&path).map_err(io_err(&path))?;
+        let (header, payload) = decode_state(&bytes)?;
+        if header.core_id != self.core_id {
+            return Err(StateFileError::WrongCore {
+                expected: self.core_id.clone(),
+                found: header.core_id,
+            }
+            .into());
+        }
+        let version = &self.core.system_info().library_version;
+        if header.core_version != *version {
+            tracing::warn!(
+                saved = %header.core_version,
+                current = %version,
+                "savestate made with another core version; trying anyway"
+            );
+        }
+        // A core may have partially applied a state it then rejects: put the current one back.
+        let backup = self.serialize_state()?;
+        if let Err(e) = self.core.unserialize(payload) {
+            if let Err(restore) = self.core.unserialize(&backup) {
+                tracing::error!("cannot restore the running state after a failed load: {restore}");
+            }
+            return Err(e.into());
+        }
+        tracing::info!(slot, "state loaded from {}", path.display());
+        Ok(())
     }
 
     /// Header of slot `slot` and file modification time, for the menu; `None` if absent or unreadable.
     pub fn state_info(&self, slot: u8) -> Option<(StateHeader, SystemTime)> {
-        todo!("{slot}")
+        let path = self.state_path(slot).ok()?;
+        let file = fs::File::open(&path).ok()?;
+        let modified = file.metadata().and_then(|m| m.modified()).ok()?;
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut &file, &mut bytes).ok()?;
+        let (header, _) = decode_state(&bytes).ok()?;
+        Some((header, modified))
     }
 
     pub fn options(&mut self) -> Vec<CoreOption> {
-        todo!()
+        self.core.options()
     }
 
     pub fn option_categories(&self) -> Vec<CoreOptionCategory> {
-        todo!()
+        self.core.option_categories()
     }
 
     pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), RuntimeError> {
-        todo!("{key}={value}")
+        self.core.set_option(key, value)?;
+        Ok(())
     }
 
     /// Forwarded to the core (`GET_FASTFORWARDING`).
     pub fn set_fast_forwarding(&mut self, enabled: bool) {
-        todo!("{enabled}")
+        self.core.set_fast_forwarding(enabled);
     }
 
     /// OSD messages from the core since the last call.
     pub fn take_messages(&mut self) -> Vec<CoreMessage> {
-        todo!()
+        self.core.take_messages()
+    }
+}
+
+impl Drop for Emulator {
+    fn drop(&mut self) {
+        if let Err(e) = self.flush_sram() {
+            tracing::error!("SRAM not saved: {e}");
+        }
+        if let Some(dir) = self.content_dir.take() {
+            self.core.unload_game();
+            content::remove_temp_dir(dir);
+        }
     }
 }
 

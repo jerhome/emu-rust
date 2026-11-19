@@ -19,9 +19,11 @@ glutin = { workspace = true }
 glutin-winit = { workspace = true }
 png = { workspace = true }
 rtrb = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 winit = { workspace = true }
+zip = { workspace = true }
 
 [lints]
 workspace = true

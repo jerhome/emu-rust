@@ -253,3 +253,105 @@ fn audio_sample_count_is_plausible() {
         "got {got} samples, expected about {expected}"
     );
 }
+
+// ---- Phase 2: savestates and zip (fresh data directory per test) ----
+
+fn load_in(data: &Path, rom: &Path) -> Emulator {
+    require(&core_path());
+    require(rom);
+    let options = EmulatorOptions {
+        system_dir: data.join("system"),
+        save_dir: data.join("saves"),
+        state_dir: data.join("states"),
+        assets_dir: data.join("assets"),
+        core_variables: Vec::new(),
+    };
+    Emulator::load(&core_path(), rom, options).expect("load core and content")
+}
+
+/// Fingerprint after each frame, and the number of audio samples.
+fn run_frames(emu: &mut Emulator, input: &mut dyn InputBackend, n: usize) -> (Vec<u64>, usize) {
+    let mut audio = CollectSink::default();
+    let prints = (0..n)
+        .map(|_| {
+            emu.run_frame(input, &mut audio).expect("run_frame");
+            emu.frame().fingerprint()
+        })
+        .collect();
+    (prints, audio.samples.len())
+}
+
+#[test]
+#[ignore = "needs core and ROM: scripts/fetch-test-assets.sh"]
+fn genesis_savestate_round_trip() {
+    let _guard = lock();
+    let data = tempfile::tempdir().unwrap();
+    let mut emu = load_in(data.path(), &rom_path());
+    assert_eq!(emu.core_id(), "genesis_plus_gx");
+    // Into the menu, so later frames change (scripted input after the snapshot).
+    run_frames(&mut emu, &mut NullInput, 300);
+    let state = emu.serialize_state().expect("serialize");
+    let input = || ScriptedInput::new().press(0, JoypadButton::Down, 310..320);
+
+    // The scripted input is indexed by `frame_count`, which keeps increasing: replay from the same index.
+    let start = emu.frame_count();
+    let (prints, samples) = run_frames(&mut emu, &mut Offset(input(), start), 60);
+    emu.unserialize_state(&state).expect("unserialize");
+    let start = emu.frame_count();
+    let (again, samples_again) = run_frames(&mut emu, &mut Offset(input(), start), 60);
+    assert_eq!(prints, again, "image differs after unserialize");
+    // genesis_plus_gx does not serialize its audio resampler state (fractional phase included): only the
+    // amount is compared, within a couple of stereo frames (measured: 1 frame over 60 video frames).
+    assert!(
+        samples.abs_diff(samples_again) <= 4,
+        "audio sample count {samples} vs {samples_again}"
+    );
+
+    let path = emu.save_state(3).expect("save_state");
+    assert!(path.ends_with("states/genesis_plus_gx/240pSuite-1.21.state3"));
+    let start = emu.frame_count();
+    let (prints, _) = run_frames(&mut emu, &mut Offset(input(), start), 60);
+    emu.load_state(3).expect("load_state");
+    let start = emu.frame_count();
+    let (again, _) = run_frames(&mut emu, &mut Offset(input(), start), 60);
+    assert_eq!(prints, again, "image differs after load_state");
+    drop(emu);
+
+    // A new session restores the same state from the file.
+    let mut emu = load_in(data.path(), &rom_path());
+    run_frames(&mut emu, &mut NullInput, 5);
+    emu.load_state(3).expect("load_state in a new session");
+    let start = emu.frame_count();
+    let (again, _) = run_frames(&mut emu, &mut Offset(input(), start), 60);
+    assert_eq!(prints, again, "image differs in a second session");
+}
+
+/// Presents frames to `inner` as if counted from `start`, so a script can be replayed after a state load.
+struct Offset(ScriptedInput, u64);
+
+impl InputBackend for Offset {
+    fn poll(&mut self, frame: u64, out: &mut emu_runtime::InputFrame) {
+        self.0.poll(frame - self.1 + 300, out);
+    }
+}
+
+#[test]
+#[ignore = "needs core and ROM: scripts/fetch-test-assets.sh"]
+fn genesis_zip_matches_bin() {
+    let _guard = lock();
+    let zip = root().join("tests/roms/240pSuite-GenesisMD-1.21.zip");
+    let data = tempfile::tempdir().unwrap();
+    let reference = {
+        let mut emu = load_in(data.path(), &rom_path());
+        assert!(
+            emu.system_info().need_fullpath,
+            "zip path expected to use a temporary file"
+        );
+        run_frames(&mut emu, &mut NullInput, 300)
+    };
+    let mut emu = load_in(data.path(), &zip);
+    assert_eq!(emu.game_name(), "240pSuite-GenesisMD-1.21");
+    let got = run_frames(&mut emu, &mut NullInput, 300);
+    assert_eq!(got.0, reference.0, "zip content renders differently");
+    assert_eq!(got.1, reference.1);
+}

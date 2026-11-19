@@ -316,29 +316,10 @@ pub fn decode_state(bytes: &[u8]) -> Result<(StateHeader, &[u8]), StateFileError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use tempfile::TempDir;
 
-    /// Unique scratch directory under the system temp dir, removed on drop.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "emu-runtime-saves-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn tempdir() -> TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     fn entries(dir: &Path) -> Vec<String> {
@@ -352,33 +333,33 @@ mod tests {
 
     #[test]
     fn write_atomic_creates_and_replaces() {
-        let tmp = TempDir::new();
-        let path = tmp.0.join("a/b/game.srm");
+        let tmp = tempdir();
+        let path = tmp.path().join("a/b/game.srm");
         write_atomic(&path, b"first", FileMode::Default).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"first");
         write_atomic(&path, b"second!", FileMode::Default).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second!");
-        assert_eq!(entries(&tmp.0.join("a/b")), ["game.srm"]);
+        assert_eq!(entries(&tmp.path().join("a/b")), ["game.srm"]);
     }
 
     #[test]
     fn write_atomic_replaces_stale_temp_file() {
-        let tmp = TempDir::new();
-        let stale = tmp.0.join(format!(".x.tmp-{}", std::process::id()));
+        let tmp = tempdir();
+        let stale = tmp.path().join(format!(".x.tmp-{}", std::process::id()));
         fs::write(&stale, b"garbage from a crash").unwrap();
-        write_atomic(&tmp.0.join("x"), b"ok", FileMode::Default).unwrap();
-        assert_eq!(fs::read(tmp.0.join("x")).unwrap(), b"ok");
-        assert_eq!(entries(&tmp.0), ["x"]);
+        write_atomic(&tmp.path().join("x"), b"ok", FileMode::Default).unwrap();
+        assert_eq!(fs::read(tmp.path().join("x")).unwrap(), b"ok");
+        assert_eq!(entries(tmp.path()), ["x"]);
     }
 
     #[test]
     fn write_atomic_failure_leaves_no_residue() {
-        let tmp = TempDir::new();
+        let tmp = tempdir();
         // Target is a non-empty directory: rename fails, the temporary file must be cleaned up.
-        let target = tmp.0.join("dir");
+        let target = tmp.path().join("dir");
         fs::create_dir_all(target.join("inner")).unwrap();
         assert!(write_atomic(&target, b"data", FileMode::Default).is_err());
-        assert_eq!(entries(&tmp.0), ["dir"]);
+        assert_eq!(entries(tmp.path()), ["dir"]);
         assert!(write_atomic(Path::new("/"), b"data", FileMode::Default).is_err());
     }
 
@@ -386,8 +367,8 @@ mod tests {
     #[test]
     fn write_atomic_private_is_0600() {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = TempDir::new();
-        let path = tmp.0.join("config.toml");
+        let tmp = tempdir();
+        let path = tmp.path().join("config.toml");
         fs::write(&path, b"old").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         write_atomic(&path, b"secret = 1", FileMode::Private).unwrap();

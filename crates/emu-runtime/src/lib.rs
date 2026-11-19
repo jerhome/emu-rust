@@ -4,6 +4,7 @@
 mod audio;
 mod audio_out;
 mod audio_ring;
+mod content;
 mod emulator;
 mod error;
 mod frame;
