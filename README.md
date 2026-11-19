@@ -17,6 +17,16 @@ PC DOS et consoles 32 bits. Usage personnel.
 Les données (cores, BIOS, ROMs, sauvegardes, covers) sont dans le volume Docker `emu-rust_emu-data`.
 Détails (placer core et ROM, test du son) : [docker/README.md](docker/README.md).
 
+## Installation / release
+
+Les paquets sont publiés sur les [releases GitHub](../../releases) : archive Linux `tar.gz`, `.app` macOS Intel,
+`zip` Windows et image Docker. Vérifiez les empreintes avec `SHA256SUMS`.
+
+- Les cores libretro (genesis_plus_gx, snes9x) ne sont pas inclus : les URL et la checklist de test figurent dans
+  les notes de la release ; les ROM de test (domaine public / homebrew) y sont indiquées.
+- Installation et premier lancement : [packaging/README.txt](packaging/README.txt).
+- Docker : [docker/README.md](docker/README.md).
+
 ## Développement
 
 ```bash

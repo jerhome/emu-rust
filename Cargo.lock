@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "emu-app"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "directories",
  "emu-ui",
@@ -598,15 +598,15 @@ dependencies = [
 
 [[package]]
 name = "emu-assets"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "emu-library"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "emu-libretro"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cc",
  "libloading 0.9.1",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "emu-runtime"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cpal",
  "emu-libretro",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "emu-ui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "egui",
  "egui-winit",
