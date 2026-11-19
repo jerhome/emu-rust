@@ -1,0 +1,4 @@
+# snes9x + 240pSuite-SNES-1.02.sfc, no input; core sha256 9b2b6ea9d88f96c156590443ddd05ee56aaf4e495329a889c979921942717a31
+frame=120 fingerprint=288f6d193fc4bf87
+frame=300 fingerprint=288f6d193fc4bf87
+frame=600 fingerprint=288f6d193fc4bf87
