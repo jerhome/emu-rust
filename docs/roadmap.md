@@ -23,6 +23,14 @@
 | PC DOS | dosbox_pure | — |
 | 32 bits (phase 7) | swanstation / beetle-psx, beetle-saturn, opera, mgba | fourni par l'utilisateur |
 
+## Versions
+
+| Version | Contenu | Processus |
+|---|---|---|
+| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur sur ses plateformes → corrections |
+| 0.1.x (stable) | 0.1 corrigée après essais | Nouvelle version de correctif publiée comme release stable (non pré-release) |
+| 1.0 | Les deux ordinateurs 16 bits : **Atari ST** (hatari + EmuTOS) et **Amiga** (puae + AROS), donc phase 5 au moins pour ST/Amiga (DOS non requis), avec ce qu'il faut des phases 3 et 4 pour les rendre utilisables | Même cycle : pré-release, essais, stable |
+
 ## Phases
 
 | # | Phase | Critère de fin |
