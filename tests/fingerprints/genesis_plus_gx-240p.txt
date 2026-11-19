@@ -1,0 +1,4 @@
+# genesis_plus_gx + 240pSuite-1.21.bin, no input; core sha256 ac060194c55aa6b596a9cc1b8fdacad8fb13349f52a1a7f4d51b8a321bad0551
+frame=120 fingerprint=68b369ff360b3bca
+frame=300 fingerprint=8667bdff836b24f0
+frame=600 fingerprint=8667bdff836b24f0

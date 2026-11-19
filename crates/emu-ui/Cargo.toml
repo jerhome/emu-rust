@@ -5,6 +5,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+emu-runtime = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+winit = { workspace = true }
 
 [lints]
 workspace = true

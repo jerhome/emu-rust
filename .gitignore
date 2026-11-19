@@ -10,6 +10,9 @@ config.toml
 *.dylib
 tests/roms/*
 !tests/roms/README.md
+# Downloaded cores and their TOFU hashes are machine-local; tests/fingerprints/ stays versioned
+tests/cores/*
+!tests/cores/README.md
 
 # Claude Code
 CLAUDE.md

@@ -15,7 +15,8 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libx11-6 libxcursor1 libxrandr2 libxi6 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-egl1 \
-        libgl1 libegl1 libgl1-mesa-dri \
+        libgl1 libegl1 libglx-mesa0 libegl-mesa0 libgl1-mesa-dri \
+        xkb-data \
         libasound2 libasound2-plugins libpulse0 \
         # noVNC mode only; small enough to keep a single image.
         xvfb x11vnc novnc websockify \

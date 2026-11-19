@@ -9,6 +9,7 @@ name = "emu-rust"
 path = "src/main.rs"
 
 [dependencies]
+emu-ui = { workspace = true }
 
 [lints]
 workspace = true

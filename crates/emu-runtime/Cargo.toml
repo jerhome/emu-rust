@@ -5,6 +5,14 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+emu-libretro = { workspace = true }
+glow = { workspace = true }
+glutin = { workspace = true }
+glutin-winit = { workspace = true }
+png = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+winit = { workspace = true }
 
 [lints]
 workspace = true
