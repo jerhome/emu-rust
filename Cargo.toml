@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+
+[workspace.lints.rust]
+# Denied (not forbidden) so emu-libretro and emu-runtime can opt in with #![allow(unsafe_code)].
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Keep the emulation loop fast enough in debug builds.
+[profile.dev.package."*"]
+debug = false
+opt-level = 2
+
+[profile.release]
+strip = true
+lto = "thin"

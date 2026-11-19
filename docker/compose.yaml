@@ -1,0 +1,56 @@
+# Run from the repository root:
+#   docker compose -f docker/compose.yaml up --build emu-wslg    # Windows + WSL2 (WSLg)
+#   docker compose -f docker/compose.yaml up --build emu-x11     # Linux host with X11
+#   docker compose -f docker/compose.yaml up --build emu-novnc   # any host, browser at http://localhost:6080/vnc.html
+name: emu-rust
+
+x-base: &base
+  image: emu-rust:dev
+  build:
+    context: ..
+    dockerfile: docker/runtime/Dockerfile
+  volumes:
+    - emu-data:/data
+
+services:
+  emu-wslg:
+    <<: *base
+    profiles: ["wslg"]
+    devices:
+      - /dev/dxg
+    volumes:
+      - emu-data:/data
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /mnt/wslg:/mnt/wslg
+      - /usr/lib/wsl:/usr/lib/wsl
+    environment:
+      DISPLAY: ":0"
+      WAYLAND_DISPLAY: "wayland-0"
+      XDG_RUNTIME_DIR: "/mnt/wslg/runtime-dir"
+      PULSE_SERVER: "unix:/mnt/wslg/PulseServer"
+      # GPU acceleration through Mesa's d3d12 driver.
+      LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+
+  emu-x11:
+    <<: *base
+    profiles: ["x11"]
+    volumes:
+      - emu-data:/data
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/run/pulse/native
+    devices:
+      - /dev/dri
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+      PULSE_SERVER: "unix:/run/pulse/native"
+
+  emu-novnc:
+    <<: *base
+    profiles: ["novnc"]
+    ports:
+      - "127.0.0.1:6080:6080"
+    environment:
+      EMU_DISPLAY: "novnc"
+
+volumes:
+  emu-data:

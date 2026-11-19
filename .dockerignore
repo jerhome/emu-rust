@@ -1,0 +1,9 @@
+target
+dist
+data
+.git
+.claude
+tests/roms
+*.so
+*.dll
+*.dylib

@@ -1,0 +1,17 @@
+/target
+/dist
+.env
+config.toml
+
+# Runtime data (cores, BIOS, ROMs, saves, covers) never goes in git
+/data
+*.so
+*.dll
+*.dylib
+tests/roms/*
+!tests/roms/README.md
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
