@@ -1,0 +1,7 @@
+clrmamepro (
+	name "T"
+)
+game (
+	name "G"
+	rom ( name "a.gb" size -5 crc 00000000 )
+)

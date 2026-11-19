@@ -1,0 +1,65 @@
+{
+  "header": {
+    "APIversion": "2.0",
+    "dateTime": "2026-01-01 00:00:00",
+    "commandRequested": "FIXTURE",
+    "success": "true",
+    "user": "fixture-user",
+    "requestsToday": "1",
+    "maxRequestsPerDay": "20000"
+  },
+  "response": {
+    "serveurs": {
+      "cpu1": "10"
+    },
+    "ssuser": {
+      "id": "fixture-user",
+      "niveau": "1"
+    },
+    "jeu": {
+      "id": "999001",
+      "romid": "1",
+      "notgame": "false",
+      "noms": [
+        {
+          "region": "wor",
+          "text": "Fictional Quest"
+        },
+        {
+          "region": "us",
+          "text": "Fictional Quest USA"
+        }
+      ],
+      "systeme": {
+        "id": "4",
+        "text": "Super Nintendo"
+      },
+      "editeur": {
+        "id": "1",
+        "text": "Fictional Publisher"
+      },
+      "medias": [
+        {
+          "type": "box-2D",
+          "parent": "jeu",
+          "url": "{BASE}/ss/media/box-2D-jp.png",
+          "region": "jp",
+          "format": "png",
+          "crc": "",
+          "md5": "",
+          "sha1": ""
+        },
+        {
+          "type": "box-2D",
+          "parent": "jeu",
+          "url": "{BASE}/ss/media/box-2D-us.png",
+          "region": "us",
+          "format": "png",
+          "crc": "",
+          "md5": "",
+          "sha1": ""
+        }
+      ]
+    }
+  }
+}

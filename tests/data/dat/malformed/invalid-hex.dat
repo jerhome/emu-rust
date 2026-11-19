@@ -1,0 +1,7 @@
+clrmamepro (
+	name "T"
+)
+game (
+	name "G"
+	rom ( name "a.gb" size 4 crc ZZZZ0000 sha1 nothex )
+)

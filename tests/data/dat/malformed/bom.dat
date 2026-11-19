@@ -1,0 +1,8 @@
+﻿clrmamepro (
+	name "T"
+	version 1
+)
+game (
+	name "Bom Game"
+	rom ( name "a.gb" size 4 crc 0000abcd )
+)

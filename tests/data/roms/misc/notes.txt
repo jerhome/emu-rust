@@ -1,0 +1,1 @@
+Not a ROM: extension must be ignored by the scanner.

@@ -1,0 +1,7 @@
+clrmamepro (
+	name "T"
+)
+game (
+	name "Never closed
+	rom ( name "a.gb" size 4 crc 00000000 )
+)

@@ -1,0 +1,102 @@
+clrmamepro (
+	name "Fixture - Mixed Systems"
+	description "Hand-written emu-rust test DAT (fictional games)"
+	version 20261119
+	author "emu-rust tests"
+	unknownheaderfield "ignored"
+)
+
+game (
+	name "Fictional Racer (World)"
+	description "Fictional Racer (World)"
+	serial "FX-MD-01"
+	releaseyear "1994"
+	rom ( name "Fictional Racer (World).md" size 256 crc 57aaaeb3 md5 1723B7464D32AC800A6C0055522D0D53 sha1 EE8D429C4E613EEE2052CB40F20D468E6741550F )
+)
+
+game (
+	name "Fictional Quest (USA)"
+	description "Fictional Quest (USA)"
+	serial "FX-SNES-01"
+	releaseyear "1994"
+	rom ( name "Fictional Quest (USA).sfc" size 1024 crc 514d1a6f md5 9EA81DA0011CBF0DF1641927F6C3B429 sha1 F807F29F4C3CF58C5568C1D58C6AA40C5FC7A7E6 status verified )
+)
+
+game (
+	name "Fictional Bros (Europe)"
+	description "Fictional Bros (Europe)"
+	serial "FX-NES-01"
+	releaseyear "1994"
+	rom ( name "Fictional Bros (Europe).nes" size 64 crc c0201158 md5 0B0A6B36E9680423F72987326C9DD67D sha1 895083DB96C25A78D10DF311DD11E1301BB6D626 )
+)
+
+game (
+	name "Fictional Blocks (World)"
+	description "Fictional Blocks (World)"
+	serial "FX-GB-01"
+	releaseyear "1994"
+	rom ( name "Fictional Blocks (World).gb" size 128 crc db21216f md5 208E02F9407821B96DBAA339BEC77EF8 sha1 3BE53B7C3888312D40A0AF9D3BB883610052FB3F )
+)
+
+game (
+	name "Fictional Color Quest (World)"
+	description "Fictional Color Quest (World)"
+	serial "FX-GBC-01"
+	releaseyear "1994"
+	rom ( name "Fictional Color Quest (World).gb" size 128 crc 13aeffec md5 C294B84A7A669F4F744C33A9262B65BA sha1 EEEE3C45E4A30C02D155488E9C9EB0034FDEDED9 )
+)
+
+game (
+	name "Fictional Color Run (World)"
+	description "Fictional Color Run (World)"
+	serial "FX-GBC-01"
+	releaseyear "1994"
+	rom ( name "Fictional Color Run (World).gbc" size 128 crc d47896a3 md5 EDCEA2D44F04D448E1E9AAF7072189C7 sha1 B47581612B2799C815B8DC2644DF11466020E50E )
+)
+
+game (
+	name "Fictional Gear (Japan)"
+	description "Fictional Gear (Japan)"
+	serial "FX-GG-01"
+	releaseyear "1994"
+	rom ( name "Fictional Gear (Japan).gg" size 64 crc bb9f9a04 md5 75EC667BFABDCD1094332BF39F6D4945 sha1 15D05B50EFF9E10A4C2962F37C2B5DFC3E2965E4 )
+)
+
+game (
+	name "Fictional Master (Brazil)"
+	description "Fictional Master (Brazil)"
+	serial "FX-SMS-01"
+	releaseyear "1994"
+	rom ( name "Fictional Master (Brazil).sms" size 64 crc 0050b1ab md5 B5108AAB6514641928295EB81E286A7B sha1 6154B5E83288774661A3A3CE3FD7AEFD63B97C46 )
+)
+
+game (
+	name "Fictional Zipped (World)"
+	description "Fictional Zipped (World)"
+	serial "FX-GB-01"
+	releaseyear "1994"
+	rom ( name "Fictional Zipped (World).gb" size 128 crc 2423166a md5 05A39F5381EB423E1CE97F06B0870DC4 sha1 6A0C65DDDF264F9EEA2EF2C64081B9E0770D70F9 )
+)
+
+game (
+	name "Fictional \"Quoted\" Game (World)"
+	description "Back\\slash and \"quotes\""
+	rom ( name "Fictional \"Quoted\" Game.gb" size 32 crc 35B2A8BF sha1 CCEBD8C5FDECA9BF29E8E7FDE54E519CF033BF85 )
+)
+
+game (
+	name "Fictional CRC Only (World)"
+	rom ( name "crc-only.gb" size 48 crc 231CB24D )
+)
+
+resource (
+	name "unknown block"
+	nested ( a "b" c ( d "e" ) )
+	rom ( name "ignored.bin" size 1 crc 00000000 )
+)
+
+game (
+	name "Fictional Multi ROM (World)"
+	rom ( name "disc1.bin" size 4 crc 00000001 )
+	rom ( name "disc2.bin" size 4 crc 00000002 )
+)
