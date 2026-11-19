@@ -9,13 +9,18 @@ fn is_reserved(name: &str) -> bool {
     // Windows also ignores trailing spaces before the extension (`CON .txt`).
     let base = base.trim_end_matches(' ');
     let upper = base.to_ascii_uppercase();
-    match upper.as_str() {
-        "CON" | "PRN" | "AUX" | "NUL" => true,
-        _ => {
-            (upper.len() == 4 && (upper.starts_with("COM") || upper.starts_with("LPT")))
-                && matches!(upper.as_bytes()[3], b'1'..=b'9')
-        }
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
     }
+    // Windows also reserves COM/LPT followed by the superscript digits ¹ ² ³.
+    let mut chars = upper.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³'))
+        && chars.next().is_none()
 }
 
 /// Longest prefix of `s` that is at most `max` bytes, cut on a character boundary.
@@ -86,6 +91,13 @@ mod tests {
             "nul.tar.gz",
             "COM3.srm",
             "con .txt",
+            "COM¹",
+            "com².srm",
+            "LPT³",
+            "lpt¹.txt",
+            "CONIN$",
+            "conout$",
+            "CONOUT$.log",
         ] {
             assert_eq!(s(n), format!("_{n}"), "{n}");
         }
@@ -98,6 +110,10 @@ mod tests {
             "AUXILIARY",
             "xCON",
             "COM",
+            "COM¹²",
+            "COM⁴",
+            "CONIN",
+            "CONIN$x",
         ] {
             assert_eq!(s(n), n, "{n}");
         }
