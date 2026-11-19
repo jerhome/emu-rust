@@ -19,6 +19,11 @@ Première pré-release. Systèmes cibles : **Mega Drive** (genesis_plus_gx) et *
 - Builds : image Docker (WSLg, X11, noVNC), binaire Linux x86_64, bundle `.app` macOS Intel, zip Windows (MSVC) ;
   CI sur Ubuntu, macOS Intel et Windows ; workflow de release.
 
+### Corrigé
+
+- Ordre d'initialisation libretro conforme à libretro.h et à RetroArch : les callbacks vidéo, audio et entrées
+  sont posés après `retro_init` (certains cores plantaient sinon).
+
 ### Limites connues
 
 - Pas de manette (clavier uniquement) ; la manette PS4 est prévue plus tard.
