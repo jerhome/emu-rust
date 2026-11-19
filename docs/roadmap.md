@@ -27,10 +27,15 @@
 
 | Version | Contenu | Processus |
 |---|---|---|
-| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; **Super Nintendo (snes9x) et Mega Drive (genesis_plus_gx) doivent être irréprochables** | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur sur ses plateformes → corrections |
-| 0.1.x (stable) | 0.1 corrigée après essais | Nouvelle version de correctif publiée comme release stable (non pré-release) |
-| 0.2 … 0.x | **À définir** : l'utilisateur réfléchit au contenu entre 0.1 et 1.0 (piste : intégrer des petites consoles, par ex. NES, Master System / Game Gear, Game Boy / Color, PC Engine…) | — |
-| 1.0 | Les deux ordinateurs 16 bits : **Atari ST** (hatari + EmuTOS) et **Amiga** (puae + AROS), donc phase 5 au moins pour ST/Amiga (DOS non requis), avec ce qu'il faut des phases 3 et 4 pour les rendre utilisables | Même cycle : pré-release, essais, stable |
+| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; **Super Nintendo (snes9x) et Mega Drive (genesis_plus_gx) doivent être irréprochables**. Cores à télécharger à la main (liens dans les notes) | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur → corrections |
+| 0.1.x (stable) | 0.1 corrigée après essais + **téléchargement automatique des cores** genesis_plus_gx et snes9x pour l'OS courant (buildbot, HTTPS rustls, zip durci existant) : premier morceau du gestionnaire de cores | Release stable (non pré-release) |
+| 0.2 … 0.x | Étapes vers la 1.0 (ordre à définir ensemble) | — |
+| 1.0 | **Petites consoles** (pistes : NES, Master System / Game Gear, Game Boy / Color, PC Engine…), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release, essais, stable |
+| 2.0 | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
+| 3.0 | **Amiga** (puae ; AROS + Kickstart fourni par l'utilisateur), réutilise l'infrastructure de la 2.0 | Même cycle |
+| 4.0 | **PC-DOS** (dosbox_pure) | Même cycle |
+
+Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable sans ROM propriétaire (EmuTOS), il valide l'infrastructure ordinateur avant l'Amiga.
 
 ## Phases
 
