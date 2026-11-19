@@ -13,6 +13,8 @@ SNES : même chemin avec snes9x_libretro.{so,dylib,dll}.zip
 
 ROM de test libre (240p Test Suite 1.21, GPL-2.0 ; le .zip se charge directement) :
   https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download
+ROM de test libre SNES (240p Test Suite SNES 1.02, GPL-2.0, même auteur) :
+  https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download
 
 Le core et la ROM peuvent être n'importe où : on passe leur chemin en ligne de commande.
 

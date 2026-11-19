@@ -13,6 +13,7 @@ Vérifier : `sha256sum -c SHA256SUMS.txt --ignore-missing`. Aucun core, BIOS ni 
 
 - ROM libre : [240p Test Suite 1.21 (Mega Drive, GPL-2.0)](https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download)
   — le `.zip` se charge directement.
+- ROM libre : [240p Test Suite SNES 1.02 (Super Nintendo, GPL-2.0)](https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download) — avec le core `snes9x` ci-dessous.
 - Core `genesis_plus_gx` (buildbot libretro, à dézipper) :
   [Linux](https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip) ·
   [macOS Intel](https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/genesis_plus_gx_libretro.dylib.zip) ·
