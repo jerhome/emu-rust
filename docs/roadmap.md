@@ -27,8 +27,9 @@
 
 | Version | Contenu | Processus |
 |---|---|---|
-| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur sur ses plateformes → corrections |
+| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; **Super Nintendo (snes9x) et Mega Drive (genesis_plus_gx) doivent être irréprochables** | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur sur ses plateformes → corrections |
 | 0.1.x (stable) | 0.1 corrigée après essais | Nouvelle version de correctif publiée comme release stable (non pré-release) |
+| 0.2 … 0.x | **À définir** : l'utilisateur réfléchit au contenu entre 0.1 et 1.0 (piste : intégrer des petites consoles, par ex. NES, Master System / Game Gear, Game Boy / Color, PC Engine…) | — |
 | 1.0 | Les deux ordinateurs 16 bits : **Atari ST** (hatari + EmuTOS) et **Amiga** (puae + AROS), donc phase 5 au moins pour ST/Amiga (DOS non requis), avec ce qu'il faut des phases 3 et 4 pour les rendre utilisables | Même cycle : pré-release, essais, stable |
 
 ## Phases

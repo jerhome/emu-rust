@@ -51,3 +51,4 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-19 | 0.1 | Release GitHub : brouillon, pré-release ou finale ? | Pré-release publiée tant que la version est `0.x` ; notes extraites de `CHANGELOG.md`. | décidé (défaut) |
 | 2026-11-19 | 0.1 | Image Docker : plateformes et visibilité | `linux/amd64` seulement ; tags `0.1.0`, `0.1`, `latest` ; paquet GHCR créé privé au premier push : l'utilisateur le passe en public une fois. | décidé (défaut) |
 | 2026-11-19 | 0.1 | Test SRAM de la checklist | La 240p Test Suite n'a pas de SRAM : test manuel facultatif (jeu à pile fourni par l'utilisateur) ; couverture par les tests du core factice. | décidé (défaut) |
+| 2026-11-19 | 0.2+ | Contenu entre 0.1 et 1.0 : intégrer des « petites consoles » (NES, Master System/Game Gear, Game Boy/Color, PC Engine…) ? | Aucune décision : en réflexion côté utilisateur. Rien de planifié avant la 0.1 stable. | à décider (utilisateur) |
