@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use crate::sys;
 
 /// Pixel formats a core may select with `RETRO_ENVIRONMENT_SET_PIXEL_FORMAT`.
@@ -178,6 +181,109 @@ impl JoypadButton {
             .ok()
             .and_then(|i| Self::ALL.get(i).copied())
     }
+
+    /// Stable lowercase name used in config files: `"b"`, `"y"`, `"select"`, `"start"`, `"up"`, `"down"`,
+    /// `"left"`, `"right"`, `"a"`, `"x"`, `"l"`, `"r"`, `"l2"`, `"r2"`, `"l3"`, `"r3"`. Never rename (persisted).
+    pub const fn name(self) -> &'static str {
+        todo!()
+    }
+
+    /// Inverse of `name`; ASCII case-insensitive.
+    pub fn from_name(name: &str) -> Option<Self> {
+        todo!("{name}")
+    }
+}
+
+/// What to hand to `retro_load_game` (phase 2: archives are extracted by emu-runtime).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameSource {
+    /// File on disk; read into memory unless the core sets `need_fullpath`.
+    Path(PathBuf),
+    /// Content already in memory (e.g. extracted from a zip). `path` is the virtual path reported in
+    /// `retro_game_info.path` (cores look at its extension); it need not exist. Rejected with
+    /// `LibretroError::NeedsFullPath` when the core sets `need_fullpath`.
+    Memory { path: PathBuf, data: Vec<u8> },
+}
+
+/// `RETRO_MEMORY_*` regions exposed through `retro_get_memory_data` / `retro_get_memory_size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryKind {
+    /// `RETRO_MEMORY_SAVE_RAM` (0): battery-backed SRAM, persisted as `.srm`.
+    SaveRam,
+    /// `RETRO_MEMORY_RTC` (1).
+    Rtc,
+    /// `RETRO_MEMORY_SYSTEM_RAM` (2).
+    SystemRam,
+    /// `RETRO_MEMORY_VIDEO_RAM` (3).
+    VideoRam,
+}
+
+/// `RETRO_SERIALIZATION_QUIRK_*` flags declared with `SET_SERIALIZATION_QUIRKS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SerializationQuirks(pub u64);
+
+impl SerializationQuirks {
+    pub const INCOMPLETE: u64 = 1 << 0;
+    pub const MUST_INITIALIZE: u64 = 1 << 1;
+    pub const CORE_VARIABLE_SIZE: u64 = 1 << 2;
+    pub const FRONT_VARIABLE_SIZE: u64 = 1 << 3;
+    pub const SINGLE_SESSION: u64 = 1 << 4;
+    pub const ENDIAN_DEPENDENT: u64 = 1 << 5;
+    pub const PLATFORM_DEPENDENT: u64 = 1 << 6;
+
+    pub const fn contains(self, flag: u64) -> bool {
+        self.0 & flag == flag
+    }
+}
+
+/// `enum retro_log_level`; also the severity of `CoreMessage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// User-facing message from `SET_MESSAGE` / `SET_MESSAGE_EXT` (OSD targets only; log targets go to `tracing`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreMessage {
+    pub text: String,
+    /// `SET_MESSAGE` frame counts are converted with the current `timing.fps`.
+    pub duration: Duration,
+    pub level: LogLevel,
+}
+
+/// One core option, merged from `SET_VARIABLES` (legacy), `SET_CORE_OPTIONS[_INTL]` (v1) or
+/// `SET_CORE_OPTIONS_V2[_INTL]` (v2; English strings are used, no localisation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreOption {
+    pub key: String,
+    /// v2 `desc_categorized` when the option has a category, else `desc`.
+    pub label: String,
+    pub info: Option<String>,
+    /// Key of a `CoreOptionCategory` (v2 only).
+    pub category: Option<String>,
+    pub values: Vec<CoreOptionValue>,
+    pub default: String,
+    pub current: String,
+    /// `false` after `SET_CORE_OPTIONS_DISPLAY` hides it; the UI should not list hidden options.
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreOptionValue {
+    pub value: String,
+    /// Display label; equals `value` when the core gives none.
+    pub label: String,
+}
+
+/// v2 option category (`retro_core_option_v2_category`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreOptionCategory {
+    pub key: String,
+    pub label: String,
+    pub info: Option<String>,
 }
 
 #[cfg(test)]

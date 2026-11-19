@@ -22,3 +22,8 @@ Racine de données (`EMU_DATA_DIR`, sinon dossier standard via le crate `directo
 - SQLite via `rusqlite` (feature `bundled` : pas de dépendance système).
 - Scan des dossiers déclarés, hash CRC32 + SHA1 (contenu décompressé pour les `.zip`), identification via la base libretro.
 - Systèmes, extensions et cores associés définis dans des fichiers de données versionnés (pas codés en dur).
+
+## Amendement 2026-11-19 — phase 2
+
+- Résolution de la racine, dossier `assets/`, identifiant de core, nommage SRAM / savestates, format des savestates,
+  écritures atomiques et règles de `config.toml` : **ADR 0011**.

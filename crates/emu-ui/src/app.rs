@@ -32,6 +32,9 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
         EmulatorOptions {
             system_dir: options.system_dir.clone(),
             save_dir: options.save_dir.clone(),
+            // Placeholders until `LaunchOptions` carries `DataDirs` (phase 2, task U1).
+            state_dir: options.save_dir.join("states"),
+            assets_dir: options.system_dir.clone(),
             core_variables: Vec::new(),
         },
     )?;

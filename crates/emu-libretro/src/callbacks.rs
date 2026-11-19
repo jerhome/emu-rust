@@ -667,6 +667,7 @@ mod tests {
         CoreConfig {
             system_dir: PathBuf::from("/tmp/sys"),
             save_dir: PathBuf::from("/tmp/saves"),
+            assets_dir: PathBuf::from("/tmp/assets"),
             variables,
         }
     }

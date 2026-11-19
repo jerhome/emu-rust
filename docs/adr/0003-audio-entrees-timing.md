@@ -39,3 +39,7 @@ Statut : accepté (2026-11-19)
 - `cpal` est isolé derrière la feature `audio-cpal` (par défaut, relayée `emu-app → emu-ui → emu-runtime`) ;
   `--no-default-features` donne un binaire silencieux sans dépendance ALSA. Le pipeline (anneau, rééchantillonnage, DRC)
   ne dépend pas de `cpal`.
+
+## Amendement 2026-11-19 — phase 2
+
+- Timing : synchro pilotée par l'audio, vsync, pause et avance rapide décidées par l'**ADR 0010** (`Pacer`, thread unique).

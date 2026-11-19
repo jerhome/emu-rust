@@ -166,6 +166,10 @@ impl GlWindow {
 
     /// Clears to black and draws the last uploaded frame; `aspect_ratio` comes from
     /// `GameGeometry::display_aspect`. Call `swap_buffers` afterwards.
+    ///
+    /// Phase 2: egui (`egui_glow::Painter`) paints over the frame between this call and `swap_buffers`, so this
+    /// must set every piece of GL state it relies on (viewport, program, VAO, texture unit 0 and binding,
+    /// blend / scissor / depth disabled, unpack alignment) instead of assuming what the previous frame left.
     pub fn draw_frame(
         &mut self,
         viewport: PhysicalSize<u32>,
@@ -179,6 +183,18 @@ impl GlWindow {
                 .draw(&self.gl, viewport, aspect_ratio, scaling)
         };
         Ok(())
+    }
+
+    /// `SwapInterval::Wait(1)` when `enabled`, else `DontWait`. A refusal is returned (the caller logs it and
+    /// carries on: the pacer does not depend on vsync).
+    pub fn set_vsync(&self, enabled: bool) -> Result<(), RuntimeError> {
+        todo!("{enabled}")
+    }
+
+    /// Reads back the current back buffer (call after drawing, before `swap_buffers`): RGBA8, top row first,
+    /// window size. Used for UI screenshots under Xvfb (`--dump-window`).
+    pub fn capture(&mut self) -> Result<FrameRgba, RuntimeError> {
+        todo!()
     }
 
     /// No-op when already current (the common case: one window per thread). Needed because another context

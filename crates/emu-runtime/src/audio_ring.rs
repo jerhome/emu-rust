@@ -10,6 +10,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use tracing::{debug, warn};
 
 use crate::audio::AudioSink;
+use crate::pacing::AudioLevel;
 use crate::resample::{MAX_RATE, MIN_RATE, StereoResampler, rate_adjust};
 
 /// Output tuning. `Default` is what the UI uses in phase 1b.
@@ -203,6 +204,18 @@ impl RingSink {
 
     pub fn stats(&self) -> AudioStats {
         self.shared.stats()
+    }
+
+    /// Paused (emulation paused, menu open, fast-forward): the reader discards what is queued, plays silence
+    /// without counting underruns, and re-arms the pre-roll for when it resumes. Samples pushed while paused
+    /// are discarded too.
+    pub fn set_paused(&mut self, paused: bool) {
+        todo!("{paused}")
+    }
+
+    /// Queued audio vs the DRC set point; `None` while paused or after `stream_failed`.
+    pub fn level(&self) -> Option<AudioLevel> {
+        todo!()
     }
 
     fn log_underruns(&mut self) {

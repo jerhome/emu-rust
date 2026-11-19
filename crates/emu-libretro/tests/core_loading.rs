@@ -24,6 +24,7 @@ fn config() -> CoreConfig {
     CoreConfig {
         system_dir: out.join("system"),
         save_dir: out.join("saves"),
+        assets_dir: out.join("assets"),
         variables: Vec::new(),
     }
 }

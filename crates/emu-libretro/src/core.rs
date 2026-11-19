@@ -7,15 +7,21 @@ use libloading::Library;
 use crate::callbacks::{self, EnvInstall, ProcessGuard};
 use crate::error::LibretroError;
 use crate::sys;
-use crate::types::{AvInfo, InputQuery, PixelFormat, SystemInfo, VideoFrame};
+use crate::types::{
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameSource, InputQuery, MemoryKind,
+    PixelFormat, SerializationQuirks, SystemInfo, VideoFrame,
+};
 
 /// Frontend-side configuration answered through environment callbacks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreConfig {
     /// `GET_SYSTEM_DIRECTORY` (BIOS files).
     pub system_dir: PathBuf,
-    /// `GET_SAVE_DIRECTORY` (SRAM, phase 2).
+    /// `GET_SAVE_DIRECTORY`: where the core writes files it manages itself (emu-runtime passes
+    /// `<saves>/<core_id>/`). SRAM exposed through `MemoryKind::SaveRam` is persisted by the frontend.
     pub save_dir: PathBuf,
+    /// `GET_CORE_ASSETS_DIRECTORY` (phase 1 answered `system_dir`).
+    pub assets_dir: PathBuf,
     /// Core option overrides (`key`, `value`); options not listed use the default declared by the core.
     pub variables: Vec<(String, String)>,
 }
@@ -39,6 +45,9 @@ pub struct RunEvents {
     pub av_info_changed: bool,
     /// `RETRO_ENVIRONMENT_SHUTDOWN` was received.
     pub shutdown_requested: bool,
+    /// Option list, values or visibility changed (`SET_VARIABLE`, `SET_CORE_OPTIONS_DISPLAY`, late
+    /// `SET_CORE_OPTIONS*`): re-read `Core::options`.
+    pub options_changed: bool,
 }
 
 /// A loaded libretro core. At most one per process; bound to the thread that loaded it (ADR 0008).
@@ -309,6 +318,72 @@ impl Core {
             return Err(LibretroError::CallbackPanicked);
         }
         Ok(events)
+    }
+
+    /// Same as `load_game` for any `GameSource` (`load_game(p)` = `load_game_from(GameSource::Path(p))`).
+    /// `Memory` keeps the buffer alive until `unload_game`, like a file read into memory.
+    pub fn load_game_from(&mut self, game: GameSource) -> Result<AvInfo, LibretroError> {
+        todo!("{game:?}")
+    }
+
+    /// `retro_serialize_size`; 0 when no game is loaded or savestates are unsupported. May change between
+    /// frames for cores with `CORE_VARIABLE_SIZE`.
+    pub fn serialize_size(&self) -> usize {
+        todo!()
+    }
+
+    /// Replaces `out` with the serialized state (`out` is resized to `serialize_size`; its capacity is
+    /// reused, so a caller keeping the buffer does not allocate per call).
+    pub fn serialize(&mut self, out: &mut Vec<u8>) -> Result<(), LibretroError> {
+        todo!("{}", out.capacity())
+    }
+
+    /// `retro_unserialize`. Errors: `NoGame`, `SerializeUnsupported`, `UnserializeFailed`.
+    pub fn unserialize(&mut self, data: &[u8]) -> Result<(), LibretroError> {
+        todo!("{}", data.len())
+    }
+
+    /// Flags from `SET_SERIALIZATION_QUIRKS` (empty if never sent).
+    pub fn serialization_quirks(&self) -> SerializationQuirks {
+        todo!()
+    }
+
+    /// Core-owned memory region; `None` if no game is loaded or the core reports a null pointer / size 0.
+    /// Re-queried on every call (cores may move the buffer between frames).
+    pub fn memory(&self, kind: MemoryKind) -> Option<&[u8]> {
+        todo!("{kind:?}")
+    }
+
+    /// Mutable view, used to restore SRAM right after `load_game` (before the first `run`).
+    pub fn memory_mut(&mut self, kind: MemoryKind) -> Option<&mut [u8]> {
+        todo!("{kind:?}")
+    }
+
+    /// Snapshot of the options declared by the core (legacy, v1 or v2), in declaration order. Calls the
+    /// core's `SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK` first if it registered one.
+    pub fn options(&mut self) -> Vec<CoreOption> {
+        todo!()
+    }
+
+    /// v2 categories, in declaration order (empty for legacy / v1 cores).
+    pub fn option_categories(&self) -> Vec<CoreOptionCategory> {
+        todo!()
+    }
+
+    /// Validates `value` against the declared values, stores it and makes the next `GET_VARIABLE_UPDATE`
+    /// return `true`. Takes effect when the core next reads it (usually during `run`).
+    pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), LibretroError> {
+        todo!("{key}={value}")
+    }
+
+    /// Value answered to `GET_FASTFORWARDING`.
+    pub fn set_fast_forwarding(&mut self, enabled: bool) {
+        todo!("{enabled}")
+    }
+
+    /// Drains the OSD messages received since the last call (`SET_MESSAGE`, `SET_MESSAGE_EXT`).
+    pub fn take_messages(&mut self) -> Vec<CoreMessage> {
+        todo!()
     }
 
     pub fn reset(&mut self) {

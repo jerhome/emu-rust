@@ -7,6 +7,7 @@ use crate::audio::{AudioSink, NullSink};
 use crate::audio_ring::{AudioConfig, AudioStats};
 #[cfg(feature = "audio-cpal")]
 use crate::audio_ring::{AudioError, OutputSample, RingReader, RingSink, audio_ring};
+use crate::pacing::AudioLevel;
 
 /// Plays the core's audio on the default output device: `RingSink` + cpal stream whose callback owns the
 /// `RingReader`. `!Send` (owns the cpal stream): create and use it on the emulation thread.
@@ -170,6 +171,16 @@ impl AudioOutput {
                 let _ = input_rate;
             }
         }
+    }
+
+    /// `RingSink::set_paused`; no-op for `Null`.
+    pub fn set_paused(&mut self, paused: bool) {
+        todo!("{paused}")
+    }
+
+    /// `RingSink::level`; `None` for `Null` (the pacer then falls back to the wall clock).
+    pub fn level(&self) -> Option<AudioLevel> {
+        todo!()
     }
 
     /// `AudioStats::default()` for `Null`.

@@ -1,19 +1,30 @@
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use emu_libretro::{
-    AvInfo, Core, CoreConfig, FrontendHandler, InputDevice, InputQuery, JOYPAD_ID_MASK,
-    JoypadButton, SystemInfo, VideoFrame,
+    AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FrontendHandler,
+    InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind, SystemInfo, VideoFrame,
 };
 
 use crate::audio::AudioSink;
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
 use crate::input::{InputBackend, InputFrame};
+use crate::saves::StateHeader;
+
+/// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
+pub const MAX_CONTENT_SIZE: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmulatorOptions {
     pub system_dir: PathBuf,
+    /// Saves root: SRAM goes to `<save_dir>/<core_id>/<game>.srm`, and the core gets `<save_dir>/<core_id>/`
+    /// as `GET_SAVE_DIRECTORY` (ADR 0011).
     pub save_dir: PathBuf,
+    /// Savestates root: `<state_dir>/<core_id>/<game>.state<slot>`.
+    pub state_dir: PathBuf,
+    /// `GET_CORE_ASSETS_DIRECTORY`.
+    pub assets_dir: PathBuf,
     /// Core option overrides (`key`, `value`).
     pub core_variables: Vec<(String, String)>,
 }
@@ -26,6 +37,8 @@ pub struct FrameStatus {
     pub video_updated: bool,
     pub av_info_changed: bool,
     pub shutdown_requested: bool,
+    /// `RunEvents::options_changed`: re-read `Emulator::options`.
+    pub options_changed: bool,
 }
 
 /// Headless emulation session: one core, one game. Same threading rules as `emu_libretro::Core` (!Send).
@@ -44,6 +57,7 @@ impl Emulator {
         let config = CoreConfig {
             system_dir: options.system_dir,
             save_dir: options.save_dir,
+            assets_dir: options.assets_dir,
             variables: options.core_variables,
         };
         let mut core = Core::load(core, config)?;
@@ -106,6 +120,7 @@ impl Emulator {
             video_updated,
             av_info_changed: events.av_info_changed,
             shutdown_requested: events.shutdown_requested,
+            options_changed: events.options_changed,
         })
     }
 
@@ -122,6 +137,94 @@ impl Emulator {
     /// Resets the emulated machine; `frame_count` keeps increasing (it indexes frames of this session).
     pub fn reset(&mut self) {
         self.core.reset();
+    }
+
+    // ---- Phase 2 (docs/design/phase2-frontend.md §2.2). Contract for `Emulator::load` from phase 2:
+    // - `.zip` content: passed as is if the core lists `zip` in `valid_extensions` or sets `block_extract`;
+    //   otherwise the first entry (archive order) whose extension the core accepts is extracted, in memory
+    //   (`GameSource::Memory`, virtual path `<archive dir>/<entry file name>`) or, if `need_fullpath`, into a
+    //   private temporary directory removed on drop. Entry names are never used as paths (basename only);
+    //   entries over `MAX_CONTENT_SIZE` (declared or actually read) are refused.
+    // - creates `<save_dir>/<core_id>/` and `<state_dir>/<core_id>/`, then restores SRAM from `sram_path()`
+    //   right after `retro_load_game` (shorter file: prefix copied; longer: truncated + `warn!`).
+    // - `Drop` calls `flush_sram` (error logged, never panics).
+
+    /// `core_id_from_path` of the core library.
+    pub fn core_id(&self) -> &str {
+        todo!()
+    }
+
+    /// `game_name_from_path` of the content path given to `load`.
+    pub fn game_name(&self) -> &str {
+        todo!()
+    }
+
+    /// Where SRAM is persisted (whether or not the core exposes any).
+    pub fn sram_path(&self) -> PathBuf {
+        todo!()
+    }
+
+    /// Path of savestate `slot`; `InvalidSlot` if `slot >= STATE_SLOTS`.
+    pub fn state_path(&self, slot: u8) -> Result<PathBuf, RuntimeError> {
+        todo!("{slot}")
+    }
+
+    /// Writes SRAM with `write_atomic` if it differs from what was last loaded or written. Returns `true` if
+    /// a file was written; `Ok(false)` when unchanged or the core exposes no SRAM.
+    pub fn flush_sram(&mut self) -> Result<bool, RuntimeError> {
+        todo!()
+    }
+
+    /// Core memory region (tests, future cheats / achievements).
+    pub fn memory(&self, kind: MemoryKind) -> Option<&[u8]> {
+        todo!("{kind:?}")
+    }
+
+    /// Raw core serialization (no container): in-memory snapshots for tests and future rewind.
+    pub fn serialize_state(&mut self) -> Result<Vec<u8>, RuntimeError> {
+        todo!()
+    }
+
+    pub fn unserialize_state(&mut self, data: &[u8]) -> Result<(), RuntimeError> {
+        todo!("{}", data.len())
+    }
+
+    /// `encode_state` + `write_atomic` to `state_path(slot)`; returns the path.
+    pub fn save_state(&mut self, slot: u8) -> Result<PathBuf, RuntimeError> {
+        todo!("{slot}")
+    }
+
+    /// Reads, `decode_state`s (`WrongCore` if another core id), warns on core version mismatch, then
+    /// unserializes. On any error the running game is left untouched.
+    pub fn load_state(&mut self, slot: u8) -> Result<(), RuntimeError> {
+        todo!("{slot}")
+    }
+
+    /// Header of slot `slot` and file modification time, for the menu; `None` if absent or unreadable.
+    pub fn state_info(&self, slot: u8) -> Option<(StateHeader, SystemTime)> {
+        todo!("{slot}")
+    }
+
+    pub fn options(&mut self) -> Vec<CoreOption> {
+        todo!()
+    }
+
+    pub fn option_categories(&self) -> Vec<CoreOptionCategory> {
+        todo!()
+    }
+
+    pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), RuntimeError> {
+        todo!("{key}={value}")
+    }
+
+    /// Forwarded to the core (`GET_FASTFORWARDING`).
+    pub fn set_fast_forwarding(&mut self, enabled: bool) {
+        todo!("{enabled}")
+    }
+
+    /// OSD messages from the core since the last call.
+    pub fn take_messages(&mut self) -> Vec<CoreMessage> {
+        todo!()
     }
 }
 

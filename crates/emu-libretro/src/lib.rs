@@ -12,6 +12,7 @@ mod types;
 pub use crate::core::{Core, CoreConfig, FrontendHandler, RunEvents};
 pub use crate::error::LibretroError;
 pub use crate::types::{
-    AvInfo, GameGeometry, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, PixelFormat,
-    SystemInfo, SystemTiming, VideoFrame,
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, GameGeometry, GameSource,
+    InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, LogLevel, MemoryKind, PixelFormat,
+    SerializationQuirks, SystemInfo, SystemTiming, VideoFrame,
 };

@@ -31,4 +31,19 @@ pub enum LibretroError {
     /// A `FrontendHandler` method panicked inside a C callback; the panic was caught at the FFI boundary.
     #[error("frontend callback panicked during retro_run")]
     CallbackPanicked,
+    /// `GameSource::Memory` given to a core that sets `need_fullpath`.
+    #[error("core needs a real file path for its content")]
+    NeedsFullPath,
+    /// `retro_serialize_size` returned 0.
+    #[error("core does not support savestates")]
+    SerializeUnsupported,
+    #[error("core failed to serialize its state")]
+    SerializeFailed,
+    /// `retro_unserialize` returned false (wrong size, other core version, corrupt data).
+    #[error("core rejected the savestate")]
+    UnserializeFailed,
+    #[error("unknown core option `{0}`")]
+    UnknownOption(String),
+    #[error("invalid value `{value}` for core option `{key}`")]
+    InvalidOptionValue { key: String, value: String },
 }

@@ -69,6 +69,8 @@ fn emulator() -> Emulator {
     let options = EmulatorOptions {
         system_dir: data.join("system"),
         save_dir: data.join("saves"),
+        state_dir: data.join("states"),
+        assets_dir: data.join("assets"),
         core_variables: Vec::new(),
     };
     fs::create_dir_all(&options.system_dir).unwrap();

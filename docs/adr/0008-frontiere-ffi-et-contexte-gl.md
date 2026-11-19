@@ -49,3 +49,11 @@ qu'`emu-ui` ne dépende pas d'`emu-libretro`. `emu-app` ne dépend que d'`emu-ui
   ce thread (pas déplacé) ; l'UI communiquera par canaux.
 - `GET_LOG_INTERFACE` exige un callback C variadique (`printf`), impossible en Rust stable : la commande renvoie
   `false` en phase 1 (les cores écrivent alors sur `stderr`). Une petite cale C (`cc`) sera décidée par une ADR en phase 2.
+
+## Amendement 2026-11-19 — phase 2
+
+- `GET_LOG_INTERFACE` : cale C compilée avec `cc` (**ADR 0009**).
+- Thread d'émulation : non, tout reste sur le thread principal (**ADR 0010**) ; la conséquence « si la phase 2 veut
+  un thread d'émulation… » est caduque.
+- egui (`egui_glow::Painter`) reçoit `GlWindow::gl()` après `make_current()` ; `GlWindow::draw_frame` repositionne tout
+  l'état GL qu'il utilise (egui le modifie entre deux images).
