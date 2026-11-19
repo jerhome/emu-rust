@@ -6,6 +6,8 @@
 mod callbacks;
 mod core;
 mod error;
+mod log;
+mod options;
 mod sys;
 mod types;
 

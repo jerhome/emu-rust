@@ -110,6 +110,8 @@ struct Shared {
     underruns: AtomicU64,
     dropped_samples: AtomicU64,
     stream_failed: AtomicBool,
+    /// Set by `RingSink::set_paused`; the reader then drains the ring and plays silence.
+    paused: AtomicBool,
 }
 
 impl Shared {
@@ -157,6 +159,7 @@ pub fn audio_ring(
         shared: Arc::clone(&shared),
         device_rate,
         capacity,
+        target,
         max_rate_deviation,
         failure_reported: false,
         last_log: Instant::now(),
@@ -180,6 +183,8 @@ pub struct RingSink {
     shared: Arc<Shared>,
     device_rate: u32,
     capacity: usize,
+    /// DRC set point in interleaved samples (= the reader's pre-roll threshold).
+    target: usize,
     max_rate_deviation: f64,
     failure_reported: bool,
     last_log: Instant,
@@ -210,12 +215,25 @@ impl RingSink {
     /// without counting underruns, and re-arms the pre-roll for when it resumes. Samples pushed while paused
     /// are discarded too.
     pub fn set_paused(&mut self, paused: bool) {
-        todo!("{paused}")
+        self.shared.paused.store(paused, Ordering::Relaxed);
     }
 
     /// Queued audio vs the DRC set point; `None` while paused or after `stream_failed`.
     pub fn level(&self) -> Option<AudioLevel> {
-        todo!()
+        if self.shared.paused.load(Ordering::Relaxed)
+            || self.shared.stream_failed.load(Ordering::Relaxed)
+        {
+            return None;
+        }
+        let used = self.capacity.saturating_sub(self.producer.slots());
+        let rate = f64::from(self.device_rate);
+        let to_duration = |samples: usize| {
+            Duration::try_from_secs_f64(samples as f64 / 2.0 / rate).unwrap_or_default()
+        };
+        Some(AudioLevel {
+            buffered: to_duration(used),
+            target: to_duration(self.target),
+        })
     }
 
     fn log_underruns(&mut self) {
@@ -242,6 +260,9 @@ impl AudioSink for RingSink {
                 self.failure_reported = true;
                 warn!("audio stream failed, audio disabled until restart");
             }
+            return;
+        }
+        if self.shared.paused.load(Ordering::Relaxed) {
             return;
         }
         self.log_underruns();
@@ -277,7 +298,18 @@ pub struct RingReader {
 impl RingReader {
     /// Fills `out` (interleaved, `channels` per frame): 1 → (L+R)/2, ≥ 2 → L, R then silence. Silence before the
     /// ring first reaches the target fill (pre-roll, not counted) and on underrun (counted). `channels == 0` → silence.
+    ///
+    /// Paused: drains whatever is queued, plays silence (not counted) and re-arms the pre-roll.
     pub fn fill<T: OutputSample>(&mut self, out: &mut [T], channels: usize) {
+        if self.shared.paused.load(Ordering::Relaxed) {
+            let queued = self.consumer.slots();
+            if let Ok(chunk) = self.consumer.read_chunk(queued) {
+                chunk.commit_all();
+            }
+            self.started = false;
+            out.fill(T::SILENCE);
+            return;
+        }
         if channels == 0 {
             out.fill(T::SILENCE);
             return;
@@ -511,6 +543,59 @@ mod tests {
         sink.push_samples(&frames(5, 1, 1));
         assert_eq!(sink.fill(), 0.0);
         assert_eq!(sink.stats().dropped_samples, 0);
+    }
+
+    #[test]
+    fn level_tracks_fill() {
+        let (mut sink, mut reader) = small_ring(1_000.0);
+        let level = sink.level().unwrap();
+        assert_eq!(level.buffered, Duration::ZERO);
+        assert_eq!(level.target, Duration::from_millis(10));
+        sink.push_samples(&frames(5, 1, 1));
+        let used = 40 - sink.producer.slots();
+        let expected = Duration::from_micros(used as u64 * 500);
+        assert!(sink.level().unwrap().buffered.abs_diff(expected) < Duration::from_micros(1));
+        let mut out = [0.0f32; 40];
+        reader.fill(&mut out, 2);
+        assert!(sink.level().unwrap().buffered > Duration::ZERO); // still in pre-roll
+
+        reader.failure_notifier()();
+        assert_eq!(sink.level(), None);
+    }
+
+    #[test]
+    fn pause_is_silent_uncounted_and_rearms_preroll() {
+        let (mut sink, mut reader) = small_ring(1_000.0);
+        sink.push_samples(&frames(12, 8192, 8192));
+        let mut out = [0.0f32; 4];
+        reader.fill(&mut out, 2);
+        assert!(out.iter().all(|&v| v > 0.0));
+
+        sink.set_paused(true);
+        assert_eq!(sink.level(), None);
+        let mut out = [1.0f32; 64];
+        for _ in 0..3 {
+            reader.fill(&mut out, 2);
+            assert!(out.iter().all(|&v| v == 0.0));
+        }
+        // Queue drained, pushes discarded, nothing counted.
+        sink.push_samples(&frames(10, 8192, 8192));
+        reader.fill(&mut out, 2);
+        assert_eq!(sink.fill(), 0.0);
+        assert_eq!(sink.stats(), AudioStats::default());
+
+        // Resume: pre-roll again (silence until the target is reached, not an underrun).
+        sink.set_paused(false);
+        assert_eq!(sink.level().unwrap().buffered, Duration::ZERO);
+        sink.push_samples(&frames(4, 8192, 8192));
+        let mut out = [1.0f32; 4];
+        reader.fill(&mut out, 2);
+        assert!(out.iter().all(|&v| v == 0.0));
+        assert_eq!(sink.stats().underruns, 0);
+        sink.push_samples(&frames(8, 8192, 8192));
+        reader.fill(&mut out, 2);
+        assert!(out.iter().all(|&v| v > 0.0), "{out:?}");
+        assert_eq!(sink.stats().underruns, 0);
     }
 
     #[test]

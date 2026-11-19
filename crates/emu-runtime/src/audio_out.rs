@@ -114,6 +114,16 @@ impl CpalSink {
     pub fn stats(&self) -> AudioStats {
         self.inner.sink.stats()
     }
+
+    /// `RingSink::set_paused`: the stream keeps running and plays silence.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.inner.sink.set_paused(paused);
+    }
+
+    /// `RingSink::level`.
+    pub fn level(&self) -> Option<AudioLevel> {
+        self.inner.sink.level()
+    }
 }
 
 #[cfg(feature = "audio-cpal")]
@@ -175,12 +185,22 @@ impl AudioOutput {
 
     /// `RingSink::set_paused`; no-op for `Null`.
     pub fn set_paused(&mut self, paused: bool) {
-        todo!("{paused}")
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(sink) => sink.set_paused(paused),
+            Self::Null(_) => {
+                let _ = paused;
+            }
+        }
     }
 
     /// `RingSink::level`; `None` for `Null` (the pacer then falls back to the wall clock).
     pub fn level(&self) -> Option<AudioLevel> {
-        todo!()
+        match self {
+            #[cfg(feature = "audio-cpal")]
+            Self::Device(sink) => sink.level(),
+            Self::Null(_) => None,
+        }
     }
 
     /// `AudioStats::default()` for `Null`.
@@ -213,6 +233,9 @@ mod tests {
         assert!(!out.is_device());
         out.push_samples(&[1, 2, 3, 4]);
         out.set_input_rate(32_040.0);
+        out.set_paused(true);
+        out.set_paused(false);
+        assert_eq!(out.level(), None);
         assert_eq!(out.stats(), AudioStats::default());
     }
 

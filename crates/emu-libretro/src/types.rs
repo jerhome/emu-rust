@@ -185,12 +185,31 @@ impl JoypadButton {
     /// Stable lowercase name used in config files: `"b"`, `"y"`, `"select"`, `"start"`, `"up"`, `"down"`,
     /// `"left"`, `"right"`, `"a"`, `"x"`, `"l"`, `"r"`, `"l2"`, `"r2"`, `"l3"`, `"r3"`. Never rename (persisted).
     pub const fn name(self) -> &'static str {
-        todo!()
+        match self {
+            JoypadButton::B => "b",
+            JoypadButton::Y => "y",
+            JoypadButton::Select => "select",
+            JoypadButton::Start => "start",
+            JoypadButton::Up => "up",
+            JoypadButton::Down => "down",
+            JoypadButton::Left => "left",
+            JoypadButton::Right => "right",
+            JoypadButton::A => "a",
+            JoypadButton::X => "x",
+            JoypadButton::L => "l",
+            JoypadButton::R => "r",
+            JoypadButton::L2 => "l2",
+            JoypadButton::R2 => "r2",
+            JoypadButton::L3 => "l3",
+            JoypadButton::R3 => "r3",
+        }
     }
 
     /// Inverse of `name`; ASCII case-insensitive.
     pub fn from_name(name: &str) -> Option<Self> {
-        todo!("{name}")
+        Self::ALL
+            .into_iter()
+            .find(|b| b.name().eq_ignore_ascii_case(name))
     }
 }
 
@@ -312,6 +331,34 @@ mod tests {
         assert_eq!(JoypadButton::from_id(16), None);
         assert_eq!(JoypadButton::from_id(JOYPAD_ID_MASK), None);
         assert_eq!(JoypadButton::from_id(u32::MAX), None);
+    }
+
+    #[test]
+    fn joypad_names_round_trip() {
+        let mut seen = std::collections::HashSet::new();
+        for button in JoypadButton::ALL {
+            assert!(seen.insert(button.name()), "duplicate {}", button.name());
+            assert_eq!(JoypadButton::from_name(button.name()), Some(button));
+            let upper = button.name().to_ascii_uppercase();
+            assert_eq!(JoypadButton::from_name(&upper), Some(button));
+        }
+        assert_eq!(JoypadButton::Start.name(), "start");
+        assert_eq!(JoypadButton::L2.name(), "l2");
+        assert_eq!(JoypadButton::from_name(""), None);
+        assert_eq!(JoypadButton::from_name("l4"), None);
+        assert_eq!(JoypadButton::from_name(" a"), None);
+    }
+
+    #[test]
+    fn serialization_quirks_contains() {
+        let q = SerializationQuirks(
+            SerializationQuirks::INCOMPLETE | SerializationQuirks::MUST_INITIALIZE,
+        );
+        assert!(q.contains(SerializationQuirks::INCOMPLETE));
+        assert!(q.contains(SerializationQuirks::MUST_INITIALIZE));
+        assert!(!q.contains(SerializationQuirks::SINGLE_SESSION));
+        assert!(q.contains(0));
+        assert!(!SerializationQuirks::default().contains(SerializationQuirks::INCOMPLETE));
     }
 
     #[test]

@@ -9,6 +9,8 @@ x-base: &base
   build:
     context: ..
     dockerfile: docker/runtime/Dockerfile
+  # One volume holds everything persistent: saves/ states/ assets/ config.toml (ADR 0011).
+  # EMU_DATA_DIR=/data is set in the image and repeated in each service (a YAML merge does not merge maps).
   volumes:
     - emu-data:/data
 
@@ -24,6 +26,7 @@ services:
       - /mnt/wslg:/mnt/wslg
       - /usr/lib/wsl:/usr/lib/wsl
     environment:
+      EMU_DATA_DIR: "/data"
       DISPLAY: ":0"
       WAYLAND_DISPLAY: "wayland-0"
       XDG_RUNTIME_DIR: "/mnt/wslg/runtime-dir"
@@ -41,6 +44,7 @@ services:
     devices:
       - /dev/dri
     environment:
+      EMU_DATA_DIR: "/data"
       DISPLAY: "${DISPLAY:-:0}"
       PULSE_SERVER: "unix:/run/pulse/native"
 
@@ -50,6 +54,7 @@ services:
     ports:
       - "127.0.0.1:6080:6080"
     environment:
+      EMU_DATA_DIR: "/data"
       EMU_DISPLAY: "novnc"
 
 volumes:

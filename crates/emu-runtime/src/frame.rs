@@ -15,6 +15,25 @@ pub struct FrameRgba {
 }
 
 impl FrameRgba {
+    /// `pixels` must hold exactly `width * height * 4` bytes; alpha is forced to 255 (type invariant).
+    /// `None` if the length does not match.
+    pub(crate) fn from_rgba(width: u32, height: u32, mut pixels: Vec<u8>) -> Option<Self> {
+        let len = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
+        if pixels.len() != len {
+            return None;
+        }
+        for px in pixels.as_chunks_mut::<4>().0 {
+            px[3] = 255;
+        }
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

@@ -38,6 +38,7 @@ mkdir -p "$roms_dir" "$cores_dir"
 
 ROM_URL='https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download'
 ROM_ZIP_SHA256='2054524a7f8695d8df7f4cf1a773af6b26d4c7fe7f74d8f115fab2641a5a9dc5'
+ROM_ZIP_NAME='240pSuite-GenesisMD-1.21.zip'
 ROM_NAME='240pSuite-1.21.bin'
 ROM_SHA256='1776009ab324c18e4f046b4781fed11b897281f407ec04f2ac43649bcebae28f'
 
@@ -80,18 +81,28 @@ extract_one() {
     mv -f "$found" "$dest"
 }
 
-# ---- ROM (pinned) ----
+# ---- ROM (pinned); the zip is kept for the archive-loading tests ----
 rom_path="$roms_dir/$ROM_NAME"
+zip_path="$roms_dir/$ROM_ZIP_NAME"
+if [ -f "$zip_path" ] && [ "$(sha_of "$zip_path")" = "$ROM_ZIP_SHA256" ]; then
+    echo "ROM zip ok: $zip_path"
+else
+    echo "Downloading $ROM_ZIP_NAME ..."
+    part_files+=("$zip_path.part")
+    download_zip "$ROM_URL" "$zip_path.part"
+    if [ "$(sha_of "$zip_path.part")" != "$ROM_ZIP_SHA256" ]; then
+        rm -f "$zip_path.part"
+        echo "error: SHA256 mismatch for ROM zip" >&2
+        exit 1
+    fi
+    mv -f "$zip_path.part" "$zip_path"
+    echo "ROM zip installed: $zip_path"
+fi
 if [ -f "$rom_path" ] && [ "$(sha_of "$rom_path")" = "$ROM_SHA256" ]; then
     echo "ROM ok: $rom_path"
 else
-    echo "Downloading $ROM_NAME ..."
-    work="$(mktemp -d)"; tmp_dirs+=("$work")
-    download_zip "$ROM_URL" "$work/rom.zip"
-    [ "$(sha_of "$work/rom.zip")" = "$ROM_ZIP_SHA256" ] \
-        || { echo "error: SHA256 mismatch for ROM zip" >&2; exit 1; }
     part_files+=("$rom_path.part")
-    extract_one "$work/rom.zip" "$ROM_NAME" "$rom_path.part"
+    extract_one "$zip_path" "$ROM_NAME" "$rom_path.part"
     if [ "$(sha_of "$rom_path.part")" != "$ROM_SHA256" ]; then
         rm -f "$rom_path.part"
         echo "error: SHA256 mismatch for $ROM_NAME" >&2

@@ -80,7 +80,7 @@ impl GlWindow {
             .make_current(&surface)
             .map_err(|e| gl_err("cannot make GL context current", &e))?;
 
-        // The frame pacer drives timing in phase 1; vsync is optional (ADR 0003). Failure is harmless.
+        // Vsync starts off; the UI applies its setting with `set_vsync` (ADR 0010). Failure is harmless.
         if let Err(e) = surface.set_swap_interval(&context, SwapInterval::DontWait) {
             tracing::debug!("cannot disable vsync: {e}");
         }
@@ -167,9 +167,12 @@ impl GlWindow {
     /// Clears to black and draws the last uploaded frame; `aspect_ratio` comes from
     /// `GameGeometry::display_aspect`. Call `swap_buffers` afterwards.
     ///
-    /// Phase 2: egui (`egui_glow::Painter`) paints over the frame between this call and `swap_buffers`, so this
-    /// must set every piece of GL state it relies on (viewport, program, VAO, texture unit 0 and binding,
-    /// blend / scissor / depth disabled, unpack alignment) instead of assuming what the previous frame left.
+    /// Contract (egui cohabitation): egui (`egui_glow::Painter`) paints over the frame between this call and
+    /// `swap_buffers`, and may leave any state behind. This call (and `upload_frame`) sets every piece of GL
+    /// state it relies on instead of assuming what the previous frame left: default framebuffer, viewport,
+    /// scissor / blend / depth / cull / stencil / sRGB disabled, colour mask, program, VAO, texture unit 0,
+    /// texture binding and filters, no sampler object; for uploads, unpack alignment / row length / skips and
+    /// no unpack buffer. It leaves program, VAO and texture unbound; everything else is as set above.
     pub fn draw_frame(
         &mut self,
         viewport: PhysicalSize<u32>,
@@ -188,13 +191,62 @@ impl GlWindow {
     /// `SwapInterval::Wait(1)` when `enabled`, else `DontWait`. A refusal is returned (the caller logs it and
     /// carries on: the pacer does not depend on vsync).
     pub fn set_vsync(&self, enabled: bool) -> Result<(), RuntimeError> {
-        todo!("{enabled}")
+        self.make_current()?;
+        let interval = if enabled {
+            SwapInterval::Wait(NonZeroU32::MIN)
+        } else {
+            SwapInterval::DontWait
+        };
+        self.surface
+            .set_swap_interval(&self.context, interval)
+            .map_err(|e| RuntimeError::Gl(format!("cannot set swap interval: {e}")))
     }
 
     /// Reads back the current back buffer (call after drawing, before `swap_buffers`): RGBA8, top row first,
     /// window size. Used for UI screenshots under Xvfb (`--dump-window`).
+    ///
+    /// Alpha is forced to 255 (`FrameRgba` invariant). Allocates: not meant for the per-frame path.
     pub fn capture(&mut self) -> Result<FrameRgba, RuntimeError> {
-        todo!()
+        self.make_current()?;
+        let size = self.window.inner_size();
+        let (width, height) = (size.width, size.height);
+        if width == 0 || height == 0 {
+            return Err(RuntimeError::Gl("cannot capture an empty window".into()));
+        }
+        let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else {
+            return Err(RuntimeError::Gl("window too large to capture".into()));
+        };
+        let row = width as usize * 4;
+        let len = row
+            .checked_mul(height as usize)
+            .ok_or_else(|| RuntimeError::Gl("window too large to capture".into()))?;
+        let mut pixels = vec![0u8; len];
+        // SAFETY: this window's context is current on this thread (`Self` is !Send). Pack state is set so GL
+        // writes exactly `w * h * 4` tightly packed bytes (RGBA/UNSIGNED_BYTE, alignment 4 divides every row,
+        // no row length or skip, no pack buffer bound, so the slice is the destination), which is
+        // `pixels.len()`. Pixels outside the drawable are left untouched, never written past the slice.
+        unsafe {
+            let gl = &self.gl;
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_ROWS, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, 0);
+            gl.read_pixels(
+                0,
+                0,
+                w,
+                h,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixels)),
+            );
+        }
+        // GL returns the bottom row first.
+        flip_rows(&mut pixels, row);
+        FrameRgba::from_rgba(width, height, pixels)
+            .ok_or_else(|| RuntimeError::Gl("capture size mismatch".into()))
     }
 
     /// No-op when already current (the common case: one window per thread). Needed because another context
@@ -382,12 +434,17 @@ impl FrameRenderer {
             return;
         };
         // SAFETY: context guaranteed by the caller; `frame.pixels()` holds exactly `width * height * 4` bytes
-        // (FrameRgba invariant), matching the RGBA/UNSIGNED_BYTE upload with unpack alignment 4 and no row
-        // length override.
+        // (FrameRgba invariant), matching the RGBA/UNSIGNED_BYTE upload with unpack alignment 4, no row
+        // length or skip override and no unpack buffer bound (all set below).
         unsafe {
+            // A pixel-unpack buffer left bound (egui, a core) would turn the slice pointer into an offset.
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
             gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, 0);
             let pixels = glow::PixelUnpackData::Slice(Some(frame.pixels()));
             if self.texture_size == (width, height) {
                 gl.tex_sub_image_2d(
@@ -442,6 +499,8 @@ impl FrameRenderer {
             gl.disable(glow::DEPTH_TEST);
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::FRAMEBUFFER_SRGB);
+            gl.disable(glow::STENCIL_TEST);
+            gl.color_mask(true, true, true, true);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.viewport(full.0, full.1, full.2, full.3);
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
@@ -455,6 +514,7 @@ impl FrameRenderer {
             gl.bind_vertex_array(Some(self.vertex_array));
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            gl.bind_sampler(0, None);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
@@ -530,6 +590,18 @@ unsafe fn link_program(gl: &glow::Context) -> Result<glow::Program, RuntimeError
                 Err(e)
             }
         }
+    }
+}
+
+/// Reverses the order of the `row`-byte rows of `pixels` in place.
+fn flip_rows(pixels: &mut [u8], row: usize) {
+    if row == 0 {
+        return;
+    }
+    let rows = pixels.len() / row;
+    for i in 0..rows / 2 {
+        let (top, bottom) = pixels.split_at_mut((rows - 1 - i) * row);
+        top[i * row..(i + 1) * row].swap_with_slice(&mut bottom[..row]);
     }
 }
 
@@ -634,6 +706,17 @@ mod tests {
             rect(640, 480, (320, 240), f32::NAN, Scaling::Integer),
             Some((0, 0, 640, 480))
         );
+    }
+
+    #[test]
+    fn flip_rows_reverses_row_order() {
+        let mut px: Vec<u8> = (0..12).collect();
+        flip_rows(&mut px, 4);
+        assert_eq!(px, [8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3]);
+        let mut px: Vec<u8> = (0..8).collect();
+        flip_rows(&mut px, 4);
+        assert_eq!(px, [4, 5, 6, 7, 0, 1, 2, 3]);
+        flip_rows(&mut px, 0);
     }
 
     #[test]

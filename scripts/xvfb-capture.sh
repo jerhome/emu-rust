@@ -16,16 +16,19 @@ Options:
   --frames N        passed to emu-rust --frames (default: 600)
   --delay SECS      wait before capturing (default: 3)
   --screen WxHxD    Xvfb screen (default: 1280x800x24)
+  --dump-window     let emu-rust write the PNG itself (--dump-window PATH) instead of capturing the
+                    X root with xwd; waits for the file to appear (see --timeout). Default: xwd mode.
+  --timeout SECS    max wait for the PNG in --dump-window mode (default: 30)
   --bin PATH        use this emu-rust binary instead of building target/debug/emu-rust
   --                everything after is passed to emu-rust unchanged
   -h, --help        this help
-Needs: Xvfb, xwd, convert (ImageMagick). Software GL is forced (LIBGL_ALWAYS_SOFTWARE=1).
+Needs: Xvfb; xwd and convert (ImageMagick) unless --dump-window. Software GL is forced (LIBGL_ALWAYS_SOFTWARE=1).
 The emu must still be running at capture time: raise --frames or lower --delay.
 U
 }
 
 core="" rom="" out="target/test-output/xvfb.png" frames=600 delay=3
-screen="1280x800x24" bin="" extra=()
+screen="1280x800x24" bin="" extra=() dump=0 timeout=30
 while (($#)); do
     case "$1" in
         --core) core=${2:?}; shift 2 ;;
@@ -34,6 +37,8 @@ while (($#)); do
         --frames) frames=${2:?}; shift 2 ;;
         --delay) delay=${2:?}; shift 2 ;;
         --screen) screen=${2:?}; shift 2 ;;
+        --dump-window) dump=1; shift ;;
+        --timeout) timeout=${2:?}; shift 2 ;;
         --bin) bin=${2:?}; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         --) shift; extra=("$@"); break ;;
@@ -43,7 +48,8 @@ done
 [[ -n $core && -n $rom ]] || { echo "--core and --rom are required" >&2; usage >&2; exit 2; }
 [[ -f $core ]] || { echo "core not found: $core (run scripts/fetch-test-assets.sh)" >&2; exit 1; }
 [[ -f $rom ]] || { echo "rom not found: $rom (run scripts/fetch-test-assets.sh)" >&2; exit 1; }
-for t in Xvfb xwd convert; do
+tools=(Xvfb); ((dump)) || tools+=(xwd convert)
+for t in "${tools[@]}"; do
     command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }
 done
 
@@ -76,9 +82,33 @@ for _ in $(seq 100); do [[ -s $tmp/display ]] && break; sleep 0.1; done
 [[ -s $tmp/display ]] || { echo "Xvfb did not start:" >&2; cat "$tmp/xvfb.log" >&2; exit 1; }
 export DISPLAY=":$(head -n1 "$tmp/display")"
 
+dump_args=()
+if ((dump)); then
+    rm -f "$out"
+    dump_args=(--dump-window "$out")
+fi
 env -u WAYLAND_DISPLAY LIBGL_ALWAYS_SOFTWARE=1 \
-    "$bin" --core "$core" --rom "$rom" --frames "$frames" "${extra[@]}" &
+    "$bin" --core "$core" --rom "$rom" --frames "$frames" "${dump_args[@]}" "${extra[@]}" &
 epid=$!
+
+if ((dump)); then
+    # The app writes the PNG itself; poll until it is non-empty. Size stable across two polls
+    # guards against reading a file still being written.
+    last=-1
+    for _ in $(seq $((timeout * 10))); do
+        size=$(stat -c %s "$out" 2>/dev/null || echo 0)
+        if ((size > 0 && size == last)); then
+            echo "dumped $out on $DISPLAY"
+            exit 0
+        fi
+        last=$size
+        kill -0 "$epid" 2>/dev/null || [[ -s $out ]] || break
+        sleep 0.1
+    done
+    [[ -s $out ]] && { echo "dumped $out on $DISPLAY"; exit 0; }
+    echo "no PNG at $out after ${timeout}s (emu-rust exited or --dump-window unsupported)" >&2
+    exit 1
+fi
 
 sleep "$delay"
 kill -0 "$epid" 2>/dev/null || { echo "emu-rust exited before capture (raise --frames or lower --delay)" >&2; wait "$epid" || true; epid=""; exit 1; }

@@ -3,6 +3,13 @@
 # EMU_DISPLAY=novnc: start a virtual screen reachable at http://<host>:6080/vnc.html (no sound).
 set -euo pipefail
 
+# Data root (ADR 0011): subfolders exist even on a volume created by an older image.
+data="${EMU_DATA_DIR:-/data}"
+export EMU_DATA_DIR="$data"
+mkdir -p "$data/saves" "$data/states" "$data/assets"
+# config.toml holds credentials later on: keep it private (the app also enforces 0600).
+if [[ -f "$data/config.toml" ]]; then chmod 600 "$data/config.toml"; fi
+
 # ALSA default -> PulseAudio only if a server is configured; otherwise no sound, no blocking.
 if [[ -n "${PULSE_SERVER:-}" ]]; then
     printf 'pcm.!default pulse\nctl.!default pulse\n' > "$HOME/.asoundrc"

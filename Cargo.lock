@@ -417,6 +417,7 @@ version = "0.0.1"
 name = "emu-libretro"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "libloading 0.9.1",
  "thiserror 2.0.21",
  "tracing",

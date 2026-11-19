@@ -6,7 +6,7 @@
 //! gets a neutral answer (logged once). The process-wide `CORE_LOADED` flag enforces "one core per process".
 //!
 //! Lifetimes:
-//! - `EnvState` (directories, variables, geometry, events): installed by `EnvInstall` from `Core::load` until
+//! - `EnvState` (directories, options, geometry, messages, events): installed by `EnvInstall` from `Core::load` until
 //!   `Core` is dropped (after `retro_deinit`).
 //! - The `FrontendHandler`: installed by `HandlerGuard` only for the duration of one `retro_run`.
 
@@ -20,10 +20,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::{CoreConfig, FrontendHandler, RunEvents};
 use crate::error::LibretroError;
+use crate::log;
+use crate::options::{self, OptionStore};
 use crate::sys;
 use crate::types::{
-    AvInfo, GameGeometry, InputDevice, InputQuery, PixelFormat, SystemTiming, VideoFrame,
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameGeometry, InputDevice, InputQuery,
+    LogLevel, PixelFormat, SerializationQuirks, SystemTiming, VideoFrame,
 };
+
+/// Players advertised through `GET_INPUT_MAX_USERS`.
+const MAX_USERS: c_uint = 2;
+/// Oldest OSD messages are dropped beyond this, so a frontend that never drains them stays bounded.
+const MAX_PENDING_MESSAGES: usize = 32;
+/// Quirk flags this frontend understands (`SET_SERIALIZATION_QUIRKS` zeroes the others).
+const KNOWN_QUIRKS: u64 = SerializationQuirks::INCOMPLETE
+    | SerializationQuirks::MUST_INITIALIZE
+    | SerializationQuirks::CORE_VARIABLE_SIZE
+    | SerializationQuirks::FRONT_VARIABLE_SIZE
+    | SerializationQuirks::SINGLE_SESSION
+    | SerializationQuirks::ENDIAN_DEPENDENT
+    | SerializationQuirks::PLATFORM_DEPENDENT;
 
 static CORE_LOADED: AtomicBool = AtomicBool::new(false);
 static FOREIGN_THREAD_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -70,19 +86,20 @@ thread_local! {
     static ENV: RefCell<Option<EnvState>> = const { RefCell::new(None) };
 }
 
-struct CoreVariable {
-    key: CString,
-    value: CString,
-}
-
 /// Environment state owned by the frontend between `Core::load` and `Drop`.
 struct EnvState {
     system_dir: Option<CString>,
     save_dir: Option<CString>,
+    assets_dir: Option<CString>,
+    libretro_path: Option<CString>,
     overrides: Vec<(String, String)>,
-    /// `GET_VARIABLE` hands out pointers into these strings: they stay alive until the next `SET_VARIABLES`
-    /// or until the core is dropped.
-    variables: Vec<CoreVariable>,
+    /// `GET_VARIABLE` hands out pointers into this store: they stay alive until the core declares its options
+    /// again or is dropped.
+    options: OptionStore,
+    update_display: Option<sys::retro_core_options_update_display_callback_t>,
+    messages: Vec<CoreMessage>,
+    quirks: u64,
+    fast_forwarding: bool,
     av_info: Option<AvInfo>,
     events: RunEvents,
     logged_commands: Vec<c_uint>,
@@ -94,12 +111,18 @@ pub(crate) struct EnvInstall {
     _not_send: PhantomData<*const ()>,
 }
 
-pub(crate) fn install_env(config: &CoreConfig) -> EnvInstall {
+pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
     let state = EnvState {
         system_dir: path_to_cstring(&config.system_dir),
         save_dir: path_to_cstring(&config.save_dir),
+        assets_dir: path_to_cstring(&config.assets_dir),
+        libretro_path: path_to_cstring(core_path),
         overrides: config.variables.clone(),
-        variables: Vec::new(),
+        options: OptionStore::default(),
+        update_display: None,
+        messages: Vec::new(),
+        quirks: 0,
+        fast_forwarding: false,
         av_info: None,
         events: RunEvents::default(),
         logged_commands: Vec::new(),
@@ -164,6 +187,38 @@ pub(crate) fn av_info() -> Option<AvInfo> {
 
 pub(crate) fn set_av_info(av_info: Option<AvInfo>) {
     with_env(|env| env.av_info = av_info);
+}
+
+pub(crate) fn serialization_quirks() -> SerializationQuirks {
+    SerializationQuirks(with_env(|env| env.quirks).unwrap_or(0))
+}
+
+pub(crate) fn set_fast_forwarding(enabled: bool) {
+    with_env(|env| env.fast_forwarding = enabled);
+}
+
+pub(crate) fn take_messages() -> Vec<CoreMessage> {
+    with_env(|env| std::mem::take(&mut env.messages)).unwrap_or_default()
+}
+
+/// The core's `SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK`, to be called *outside* `with_env` (it re-enters the
+/// environment with `SET_CORE_OPTIONS_DISPLAY`).
+pub(crate) fn update_display_callback() -> Option<sys::retro_core_options_update_display_callback_t>
+{
+    with_env(|env| env.update_display).flatten()
+}
+
+pub(crate) fn options() -> Vec<CoreOption> {
+    with_env(|env| env.options.snapshot()).unwrap_or_default()
+}
+
+pub(crate) fn option_categories() -> Vec<CoreOptionCategory> {
+    with_env(|env| env.options.categories()).unwrap_or_default()
+}
+
+pub(crate) fn set_option(key: &str, value: &str) -> Result<(), LibretroError> {
+    with_env(|env| env.options.set(key, value))
+        .unwrap_or_else(|| Err(LibretroError::UnknownOption(key.to_owned())))
 }
 
 /// Keeps a `FrontendHandler` reachable from the callbacks; removes it on drop (including during unwinding).
@@ -391,16 +446,6 @@ pub(crate) unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> b
     })
 }
 
-/// Splits a legacy `SET_VARIABLES` value `"Description; a|b|c"` into its description and options.
-pub(crate) fn parse_variable_value(raw: &str) -> Option<(&str, Vec<&str>)> {
-    let (description, options) = raw.split_once(';')?;
-    let options: Vec<&str> = options.trim_start().split('|').collect();
-    if options.iter().any(|o| o.is_empty()) {
-        return None;
-    }
-    Some((description.trim(), options))
-}
-
 /// Writes `value` through `data` if non-null.
 ///
 /// # Safety
@@ -463,27 +508,200 @@ impl EnvState {
                 // SAFETY: `const char **`.
                 unsafe { write_dir(data, self.save_dir.as_deref()) }
             }
-            // No dedicated assets directory in phase 1: answer the system directory.
             sys::RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY => {
                 // SAFETY: `const char **`.
-                unsafe { write_dir(data, self.system_dir.as_deref()) }
+                unsafe { write_dir(data, self.assets_dir.as_deref()) }
             }
-            // `false` makes the core fall back to the legacy `SET_VARIABLES` interface.
-            sys::RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION => false,
+            sys::RETRO_ENVIRONMENT_GET_LIBRETRO_PATH => {
+                // SAFETY: `const char **`.
+                unsafe { write_dir(data, self.libretro_path.as_deref()) }
+            }
+            sys::RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION => {
+                // SAFETY: `unsigned *`.
+                unsafe { write_out::<c_uint>(data, 2) }
+            }
             sys::RETRO_ENVIRONMENT_SET_VARIABLES => {
                 // SAFETY: `const struct retro_variable *`, array terminated by a null key.
-                unsafe { self.set_variables(data.cast_const().cast()) };
+                let decls = unsafe { options::parse_legacy(data.cast_const().cast()) };
+                self.declare_options(Vec::new(), decls);
                 true
+            }
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS => {
+                // SAFETY: `const struct retro_core_option_definition *`, terminated by a null key.
+                let decls = unsafe { options::parse_v1(data.cast_const().cast()) };
+                self.declare_options(Vec::new(), decls);
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL => {
+                // SAFETY: `const struct retro_core_options_intl *`; only the English `us` array is read.
+                let Some(intl) = (unsafe { read_in::<sys::retro_core_options_intl>(data) }) else {
+                    return false;
+                };
+                // SAFETY: `us` is a definition array terminated by a null key (libretro.h).
+                let decls = unsafe { options::parse_v1(intl.us) };
+                self.declare_options(Vec::new(), decls);
+                true
+            }
+            // libretro.h: with options version >= 2 the return value means "categories supported".
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 => {
+                // SAFETY: `const struct retro_core_options_v2 *`.
+                let (categories, decls) = unsafe { options::parse_v2(data.cast_const().cast()) };
+                self.declare_options(categories, decls);
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL => {
+                // SAFETY: `const struct retro_core_options_v2_intl *`; only the English `us` set is read.
+                let Some(intl) = (unsafe { read_in::<sys::retro_core_options_v2_intl>(data) })
+                else {
+                    return false;
+                };
+                // SAFETY: `us` is null or a valid `retro_core_options_v2` (libretro.h).
+                let (categories, decls) = unsafe { options::parse_v2(intl.us) };
+                self.declare_options(categories, decls);
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY => {
+                // SAFETY: `const struct retro_core_option_display *`.
+                let Some(display) = (unsafe { read_in::<sys::retro_core_option_display>(data) })
+                else {
+                    return false;
+                };
+                if display.key.is_null() {
+                    return false;
+                }
+                // SAFETY: non-null NUL-terminated key valid for the call (libretro.h).
+                let key = unsafe { CStr::from_ptr(display.key) };
+                if self.options.set_visible(key, display.visible) {
+                    self.events.options_changed = true;
+                }
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK => {
+                // SAFETY: `const struct retro_core_options_update_display_callback *`; null unregisters.
+                let cb =
+                    unsafe { read_in::<sys::retro_core_options_update_display_callback>(data) };
+                self.update_display = cb.and_then(|cb| cb.callback);
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_VARIABLE => {
+                // libretro.h: a null `data` queries support.
+                if data.is_null() {
+                    return true;
+                }
+                // SAFETY: `const struct retro_variable *`, non-null.
+                let Some(var) = (unsafe { read_in::<sys::retro_variable>(data) }) else {
+                    return false;
+                };
+                if var.key.is_null() || var.value.is_null() {
+                    return false;
+                }
+                // SAFETY: non-null NUL-terminated strings valid for the call (libretro.h).
+                let (key, value) = unsafe { (CStr::from_ptr(var.key), CStr::from_ptr(var.value)) };
+                let ok = self.options.set_from_core(key, value);
+                if ok {
+                    self.events.options_changed = true;
+                }
+                ok
             }
             sys::RETRO_ENVIRONMENT_GET_VARIABLE => {
                 // SAFETY: `struct retro_variable *`.
                 unsafe { self.get_variable(data.cast()) }
             }
             sys::RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE => {
+                let updated = self.options.take_updated();
                 // SAFETY: `bool *`.
-                unsafe { write_out(data, false) };
-                false
+                unsafe { write_out(data, updated) }
             }
+            sys::RETRO_ENVIRONMENT_GET_LOG_INTERFACE => {
+                // SAFETY: `struct retro_log_callback *`.
+                unsafe { write_out(data, log::log_callback()) }
+            }
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE => {
+                // SAFETY: `const struct retro_message *`.
+                let Some(message) = (unsafe { read_in::<sys::retro_message>(data) }) else {
+                    return false;
+                };
+                // SAFETY: `msg` is null or a NUL-terminated string valid for the call.
+                let Some(text) = (unsafe { copy_message(message.msg) }) else {
+                    return false;
+                };
+                let fps = self
+                    .av_info
+                    .map(|av| av.timing.fps)
+                    .filter(|fps| fps.is_finite() && *fps > 0.0)
+                    .unwrap_or(60.0);
+                let duration =
+                    std::time::Duration::try_from_secs_f64(f64::from(message.frames) / fps)
+                        .unwrap_or_default();
+                self.push_message(CoreMessage {
+                    text,
+                    duration,
+                    level: LogLevel::Info,
+                });
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE_EXT => {
+                // SAFETY: `const struct retro_message_ext *`.
+                let Some(message) = (unsafe { read_in::<sys::retro_message_ext>(data) }) else {
+                    return false;
+                };
+                // SAFETY: `msg` is null or a NUL-terminated string valid for the call.
+                let Some(text) = (unsafe { copy_message(message.msg) }) else {
+                    return false;
+                };
+                let level = log::level_from_raw(message.level);
+                // Unknown targets are treated as OSD.
+                let (to_log, to_osd) = match message.target {
+                    sys::RETRO_MESSAGE_TARGET_ALL => (true, true),
+                    sys::RETRO_MESSAGE_TARGET_LOG => (true, false),
+                    sys::RETRO_MESSAGE_TARGET_OSD => (false, true),
+                    _ => (false, true),
+                };
+                if to_log {
+                    log::emit(level, &text, false);
+                }
+                if to_osd {
+                    self.push_message(CoreMessage {
+                        text,
+                        duration: std::time::Duration::from_millis(u64::from(message.duration)),
+                        level,
+                    });
+                }
+                true
+            }
+            sys::RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION => {
+                // SAFETY: `unsigned *`.
+                unsafe { write_out::<c_uint>(data, 1) }
+            }
+            sys::RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS => {
+                // In/out `uint64_t *`: unknown flags are zeroed; variable sizes are supported because
+                // `Core::serialize` asks for the size on every call.
+                // SAFETY: `uint64_t *`.
+                let Some(mut quirks) = (unsafe { read_in::<u64>(data) }) else {
+                    return false;
+                };
+                quirks &= KNOWN_QUIRKS;
+                if quirks & SerializationQuirks::CORE_VARIABLE_SIZE != 0 {
+                    quirks |= SerializationQuirks::FRONT_VARIABLE_SIZE;
+                }
+                self.quirks = quirks;
+                // SAFETY: as above, valid for writes.
+                unsafe { write_out(data, quirks) }
+            }
+            sys::RETRO_ENVIRONMENT_GET_FASTFORWARDING => {
+                // SAFETY: `bool *`.
+                unsafe { write_out(data, self.fast_forwarding) }
+            }
+            sys::RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS => {
+                // SAFETY: `unsigned *`.
+                unsafe { write_out(data, MAX_USERS) }
+            }
+            sys::RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES => {
+                // SAFETY: `uint64_t *`, bit n = RETRO_DEVICE n.
+                unsafe { write_out::<u64>(data, 1 << sys::RETRO_DEVICE_JOYPAD) }
+            }
+            // No overscan preference: the core keeps its own default (it is not told to crop or not).
+            sys::RETRO_ENVIRONMENT_GET_OVERSCAN => false,
             sys::RETRO_ENVIRONMENT_SET_GEOMETRY => {
                 // SAFETY: `const struct retro_game_geometry *`.
                 let Some(g) = (unsafe { read_in::<sys::retro_game_geometry>(data) }) else {
@@ -530,12 +748,16 @@ impl EnvState {
             | sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO
             | sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL
             | sys::RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS
-            | sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME => true,
-            // GET_LOG_INTERFACE needs a variadic C callback (ADR 0008); SET_HW_RENDER is phase 7.
-            sys::RETRO_ENVIRONMENT_GET_LOG_INTERFACE | sys::RETRO_ENVIRONMENT_SET_HW_RENDER => {
+            | sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME
+            | sys::RETRO_ENVIRONMENT_SET_MEMORY_MAPS
+            | sys::RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO
+            | sys::RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE => true,
+            // Hardware rendering is phase 7.
+            sys::RETRO_ENVIRONMENT_SET_HW_RENDER => {
                 self.log_unhandled(cmd);
                 false
             }
+            // Rumble, perf, VFS, frame-time / audio / keyboard callbacks…
             _ => {
                 self.log_unhandled(cmd);
                 false
@@ -555,49 +777,20 @@ impl EnvState {
         }
     }
 
-    /// # Safety
-    /// `vars` is null or points to an array of `retro_variable` terminated by a null key, whose strings are
-    /// valid NUL-terminated C strings for the duration of the call.
-    unsafe fn set_variables(&mut self, mut vars: *const sys::retro_variable) {
-        self.variables.clear();
-        if vars.is_null() {
-            return;
+    fn declare_options(
+        &mut self,
+        categories: Vec<CoreOptionCategory>,
+        decls: Vec<options::OptionDecl>,
+    ) {
+        self.options.declare(categories, decls, &self.overrides);
+        self.events.options_changed = true;
+    }
+
+    fn push_message(&mut self, message: CoreMessage) {
+        if self.messages.len() >= MAX_PENDING_MESSAGES {
+            self.messages.remove(0);
         }
-        loop {
-            // SAFETY: within the null-key-terminated array per contract; we stop at the terminator.
-            let var = unsafe { vars.read() };
-            if var.key.is_null() {
-                break;
-            }
-            // SAFETY: advancing inside the array; the terminator has not been reached yet.
-            vars = unsafe { vars.add(1) };
-            if var.value.is_null() {
-                continue;
-            }
-            // SAFETY: both are non-null, NUL-terminated C strings valid during the call; we copy them.
-            let (key, raw) = unsafe { (CStr::from_ptr(var.key), CStr::from_ptr(var.value)) };
-            let key_str = key.to_string_lossy();
-            let raw = raw.to_string_lossy();
-            let Some((_, options)) = parse_variable_value(&raw) else {
-                tracing::debug!(key = %key_str, value = %raw, "malformed core variable declaration");
-                continue;
-            };
-            let value = match self.overrides.iter().find(|(k, _)| *k == key_str) {
-                Some((_, v)) if options.contains(&v.as_str()) => v.as_str(),
-                Some((_, v)) => {
-                    tracing::warn!(key = %key_str, value = %v, "core option override is not an allowed value; using the default");
-                    options[0]
-                }
-                None => options[0],
-            };
-            let Ok(value) = CString::new(value) else {
-                continue;
-            };
-            self.variables.push(CoreVariable {
-                key: key.to_owned(),
-                value,
-            });
-        }
+        self.messages.push(message);
     }
 
     /// # Safety
@@ -613,13 +806,28 @@ impl EnvState {
         }
         // SAFETY: non-null NUL-terminated C string per contract.
         let key = unsafe { CStr::from_ptr(key_ptr) };
-        let found = self.variables.iter().find(|v| v.key.as_c_str() == key);
-        let value: *const c_char = found.map_or(std::ptr::null(), |v| v.value.as_ptr());
-        // SAFETY: valid for writes per contract. The string lives in `self.variables` until the next
-        // SET_VARIABLES or until the core is dropped.
-        unsafe { (*var).value = value };
+        let found = self.options.get(key);
+        // SAFETY: valid for writes per contract. The string lives in `self.options` until the core declares
+        // its options again or is dropped.
+        unsafe { (*var).value = found.unwrap_or(std::ptr::null()) };
         found.is_some()
     }
+}
+
+/// Copies a message text; `None` for null.
+///
+/// # Safety
+/// `msg` is null or a NUL-terminated string valid for the call.
+unsafe fn copy_message(msg: *const c_char) -> Option<String> {
+    if msg.is_null() {
+        return None;
+    }
+    // SAFETY: per contract; copied immediately.
+    Some(
+        unsafe { CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// # Safety
@@ -707,22 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_variable_value_legacy_format() {
-        assert_eq!(
-            parse_variable_value("Region; auto|ntsc-u|pal"),
-            Some(("Region", vec!["auto", "ntsc-u", "pal"]))
-        );
-        assert_eq!(parse_variable_value("Lone;x"), Some(("Lone", vec!["x"])));
-        assert_eq!(
-            parse_variable_value("Has spaces; a b|c"),
-            Some(("Has spaces", vec!["a b", "c"]))
-        );
-        assert_eq!(parse_variable_value("No separator"), None);
-        assert_eq!(parse_variable_value("Empty; "), None);
-        assert_eq!(parse_variable_value("Hole; a||b"), None);
-    }
-
-    #[test]
     fn environment_without_state_is_ignored() {
         let mut dupe = false;
         assert!(!env(
@@ -734,10 +926,13 @@ mod tests {
 
     #[test]
     fn environment_commands() {
-        let _install = install_env(&config(vec![
-            ("md_region".into(), "pal".into()),
-            ("md_bad".into(), "nope".into()),
-        ]));
+        let _install = install_env(
+            &config(vec![
+                ("md_region".into(), "pal".into()),
+                ("md_bad".into(), "nope".into()),
+            ]),
+            Path::new("/cores/x_libretro.so"),
+        );
 
         let mut flag = false;
         assert!(env(
@@ -780,10 +975,23 @@ mod tests {
         assert_eq!(pixel_format(), PixelFormat::Rgb565);
 
         let mut version: c_uint = 99;
-        assert!(!env(
+        assert!(env(
             sys::RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION,
             (&raw mut version).cast()
         ));
+        assert_eq!(version, 2);
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY,
+            (&raw mut dir).cast()
+        ));
+        // SAFETY: as above.
+        assert_eq!(unsafe { CStr::from_ptr(dir) }, c"/tmp/assets");
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_LIBRETRO_PATH,
+            (&raw mut dir).cast()
+        ));
+        // SAFETY: as above.
+        assert_eq!(unsafe { CStr::from_ptr(dir) }, c"/cores/x_libretro.so");
 
         let mut vars = [
             sys::retro_variable {
@@ -825,11 +1033,33 @@ mod tests {
         assert_eq!(get(c"unknown"), (false, None));
 
         let mut updated = true;
-        assert!(!env(
+        assert!(env(
             sys::RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE,
             (&raw mut updated).cast()
         ));
         assert!(!updated);
+        set_option("md_plain", "2x").unwrap();
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE,
+            (&raw mut updated).cast()
+        ));
+        assert!(updated);
+        assert_eq!(get(c"md_plain"), (true, Some(c"2x".to_owned())));
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE,
+            (&raw mut updated).cast()
+        ));
+        assert!(!updated);
+        assert!(matches!(
+            set_option("md_plain", "3x"),
+            Err(LibretroError::InvalidOptionValue { .. })
+        ));
+        let opts = options();
+        assert_eq!(opts.len(), 3);
+        assert_eq!(opts[0].label, "Region");
+        assert_eq!(opts[0].default, "auto");
+        assert_eq!(opts[0].current, "pal");
+        assert!(option_categories().is_empty());
 
         assert!(env(
             sys::RETRO_ENVIRONMENT_GET_INPUT_BITMASKS,
@@ -852,6 +1082,13 @@ mod tests {
             sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL,
             (&raw const level).cast_mut().cast()
         ));
+        let mut log_cb = sys::retro_log_callback {
+            log: crate::log::emu_libretro_log_printf,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_LOG_INTERFACE,
+            (&raw mut log_cb).cast()
+        ));
         assert!(!env(
             sys::RETRO_ENVIRONMENT_GET_LOG_INTERFACE,
             std::ptr::null_mut()
@@ -865,8 +1102,263 @@ mod tests {
     }
 
     #[test]
+    fn phase2_environment_commands() {
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
+        set_av_info(Some(AvInfo {
+            geometry: GameGeometry {
+                base_width: 1,
+                base_height: 1,
+                max_width: 1,
+                max_height: 1,
+                aspect_ratio: 0.0,
+            },
+            timing: SystemTiming {
+                fps: 50.0,
+                sample_rate: 48000.0,
+            },
+        }));
+
+        let mut ff = true;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_FASTFORWARDING,
+            (&raw mut ff).cast()
+        ));
+        assert!(!ff);
+        set_fast_forwarding(true);
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_FASTFORWARDING,
+            (&raw mut ff).cast()
+        ));
+        assert!(ff);
+
+        let mut users: c_uint = 0;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS,
+            (&raw mut users).cast()
+        ));
+        assert_eq!(users, 2);
+        let mut caps: u64 = 0;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES,
+            (&raw mut caps).cast()
+        ));
+        assert_eq!(caps, 1 << sys::RETRO_DEVICE_JOYPAD);
+        let mut overscan = true;
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_GET_OVERSCAN,
+            (&raw mut overscan).cast()
+        ));
+        let mut msg_version: c_uint = 0;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION,
+            (&raw mut msg_version).cast()
+        ));
+        assert_eq!(msg_version, 1);
+        for cmd in [
+            sys::RETRO_ENVIRONMENT_SET_MEMORY_MAPS,
+            sys::RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO,
+            sys::RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE,
+        ] {
+            assert!(env(cmd, std::ptr::null_mut()));
+        }
+
+        assert_eq!(serialization_quirks(), SerializationQuirks::default());
+        let mut quirks: u64 = SerializationQuirks::MUST_INITIALIZE
+            | SerializationQuirks::CORE_VARIABLE_SIZE
+            | (1 << 40);
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS,
+            (&raw mut quirks).cast()
+        ));
+        assert_eq!(
+            quirks,
+            SerializationQuirks::MUST_INITIALIZE
+                | SerializationQuirks::CORE_VARIABLE_SIZE
+                | SerializationQuirks::FRONT_VARIABLE_SIZE
+        );
+        assert_eq!(serialization_quirks().0, quirks);
+
+        let mut message = sys::retro_message {
+            msg: c"hello".as_ptr(),
+            frames: 100,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE,
+            (&raw mut message).cast()
+        ));
+        let mut ext = sys::retro_message_ext {
+            msg: c"to the log only".as_ptr(),
+            duration: 1500,
+            priority: 1,
+            level: sys::RETRO_LOG_WARN,
+            target: sys::RETRO_MESSAGE_TARGET_LOG,
+            type_: 0,
+            progress: -1,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE_EXT,
+            (&raw mut ext).cast()
+        ));
+        ext.msg = c"osd".as_ptr();
+        ext.target = sys::RETRO_MESSAGE_TARGET_OSD;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE_EXT,
+            (&raw mut ext).cast()
+        ));
+        message.msg = std::ptr::null();
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_SET_MESSAGE,
+            (&raw mut message).cast()
+        ));
+        assert_eq!(
+            take_messages(),
+            vec![
+                CoreMessage {
+                    text: "hello".into(),
+                    duration: std::time::Duration::from_secs(2),
+                    level: LogLevel::Info,
+                },
+                CoreMessage {
+                    text: "osd".into(),
+                    duration: std::time::Duration::from_millis(1500),
+                    level: LogLevel::Warn,
+                },
+            ]
+        );
+        assert!(take_messages().is_empty());
+        message.msg = c"spam".as_ptr();
+        for _ in 0..100 {
+            env(
+                sys::RETRO_ENVIRONMENT_SET_MESSAGE,
+                (&raw mut message).cast(),
+            );
+        }
+        assert_eq!(take_messages().len(), MAX_PENDING_MESSAGES);
+    }
+
+    extern "C" fn hide_opt_b() -> bool {
+        let display = sys::retro_core_option_display {
+            key: c"opt_b".as_ptr(),
+            visible: false,
+        };
+        // SAFETY: `const struct retro_core_option_display *`.
+        unsafe {
+            environment(
+                sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+                (&raw const display).cast_mut().cast(),
+            )
+        }
+    }
+
+    #[test]
+    fn v2_options_through_environment() {
+        let _install = install_env(
+            &config(vec![("opt_a".into(), "red".into())]),
+            Path::new("/cores/x_libretro.so"),
+        );
+        let mut values = [sys::retro_core_option_value {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }; sys::RETRO_NUM_CORE_OPTION_VALUES_MAX];
+        values[0].value = c"red".as_ptr();
+        values[1].value = c"green".as_ptr();
+        let def = |key: &'static CStr| sys::retro_core_option_v2_definition {
+            key: key.as_ptr(),
+            desc: c"Desc".as_ptr(),
+            desc_categorized: c"Cat desc".as_ptr(),
+            info: std::ptr::null(),
+            info_categorized: std::ptr::null(),
+            category_key: c"video".as_ptr(),
+            values,
+            default_value: c"green".as_ptr(),
+        };
+        let defs = [
+            def(c"opt_a"),
+            def(c"opt_b"),
+            sys::retro_core_option_v2_definition {
+                key: std::ptr::null(),
+                ..def(c"x")
+            },
+        ];
+        let cats = [
+            sys::retro_core_option_v2_category {
+                key: c"video".as_ptr(),
+                desc: c"Video".as_ptr(),
+                info: std::ptr::null(),
+            },
+            sys::retro_core_option_v2_category {
+                key: std::ptr::null(),
+                desc: std::ptr::null(),
+                info: std::ptr::null(),
+            },
+        ];
+        let us = sys::retro_core_options_v2 {
+            categories: cats.as_ptr(),
+            definitions: defs.as_ptr(),
+        };
+        let mut intl = sys::retro_core_options_v2_intl {
+            us: &raw const us,
+            local: std::ptr::null(),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL,
+            (&raw mut intl).cast()
+        ));
+        let opts = options();
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].current, "red");
+        assert_eq!(opts[1].current, "green");
+        assert_eq!(opts[0].label, "Cat desc");
+        assert_eq!(opts[0].category.as_deref(), Some("video"));
+        assert_eq!(option_categories().len(), 1);
+
+        let mut cb = sys::retro_core_options_update_display_callback {
+            callback: Some(hide_opt_b),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK,
+            (&raw mut cb).cast()
+        ));
+        let callback = update_display_callback().unwrap();
+        // SAFETY: test callback, no preconditions; called outside any environment borrow.
+        assert!(unsafe { callback() });
+        assert!(!options()[1].visible);
+
+        let mut recorder = Recorder::default();
+        let mut slot: &mut dyn FrontendHandler = &mut recorder;
+        let guard = install_handler(&mut slot);
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_VARIABLE,
+            std::ptr::null_mut()
+        ));
+        let mut var = sys::retro_variable {
+            key: c"opt_a".as_ptr(),
+            value: c"green".as_ptr(),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_VARIABLE,
+            (&raw mut var).cast()
+        ));
+        var.value = c"blue".as_ptr();
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_SET_VARIABLE,
+            (&raw mut var).cast()
+        ));
+        let (events, _) = guard.finish();
+        assert!(events.options_changed);
+        assert_eq!(options()[0].current, "green");
+
+        cb.callback = None;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK,
+            (&raw mut cb).cast()
+        ));
+        assert!(update_display_callback().is_none());
+    }
+
+    #[test]
     fn geometry_and_shutdown_events() {
-        let _install = install_env(&config(Vec::new()));
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
         let mut geometry = sys::retro_game_geometry {
             base_width: 256,
             base_height: 224,
@@ -923,7 +1415,7 @@ mod tests {
 
     #[test]
     fn hot_callbacks_reach_handler_only_while_installed() {
-        let _install = install_env(&config(Vec::new()));
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
         // 2x2 RGB565 frame with a padded pitch; last row unpadded.
         let pixels = [0u8; 8 + 4];
 
@@ -977,7 +1469,7 @@ mod tests {
 
     #[test]
     fn handler_panic_is_caught_and_reported() {
-        let _install = install_env(&config(Vec::new()));
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
         let mut recorder = Recorder {
             panic_on_poll: true,
             ..Recorder::default()

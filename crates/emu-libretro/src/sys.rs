@@ -2,7 +2,7 @@
 //! Private: nothing here leaves the crate.
 #![allow(non_camel_case_types)]
 
-use std::ffi::{c_char, c_uint, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void};
 
 pub const RETRO_API_VERSION: c_uint = 1;
 
@@ -24,7 +24,25 @@ pub const RETRO_PIXEL_FORMAT_RGB565: u32 = 2;
 
 pub const RETRO_ENVIRONMENT_EXPERIMENTAL: c_uint = 0x10000;
 
+pub const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
+pub const RETRO_MEMORY_RTC: c_uint = 1;
+pub const RETRO_MEMORY_SYSTEM_RAM: c_uint = 2;
+pub const RETRO_MEMORY_VIDEO_RAM: c_uint = 3;
+
+pub const RETRO_LOG_DEBUG: c_int = 0;
+pub const RETRO_LOG_INFO: c_int = 1;
+pub const RETRO_LOG_WARN: c_int = 2;
+pub const RETRO_LOG_ERROR: c_int = 3;
+
+pub const RETRO_MESSAGE_TARGET_ALL: c_int = 0;
+pub const RETRO_MESSAGE_TARGET_OSD: c_int = 1;
+pub const RETRO_MESSAGE_TARGET_LOG: c_int = 2;
+
+pub const RETRO_NUM_CORE_OPTION_VALUES_MAX: usize = 128;
+
+pub const RETRO_ENVIRONMENT_GET_OVERSCAN: c_uint = 2;
 pub const RETRO_ENVIRONMENT_GET_CAN_DUPE: c_uint = 3;
+pub const RETRO_ENVIRONMENT_SET_MESSAGE: c_uint = 6;
 pub const RETRO_ENVIRONMENT_SHUTDOWN: c_uint = 7;
 pub const RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL: c_uint = 8;
 pub const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: c_uint = 9;
@@ -35,17 +53,34 @@ pub const RETRO_ENVIRONMENT_GET_VARIABLE: c_uint = 15;
 pub const RETRO_ENVIRONMENT_SET_VARIABLES: c_uint = 16;
 pub const RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: c_uint = 17;
 pub const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME: c_uint = 18;
+pub const RETRO_ENVIRONMENT_GET_LIBRETRO_PATH: c_uint = 19;
+pub const RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES: c_uint = 24;
 pub const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: c_uint = 27;
 pub const RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY: c_uint = 30;
 pub const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: c_uint = 31;
 pub const RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: c_uint = 32;
+pub const RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO: c_uint = 34;
 pub const RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: c_uint = 35;
+pub const RETRO_ENVIRONMENT_SET_MEMORY_MAPS: c_uint = 36 | RETRO_ENVIRONMENT_EXPERIMENTAL;
 pub const RETRO_ENVIRONMENT_SET_GEOMETRY: c_uint = 37;
 pub const RETRO_ENVIRONMENT_GET_LANGUAGE: c_uint = 39;
 pub const RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS: c_uint = 42 | RETRO_ENVIRONMENT_EXPERIMENTAL;
+pub const RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS: c_uint = 44;
 pub const RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: c_uint = 47 | RETRO_ENVIRONMENT_EXPERIMENTAL;
+pub const RETRO_ENVIRONMENT_GET_FASTFORWARDING: c_uint = 49 | RETRO_ENVIRONMENT_EXPERIMENTAL;
 pub const RETRO_ENVIRONMENT_GET_INPUT_BITMASKS: c_uint = 51 | RETRO_ENVIRONMENT_EXPERIMENTAL;
 pub const RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: c_uint = 52;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS: c_uint = 53;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: c_uint = 54;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: c_uint = 55;
+pub const RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION: c_uint = 59;
+pub const RETRO_ENVIRONMENT_SET_MESSAGE_EXT: c_uint = 60;
+pub const RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS: c_uint = 61;
+pub const RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE: c_uint = 65;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: c_uint = 67;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: c_uint = 68;
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK: c_uint = 69;
+pub const RETRO_ENVIRONMENT_SET_VARIABLE: c_uint = 70;
 
 /// `RETRO_HW_FRAME_BUFFER_VALID`: sentinel passed to the video callback by hardware-rendered cores.
 pub const RETRO_HW_FRAME_BUFFER_VALID: *const c_void = usize::MAX as *const c_void;
@@ -100,6 +135,112 @@ pub struct retro_game_info {
     pub meta: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_message {
+    pub msg: *const c_char,
+    pub frames: c_uint,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_message_ext {
+    pub msg: *const c_char,
+    /// Milliseconds.
+    pub duration: c_uint,
+    pub priority: c_uint,
+    /// `enum retro_log_level`.
+    pub level: c_int,
+    /// `enum retro_message_target`.
+    pub target: c_int,
+    /// `enum retro_message_type`.
+    pub type_: c_int,
+    pub progress: i8,
+}
+
+/// `retro_log_printf_t` is variadic; Rust only sees it as an opaque function pointer here.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_log_callback {
+    pub log: unsafe extern "C" fn(level: c_int, fmt: *const c_char, ...),
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_option_value {
+    pub value: *const c_char,
+    pub label: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_option_definition {
+    pub key: *const c_char,
+    pub desc: *const c_char,
+    pub info: *const c_char,
+    pub values: [retro_core_option_value; RETRO_NUM_CORE_OPTION_VALUES_MAX],
+    pub default_value: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_options_intl {
+    pub us: *const retro_core_option_definition,
+    pub local: *const retro_core_option_definition,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_option_v2_category {
+    pub key: *const c_char,
+    pub desc: *const c_char,
+    pub info: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_option_v2_definition {
+    pub key: *const c_char,
+    pub desc: *const c_char,
+    pub desc_categorized: *const c_char,
+    pub info: *const c_char,
+    pub info_categorized: *const c_char,
+    pub category_key: *const c_char,
+    pub values: [retro_core_option_value; RETRO_NUM_CORE_OPTION_VALUES_MAX],
+    pub default_value: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_options_v2 {
+    /// Array terminated by a null `key`; may itself be null.
+    pub categories: *const retro_core_option_v2_category,
+    /// Array terminated by a null `key`.
+    pub definitions: *const retro_core_option_v2_definition,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_options_v2_intl {
+    pub us: *const retro_core_options_v2,
+    pub local: *const retro_core_options_v2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_option_display {
+    pub key: *const c_char,
+    pub visible: bool,
+}
+
+pub type retro_core_options_update_display_callback_t = unsafe extern "C" fn() -> bool;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_core_options_update_display_callback {
+    pub callback: Option<retro_core_options_update_display_callback_t>,
+}
+
 pub type retro_environment_t = unsafe extern "C" fn(cmd: c_uint, data: *mut c_void) -> bool;
 pub type retro_video_refresh_t =
     unsafe extern "C" fn(data: *const c_void, width: c_uint, height: c_uint, pitch: usize);
@@ -129,4 +270,9 @@ pub struct CoreApi {
     pub run: unsafe extern "C" fn(),
     pub load_game: unsafe extern "C" fn(*const retro_game_info) -> bool,
     pub unload_game: unsafe extern "C" fn(),
+    pub serialize_size: unsafe extern "C" fn() -> usize,
+    pub serialize: unsafe extern "C" fn(data: *mut c_void, size: usize) -> bool,
+    pub unserialize: unsafe extern "C" fn(data: *const c_void, size: usize) -> bool,
+    pub get_memory_data: unsafe extern "C" fn(id: c_uint) -> *mut c_void,
+    pub get_memory_size: unsafe extern "C" fn(id: c_uint) -> usize,
 }

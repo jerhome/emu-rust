@@ -1,9 +1,10 @@
 # Runtime image: a deployment target like the native builds (ADR 0004).
 # Build context: repository root. Example: docker compose -f docker/compose.yaml build
 
+# C compiler: emu-libretro builds log_shim.c through the `cc` crate (ADR 0009). Build stage only.
 FROM rust:1.100-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        pkg-config cmake clang \
+        build-essential pkg-config cmake clang \
         libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
         libgl-dev libegl-dev libasound2-dev libpulse-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -25,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Default ALSA device is routed to PulseAudio only when PULSE_SERVER is set (see entrypoint.sh),
 # so that sound-less runs (noVNC) do not try to reach a missing server.
 
-RUN useradd --create-home --uid 1000 emu && mkdir -p /data /tmp/.X11-unix && chown emu:emu /data && chmod 1777 /tmp/.X11-unix
+RUN useradd --create-home --uid 1000 emu && mkdir -p /data/saves /data/states /data/assets /tmp/.X11-unix && chown -R emu:emu /data && chmod 1777 /tmp/.X11-unix
 COPY --from=build /src/target/release/emu-rust /usr/local/bin/emu-rust
 COPY docker/runtime/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/runtime/sound-check.sh /usr/local/bin/sound-check

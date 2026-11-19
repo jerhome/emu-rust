@@ -25,3 +25,7 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-19 | 2 | Profils de touches : par système ou par core ? | Par `core_id` (+ profil `default`) tant que la bibliothèque (phase 4) ne connaît pas les systèmes. | décidé (défaut) |
 | 2026-11-19 | 2 | Zip à plusieurs entrées jouables ; taille maximale. | Première entrée acceptée dans l'ordre de l'archive (+ `warn!`) ; refus au-delà de 512 Mio. | décidé (défaut) |
 | 2026-11-19 | 2 | Options de core : `.opt` par core (RetroArch) ou `config.toml` ? | `config.toml`, section `core_options.<core_id>`. | décidé (défaut) |
+| 2026-11-19 | 2 | Volumes Docker : un par catégorie (saves/states/config) ou un seul ? | Un seul volume `emu-data` sur `/data` (ADR 0011 : tout sous la racine de données) ; `EMU_DATA_DIR=/data` répété dans chaque service compose ; entrypoint crée les sous-dossiers et force `config.toml` en 0600. | décidé (défaut) |
+| 2026-11-19 | 2b | Runner macOS Intel : `macos-13` (demandé) ? | `macos-13` est retiré par GitHub (déc. 2025) ; CI utilise `macos-15-intel` (disponible jusqu'à ~août 2027, ensuite plus de runner Intel : cross-compilation depuis arm64). | décidé (défaut) |
+| 2026-11-19 | 2b | Tests CI Linux : sous `xvfb-run` ? | Oui, par prudence (tests touchant à un affichage X) ; coût négligeable. | décidé (défaut) |
+| 2026-11-19 | 2b | Artefact macOS : binaire nu ou `.app` ? | Binaire nu pour l'instant (TODO dans `ci.yml`) ; bundle `.app` en phase 2b suite. | décidé (défaut) |
