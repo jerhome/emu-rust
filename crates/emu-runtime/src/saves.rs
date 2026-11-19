@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Savestate slots are `0..STATE_SLOTS`.
@@ -138,13 +138,78 @@ pub fn game_name_from_path(rom: &Path) -> String {
             }
         })
         .collect();
+    let name = truncate_utf8(&name, MAX_GAME_NAME_BYTES);
     // Never empty, so `<game>.srm` is not a hidden file. Names are always joined with an extension, so even
     // `..` stays a single path component.
     if name.is_empty() {
         "game".to_owned()
     } else {
-        name
+        name.to_owned()
     }
+}
+
+/// Keeps `<game>.state9` and `.<game>.srm.tmp-<pid>` (+ leading dot, pid up to 10 digits) under the 255-byte
+/// file name limit of common filesystems.
+const MAX_GAME_NAME_BYTES: usize = 200;
+
+/// Longest prefix of `s` that is at most `max` bytes, cut on a character boundary.
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Reads at most `max + 1` bytes of `path`: a result longer than `max` means the file is bigger than allowed,
+/// without ever loading more than one byte past the bound.
+pub(crate) fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let mut out = Vec::new();
+    file.take(max as u64 + 1).read_to_end(&mut out)?;
+    Ok(out)
+}
+
+/// Reads only the container header (`16 + header_len` bytes), for menus: no payload, no checksum check.
+pub(crate) fn read_state_header(mut input: impl Read) -> Result<StateHeader, StateFileError> {
+    let mut fixed = [0u8; 16];
+    let n = read_full(&mut input, &mut fixed).map_err(|_| StateFileError::Truncated)?;
+    let magic_len = n.min(STATE_MAGIC.len());
+    if fixed[..magic_len] != STATE_MAGIC[..magic_len] {
+        return Err(StateFileError::BadMagic);
+    }
+    if n < fixed.len() {
+        return Err(StateFileError::Truncated);
+    }
+    let version = u32::from_le_bytes([fixed[8], fixed[9], fixed[10], fixed[11]]);
+    if version != STATE_FORMAT_VERSION {
+        return Err(StateFileError::UnsupportedVersion(version));
+    }
+    let header_len = u32::from_le_bytes([fixed[12], fixed[13], fixed[14], fixed[15]]) as usize;
+    if header_len > MAX_HEADER_LEN {
+        return Err(StateFileError::BadHeader);
+    }
+    let mut header = vec![0u8; header_len];
+    if read_full(&mut input, &mut header).map_err(|_| StateFileError::Truncated)? < header_len {
+        return Err(StateFileError::Truncated);
+    }
+    parse_header(&header)
+}
+
+fn read_full(input: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match input.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
 }
 
 /// `<saves>/<core_id>/<game>.srm`.
@@ -401,6 +466,50 @@ mod tests {
         assert_eq!(name("a\\b\u{1}c.bin"), "a_b_c");
         assert_eq!(name(""), "game");
         assert_eq!(name("/"), "game");
+    }
+
+    #[test]
+    fn long_game_names_are_bounded() {
+        let long = format!("{}.zip", "é".repeat(300));
+        let name = game_name_from_path(Path::new(&long));
+        assert!(name.len() <= MAX_GAME_NAME_BYTES && name.len() >= MAX_GAME_NAME_BYTES - 1);
+        assert!(name.chars().all(|c| c == 'é'));
+        let tmp = tempdir();
+        let path = sram_path(tmp.path(), "mock", &name);
+        write_atomic(&path, b"x", FileMode::Default).unwrap();
+        let ascii = game_name_from_path(Path::new(&format!("{}.bin", "a".repeat(500))));
+        assert_eq!(ascii.len(), MAX_GAME_NAME_BYTES);
+        let path = sram_path(tmp.path(), "mock", &ascii);
+        write_atomic(&path, b"x", FileMode::Default).unwrap();
+    }
+
+    #[test]
+    fn bounded_read_and_header_only() {
+        let tmp = tempdir();
+        let path = tmp.path().join("f");
+        fs::write(&path, [1u8; 100]).unwrap();
+        assert_eq!(read_bounded(&path, 100).unwrap().len(), 100);
+        assert_eq!(read_bounded(&path, 10).unwrap().len(), 11);
+
+        let bytes = encode_state(&header(), &[9u8; 1000]);
+        let header_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        // Only the header bytes are available: the payload is never needed.
+        assert_eq!(
+            read_state_header(&bytes[..16 + header_len]).unwrap(),
+            header()
+        );
+        assert_eq!(
+            read_state_header(&bytes[..16 + header_len - 1]),
+            Err(StateFileError::Truncated)
+        );
+        assert_eq!(
+            read_state_header(&b"junk"[..]),
+            Err(StateFileError::BadMagic)
+        );
+        assert_eq!(
+            read_state_header(&STATE_MAGIC[..]),
+            Err(StateFileError::Truncated)
+        );
     }
 
     #[test]

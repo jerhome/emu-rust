@@ -2,7 +2,7 @@
 //! input and one entry is handed to the core in memory or through a private temporary file.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use emu_libretro::{GameSource, SystemInfo};
@@ -80,13 +80,24 @@ fn io_error(path: &Path, source: io::Error) -> RuntimeError {
 fn extract(rom: &Path, info: &SystemInfo, limits: Limits) -> Result<PreparedContent, RuntimeError> {
     let file = File::open(rom).map_err(|e| io_error(rom, e))?;
     let archive_size = file.metadata().map_err(|e| io_error(rom, e))?.len();
-    // Bounds the central directory parsed by `ZipArchive::new` (held in memory) as well.
+    // The file size alone does not bound the central directory that `ZipArchive::new` parses into memory
+    // (a small archive can announce millions of entries), so the declared count is checked first.
     if archive_size > limits.max_archive_size {
         return Err(RuntimeError::ContentTooLarge {
             path: rom.to_path_buf(),
             size: archive_size,
         });
     }
+    let mut file = file;
+    match declared_entries(&mut file, archive_size) {
+        Ok(Some(n)) if n > limits.max_entries as u64 => {
+            return Err(archive_error(rom, format!("too many entries ({n})")));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(io_error(rom, e)),
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| io_error(rom, e))?;
     let mut archive = ZipArchive::new(BufReader::new(file)).map_err(|e| archive_error(rom, e))?;
     if archive.len() > limits.max_entries {
         return Err(archive_error(
@@ -173,6 +184,60 @@ fn extract(rom: &Path, info: &SystemInfo, limits: Limits) -> Result<PreparedCont
             temp_dir: None,
         })
     }
+}
+
+/// Total entry count announced by the end-of-central-directory record (ZIP64 record if the 16-bit field is
+/// saturated). `None` when no record is found: `ZipArchive::new` then reports the proper error.
+fn declared_entries(file: &mut File, size: u64) -> io::Result<Option<u64>> {
+    const EOCD_LEN: u64 = 22;
+    const EOCD_SIG: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const LOCATOR_LEN: u64 = 20;
+    // EOCD + maximum comment length.
+    let window = size.min(EOCD_LEN + 65535);
+    let start = size - window;
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = vec![0u8; window as usize];
+    file.read_exact(&mut tail)?;
+    let Some(pos) = tail
+        .windows(EOCD_SIG.len())
+        .rposition(|w| w == EOCD_SIG)
+        .filter(|&p| p + EOCD_LEN as usize <= tail.len())
+    else {
+        return Ok(None);
+    };
+    let total = u64::from(u16::from_le_bytes([tail[pos + 10], tail[pos + 11]]));
+    if total != 0xFFFF {
+        return Ok(Some(total));
+    }
+    // ZIP64: the locator sits right before the EOCD and points at the ZIP64 EOCD record.
+    let eocd_at = start + pos as u64;
+    if eocd_at < LOCATOR_LEN {
+        return Ok(Some(total));
+    }
+    let mut locator = [0u8; LOCATOR_LEN as usize];
+    file.seek(SeekFrom::Start(eocd_at - LOCATOR_LEN))?;
+    file.read_exact(&mut locator)?;
+    if locator[..4] != [0x50, 0x4b, 0x06, 0x07] {
+        return Ok(Some(total));
+    }
+    let mut offset = [0u8; 8];
+    offset.copy_from_slice(&locator[8..16]);
+    let offset = u64::from_le_bytes(offset);
+    let mut record = [0u8; 56];
+    if offset
+        .checked_add(record.len() as u64)
+        .is_none_or(|end| end > size)
+    {
+        return Ok(Some(total));
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(&mut record)?;
+    if record[..4] != [0x50, 0x4b, 0x06, 0x06] {
+        return Ok(Some(total));
+    }
+    let mut n = [0u8; 8];
+    n.copy_from_slice(&record[32..40]);
+    Ok(Some(u64::from_le_bytes(n)))
 }
 
 fn copy(reader: &mut impl Read, out: &mut File) -> io::Result<u64> {
@@ -482,6 +547,48 @@ pub(crate) mod tests {
         assert!(matches!(
             prepare(&zip, &bin, tiny_archive),
             Err(RuntimeError::ContentTooLarge { path, .. }) if path == zip
+        ));
+    }
+
+    #[test]
+    fn forged_entry_count_is_refused_before_parsing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = info(&["bin"], false);
+        let mut bytes = build_zip(&[(b"a.bin", b"x", None)]);
+        // Patch both 16-bit counts of the EOCD (last 22 bytes) to 60000.
+        let eocd = bytes.len() - 22;
+        bytes[eocd + 8..eocd + 12].copy_from_slice(&[0x60, 0xEA, 0x60, 0xEA]);
+        let path = tmp.path().join("forged.zip");
+        fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            prepare(&path, &bin, Limits::DEFAULT),
+            Err(RuntimeError::Archive { message, .. }) if message.contains("too many entries (60000)")
+        ));
+
+        // ZIP64: saturated 16-bit count, real count in the ZIP64 record.
+        let mut z = build_zip(&[(b"a.bin", b"x", None)]);
+        let eocd = z.len() - 22;
+        let record_at = eocd as u64;
+        let mut z64 = vec![0x50, 0x4b, 0x06, 0x06];
+        z64.extend_from_slice(&44u64.to_le_bytes());
+        z64.extend_from_slice(&[45, 0, 45, 0]);
+        z64.extend_from_slice(&[0; 8]); // disk numbers
+        z64.extend_from_slice(&1_000_000u64.to_le_bytes());
+        z64.extend_from_slice(&1_000_000u64.to_le_bytes());
+        z64.extend_from_slice(&[0; 16]); // cd size + offset
+        let mut locator = vec![0x50, 0x4b, 0x06, 0x07, 0, 0, 0, 0];
+        locator.extend_from_slice(&record_at.to_le_bytes());
+        locator.extend_from_slice(&1u32.to_le_bytes());
+        let mut tail = z.split_off(eocd);
+        tail[8..12].copy_from_slice(&[0xFF; 4]);
+        z.extend_from_slice(&z64);
+        z.extend_from_slice(&locator);
+        z.extend_from_slice(&tail);
+        let path = tmp.path().join("forged64.zip");
+        fs::write(&path, &z).unwrap();
+        assert!(matches!(
+            prepare(&path, &bin, Limits::DEFAULT),
+            Err(RuntimeError::Archive { message, .. }) if message.contains("too many entries (1000000)")
         ));
     }
 

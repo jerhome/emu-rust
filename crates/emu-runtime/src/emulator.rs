@@ -15,7 +15,7 @@ use crate::frame::{FrameRgba, convert_frame};
 use crate::input::{InputBackend, InputFrame};
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, core_id_from_path, decode_state,
-    encode_state, game_name_from_path, write_atomic,
+    encode_state, game_name_from_path, read_bounded, read_state_header, write_atomic,
 };
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
@@ -73,15 +73,15 @@ fn restore_sram(core: &mut Core, path: &Path) -> Result<Vec<u8>, RuntimeError> {
     let Some(sram) = core.memory_mut(MemoryKind::SaveRam) else {
         return Ok(Vec::new());
     };
-    match fs::read(path) {
+    // Margin over the core's SRAM; anything beyond is cut anyway.
+    match read_bounded(path, sram.len() + STATE_READ_MARGIN) {
         Ok(saved) => {
             let n = saved.len().min(sram.len());
             sram[..n].copy_from_slice(&saved[..n]);
             if saved.len() > sram.len() {
                 tracing::warn!(
-                    "{} is larger than the core's SRAM ({} > {} bytes): truncated",
+                    "{} is larger than the core's SRAM (> {} bytes): truncated",
                     path.display(),
-                    saved.len(),
                     sram.len()
                 );
             } else {
@@ -93,6 +93,9 @@ fn restore_sram(core: &mut Core, path: &Path) -> Result<Vec<u8>, RuntimeError> {
     }
     Ok(sram.to_vec())
 }
+
+/// Slack over the expected size when reading `.srm` and state files (container header, small mismatches).
+const STATE_READ_MARGIN: usize = 64 * 1024;
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> RuntimeError + '_ {
     move |source| RuntimeError::Io {
@@ -325,7 +328,11 @@ impl Emulator {
     /// unserializes. On any error the running game is left untouched.
     pub fn load_state(&mut self, slot: u8) -> Result<(), RuntimeError> {
         let path = self.state_path(slot)?;
-        let bytes = fs::read(&path).map_err(io_err(&path))?;
+        let max = self.core.serialize_size() + STATE_READ_MARGIN;
+        let bytes = read_bounded(&path, max).map_err(io_err(&path))?;
+        if bytes.len() > max {
+            return Err(StateFileError::Truncated.into());
+        }
         let (header, payload) = decode_state(&bytes)?;
         if header.core_id != self.core_id {
             return Err(StateFileError::WrongCore {
@@ -359,9 +366,7 @@ impl Emulator {
         let path = self.state_path(slot).ok()?;
         let file = fs::File::open(&path).ok()?;
         let modified = file.metadata().and_then(|m| m.modified()).ok()?;
-        let mut bytes = Vec::new();
-        io::Read::read_to_end(&mut &file, &mut bytes).ok()?;
-        let (header, _) = decode_state(&bytes).ok()?;
+        let header = read_state_header(io::BufReader::new(file)).ok()?;
         Some((header, modified))
     }
 

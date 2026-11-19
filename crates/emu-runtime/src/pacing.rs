@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::timing::FramePacer;
+use crate::timing::{FramePacer, valid_fps};
 
 /// Most `Run` decisions in a row before `poll` forces a `Wait` so the event loop gets a turn.
 pub const MAX_BURST: u32 = 3;
@@ -82,16 +82,6 @@ pub struct Pacer {
 /// rate vs real device rate mismatch is far below this).
 const AUDIO_MAX_SPEEDUP: f64 = 1.05;
 const MIN_AUDIO_WAIT: Duration = Duration::from_millis(1);
-const FALLBACK_FPS: f64 = 60.0;
-
-fn valid_fps(fps: f64) -> f64 {
-    if fps.is_finite() && fps > 0.0 && 1.0 / fps > 0.0 {
-        fps
-    } else {
-        tracing::warn!(fps, "invalid core frame rate, pacing at {FALLBACK_FPS} fps");
-        FALLBACK_FPS
-    }
-}
 
 fn secs(s: f64) -> Duration {
     Duration::try_from_secs_f64(s).unwrap_or(Duration::from_secs(1))
@@ -406,7 +396,7 @@ mod tests {
     #[test]
     fn invalid_fps_falls_back() {
         let t0 = Instant::now();
-        for fps in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for fps in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-19, 1e9, 0.5] {
             let mut p = Pacer::new(fps, SyncMode::Clock, t0);
             assert_eq!(p.poll(t0, None), PaceDecision::Run);
             let PaceDecision::WaitUntil(t) = p.poll(t0, None) else {

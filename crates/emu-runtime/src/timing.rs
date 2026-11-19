@@ -44,13 +44,21 @@ impl FramePacer {
     }
 }
 
-fn period_of(fps: f64) -> Duration {
-    let fps = if fps.is_finite() && fps > 0.0 {
+/// Frame rates outside this range are treated as invalid (absurd values would overflow `Instant` arithmetic).
+pub(crate) const FPS_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
+/// `fps` if finite and within `FPS_RANGE`, else 60 with a warning.
+pub(crate) fn valid_fps(fps: f64) -> f64 {
+    if fps.is_finite() && FPS_RANGE.contains(&fps) {
         fps
     } else {
         tracing::warn!(fps, "invalid core frame rate, pacing at {FALLBACK_FPS} fps");
         FALLBACK_FPS
-    };
+    }
+}
+
+fn period_of(fps: f64) -> Duration {
+    let fps = valid_fps(fps);
     Duration::try_from_secs_f64(1.0 / fps).unwrap_or(Duration::from_secs(1))
 }
 
@@ -82,6 +90,19 @@ mod tests {
         assert!(p.frame_due(late));
         assert!(!p.frame_due(late));
         assert_eq!(p.next_deadline(), late + 20 * MS);
+    }
+
+    #[test]
+    fn absurd_fps_does_not_panic() {
+        let t0 = Instant::now();
+        for fps in [1e-19, 1e9, f64::MAX, f64::MIN_POSITIVE] {
+            let mut p = FramePacer::new(fps, t0);
+            assert!(p.frame_due(t0));
+            let period = p.next_deadline() - t0;
+            assert!(period > 16 * MS && period < 17 * MS);
+        }
+        assert_eq!(valid_fps(1.0), 1.0);
+        assert_eq!(valid_fps(1000.0), 1000.0);
     }
 
     #[test]
