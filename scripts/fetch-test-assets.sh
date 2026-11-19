@@ -47,7 +47,11 @@ CORE_NAME='genesis_plus_gx_libretro.so'
 MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
 
 tmp_dirs=()
-cleanup() { for d in "${tmp_dirs[@]}"; do rm -rf "$d"; done; }
+part_files=()
+cleanup() {
+    for d in "${tmp_dirs[@]}"; do rm -rf "$d"; done
+    for f in "${part_files[@]}"; do rm -f "$f"; done
+}
 trap cleanup EXIT
 
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
@@ -86,6 +90,7 @@ else
     download_zip "$ROM_URL" "$work/rom.zip"
     [ "$(sha_of "$work/rom.zip")" = "$ROM_ZIP_SHA256" ] \
         || { echo "error: SHA256 mismatch for ROM zip" >&2; exit 1; }
+    part_files+=("$rom_path.part")
     extract_one "$work/rom.zip" "$ROM_NAME" "$rom_path.part"
     if [ "$(sha_of "$rom_path.part")" != "$ROM_SHA256" ]; then
         rm -f "$rom_path.part"
@@ -110,6 +115,7 @@ else
     download_zip "$CORE_URL" "$work/core.zip"
     extract_one "$work/core.zip" "$CORE_NAME" "$work/$CORE_NAME"
     # Copy next to the destination so the final mv is an atomic same-filesystem rename.
+    part_files+=("$core_path.part")
     cp -f "$work/$CORE_NAME" "$core_path.part"
     mv -f "$core_path.part" "$core_path"
     sum="$(sha_of "$core_path")"

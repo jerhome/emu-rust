@@ -131,7 +131,8 @@ impl GlWindow {
         &self.window
     }
 
-    /// Shared GL function table, for `egui_glow::Painter` in phase 2.
+    /// Shared GL function table, for `egui_glow::Painter` in phase 2. The caller must call `make_current`
+    /// first: the table is only valid while this window's context is current on the calling thread.
     pub fn gl(&self) -> &Arc<glow::Context> {
         &self.gl
     }
@@ -139,11 +140,16 @@ impl GlWindow {
     /// Call on `WindowEvent::Resized`. Zero sizes are ignored (minimised window).
     pub fn resize(&self, size: PhysicalSize<u32>) {
         if let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
+            if let Err(e) = self.make_current() {
+                tracing::warn!("resize skipped: {e}");
+                return;
+            }
             self.surface.resize(&self.context, w, h);
         }
     }
 
     pub fn swap_buffers(&self) -> Result<(), RuntimeError> {
+        self.make_current()?;
         self.surface
             .swap_buffers(&self.context)
             .map_err(|e| RuntimeError::Gl(format!("swap_buffers failed: {e}")))
@@ -177,7 +183,7 @@ impl GlWindow {
 
     /// No-op when already current (the common case: one window per thread). Needed because another context
     /// (a second `GlWindow`, a core's HW context later) may have been made current on this thread.
-    fn make_current(&self) -> Result<(), RuntimeError> {
+    pub fn make_current(&self) -> Result<(), RuntimeError> {
         if self.context.is_current() {
             return Ok(());
         }

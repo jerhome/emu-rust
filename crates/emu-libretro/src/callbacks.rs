@@ -650,17 +650,18 @@ pub(crate) fn av_info_from_raw(av: &sys::retro_system_av_info) -> AvInfo {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
     #[test]
     fn frame_from_raw_rejects_oversized_length() {
         let byte = 0u8;
         let ptr = (&raw const byte).cast::<c_void>();
+        // height=2: len = isize::MAX + 2 fits in usize, so only the isize::try_from check can reject it.
         // SAFETY: the length check fails before any read of `ptr`.
-        let r = unsafe { frame_from_raw(ptr, 1, 3, isize::MAX as usize, PixelFormat::Rgb565) };
+        let r = unsafe { frame_from_raw(ptr, 1, 2, isize::MAX as usize, PixelFormat::Rgb565) };
         assert!(r.is_none());
     }
-
-    use super::*;
-    use std::path::PathBuf;
 
     fn config(variables: Vec<(String, String)>) -> CoreConfig {
         CoreConfig {
