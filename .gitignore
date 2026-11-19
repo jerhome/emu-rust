@@ -15,6 +15,5 @@ tests/cores/*
 !tests/cores/README.md
 
 # Claude Code
-CLAUDE.md
 CLAUDE.local.md
 .claude/
