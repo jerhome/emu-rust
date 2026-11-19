@@ -315,6 +315,74 @@ mod mock {
         core.load_game(&rom).expect("load from path");
         run(&mut core, 1);
     }
+
+    #[test]
+    fn set_variable_from_the_core_reports_options_changed() {
+        let _lock = lock();
+        let dir = out_dir("dynamic");
+        let mut core = Core::load(
+            &mock_core::build(Variant::DynamicOptions),
+            config(&dir, Vec::new()),
+        )
+        .expect("load");
+        core.load_game(&content(&dir)).expect("load game");
+        let mut rec = Recorder::default();
+        let mut changed = Vec::new();
+        for i in 0..30 {
+            if core.run(&mut rec).expect("run").options_changed {
+                changed.push(i);
+            }
+        }
+        assert_eq!(changed, [20]);
+        assert_eq!(core.options()[0].current, "blue");
+        // The change shows in the image (blue is the dominant channel from frame 20).
+        assert_ne!(rec.video[19], rec.video[20]);
+
+        // Frontend-side change: GET_VARIABLE_UPDATE is true once, `options_changed` stays false.
+        core.take_messages();
+        core.set_option("mock_color", "green").unwrap();
+        for _ in 0..4 {
+            assert!(!core.run(&mut rec).expect("run").options_changed);
+        }
+        let updates = core
+            .take_messages()
+            .iter()
+            .filter(|m| m.text.contains("variables updated"))
+            .count();
+        assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn sixteen_bit_variants_report_their_format() {
+        let _lock = lock();
+        use emu_libretro::PixelFormat;
+        struct Formats(Vec<(PixelFormat, usize)>);
+        impl FrontendHandler for Formats {
+            fn video_refresh(&mut self, frame: Option<VideoFrame<'_>>) {
+                if let Some(f) = frame {
+                    self.0.push((f.format, f.pitch));
+                }
+            }
+            fn audio_samples(&mut self, _: &[i16]) {}
+            fn input_poll(&mut self) {}
+            fn input_state(&mut self, _: InputQuery) -> i16 {
+                0
+            }
+        }
+        for (variant, format) in [
+            (Variant::Rgb565, PixelFormat::Rgb565),
+            (Variant::Xrgb1555, PixelFormat::Xrgb1555),
+        ] {
+            let dir = out_dir("formats");
+            let mut core =
+                Core::load(&mock_core::build(variant), config(&dir, Vec::new())).expect("load");
+            core.load_game(&content(&dir)).expect("load game");
+            let mut seen = Formats(Vec::new());
+            core.run(&mut seen).expect("run");
+            // 64 pixels of 2 bytes plus 8 bytes of row padding.
+            assert_eq!(seen.0, [(format, 136)], "{variant:?}");
+        }
+    }
 }
 
 fn workspace_root() -> PathBuf {

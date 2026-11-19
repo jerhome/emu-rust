@@ -33,13 +33,16 @@
 #define RETRO_DEVICE_ID_JOYPAD_START 3
 #define RETRO_MEMORY_SAVE_RAM 0
 #define RETRO_REGION_NTSC 0
+#define RETRO_PIXEL_FORMAT_0RGB1555 0
 #define RETRO_PIXEL_FORMAT_XRGB8888 1
+#define RETRO_PIXEL_FORMAT_RGB565 2
 
 #define RETRO_ENVIRONMENT_GET_CAN_DUPE 3
 #define RETRO_ENVIRONMENT_SET_MESSAGE 6
 #define RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY 9
 #define RETRO_ENVIRONMENT_SET_PIXEL_FORMAT 10
 #define RETRO_ENVIRONMENT_GET_VARIABLE 15
+#define RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE 17
 #define RETRO_ENVIRONMENT_SET_VARIABLES 16
 #define RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME 18
 #define RETRO_ENVIRONMENT_GET_LOG_INTERFACE 27
@@ -47,6 +50,7 @@
 #define RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION 52
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS 53
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 67
+#define RETRO_ENVIRONMENT_SET_VARIABLE 70
 
 #define RETRO_NUM_CORE_OPTION_VALUES_MAX 128
 
@@ -130,6 +134,27 @@ static bool game_loaded;
 static uint8_t sram[SRAM_SIZE];
 static uint32_t frame_pixels[WIDTH * HEIGHT];
 static int16_t audio_buf[AUDIO_FRAMES * 2];
+
+/* -DMOCK_PIXEL_RGB565 / -DMOCK_PIXEL_1555: the same image quantized to 16 bits, rows padded by 8 bytes. */
+#if defined(MOCK_PIXEL_RGB565)
+#define PIXEL_FORMAT RETRO_PIXEL_FORMAT_RGB565
+#define PIXEL_16 1
+#elif defined(MOCK_PIXEL_1555)
+#define PIXEL_FORMAT RETRO_PIXEL_FORMAT_0RGB1555
+#define PIXEL_16 1
+#else
+#define PIXEL_FORMAT RETRO_PIXEL_FORMAT_XRGB8888
+#endif
+#ifdef PIXEL_16
+#define ROW_PAD_U16 4u
+static uint16_t frame_pixels16[(WIDTH + ROW_PAD_U16) * HEIGHT];
+#endif
+
+/* -DMOCK_DYNAMIC_OPTIONS: once the counter reaches 20 the core sets mock_color=blue itself (SET_VARIABLE);
+ * each time GET_VARIABLE_UPDATE reports a frontend change, a message is emitted. */
+#ifdef MOCK_DYNAMIC_OPTIONS
+static bool dynamic_done;
+#endif
 
 #ifdef MOCK_NEED_FULLPATH
 #define NEED_FULLPATH true
@@ -259,7 +284,7 @@ MOCK_API void retro_get_system_av_info(struct retro_system_av_info *info) {
 MOCK_API void retro_set_controller_port_device(unsigned port, unsigned device) { (void)port; (void)device; }
 
 MOCK_API bool retro_load_game(const struct retro_game_info *game) {
-    int fmt = RETRO_PIXEL_FORMAT_XRGB8888;
+    int fmt = PIXEL_FORMAT;
     const char *save_dir = NULL;
     uint32_t h = 2166136261u;
     size_t total = 0;
@@ -284,6 +309,9 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
     seed = h;
     counter = 0;
     game_loaded = true;
+#ifdef MOCK_DYNAMIC_OPTIONS
+    dynamic_done = false;
+#endif
 
     if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: loaded %s (%u bytes, seed %08x)\n",
                        game->path ? game->path : "<memory>", (unsigned)total, (unsigned)seed);
@@ -331,6 +359,22 @@ MOCK_API void retro_run(void) {
         if (log_cb) log_cb(RETRO_LOG_WARN, "mock core: reached frame %u (color=%s speed=%u)\n",
                            (unsigned)counter, color, step);
     }
+#ifdef MOCK_DYNAMIC_OPTIONS
+    {
+        bool updated = false;
+        if (env_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
+            struct retro_message m = { "mock: variables updated", 60 };
+            env_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &m);
+        }
+        if (!dynamic_done && counter >= 20) {
+            struct retro_variable v = { "mock_color", "blue" };
+            dynamic_done = true;
+            env_cb(RETRO_ENVIRONMENT_SET_VARIABLE, &v);
+            color = get_option("mock_color", "red");
+            dominant = !strcmp(color, "green") ? 1u : !strcmp(color, "blue") ? 2u : 0u;
+        }
+    }
+#endif
     if (start) {
         put_u32(sram, counter);
         sram[4] = 0xA5;
@@ -348,7 +392,22 @@ MOCK_API void retro_run(void) {
             frame_pixels[y * WIDTH + x] = px;
         }
     }
+#ifdef PIXEL_16
+    for (y = 0; y < HEIGHT; y++) {
+        for (x = 0; x < WIDTH; x++) {
+            uint32_t px = frame_pixels[y * WIDTH + x];
+            uint32_t r = (px >> 16) & 0xFFu, g = (px >> 8) & 0xFFu, b = px & 0xFFu;
+#ifdef MOCK_PIXEL_RGB565
+            frame_pixels16[y * (WIDTH + ROW_PAD_U16) + x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+#else
+            frame_pixels16[y * (WIDTH + ROW_PAD_U16) + x] = (uint16_t)(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+#endif
+        }
+    }
+    video_cb(frame_pixels16, WIDTH, HEIGHT, (WIDTH + ROW_PAD_U16) * sizeof(uint16_t));
+#else
     video_cb(frame_pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t));
+#endif
 
     for (i = 0; i < AUDIO_FRAMES; i++) {
         uint32_t n = counter * AUDIO_FRAMES + i;

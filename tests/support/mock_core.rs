@@ -17,6 +17,12 @@ pub enum Variant {
     OptionsV1,
     /// Options declared with `SET_VARIABLES`.
     LegacyOptions,
+    /// RGB565 frames with padded rows.
+    Rgb565,
+    /// 0RGB1555 frames with padded rows.
+    Xrgb1555,
+    /// The core changes `mock_color` itself (`SET_VARIABLE`) at frame 20 and reports `GET_VARIABLE_UPDATE`.
+    DynamicOptions,
 }
 
 impl Variant {
@@ -26,6 +32,9 @@ impl Variant {
             Variant::NeedFullpath => "fullpath",
             Variant::OptionsV1 => "options_v1",
             Variant::LegacyOptions => "legacy",
+            Variant::Rgb565 => "rgb565",
+            Variant::Xrgb1555 => "xrgb1555",
+            Variant::DynamicOptions => "dynamic",
         }
     }
 
@@ -35,6 +44,9 @@ impl Variant {
             Variant::NeedFullpath => Some("-DMOCK_NEED_FULLPATH"),
             Variant::OptionsV1 => Some("-DMOCK_OPTIONS_V1"),
             Variant::LegacyOptions => Some("-DMOCK_LEGACY_OPTIONS"),
+            Variant::Rgb565 => Some("-DMOCK_PIXEL_RGB565"),
+            Variant::Xrgb1555 => Some("-DMOCK_PIXEL_1555"),
+            Variant::DynamicOptions => Some("-DMOCK_DYNAMIC_OPTIONS"),
         }
     }
 }
