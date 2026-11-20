@@ -350,6 +350,18 @@ pub fn disk_inserted(index: u32, total: usize, label: &str) -> String {
     )
 }
 
+pub fn work_dir_notice(n: &emu_runtime::WorkDirNotice) -> String {
+    match n {
+        emu_runtime::WorkDirNotice::SourceChanged { previous } => format!(
+            "Image source modifiée : nouvelles copies de travail ; l'ancienne progression reste dans {}",
+            previous.display()
+        ),
+        emu_runtime::WorkDirNotice::SameName => {
+            "Autre jeu du même nom : copies de travail séparées".to_owned()
+        }
+    }
+}
+
 pub fn disk_failed(e: &dyn std::fmt::Display) -> String {
     format!("Changement de disquette impossible : {e}")
 }

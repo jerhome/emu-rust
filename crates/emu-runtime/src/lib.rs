@@ -18,6 +18,7 @@ mod pacing;
 mod resample;
 mod saves;
 mod timing;
+mod workcopy;
 
 pub use emu_libretro::{
     AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, DiskControlKind,
@@ -42,7 +43,7 @@ pub use crate::input::{
 };
 pub use crate::media::{
     ContentSpec, DiskSlot, Disks, MAX_MEDIA_IMAGES, MediaPolicy, MediaSet, NO_GAME_NAME,
-    PreparedMedia, prepare_media, reset_working_copies,
+    PreparedMedia, WorkDirNotice, prepare_media, reset_work_dir, reset_working_copies,
 };
 pub use crate::pacing::{
     AudioLevel, DEFAULT_FAST_FORWARD_RATIO, MAX_BURST, PaceDecision, Pacer, Speed, SyncMode,

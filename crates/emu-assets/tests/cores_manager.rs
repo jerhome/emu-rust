@@ -443,3 +443,121 @@ fn install_through_a_background_job() {
     assert!(result.unwrap().is_ok());
     m.verified_path(&id("gambatte")).unwrap();
 }
+
+fn requests_to(bot: &Buildbot, route: &str) -> usize {
+    bot.rt
+        .block_on(bot.server.received_requests())
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == route)
+        .count()
+}
+
+#[test]
+fn outdated_cached_index_is_renewed_after_a_crc_mismatch() {
+    let old = mock_core_bytes(Variant::Default);
+    let new = mock_core_bytes(Variant::Rgb565);
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    let m = open(&bot, data.path());
+    // Cached index describes the previous build while the zip already holds the new one.
+    bot.publish(
+        "2026-11-10",
+        crc32fast::hash(&old),
+        "gambatte_libretro.so",
+        &new,
+    );
+    refresh(&m).unwrap();
+    bot.publish_good("2026-11-20", &new);
+    install(&m, "gambatte").unwrap();
+    assert_eq!(
+        fs::read(cores_dir(data.path()).join("gambatte_libretro.so")).unwrap(),
+        new
+    );
+    assert_eq!(requests_to(&bot, GAMBATTE_ZIP), 2);
+    assert!(tmp_leftovers(data.path()).is_empty());
+}
+
+#[test]
+fn fresh_index_with_a_corrupt_zip_installs_nothing() {
+    let new = mock_core_bytes(Variant::Rgb565);
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    let m = open(&bot, data.path());
+    bot.publish(
+        "2026-11-20",
+        crc32fast::hash(&new) ^ 1,
+        "gambatte_libretro.so",
+        &new,
+    );
+    refresh(&m).unwrap();
+    let err = install(&m, "gambatte").unwrap_err();
+    assert!(matches!(err, CoreError::CrcMismatch { .. }), "{err:?}");
+    assert!(
+        err.to_string()
+            .contains("même après mise à jour du catalogue")
+    );
+    // The renewed index is unchanged: no second download.
+    assert_eq!(requests_to(&bot, GAMBATTE_ZIP), 1);
+    assert_eq!(requests_to(&bot, INDEX), 2);
+    assert!(!cores_dir(data.path()).join("gambatte_libretro.so").exists());
+    assert!(tmp_leftovers(data.path()).is_empty());
+}
+
+#[test]
+fn catalog_older_than_the_limit_is_renewed_before_downloading() {
+    let old = mock_core_bytes(Variant::Default);
+    let new = mock_core_bytes(Variant::Rgb565);
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    {
+        let m = open(&bot, data.path());
+        bot.publish_good("2026-11-10", &old);
+        refresh(&m).unwrap();
+    }
+    let manifest = cores_dir(data.path()).join("manifest.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    let aged: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("index_fetched_unix") {
+                "index_fetched_unix = 1000".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    assert_ne!(
+        aged.join("\n"),
+        text.trim_end(),
+        "manifest has no fetch date"
+    );
+    fs::write(&manifest, aged.join("\n")).unwrap();
+
+    let m = open(&bot, data.path());
+    assert_eq!(m.catalog().unwrap().fetched_unix, 1000);
+    bot.publish_good("2026-11-20", &new);
+    install(&m, "gambatte").unwrap();
+    assert_eq!(requests_to(&bot, GAMBATTE_ZIP), 1);
+    assert!(m.catalog().unwrap().fetched_unix > 1000);
+}
+
+#[test]
+fn offline_with_an_old_catalog_lets_the_crc_check_decide() {
+    let new = mock_core_bytes(Variant::Rgb565);
+    assert!(
+        emu_assets::cores::CATALOG_MAX_AGE >= Duration::from_secs(3600),
+        "documented constant"
+    );
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    let m = open(&bot, data.path());
+    bot.publish_good("2026-11-20", &new);
+    refresh(&m).unwrap();
+    // Index and info.zip vanish: the renewal fails, the verified install still works.
+    bot.rt.block_on(bot.server.reset());
+    bot.mount(Mock::given(path(GAMBATTE_ZIP)).respond_with(
+        ResponseTemplate::new(200).set_body_bytes(zip_of(&[("gambatte_libretro.so", &new)])),
+    ));
+    install(&m, "gambatte").unwrap();
+}

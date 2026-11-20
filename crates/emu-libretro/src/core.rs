@@ -169,8 +169,8 @@ unsafe fn system_info_from_raw(raw: &sys::retro_system_info) -> SystemInfo {
             .filter(|e| !e.is_empty())
             .map(str::to_ascii_lowercase)
             .collect(),
-        need_fullpath: raw.need_fullpath,
-        block_extract: raw.block_extract,
+        need_fullpath: raw.need_fullpath != 0,
+        block_extract: raw.block_extract != 0,
     }
 }
 
@@ -217,8 +217,8 @@ impl Core {
             library_name: std::ptr::null(),
             library_version: std::ptr::null(),
             valid_extensions: std::ptr::null(),
-            need_fullpath: false,
-            block_extract: false,
+            need_fullpath: 0,
+            block_extract: 0,
         };
         // SAFETY: `raw` is a valid, writable `retro_system_info`; the core fills it with static strings.
         unsafe { (api.get_system_info)(&raw mut raw) };
@@ -330,7 +330,7 @@ impl Core {
         };
         // SAFETY: `info` and the buffers it points to are valid for the call; `path` and `data` are moved into
         // `self.game` (heap contents do not move) and kept until retro_unload_game.
-        let loaded = unsafe { (self.api.load_game)(&raw const info) };
+        let loaded = unsafe { (self.api.load_game)(&raw const info) } != 0;
         if !loaded {
             return Err(LibretroError::LoadGameFailed(rom));
         }
@@ -351,7 +351,7 @@ impl Core {
         }
         // SAFETY: libretro.h allows a NULL `game` once the core announced SET_SUPPORT_NO_GAME (checked above);
         // owning thread.
-        let loaded = unsafe { (self.api.load_game)(std::ptr::null()) };
+        let loaded = unsafe { (self.api.load_game)(std::ptr::null()) } != 0;
         if !loaded {
             return Err(LibretroError::LoadGameFailed(PathBuf::new()));
         }
@@ -373,6 +373,10 @@ impl Core {
     /// Keeps `path` alive until the game is unloaded (or the core dropped) and returns its address, which stays
     /// valid that long (the `CString` heap buffer does not move when the vector grows).
     pub(crate) fn retain_disk_path(&mut self, path: CString) -> *const c_char {
+        // Deduplicated: repeated replace_image calls with the same path keep a single allocation.
+        if let Some(existing) = self.disk_paths.iter().find(|p| **p == path) {
+            return existing.as_ptr();
+        }
         let ptr = path.as_ptr();
         self.disk_paths.push(path);
         ptr
@@ -439,7 +443,7 @@ impl Core {
         out.resize(size, 0);
         // SAFETY: `out` holds exactly `size` writable bytes; the core does not keep the pointer after returning
         // (libretro contract). Owning thread, game loaded.
-        let ok = unsafe { (self.api.serialize)(out.as_mut_ptr().cast(), size) };
+        let ok = unsafe { (self.api.serialize)(out.as_mut_ptr().cast(), size) } != 0;
         if !ok {
             out.clear();
             return Err(LibretroError::SerializeFailed);
@@ -468,7 +472,7 @@ impl Core {
         }
         // SAFETY: `data` is readable for `data.len()` bytes during the call; the core copies what it needs
         // (libretro contract). Owning thread, game loaded.
-        let ok = unsafe { (self.api.unserialize)(data.as_ptr().cast(), data.len()) };
+        let ok = unsafe { (self.api.unserialize)(data.as_ptr().cast(), data.len()) } != 0;
         if ok {
             Ok(())
         } else {
@@ -527,6 +531,7 @@ impl Core {
         if let Some(update_display) = callbacks::update_display_callback() {
             // SAFETY: registered by this core, whose library is loaded; called on the owning thread and outside
             // any environment borrow (it re-enters the environment with SET_CORE_OPTIONS_DISPLAY).
+            // The returned value is ignored (u8 on the FFI side: any byte is valid).
             unsafe { update_display() };
         }
         callbacks::options()

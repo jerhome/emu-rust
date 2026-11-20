@@ -381,7 +381,7 @@ fn hash_error_message(e: &LibraryError) -> String {
 /// Largest `.m3u` read (a playlist is a few lines).
 const MAX_M3U_SIZE: u64 = 64 * 1024;
 
-/// Existing images listed by a `.m3u` (relative paths below its folder only), in playlist order.
+/// Existing images listed by a `.m3u` (paths as the core reads them), in playlist order.
 fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
     let file = open_regular(path)?;
     let mut text = Vec::new();
@@ -406,18 +406,38 @@ fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
     Ok(images)
 }
 
+/// Key used to match a `.m3u` entry with a scanned file: NTFS and APFS ignore case, so `DISK1.ST` names `disk1.st`.
+fn norm_key(key: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) {
+        key.to_lowercase()
+    } else {
+        key.to_owned()
+    }
+}
+
 /// Multi-disk games (design v2.0 §3.4): the files of a valid `.m3u` are listed under the playlist, and the
 /// disks of a `(Disk N of M)` group of a computer system under their first disk. The other files of these
 /// games are removed from `found` (and `seen`, so a row stored by an earlier scan goes away).
 fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mut ScanReport) {
     let mut hidden: HashSet<String> = HashSet::new();
+    let mut by_norm: HashMap<String, Vec<String>> = HashMap::new();
+    for f in found.iter() {
+        by_norm
+            .entry(norm_key(&f.key))
+            .or_default()
+            .push(f.key.clone());
+    }
     for f in found.iter_mut() {
         if lower_ext(&f.path).as_deref() != Some("m3u") {
             continue;
         }
         match read_m3u(&f.path) {
             Ok(images) => {
-                hidden.extend(images.iter().cloned());
+                for image in &images {
+                    if let Some(keys) = by_norm.get(&norm_key(image)) {
+                        hidden.extend(keys.iter().cloned());
+                    }
+                }
                 f.media = images;
             }
             Err(message) => {

@@ -159,13 +159,9 @@ impl Host {
         if let (Some(restart), Some(request), Some(event_loop), None) =
             (back.restart, current, event_loop, &back.error)
         {
-            if let Restart::ResetDisks {
-                saves_core_dir,
-                game,
-            } = &restart
-            {
-                match emu_runtime::reset_working_copies(saves_core_dir, game) {
-                    Ok(_) => tracing::info!("disquettes réinitialisées : {game}"),
+            if matches!(restart, Restart::ResetDisks { .. }) {
+                match restart.apply() {
+                    Ok(_) => tracing::info!("disquettes réinitialisées"),
                     Err(e) => tracing::warn!("réinitialisation des disquettes : {e}"),
                 }
             }

@@ -62,7 +62,27 @@ pub(crate) enum Restart {
     ResetDisks {
         saves_core_dir: PathBuf,
         game: String,
+        /// Folder actually used by this session (`<game> (n).disks` for a same-name game); `None` without
+        /// working copies.
+        work_dir: Option<PathBuf>,
     },
+}
+
+impl Restart {
+    /// Deletes the working copies of the game (`ResetDisks` only). The core must be unloaded.
+    pub(crate) fn apply(&self) -> Result<bool, emu_runtime::RuntimeError> {
+        match self {
+            Restart::Plain => Ok(false),
+            Restart::ResetDisks {
+                saves_core_dir,
+                game,
+                work_dir,
+            } => match work_dir {
+                Some(dir) => emu_runtime::reset_work_dir(saves_core_dir, dir),
+                None => emu_runtime::reset_working_copies(saves_core_dir, game),
+            },
+        }
+    }
 }
 
 /// Mouse wheel: pixels per notch for touchpads reporting pixel deltas.
@@ -304,6 +324,14 @@ impl App {
             text::menu_hint(options.config.hotkeys.menu)
         };
         overlay.osd.info(hint, now);
+        if let Some(notice) = emulator.prepared_media().and_then(|p| p.notice.as_ref()) {
+            overlay.osd.push(
+                text::work_dir_notice(notice),
+                OsdLevel::Warn,
+                Duration::from_secs(10),
+                now,
+            );
+        }
         if let Some(disk) = game_options.options.media.last_disk.filter(|d| *d > 0)
             && let Some(mut disks) = emulator.disks()
             && let Err(e) = disks.insert(disk)
@@ -620,6 +648,10 @@ impl App {
             Restart::ResetDisks {
                 saves_core_dir: self.options.dirs.saves.join(&self.core_id),
                 game: self.emulator.game_name().to_owned(),
+                work_dir: self
+                    .emulator
+                    .prepared_media()
+                    .and_then(|p| p.work_dir.clone()),
             }
         } else {
             Restart::Plain
@@ -713,6 +745,9 @@ impl App {
             );
         }
         self.audio.set_paused(speed.audio_paused());
+        if let Some(c) = &mut self.computer {
+            c.keyboard.set_paused(self.speed.paused);
+        }
         self.emulator.set_fast_forwarding(speed.core_fast_forward());
     }
 
@@ -1663,6 +1698,27 @@ fn modifier_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_disks_deletes_only_the_session_work_dir() {
+        let root = std::env::temp_dir().join(format!("emu-ui-reset-{}", std::process::id()));
+        let core = root.join("core");
+        let own = core.join("Jeu (2).disks");
+        let other = core.join("Jeu.disks");
+        for d in [&own, &other] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("a.st"), b"x").unwrap();
+        }
+        let restart = Restart::ResetDisks {
+            saves_core_dir: core.clone(),
+            game: "Jeu".to_owned(),
+            work_dir: Some(own.clone()),
+        };
+        restart.apply().unwrap();
+        assert!(!own.exists());
+        assert!(other.join("a.st").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn modifier_shortcuts_follow_keymap() {

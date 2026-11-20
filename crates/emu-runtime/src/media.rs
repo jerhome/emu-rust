@@ -2,24 +2,26 @@
 //! working copies, generated `.m3u`, disk swapping during a session.
 //!
 //! Safety rules (reviewed): the user's files are only ever opened for reading; every write goes to
-//! `<saves>/<core_id>/<game>.disks/` (`WorkingCopy`) or to a private temporary directory (`Direct`), through
+//! `<saves>/<core_id>/<game>[ (n)].disks/` (`WorkingCopy`) or to a private temporary directory (`Direct`), through
 //! `write_atomic_with`. Zip entries are untrusted: names reduced to a sanitized base name, sizes bounded by the
 //! `content.rs` limits.
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use emu_libretro::{DiskControl, DiskControlKind};
 use tempfile::TempDir;
+use zip::ZipArchive;
 
-use crate::content::{self, Limits, io_error};
+use crate::content::{self, ArchiveEntry, Limits, io_error};
 use crate::emulator::Emulator;
 use crate::error::RuntimeError;
 use crate::fsname::sanitize_component;
 use crate::saves::{FileMode, game_name_from_str, read_bounded, write_atomic_with};
+use crate::workcopy::{self, DirState, MANIFEST_NAME, ManifestEntry, Origin, Plan};
 
 /// Most images accepted in one set (generated playlist, zip with several disks, disk menu additions).
 /// Same value as `emu_library::MAX_MEDIA_IMAGES`.
@@ -76,11 +78,26 @@ pub struct PreparedMedia {
     pub content: PathBuf,
     /// Images actually seen by the core, in order (working copies when `WorkingCopy`).
     pub images: Vec<PathBuf>,
-    /// `Some(<saves>/<core_id>/<game>.disks)` for `WorkingCopy`.
+    /// `WorkingCopy` only: `<saves>/<core_id>/<game>.disks`, or `<game> (n).disks` when the first folder holds
+    /// copies of other files (see [`WorkDirNotice`]). This is the folder [`reset_work_dir`] must be given.
     pub work_dir: Option<PathBuf>,
+    /// Set when this preparation had to start new copies in a suffixed folder instead of `<game>.disks`
+    /// (only at that launch; the next ones reuse the new folder silently). The UI should tell the player.
+    pub notice: Option<WorkDirNotice>,
     /// `Direct` only: private directory holding extracted zip entries and the generated playlist. Removed when
     /// the last clone is dropped, so keep this value alive as long as the core may read the files.
     pub(crate) temp_dir: Option<Arc<TempDir>>,
+}
+
+/// Why new working copies were started in a suffixed folder ([`PreparedMedia::notice`]). The older copies, and
+/// the progress they hold, are never modified nor deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkDirNotice {
+    /// A source file of this set has another content than when its copies were made (image replaced, e.g. by a
+    /// fixed dump), or the set lost a disk: the progress made on the previous copies stays in `previous`.
+    SourceChanged { previous: PathBuf },
+    /// `<game>.disks` holds the copies of other files with the same game name (`Jeu1/disk1.st`, `Jeu2/disk1.st`).
+    SameName,
 }
 
 impl PartialEq for PreparedMedia {
@@ -88,6 +105,7 @@ impl PartialEq for PreparedMedia {
         self.content == other.content
             && self.images == other.images
             && self.work_dir == other.work_dir
+            && self.notice == other.notice
     }
 }
 
@@ -102,13 +120,34 @@ impl PreparedMedia {
 
 /// `<saves>/<core_id>/<game>.disks` for the sanitized game name.
 fn work_dir_for(saves_core_dir: &Path, game: &str) -> PathBuf {
-    saves_core_dir.join(format!("{}.disks", game_name_from_str(game)))
+    work_dir_candidate(saves_core_dir, &game_name_from_str(game), 1)
+}
+
+/// Most `<game> (n).disks` folders tried for one game name.
+const MAX_WORK_DIRS: u32 = 64;
+
+/// `n`-th working-copy folder of an already sanitized game name: `<game>.disks`, then `<game> (n).disks`.
+fn work_dir_candidate(saves_core_dir: &Path, game: &str, n: u32) -> PathBuf {
+    if n <= 1 {
+        saves_core_dir.join(format!("{game}.disks"))
+    } else {
+        saves_core_dir.join(format!("{game} ({n}).disks"))
+    }
 }
 
 /// Copies / extracts / writes the playlist as the policy requires. Never modifies the files of `set`.
 ///
 /// `saves_core_dir` = `<saves>/<core_id>`. Working copies are created only when absent (an existing copy holds
-/// the player's progress and is reused); every write is atomic (`write_atomic`). Zip entries are read with the
+/// the player's progress and is reused); every write is atomic (`write_atomic`).
+///
+/// Working-copy folder (`workcopy.rs` for the identity of a source): `<game>.disks`, `<game> (2).disks`, … are
+/// examined in order and the first one whose manifest records copies of this set's sources is used; a folder
+/// is compatible when each copy recorded there for a set (and still present) has an identical source in this
+/// set (new disks of the set are simply added). Otherwise the copies are started in the first free candidate
+/// and [`PreparedMedia::notice`] says why: progress is never overwritten nor handed to another game. A folder
+/// without manifest (made by an earlier version) is adopted as is by the first set prepared into it, which
+/// then records its sources: its origin cannot be known, so this is the earlier behaviour, once. A link or a
+/// file in place of a folder, an unreadable manifest, or a link in place of a copy is never used. Zip entries are read with the
 /// limits of `content.rs` and only entries whose extension the core accepts are kept (a zip is passed whole when
 /// the core accepts `zip`); entry names are never used as paths (sanitised with `fsname`). A generated `.m3u`
 /// uses names relative to its own folder (`WorkingCopy`) or absolute paths (`Direct`, private temp directory).
@@ -161,6 +200,7 @@ pub(crate) fn prepare_media_with(
             content: playlist,
             images,
             work_dir: None,
+            notice: None,
             temp_dir: None,
         });
     }
@@ -169,7 +209,10 @@ pub(crate) fn prepare_media_with(
         Some(playlist) => parse_playlist(playlist)?,
         None => set.images.clone(),
     };
-    let mut stage = Stage::new(policy, exts, limits, work_dir_for(saves_core_dir, &game))?;
+    if policy == MediaPolicy::WorkingCopy {
+        return prepare_working_copies(&game, &sources, exts, saves_core_dir, limits);
+    }
+    let mut stage = Stage::new(policy, exts, limits, PathBuf::new())?;
     for source in &sources {
         stage.add_source(source)?;
     }
@@ -180,21 +223,169 @@ pub(crate) fn prepare_media_with(
     Ok(PreparedMedia {
         content,
         images: stage.images,
-        work_dir: (policy == MediaPolicy::WorkingCopy).then_some(stage.work_dir),
+        work_dir: None,
+        notice: None,
         temp_dir: stage.temp_dir,
     })
 }
 
-fn too_many() -> RuntimeError {
+/// Folder chosen for a set, with what its manifest says.
+struct ChosenDir {
+    dir: PathBuf,
+    /// No manifest yet (earlier version): existing copies are adopted by name.
+    legacy: bool,
+    entries: Vec<ManifestEntry>,
+    present: Vec<bool>,
+    /// Entry of `entries` holding the copy of each plan item.
+    assignment: Vec<Option<usize>>,
+    notice: Option<WorkDirNotice>,
+}
+
+fn choose_work_dir(
+    saves_core_dir: &Path,
+    game: &str,
+    plan: &mut Plan,
+) -> Result<ChosenDir, RuntimeError> {
+    let mut free = None;
+    let mut changed = None;
+    for n in 1..=MAX_WORK_DIRS {
+        let dir = work_dir_candidate(saves_core_dir, game, n);
+        let chosen = |legacy, entries, present, assignment| ChosenDir {
+            dir: dir.clone(),
+            legacy,
+            entries,
+            present,
+            assignment,
+            notice: None,
+        };
+        match workcopy::inspect(&dir, is_disk_file_name)? {
+            DirState::Absent => {
+                free.get_or_insert((n, dir.clone()));
+            }
+            DirState::NotDir | DirState::Unreadable => {}
+            DirState::Legacy => return Ok(chosen(true, Vec::new(), Vec::new(), Vec::new())),
+            DirState::Manifest(entries) => {
+                let present = workcopy::present(&dir, &entries)?;
+                match workcopy::assign(&entries, &present, plan)? {
+                    Some(assignment) => return Ok(chosen(false, entries, present, assignment)),
+                    None => {
+                        if changed.is_none() && plan.shares_path(&entries, &present) {
+                            changed = Some(dir.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some((n, dir)) = free else {
+        return Err(RuntimeError::InvalidMediaSet(format!(
+            "{MAX_WORK_DIRS} working-copy folders already exist for `{game}`"
+        )));
+    };
+    // Only a folder pushed aside by another one is news; the first folder of a game (or one reset) is not.
+    let notice = (n > 1).then_some(match changed {
+        Some(previous) => WorkDirNotice::SourceChanged { previous },
+        None => WorkDirNotice::SameName,
+    });
+    if let Some(notice) = &notice {
+        tracing::warn!(?notice, "new working copies in {}", dir.display());
+    }
+    Ok(ChosenDir {
+        dir,
+        legacy: false,
+        entries: Vec::new(),
+        present: Vec::new(),
+        assignment: Vec::new(),
+        notice,
+    })
+}
+
+fn prepare_working_copies(
+    game: &str,
+    sources: &[PathBuf],
+    exts: &[String],
+    saves_core_dir: &Path,
+    limits: Limits,
+) -> Result<PreparedMedia, RuntimeError> {
+    let mut plan = Plan::new(sources, exts, limits, MAX_MEDIA_IMAGES)?;
+    let chosen = choose_work_dir(saves_core_dir, game, &mut plan)?;
+    let mut stage = Stage::new(MediaPolicy::WorkingCopy, exts, limits, chosen.dir.clone())?;
+    // Files of other sources stay out of reach: only a pre-manifest folder adopts copies by name.
+    stage.fresh = !chosen.legacy;
+    stage.used.insert(MANIFEST_NAME.to_lowercase());
+    stage.used.insert(format!("{game}.m3u").to_lowercase());
+    for (entry, &present) in chosen.entries.iter().zip(&chosen.present) {
+        if present {
+            stage.used.insert(entry.copy.to_lowercase());
+        }
+    }
+    let mut recorded = Vec::with_capacity(plan.items.len());
+    let mut consumed = vec![false; chosen.entries.len()];
+    for i in 0..plan.items.len() {
+        let src = plan.items[i].src;
+        match chosen.assignment.get(i).copied().flatten() {
+            Some(j) => {
+                consumed[j] = true;
+                let mut entry = chosen.entries[j].clone();
+                entry.origin = Origin::Set;
+                entry.refresh(&plan.sources[src]);
+                stage.push(chosen.dir.join(&entry.copy))?;
+                recorded.push(entry);
+            }
+            None => {
+                let copy = stage.materialize(&mut plan, i)?;
+                let name = plan.items[i].entry.as_ref().map(|e| e.name.clone());
+                recorded.push(ManifestEntry::new(
+                    Origin::Set,
+                    copy_name(&copy),
+                    name,
+                    &mut plan.sources[src],
+                )?);
+            }
+        }
+    }
+    // Disks added from the menu stay available to later sessions.
+    for (j, entry) in chosen.entries.iter().enumerate() {
+        if !consumed[j] && chosen.present[j] && entry.origin == Origin::Added {
+            recorded.push(entry.clone());
+        }
+    }
+    let content = match stage.images.as_slice() {
+        [only] => only.clone(),
+        _ => stage.write_playlist(game)?,
+    };
+    workcopy::write(&chosen.dir, &recorded)?;
+    Ok(PreparedMedia {
+        content,
+        images: stage.images,
+        work_dir: Some(chosen.dir),
+        notice: chosen.notice,
+        temp_dir: None,
+    })
+}
+
+fn copy_name(copy: &Path) -> String {
+    copy.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A name `disk_file_name` could have produced (manifests are read back from disk).
+fn is_disk_file_name(name: &str) -> bool {
+    disk_file_name(name) == name
+}
+
+pub(crate) fn too_many() -> RuntimeError {
     RuntimeError::InvalidMediaSet(format!("more than {MAX_MEDIA_IMAGES} disk images"))
 }
 
-fn has_ext(path: &Path, ext: &str) -> bool {
+pub(crate) fn has_ext(path: &Path, ext: &str) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
-fn accepts_ext(exts: &[String], ext: &str) -> bool {
+pub(crate) fn accepts_ext(exts: &[String], ext: &str) -> bool {
     exts.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
@@ -272,7 +463,12 @@ impl<'a> Stage<'a> {
         let mut n = self.images.len() + 1;
         loop {
             let free = !self.used.contains(&candidate.to_lowercase())
-                && !(self.fresh && exists(&dir.join(&candidate))?);
+                && match fs::symlink_metadata(dir.join(&candidate)) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => true,
+                    Err(e) => return Err(io_error(&dir.join(&candidate), e)),
+                    // An existing copy is adopted (never during a session, never a link or a folder).
+                    Ok(meta) => meta.is_file() && !self.fresh,
+                };
             if free {
                 self.used.insert(candidate.to_lowercase());
                 break;
@@ -301,17 +497,57 @@ impl<'a> Stage<'a> {
                 let path = std::path::absolute(source).map_err(|e| io_error(source, e))?;
                 self.push(path)
             }
-            MediaPolicy::WorkingCopy => {
-                let name =
-                    disk_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
-                let dest = self.dest_path(&name)?;
-                if !exists(&dest)? {
-                    copy_file(source, &dest, self.limits.max_size)?;
-                    tracing::info!("working copy of {} created", source.display());
-                }
-                self.push(dest)
-            }
+            MediaPolicy::WorkingCopy => self.copy_plain(source).map(drop),
         }
+    }
+
+    /// Working copy of a whole file; an existing regular file at the chosen name is adopted (`!fresh` only).
+    fn copy_plain(&mut self, source: &Path) -> Result<PathBuf, RuntimeError> {
+        let name = disk_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
+        let dest = self.dest_path(&name)?;
+        if !exists(&dest)? {
+            copy_file(source, &dest, self.limits.max_size)?;
+            tracing::info!("working copy of {} created", source.display());
+        }
+        self.push(dest.clone())?;
+        Ok(dest)
+    }
+
+    /// Copy (or extraction) of one planned image.
+    fn materialize(&mut self, plan: &mut Plan, i: usize) -> Result<PathBuf, RuntimeError> {
+        let src = plan.items[i].src;
+        let source = plan.sources[src].path.clone();
+        match (plan.items[i].entry.clone(), plan.archives[src].as_mut()) {
+            (Some(entry), Some(archive)) => self.extract_entry(archive, &source, &entry),
+            _ => self.copy_plain(&source),
+        }
+    }
+
+    fn extract_entry(
+        &mut self,
+        archive: &mut ZipArchive<BufReader<fs::File>>,
+        zip: &Path,
+        entry: &ArchiveEntry,
+    ) -> Result<PathBuf, RuntimeError> {
+        let dest = self.dest_path(&disk_file_name(&entry.name))?;
+        if self.policy == MediaPolicy::Direct || !exists(&dest)? {
+            let mut failure = None;
+            let written = write_atomic_with(&dest, FileMode::Default, |file| {
+                content::copy_entry(archive, zip, entry, self.limits.max_size, file, &dest)
+                    .map(drop)
+                    .map_err(|e| {
+                        failure = Some(e);
+                        io::Error::other("zip entry not extracted")
+                    })
+            });
+            if let Some(e) = failure {
+                return Err(e);
+            }
+            written.map_err(|e| io_error(&dest, e))?;
+            tracing::info!(entry = %entry.name, "disk image extracted from {}", zip.display());
+        }
+        self.push(dest.clone())?;
+        Ok(dest)
     }
 
     /// Extracts up to `max` accepted entries (archive order). A playlist inside the archive is ignored.
@@ -322,10 +558,7 @@ impl<'a> Stage<'a> {
         let entries = content::accepted_entries(
             &mut archive,
             zip,
-            |name| match name.rsplit_once('.') {
-                Some((_, ext)) => !ext.eq_ignore_ascii_case("m3u") && accepts_ext(exts, ext),
-                None => false,
-            },
+            |name| workcopy::zip_entry_accepted(exts, name),
             // One more than allowed, to report an oversized set instead of silently dropping disks.
             room.saturating_add(1),
         )?;
@@ -336,24 +569,7 @@ impl<'a> Stage<'a> {
             return Err(too_many());
         }
         for entry in entries.iter().take(room) {
-            let dest = self.dest_path(&disk_file_name(&entry.name))?;
-            if self.policy == MediaPolicy::Direct || !exists(&dest)? {
-                let mut failure = None;
-                let written = write_atomic_with(&dest, FileMode::Default, |file| {
-                    content::copy_entry(&mut archive, zip, entry, self.limits.max_size, file, &dest)
-                        .map(drop)
-                        .map_err(|e| {
-                            failure = Some(e);
-                            io::Error::other("zip entry not extracted")
-                        })
-                });
-                if let Some(e) = failure {
-                    return Err(e);
-                }
-                written.map_err(|e| io_error(&dest, e))?;
-                tracing::info!(entry = %entry.name, "disk image extracted from {}", zip.display());
-            }
-            self.push(dest)?;
+            self.extract_entry(&mut archive, zip, entry)?;
         }
         Ok(())
     }
@@ -533,24 +749,58 @@ fn playlist_entry_path(entry: &str) -> PathBuf {
     }
 }
 
-/// Deletes the working copies of `game` (menu « Réinitialiser les disquettes »); the core must not be running
-/// that game. Returns `false` when there was nothing to delete.
+/// Deletes `<saves_core_dir>/<game>.disks` (menu « Réinitialiser les disquettes »); the core must not be running
+/// that game. Returns `false` when there was nothing to delete. A game whose copies live in a suffixed
+/// `<game> (n).disks` folder ([`PreparedMedia::work_dir`]) must be reset with [`reset_work_dir`]: this function
+/// would delete the copies of the other game owning `<game>.disks`.
 pub fn reset_working_copies(saves_core_dir: &Path, game: &str) -> Result<bool, RuntimeError> {
-    let dir = work_dir_for(saves_core_dir, game);
-    let meta = match fs::symlink_metadata(&dir) {
+    remove_work_dir(&work_dir_for(saves_core_dir, game))
+}
+
+/// Deletes one working-copy folder, normally [`PreparedMedia::work_dir`] of the game (the core must not be
+/// running it). Refused unless `work_dir` is a `*.disks` entry directly inside `saves_core_dir`. Returns `false`
+/// when there was nothing to delete.
+pub fn reset_work_dir(saves_core_dir: &Path, work_dir: &Path) -> Result<bool, RuntimeError> {
+    let named_disks = work_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.len() > ".disks".len() && n.ends_with(".disks"));
+    if work_dir.parent() != Some(saves_core_dir) || !named_disks {
+        return Err(RuntimeError::InvalidMediaSet(format!(
+            "{} is not a working-copy folder of {}",
+            work_dir.display(),
+            saves_core_dir.display()
+        )));
+    }
+    remove_work_dir(work_dir)
+}
+
+fn remove_work_dir(dir: &Path) -> Result<bool, RuntimeError> {
+    let meta = match fs::symlink_metadata(dir) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(io_error(&dir, e)),
+        Err(e) => return Err(io_error(dir, e)),
     };
-    // A symlink in place of the folder: remove the link, never what it points to.
+    // A link in place of the folder: remove the link, never what it points to (`remove_dir_all` does not
+    // follow links inside the folder either).
     let removed = if meta.is_dir() {
-        fs::remove_dir_all(&dir)
+        fs::remove_dir_all(dir)
     } else {
-        fs::remove_file(&dir)
+        remove_link(dir)
     };
-    removed.map_err(|e| io_error(&dir, e))?;
+    removed.map_err(|e| io_error(dir, e))?;
     tracing::info!("working copies removed: {}", dir.display());
     Ok(true)
+}
+
+/// Removes a file or a link without following it.
+fn remove_link(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        // Windows: a directory symlink or a junction is a directory entry; `RemoveDirectoryW` deletes the link
+        // itself, not the target's content.
+        Err(e) if cfg!(windows) => fs::remove_dir(path).map_err(|_| e),
+        other => other,
+    }
 }
 
 /// One entry of the disk menu.
@@ -591,7 +841,8 @@ impl Disks<'_> {
         let Ok(mut control) = self.control() else {
             return Vec::new();
         };
-        let num = control.num_images();
+        // The count comes from the core: never trust it to size a menu.
+        let num = control.num_images().min(MAX_MEDIA_IMAGES as u32);
         (0..num)
             .map(|index| {
                 // The basic interface has no paths: the prepared list is in the same order.
@@ -655,7 +906,7 @@ impl Disks<'_> {
 
     /// Next image (wraps); the usual « changer de disquette » action. Returns the inserted index.
     pub fn insert_next(&mut self) -> Result<u32, RuntimeError> {
-        let num = self.control()?.num_images();
+        let num = self.control()?.num_images().min(MAX_MEDIA_IMAGES as u32);
         if num == 0 {
             return Err(RuntimeError::InvalidMediaSet("no disk image".into()));
         }
@@ -671,7 +922,9 @@ impl Disks<'_> {
 
     /// Adds an image during the session and returns its index; it is not inserted. Under `WorkingCopy` (and for
     /// `File` / `NoGame` sessions, whose policy is unknown) the core gets a working copy in
-    /// `<saves>/<core_id>/<game>.disks/` (a name already taken, by this game or by another source, gets a numeric prefix: an added disk is never merged with an existing copy, so its progress starts from the source); a zip the core cannot read
+    /// the game's working-copy folder ([`PreparedMedia::work_dir`], else `<saves>/<core_id>/<game>.disks/`): the
+    /// copy made the last time the same source was added is reused (with its progress), otherwise a new copy is
+    /// made under a free name (never merged with a file of another source); a zip the core cannot read
     /// gives its first accepted entry. The addition lasts for the session (the generated playlist is unchanged).
     pub fn add(&mut self, image: &Path) -> Result<u32, RuntimeError> {
         let num = self.control()?.num_images();
@@ -719,6 +972,14 @@ impl Emulator {
             .and_then(|p| p.work_dir.clone())
             .unwrap_or_else(|| work_dir_for(&self.save_root.join(&self.core_id), &self.game_name));
         let exts = self.core.system_info().valid_extensions.clone();
+        if policy == MediaPolicy::WorkingCopy {
+            let known = self
+                .prepared
+                .as_ref()
+                .map(|p| p.images.as_slice())
+                .unwrap_or_default();
+            return stage_added_copy(&work_dir, image, &exts, self.limits, known);
+        }
         let mut stage = Stage::new(policy, &exts, self.limits, work_dir)?;
         stage.temp_dir = self.prepared.as_ref().and_then(|p| p.temp_dir.clone());
         // Names already handed to the core keep theirs; a new name never overwrites them in the temp directory.
@@ -742,6 +1003,76 @@ impl Emulator {
         }
         Ok(path)
     }
+}
+
+/// Most disks added from the menu remembered per folder (the oldest are forgotten; their copies stay on disk).
+const MAX_ADDED_REMEMBERED: usize = MAX_MEDIA_IMAGES;
+
+/// Working copy of a disk added from the menu, in `work_dir`. The folder's manifest remembers which source each
+/// added copy comes from, so adding the same source again (in a later session) gives back the same copy and its
+/// progress; a copy already handed to the core this session (`known`) is never given twice. Anything else gets
+/// a new copy under a free name: an added disk never adopts a file it did not record. A folder without a
+/// readable manifest (earlier version, damaged) still gets the copy but nothing is recorded there.
+fn stage_added_copy(
+    work_dir: &Path,
+    image: &Path,
+    exts: &[String],
+    limits: Limits,
+    known: &[PathBuf],
+) -> Result<PathBuf, RuntimeError> {
+    let mut manifest = match workcopy::inspect(work_dir, is_disk_file_name)? {
+        DirState::Absent => Some(Vec::new()),
+        DirState::Manifest(entries) => Some(entries),
+        DirState::Legacy | DirState::Unreadable => None,
+        DirState::NotDir => {
+            return Err(RuntimeError::InvalidMediaSet(format!(
+                "{} is not a folder",
+                work_dir.display()
+            )));
+        }
+    };
+    let mut plan = Plan::new(&[image.to_path_buf()], exts, limits, 1)?;
+    if let Some(entries) = manifest.as_mut() {
+        let present = workcopy::present(work_dir, entries)?;
+        let in_use = |e: &ManifestEntry| known.iter().any(|k| *k == work_dir.join(&e.copy));
+        if let Some(j) = workcopy::find_added(entries, &present, &mut plan, in_use)? {
+            entries[j].refresh(&plan.sources[0]);
+            workcopy::write(work_dir, entries)?;
+            let path = work_dir.join(&entries[j].copy);
+            tracing::info!("working copy {} reused", path.display());
+            return Ok(path);
+        }
+    }
+    let mut stage = Stage::new(
+        MediaPolicy::WorkingCopy,
+        exts,
+        limits,
+        work_dir.to_path_buf(),
+    )?;
+    stage.fresh = true;
+    stage.used.insert(MANIFEST_NAME.to_lowercase());
+    for name in known.iter().filter_map(|k| k.file_name()) {
+        stage.used.insert(name.to_string_lossy().to_lowercase());
+    }
+    let path = stage.materialize(&mut plan, 0)?;
+    if let Some(mut entries) = manifest {
+        let name = plan.items[0].entry.as_ref().map(|e| e.name.clone());
+        entries.push(ManifestEntry::new(
+            Origin::Added,
+            copy_name(&path),
+            name,
+            &mut plan.sources[0],
+        )?);
+        let added = entries.iter().filter(|e| e.origin == Origin::Added).count();
+        let mut forget = added.saturating_sub(MAX_ADDED_REMEMBERED);
+        entries.retain(|e| {
+            let drop = forget > 0 && e.origin == Origin::Added;
+            forget -= usize::from(drop);
+            !drop
+        });
+        workcopy::write(work_dir, &entries)?;
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -874,7 +1205,13 @@ mod tests {
         assert_eq!(again, p);
         assert_eq!(fs::read(&again.content).unwrap(), b"progress");
         assert_eq!(fs::read(&d1).unwrap(), b"original");
-        assert_eq!(f.written(), ["saves/hatari/Game.disks/Game.st"]);
+        assert_eq!(
+            f.written(),
+            [
+                "saves/hatari/Game.disks/.emu-rust-disks",
+                "saves/hatari/Game.disks/Game.st"
+            ]
+        );
     }
 
     #[test]
@@ -961,6 +1298,7 @@ mod tests {
         assert_eq!(
             f.written(),
             [
+                "saves/hatari/Game.disks/.emu-rust-disks",
                 "saves/hatari/Game.disks/Game.m3u",
                 "saves/hatari/Game.disks/_hash.msa",
                 "saves/hatari/Game.disks/drive.st",
@@ -1193,7 +1531,13 @@ mod tests {
             .unwrap();
         assert!(reset_working_copies(&f.saves(), "G").unwrap());
         assert!(!reset_working_copies(&f.saves(), "G").unwrap());
-        assert_eq!(f.written(), ["saves/hatari/H.disks/H.st"]);
+        assert_eq!(
+            f.written(),
+            [
+                "saves/hatari/H.disks/.emu-rust-disks",
+                "saves/hatari/H.disks/H.st"
+            ]
+        );
         assert_eq!(fs::read(&d).unwrap(), b"g");
         // The name is sanitized the same way as at preparation.
         f.prepare(&set("A/B", vec![d]), MediaPolicy::WorkingCopy)
@@ -1212,6 +1556,270 @@ mod tests {
         std::os::unix::fs::symlink(&target, f.saves().join("G.disks")).unwrap();
         assert!(reset_working_copies(&f.saves(), "G").unwrap());
         assert!(target.join("keep.st").exists());
+    }
+
+    #[test]
+    fn homonymous_games_get_their_own_copies() {
+        let f = Fixture::new();
+        let one = f.file("Jeu1/disk1.st", b"jeu1");
+        let two = f.file("Jeu2/disk1.st", b"jeu2");
+        let first = f
+            .prepare(&set("disk1", vec![one.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(first.notice, None);
+        fs::write(&first.content, b"progress 1").unwrap();
+        let second = f
+            .prepare(&set("disk1", vec![two.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(second.work_dir, Some(f.saves().join("disk1 (2).disks")));
+        assert_eq!(second.notice, Some(WorkDirNotice::SameName));
+        assert_eq!(fs::read(&second.content).unwrap(), b"jeu2");
+        assert_eq!(fs::read(&first.content).unwrap(), b"progress 1");
+        fs::write(&second.content, b"progress 2").unwrap();
+        // Later launches find their folder again, silently, whatever the order.
+        for (src, progress, dir) in [
+            (&two, &b"progress 2"[..], "disk1 (2).disks"),
+            (&one, b"progress 1", "disk1.disks"),
+        ] {
+            let p = f
+                .prepare(&set("disk1", vec![src.clone()]), MediaPolicy::WorkingCopy)
+                .unwrap();
+            assert_eq!(p.work_dir, Some(f.saves().join(dir)));
+            assert_eq!(p.notice, None);
+            assert_eq!(fs::read(&p.content).unwrap(), progress);
+        }
+        // Resetting the first folder does not hand the second game's copies to the first one.
+        assert!(reset_work_dir(&f.saves(), first.work_dir.as_ref().unwrap()).unwrap());
+        let again = f
+            .prepare(&set("disk1", vec![one]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(again.work_dir, first.work_dir);
+        assert_eq!(again.notice, None);
+        assert_eq!(fs::read(&again.content).unwrap(), b"jeu1");
+        assert_eq!(fs::read(&second.content).unwrap(), b"progress 2");
+    }
+
+    #[test]
+    fn replaced_source_never_reuses_the_old_progress() {
+        let f = Fixture::new();
+        let d1 = f.file("G/d1.st", b"v1 disk 1");
+        let d2 = f.file("G/d2.st", b"v1 disk 2");
+        let s = set("G", vec![d1.clone(), d2.clone()]);
+        let p = f.prepare(&s, MediaPolicy::WorkingCopy).unwrap();
+        fs::write(&p.images[0], b"progress").unwrap();
+        // Same size, other content (a fixed dump). Only the content decides: same size, so the CRC32 is read.
+        let mtime =
+            fs::metadata(&d2).unwrap().modified().unwrap() + std::time::Duration::from_secs(10);
+        fs::write(&d2, b"v2 disk 2").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&d2)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let q = f.prepare(&s, MediaPolicy::WorkingCopy).unwrap();
+        assert_eq!(q.work_dir, Some(f.saves().join("G (2).disks")));
+        assert_eq!(
+            q.notice,
+            Some(WorkDirNotice::SourceChanged {
+                previous: f.saves().join("G.disks")
+            })
+        );
+        assert_eq!(
+            snapshot(&q.images),
+            [b"v1 disk 1".to_vec(), b"v2 disk 2".to_vec()]
+        );
+        assert_eq!(fs::read(&p.images[0]).unwrap(), b"progress");
+        assert_eq!(fs::read(&p.images[1]).unwrap(), b"v1 disk 2");
+        let again = f.prepare(&s, MediaPolicy::WorkingCopy).unwrap();
+        assert_eq!(again.work_dir, q.work_dir);
+        assert_eq!(again.notice, None);
+    }
+
+    #[test]
+    fn moved_touched_or_extended_sets_keep_their_copies() {
+        let f = Fixture::new();
+        let d1 = f.file("G/d1.st", b"disk 1");
+        let p = f
+            .prepare(&set("G", vec![d1.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        fs::write(&p.content, b"progress").unwrap();
+        // Moved elsewhere with the same content, then touched.
+        let moved = f.file("Moved/d1.st", b"disk 1");
+        fs::remove_file(&d1).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&moved)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        let q = f
+            .prepare(&set("G", vec![moved.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(
+            (q.work_dir.clone(), q.notice.clone()),
+            (p.work_dir.clone(), None)
+        );
+        assert_eq!(fs::read(&q.content).unwrap(), b"progress");
+        // A disk joins the set: same folder, the new disk gets its copy.
+        let d2 = f.file("Moved/d2.st", b"disk 2");
+        let r = f
+            .prepare(&set("G", vec![moved.clone(), d2]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(r.work_dir, p.work_dir);
+        assert_eq!(
+            snapshot(&r.images),
+            [b"progress".to_vec(), b"disk 2".to_vec()]
+        );
+        // ... and leaves it: the folder now records it, so the shorter set gets new copies.
+        let s = f
+            .prepare(&set("G", vec![moved]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(s.work_dir, Some(f.saves().join("G (2).disks")));
+        assert!(matches!(
+            s.notice,
+            Some(WorkDirNotice::SourceChanged { .. })
+        ));
+        assert_eq!(fs::read(&r.images[0]).unwrap(), b"progress");
+    }
+
+    #[test]
+    fn folder_without_manifest_is_adopted_once_then_recorded() {
+        let f = Fixture::new();
+        let d = f.file("Old/Game.st", b"original");
+        let work = f.saves().join("Game.disks");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("Game.st"), b"old progress").unwrap();
+        let p = f
+            .prepare(&set("Game", vec![d.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(
+            (p.work_dir.as_deref(), p.notice.clone()),
+            (Some(work.as_path()), None)
+        );
+        assert_eq!(fs::read(&p.content).unwrap(), b"old progress");
+        assert!(work.join(MANIFEST_NAME).is_file());
+        // Recorded for this source: another game with the same name no longer gets it.
+        let other = f.file("Other/Game.st", b"other");
+        let q = f
+            .prepare(&set("Game", vec![other]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(q.notice, Some(WorkDirNotice::SameName));
+        assert_eq!(fs::read(&q.content).unwrap(), b"other");
+        assert_eq!(fs::read(&p.content).unwrap(), b"old progress");
+    }
+
+    #[test]
+    fn unreadable_manifest_or_non_folder_is_left_alone() {
+        let f = Fixture::new();
+        let d = f.file("Game.st", b"g");
+        let work = f.saves().join("Game.disks");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join(MANIFEST_NAME), b"garbage").unwrap();
+        fs::write(work.join("Game.st"), b"keep").unwrap();
+        fs::write(f.saves().join("Game (2).disks"), b"a file").unwrap();
+        let p = f
+            .prepare(&set("Game", vec![d]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(p.work_dir, Some(f.saves().join("Game (3).disks")));
+        assert_eq!(p.notice, Some(WorkDirNotice::SameName));
+        assert_eq!(fs::read(work.join("Game.st")).unwrap(), b"keep");
+        assert_eq!(fs::read(work.join(MANIFEST_NAME)).unwrap(), b"garbage");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_a_copy_is_never_adopted() {
+        let f = Fixture::new();
+        let d = f.file("Game.st", b"g");
+        let target = f.tmp.path().join("precious.st");
+        fs::write(&target, b"precious").unwrap();
+        let work = f.saves().join("Game.disks");
+        fs::create_dir_all(&work).unwrap();
+        std::os::unix::fs::symlink(&target, work.join("Game.st")).unwrap();
+        // Pre-manifest folder: the name is taken by the link, the copy goes next to it.
+        let p = f
+            .prepare(&set("Game", vec![d.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(p.content, work.join("01 Game.st"));
+        assert_eq!(fs::read(&p.content).unwrap(), b"g");
+        // Recorded copy replaced by a link: not progress of ours, a new copy is made.
+        fs::remove_file(&p.content).unwrap();
+        std::os::unix::fs::symlink(&target, &p.content).unwrap();
+        let q = f
+            .prepare(&set("Game", vec![d]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(q.work_dir.as_deref(), Some(work.as_path()));
+        assert_ne!(q.content, p.content);
+        assert_eq!(fs::read(&q.content).unwrap(), b"g");
+        assert_eq!(fs::read(&target).unwrap(), b"precious");
+        // A link in place of the folder is skipped too.
+        let other = f.tmp.path().join("elsewhere");
+        fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&other, f.saves().join("H.disks")).unwrap();
+        let h = f.file("H.st", b"h");
+        let r = f
+            .prepare(&set("H", vec![h]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(r.work_dir, Some(f.saves().join("H (2).disks")));
+        assert_eq!(fs::read_dir(&other).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn disk_added_from_the_menu_is_reused_in_later_sessions() {
+        let f = Fixture::new();
+        let own = f.file("Game/Disk 1.st", b"own");
+        let extra = f.file("Extras/Save.st", b"blank");
+        let other = f.file("Other/Save.st", b"other");
+        let p = f
+            .prepare(&set("Game", vec![own.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        let work = p.work_dir.clone().unwrap();
+        let add = |src: &Path, known: &[PathBuf]| {
+            stage_added_copy(&work, src, &exts(), Limits::DEFAULT, known).unwrap()
+        };
+        let added = add(&extra, &p.images);
+        assert_eq!(added, work.join("Save.st"));
+        fs::write(&added, b"saved game").unwrap();
+        // Next session: same source, same copy and progress; the set itself is unaffected.
+        let p2 = f
+            .prepare(&set("Game", vec![own]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(p2.work_dir, p.work_dir);
+        assert_eq!(add(&extra, &p2.images), added);
+        assert_eq!(fs::read(&added).unwrap(), b"saved game");
+        // Another source with the same name, or the same one twice in a session: separate copies.
+        let o = add(&other, &p2.images);
+        assert_ne!(o, added);
+        assert_eq!(fs::read(&o).unwrap(), b"other");
+        let mut known = p2.images.clone();
+        known.push(added.clone());
+        let twice = add(&extra, &known);
+        assert_ne!(twice, added);
+        assert_eq!(fs::read(&twice).unwrap(), b"blank");
+    }
+
+    #[test]
+    fn reset_work_dir_only_takes_a_disks_folder_of_the_core() {
+        let f = Fixture::new();
+        let elsewhere = f.tmp.path().join("x.disks");
+        fs::create_dir_all(&elsewhere).unwrap();
+        for bad in [
+            elsewhere.clone(),
+            f.saves().join("Game"),
+            f.saves().join(".disks"),
+        ] {
+            assert!(
+                matches!(
+                    reset_work_dir(&f.saves(), &bad),
+                    Err(RuntimeError::InvalidMediaSet(_))
+                ),
+                "{}",
+                bad.display()
+            );
+        }
+        assert!(elsewhere.exists());
+        assert!(!reset_work_dir(&f.saves(), &f.saves().join("G (2).disks")).unwrap());
     }
 
     #[test]

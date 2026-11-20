@@ -60,9 +60,19 @@ pub(crate) struct ComputerKeyboard {
     held: BTreeSet<RetroKey>,
     events: Vec<KeyEvent>,
     modifiers: KeyModifiers,
+    paused: bool,
 }
 
+/// Safety bound of the transition queue (a poll drains it every frame).
+const MAX_PENDING_EVENTS: usize = 256;
+
 impl ComputerKeyboard {
+    /// While paused, new key presses are dropped (they would all reach the machine at once on resume);
+    /// releases still go through so no key stays stuck.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
     /// Modifiers sent with the next events (`keymap::modifiers`).
     pub fn set_modifiers(&mut self, modifiers: KeyModifiers) {
         self.modifiers = modifiers;
@@ -73,6 +83,12 @@ impl ComputerKeyboard {
     /// equivalent and duplicate presses / releases are ignored.
     pub fn handle_key(&mut self, code: KeyCode, pressed: bool, text: Option<&str>) {
         let Some(key) = retro_key(code) else { return };
+        if self.paused && pressed {
+            return;
+        }
+        if self.events.len() >= MAX_PENDING_EVENTS && pressed {
+            return;
+        }
         let changed = if pressed {
             self.held.insert(key)
         } else {
@@ -387,6 +403,22 @@ mod tests {
         assert!(!ev[2].down && ev[2].character == 0);
         assert!(k.is_held(RetroKey::from_name("return").unwrap()));
         assert!(!k.is_held(RetroKey::from_name("q").unwrap()));
+    }
+
+    #[test]
+    fn presses_are_ignored_while_paused_but_releases_pass() {
+        let mut k = ComputerKeyboard::default();
+        k.handle_key(KeyCode::KeyA, true, None);
+        k.set_paused(true);
+        k.handle_key(KeyCode::KeyB, true, None);
+        k.handle_key(KeyCode::KeyA, false, None);
+        let ev = k.pending_events();
+        assert_eq!(ev.len(), 2);
+        assert!(!k.is_held(RetroKey::from_name("a").unwrap()));
+        assert!(!k.is_held(RetroKey::from_name("b").unwrap()));
+        k.set_paused(false);
+        k.handle_key(KeyCode::KeyB, true, None);
+        assert_eq!(k.pending_events().len(), 3);
     }
 
     #[test]

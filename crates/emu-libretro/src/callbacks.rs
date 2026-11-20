@@ -611,7 +611,7 @@ impl EnvState {
                 }
                 // SAFETY: non-null NUL-terminated key valid for the call (libretro.h).
                 let key = unsafe { CStr::from_ptr(display.key) };
-                if self.options.set_visible(key, display.visible) {
+                if self.options.set_visible(key, display.visible != 0) {
                     self.events.options_changed = true;
                 }
                 true
@@ -1344,18 +1344,18 @@ mod tests {
         assert_eq!(take_messages().len(), MAX_PENDING_MESSAGES);
     }
 
-    extern "C" fn hide_opt_b() -> bool {
+    extern "C" fn hide_opt_b() -> u8 {
         let display = sys::retro_core_option_display {
             key: c"opt_b".as_ptr(),
-            visible: false,
+            visible: 0,
         };
         // SAFETY: `const struct retro_core_option_display *`.
-        unsafe {
+        u8::from(unsafe {
             environment(
                 sys::RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
                 (&raw const display).cast_mut().cast(),
             )
-        }
+        })
     }
 
     #[test]
@@ -1429,7 +1429,7 @@ mod tests {
         ));
         let callback = update_display_callback().unwrap();
         // SAFETY: test callback, no preconditions; called outside any environment borrow.
-        assert!(unsafe { callback() });
+        assert!(unsafe { callback() } != 0);
         assert!(!options()[1].visible);
 
         let mut recorder = Recorder::default();
@@ -1593,14 +1593,14 @@ mod tests {
     }
 
     extern "C" fn test_key(_down: bool, _keycode: c_uint, _character: u32, _modifiers: u16) {}
-    extern "C" fn test_eject(_ejected: bool) -> bool {
-        true
+    extern "C" fn test_eject(_ejected: bool) -> u8 {
+        1
     }
     extern "C" fn test_num_images() -> c_uint {
         3
     }
-    extern "C" fn test_initial(_index: c_uint, _path: *const c_char) -> bool {
-        true
+    extern "C" fn test_initial(_index: c_uint, _path: *const c_char) -> u8 {
+        1
     }
 
     #[test]

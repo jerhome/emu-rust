@@ -95,8 +95,8 @@ pub struct retro_system_info {
     pub library_name: *const c_char,
     pub library_version: *const c_char,
     pub valid_extensions: *const c_char,
-    pub need_fullpath: bool,
-    pub block_extract: bool,
+    pub need_fullpath: u8,
+    pub block_extract: u8,
 }
 
 #[repr(C)]
@@ -234,10 +234,10 @@ pub struct retro_core_options_v2_intl {
 #[derive(Debug, Clone, Copy)]
 pub struct retro_core_option_display {
     pub key: *const c_char,
-    pub visible: bool,
+    pub visible: u8,
 }
 
-pub type retro_core_options_update_display_callback_t = unsafe extern "C" fn() -> bool;
+pub type retro_core_options_update_display_callback_t = unsafe extern "C" fn() -> u8;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -254,20 +254,19 @@ pub struct retro_keyboard_callback {
     pub callback: Option<retro_keyboard_event_t>,
 }
 
-pub type retro_set_eject_state_t = unsafe extern "C" fn(ejected: bool) -> bool;
-pub type retro_get_eject_state_t = unsafe extern "C" fn() -> bool;
+pub type retro_set_eject_state_t = unsafe extern "C" fn(ejected: bool) -> u8;
+pub type retro_get_eject_state_t = unsafe extern "C" fn() -> u8;
 pub type retro_get_image_index_t = unsafe extern "C" fn() -> c_uint;
-pub type retro_set_image_index_t = unsafe extern "C" fn(index: c_uint) -> bool;
+pub type retro_set_image_index_t = unsafe extern "C" fn(index: c_uint) -> u8;
 pub type retro_get_num_images_t = unsafe extern "C" fn() -> c_uint;
 pub type retro_replace_image_index_t =
-    unsafe extern "C" fn(index: c_uint, info: *const retro_game_info) -> bool;
-pub type retro_add_image_index_t = unsafe extern "C" fn() -> bool;
-pub type retro_set_initial_image_t =
-    unsafe extern "C" fn(index: c_uint, path: *const c_char) -> bool;
+    unsafe extern "C" fn(index: c_uint, info: *const retro_game_info) -> u8;
+pub type retro_add_image_index_t = unsafe extern "C" fn() -> u8;
+pub type retro_set_initial_image_t = unsafe extern "C" fn(index: c_uint, path: *const c_char) -> u8;
 pub type retro_get_image_path_t =
-    unsafe extern "C" fn(index: c_uint, s: *mut c_char, len: usize) -> bool;
+    unsafe extern "C" fn(index: c_uint, s: *mut c_char, len: usize) -> u8;
 pub type retro_get_image_label_t =
-    unsafe extern "C" fn(index: c_uint, s: *mut c_char, len: usize) -> bool;
+    unsafe extern "C" fn(index: c_uint, s: *mut c_char, len: usize) -> u8;
 
 /// libretro.h declares the pointers non-optional ("all function pointers are required"); `Option` keeps a
 /// buggy core's NULL from being undefined behaviour.
@@ -326,11 +325,11 @@ pub struct CoreApi {
     pub set_controller_port_device: unsafe extern "C" fn(port: c_uint, device: c_uint),
     pub reset: unsafe extern "C" fn(),
     pub run: unsafe extern "C" fn(),
-    pub load_game: unsafe extern "C" fn(*const retro_game_info) -> bool,
+    pub load_game: unsafe extern "C" fn(*const retro_game_info) -> u8,
     pub unload_game: unsafe extern "C" fn(),
     pub serialize_size: unsafe extern "C" fn() -> usize,
-    pub serialize: unsafe extern "C" fn(data: *mut c_void, size: usize) -> bool,
-    pub unserialize: unsafe extern "C" fn(data: *const c_void, size: usize) -> bool,
+    pub serialize: unsafe extern "C" fn(data: *mut c_void, size: usize) -> u8,
+    pub unserialize: unsafe extern "C" fn(data: *const c_void, size: usize) -> u8,
     pub get_memory_data: unsafe extern "C" fn(id: c_uint) -> *mut c_void,
     pub get_memory_size: unsafe extern "C" fn(id: c_uint) -> usize,
 }

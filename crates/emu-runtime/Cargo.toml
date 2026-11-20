@@ -13,6 +13,7 @@ audio-cpal = ["dep:cpal"]
 
 [dependencies]
 cpal = { workspace = true, optional = true }
+crc32fast = "1.5"
 emu-libretro = { workspace = true }
 glow = { workspace = true }
 glutin = { workspace = true }

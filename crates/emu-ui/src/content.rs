@@ -36,12 +36,15 @@ fn stem(path: &Path) -> String {
 }
 
 /// Floppy image extensions of the computer systems (`m3u` excluded: playlists are handled apart).
-const FLOPPY_EXTENSIONS: [&str; 6] = ["st", "msa", "dim", "stx", "ipf", "adf"];
-
-fn is_floppy(path: &Path) -> bool {
+/// True when `path` has an extension of a console of the catalog (`systems.toml`, kind Console) and of no
+/// computer: only then is a file known to be a read-only cartridge.
+fn is_console_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| FLOPPY_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+        .map(emu_library::systems_for_extension)
+        .is_some_and(|s| {
+            !s.is_empty() && s.iter().all(|i| i.kind == emu_library::SystemKind::Console)
+        })
 }
 
 fn is_known(prefs: &CorePreferences, id: &CoreId) -> bool {
@@ -75,10 +78,11 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
     let id = CoreId::new(core_id);
     let policy = match id.as_ref().map(|id| prefs.media_policy(id)) {
         Some(CoreMediaPolicy::WorkingCopy) => MediaPolicy::WorkingCopy,
-        // Unknown core (renamed file, `--core /x/hatari-old.so`): it may write into its disks, so floppy
-        // images get a working copy by default. Cores known to the preferences keep their explicit policy.
+        // Unknown core (renamed file, `--core /x/hatari-old.so`): it may write into its disks, so anything
+        // that is not surely a console file (floppies, hard disks, `.m3u`, unknown extensions) gets a working
+        // copy. Cores known to the preferences keep their explicit policy.
         _ if id.as_ref().is_none_or(|id| !is_known(prefs, id))
-            && files.iter().any(|f| is_floppy(f)) =>
+            && !files.iter().all(|f| is_console_file(f)) =>
         {
             MediaPolicy::WorkingCopy
         }
@@ -150,6 +154,22 @@ mod tests {
             content_spec("mystery", &files(&["/g/a.sfc"]), &prefs),
             ContentSpec::File(PathBuf::from("/g/a.sfc"))
         );
+        assert_eq!(
+            content_spec("mystery", &files(&["/g/a.md"]), &prefs),
+            ContentSpec::File(PathBuf::from("/g/a.md"))
+        );
+        match content_spec("hatari-old", &files(&["/g/x.m3u"]), &prefs) {
+            ContentSpec::Media { policy, .. } => assert_eq!(policy, MediaPolicy::WorkingCopy),
+            other => panic!("{other:?}"),
+        }
+        for f in ["a.ide", "a.vhd", "a.gem", "a.hdf", "a.unknown"] {
+            match content_spec("hatari-old", &files(&[f]), &prefs) {
+                ContentSpec::Media { policy, .. } => {
+                    assert_eq!(policy, MediaPolicy::WorkingCopy, "{f}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
         // Known direct core: explicit policy kept.
         assert_eq!(
             content_spec("hatarib", &files(&["/g/Nova.st"]), &prefs),

@@ -189,7 +189,11 @@ pub enum CoreError {
     /// Installed file no longer matches the SHA-256 recorded at install time: never loaded.
     #[error("core `{id}` modifié depuis son installation ({path}) : réinstaller")]
     Tampered { id: CoreId, path: PathBuf },
-    #[error("core `{id}` : CRC32 {found:08x} au lieu de {expected:08x} (index du buildbot)")]
+    #[error(
+        "core `{id}` : le fichier téléchargé (CRC32 {found:08x}) ne correspond pas à l'index du buildbot \
+         ({expected:08x}), même après mise à jour du catalogue : réessayez plus tard (build en cours ?) ou \
+         vérifiez qu'un proxy/antivirus ne modifie pas les téléchargements"
+    )]
     CrcMismatch {
         id: CoreId,
         expected: u32,
@@ -220,6 +224,9 @@ pub const MAX_INFO_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_CORE_ZIP_BYTES: u64 = 128 * 1024 * 1024;
 /// Attempts per download (network errors, timeouts and 5xx only), delays 1 s then 2 s.
 pub const DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// A cached catalog older than this is renewed before an install (offline: kept, the CRC32 check decides).
+pub const CATALOG_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
 
 const MANIFEST_FILE: &str = "manifest.toml";
 const MANIFEST_VERSION: u32 = 1;
@@ -527,33 +534,58 @@ impl CoreManager {
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<InstalledCore, CoreError> {
-        let remote = {
+        {
             let mut st = self.lock();
             check_free(&st, id)?;
-            let catalog = st.catalog.as_ref().ok_or(CoreError::NoCatalog)?;
-            let remote = catalog
-                .cores
-                .get(id)
-                .cloned()
-                .ok_or_else(|| CoreError::NotAvailable(id.clone()))?;
+            if st.catalog.is_none() {
+                return Err(CoreError::NoCatalog);
+            }
             st.busy.insert(id.clone());
-            remote
-        };
+        }
         let _busy = BusyGuard { manager: self, id };
 
-        let url = self.source.core_url(self.platform, id);
-        let zip = self.download(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
-        let file_name = self.platform.core_file_name(id);
-        let data = extract_core(&zip, &file_name, ExtractLimits::CORE)?;
-        drop(zip);
-        let crc32 = crc32fast::hash(&data);
-        if crc32 != remote.crc32 {
-            return Err(CoreError::CrcMismatch {
-                id: id.clone(),
-                expected: remote.crc32,
-                found: crc32,
-            });
+        // Nightlies are rebuilt daily: an old cached index would announce a CRC32 that no longer matches.
+        let mut refreshed = false;
+        let stale = self
+            .lock()
+            .catalog
+            .as_ref()
+            .is_some_and(|c| catalog_is_stale(c.fetched_unix, now_unix()));
+        if stale {
+            refreshed = self.refresh_for_install(progress, cancel)?;
         }
+        let url = self.source.core_url(self.platform, id);
+        let file_name = self.platform.core_file_name(id);
+        let mut remote = self.remote_core(id)?;
+        let (data, crc32) = loop {
+            let zip = self.download(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
+            let data = extract_core(&zip, &file_name, ExtractLimits::CORE)?;
+            drop(zip);
+            let crc32 = crc32fast::hash(&data);
+            if crc32 == remote.crc32 {
+                break (data, crc32);
+            }
+            drop(data);
+            // The index may predate the zip: one refresh, then the download is verified against the fresh index.
+            // Never accept a file that disagrees with an index fetched after the download.
+            let previous = remote.clone();
+            if refreshed || !self.refresh_for_install(progress, cancel)? {
+                return Err(CoreError::CrcMismatch {
+                    id: id.clone(),
+                    expected: remote.crc32,
+                    found: crc32,
+                });
+            }
+            refreshed = true;
+            remote = self.remote_core(id)?;
+            if remote.crc32 == previous.crc32 {
+                return Err(CoreError::CrcMismatch {
+                    id: id.clone(),
+                    expected: remote.crc32,
+                    found: crc32,
+                });
+            }
+        };
         if cancel.is_cancelled() {
             return Err(AssetError::Cancelled.into());
         }
@@ -568,6 +600,33 @@ impl CoreManager {
         let temp = write_temp(&self.dirs.cores, &file_name, &data, true)?;
         drop(data);
         self.commit_install(id, temp, record, cancel)
+    }
+
+    fn remote_core(&self, id: &CoreId) -> Result<RemoteCore, CoreError> {
+        let st = self.lock();
+        let catalog = st.catalog.as_ref().ok_or(CoreError::NoCatalog)?;
+        catalog
+            .cores
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CoreError::NotAvailable(id.clone()))
+    }
+
+    /// `Ok(true)` when the catalog was renewed. Offline (any error but cancellation) the cached catalog is kept
+    /// and `Ok(false)` is returned: the CRC32 check then decides.
+    fn refresh_for_install(
+        &self,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<bool, CoreError> {
+        match self.refresh(progress, cancel) {
+            Ok(_) => Ok(true),
+            Err(CoreError::Asset(AssetError::Cancelled)) => Err(AssetError::Cancelled.into()),
+            Err(e) => {
+                tracing::warn!("catalogue non rafraîchi avant l'installation : {e}");
+                Ok(false)
+            }
+        }
     }
 
     /// Renames and manifest, under the directory lock and the state lock (no network, a few file system calls).
@@ -922,6 +981,10 @@ impl CoreManager {
             }
         }
     }
+}
+
+fn catalog_is_stale(fetched_unix: u64, now: u64) -> bool {
+    now.saturating_sub(fetched_unix) > CATALOG_MAX_AGE.as_secs()
 }
 
 fn check_free(st: &State, id: &CoreId) -> Result<(), CoreError> {

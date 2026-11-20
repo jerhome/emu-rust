@@ -204,10 +204,41 @@ fn hostile_or_empty_m3u_is_reported_and_not_listed() {
     write(&root.join("ok.st"), &disk(1));
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);
-    assert_eq!(report.errors.len(), 4, "{report:?}");
+    assert_eq!(report.errors.len(), 3, "{report:?}");
+    // An absolute path is valid (the runtime accepts it): the playlist is listed.
     let all = games(&lib);
-    assert_eq!(all.len(), 1);
-    assert!(all[0].path.ends_with("ok.st"));
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert!(all.iter().any(|g| g.path.ends_with("ok.st")));
+    assert!(all.iter().any(|g| g.path.ends_with("abs.m3u")));
+}
+
+#[test]
+fn m3u_labels_are_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("atarist");
+    write(&root.join("a.st"), &disk(1));
+    write(&root.join("b.st"), &disk(2));
+    write(&root.join("Saga.m3u"), b"a.st|Disk A\nb.st|Disk B\n");
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan(&mut lib, &root);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let all = games(&lib);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(names(&all[0].media), ["a.st", "b.st"]);
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn m3u_entries_match_files_ignoring_case() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("atarist");
+    write(&root.join("disk1.st"), &disk(1));
+    write(&root.join("Saga.m3u"), b"DISK1.ST\n");
+    let mut lib = Library::open_in_memory().unwrap();
+    scan(&mut lib, &root);
+    let all = games(&lib);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert!(all[0].path.ends_with("Saga.m3u"));
 }
 
 #[test]

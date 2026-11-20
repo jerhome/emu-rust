@@ -18,8 +18,9 @@ pub use id::CoreId;
 pub use index::{BuildDate, MAX_INDEX_ENTRIES, RemoteCore, parse_index_extended};
 pub use info::{CoreInfo, FirmwareSpec, InfoError, MAX_INFO_SIZE, parse_info};
 pub use manager::{
-    BuildbotSource, CoreDirs, CoreError, CoreManager, CoreUpdate, DOWNLOAD_ATTEMPTS, InstalledCore,
-    MAX_CORE_ZIP_BYTES, MAX_INDEX_BYTES, MAX_INFO_BUNDLE_BYTES, Origin, RemoteCatalog,
+    BuildbotSource, CATALOG_MAX_AGE, CoreDirs, CoreError, CoreManager, CoreUpdate,
+    DOWNLOAD_ATTEMPTS, InstalledCore, MAX_CORE_ZIP_BYTES, MAX_INDEX_BYTES, MAX_INFO_BUNDLE_BYTES,
+    Origin, RemoteCatalog,
 };
 pub use platform::Platform;
 pub use select::{CoreChoice, CoreMediaPolicy, CorePreferences, choose_core};

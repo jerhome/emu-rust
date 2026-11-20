@@ -85,10 +85,31 @@ fn sanitize_component(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_end_matches('.');
     if trimmed.is_empty() {
-        "_".to_owned()
-    } else {
-        trimmed.chars().take(120).collect()
+        return "_".to_owned();
     }
+    let mut name: String = trimmed.chars().take(120).collect();
+    if is_reserved_windows(&name) {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// Same rule as the runtime's `fsname` (not public): DOS device names are refused by Windows with or without
+/// extension, case-insensitively.
+fn is_reserved_windows(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let upper = base.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let mut chars = upper.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³'))
+        && chars.next().is_none()
 }
 
 impl GameOptions {
@@ -161,6 +182,20 @@ pub(crate) fn effective_core_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_windows_names_are_prefixed() {
+        for (raw, want) in [
+            ("CON", "_CON"),
+            ("nul", "_nul"),
+            ("COM1", "_COM1"),
+            ("lpt9.x", "_lpt9.x"),
+            ("COM10", "COM10"),
+            ("Console", "Console"),
+        ] {
+            assert_eq!(sanitize_component(raw), want);
+        }
+    }
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter().map(|(a, b)| ((*a).into(), (*b).into())).collect()

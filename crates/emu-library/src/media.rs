@@ -2,7 +2,7 @@
 //! Pure functions: no file access (the scanner reads `.m3u` files itself).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Same bound as `emu_runtime::MAX_MEDIA_IMAGES`: a group or playlist never lists more images.
 pub const MAX_MEDIA_IMAGES: usize = 32;
@@ -213,29 +213,48 @@ pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
     (groups.into_iter().map(|(_, g)| g).collect(), singles)
 }
 
-/// Images listed by a `.m3u` (text already read, ≤ 64 KiB): one relative path per line, `#` comments and blank
-/// lines skipped. Absolute paths, drive letters and `..` are refused; both separators are accepted.
+/// Images listed by a `.m3u` (text already read, ≤ 64 KiB): one path per line, `#` comments and blank lines
+/// skipped, a `|label` suffix dropped, paths absolute or relative to `dir`. `..`, control characters and drive or
+/// root prefixes on a relative path are refused. Backslashes are separators on every platform but Windows.
+///
+/// Must stay aligned with `parse_playlist` in `emu-runtime/src/media.rs` (the crates cannot depend on each
+/// other): a playlist the core accepts must not be flagged here, or the game would be hidden by the scan.
 pub(crate) fn parse_m3u(text: &str, dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    for line in text.trim_start_matches('\u{feff}').lines() {
-        let line = line.trim();
+    for line in text.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with(['/', '\\']) || line.as_bytes().get(1) == Some(&b':') {
-            return Err(format!("chemin absolu refusé dans le .m3u : {line}"));
+        let entry = line.split('|').next().unwrap_or("").trim();
+        if entry.is_empty() {
+            continue;
         }
-        let mut path = dir.to_path_buf();
-        for part in line.split(['/', '\\']) {
-            match part {
-                "" | "." => {}
-                ".." => return Err(format!("`..` refusé dans le .m3u : {line}")),
-                p if p.chars().any(char::is_control) => {
-                    return Err("caractère de contrôle dans le .m3u".to_owned());
-                }
-                p => path.push(p),
+        if entry.chars().any(char::is_control) {
+            return Err("caractère de contrôle dans le .m3u".to_owned());
+        }
+        let entry = if cfg!(windows) {
+            PathBuf::from(entry)
+        } else {
+            PathBuf::from(entry.replace('\\', "/"))
+        };
+        if entry.components().any(|c| c == Component::ParentDir) {
+            return Err(format!("`..` refusé dans le .m3u : {}", entry.display()));
+        }
+        let path = if entry.is_absolute() {
+            entry
+        } else {
+            if entry
+                .components()
+                .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+            {
+                return Err(format!(
+                    "préfixe de lecteur ou racine refusé dans le .m3u : {}",
+                    entry.display()
+                ));
             }
-        }
+            dir.join(entry)
+        };
         if out.len() >= MAX_MEDIA_IMAGES {
             return Err(format!(".m3u : plus de {MAX_MEDIA_IMAGES} images"));
         }
@@ -363,20 +382,37 @@ mod tests {
     }
 
     #[test]
-    fn m3u_parsing_refuses_hostile_lines() {
+    fn m3u_parsing_matches_the_runtime_rules() {
         let dir = Path::new("/r/st");
-        let ok = parse_m3u("\u{feff}#EXTM3U\n\nA.st\r\nsub\\B.st\n./C.st\n", dir).unwrap();
-        assert_eq!(ok, [p("/r/st/A.st"), p("/r/st/sub/B.st"), p("/r/st/C.st")]);
+        let ok = parse_m3u(
+            "\u{feff}#EXTM3U\n\nA.st|Disk A\r\nsub\\B.st\n./C.st\n /abs/D.st \n|only label\n",
+            dir,
+        )
+        .unwrap();
+        if cfg!(windows) {
+            assert_eq!(ok.len(), 4);
+        } else {
+            assert_eq!(
+                ok,
+                [
+                    p("/r/st/A.st"),
+                    p("/r/st/sub/B.st"),
+                    p("/r/st/./C.st"),
+                    p("/abs/D.st")
+                ]
+            );
+        }
         for bad in [
-            "/etc/passwd",
-            "\\x.st",
-            "C:\\x.st",
             "../x.st",
             "a/../../x.st",
             "a\\..\\x.st",
+            "a\u{1}b.st",
+            "/abs/../x.st|label",
         ] {
             assert!(parse_m3u(bad, dir).is_err(), "{bad}");
         }
+        #[cfg(windows)]
+        assert!(parse_m3u("C:x.st", dir).is_err());
         let many = "x.st\n".repeat(MAX_MEDIA_IMAGES + 1);
         assert!(parse_m3u(&many, dir).is_err());
     }

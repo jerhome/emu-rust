@@ -64,14 +64,15 @@ impl DiskControl<'_> {
             return false;
         };
         // SAFETY: registered by this core, whose library is loaded while `self.core` lives; owning thread, outside
-        // `retro_run`, content loaded; no arguments.
-        unsafe { f() }
+        // `retro_run`, content loaded; no arguments. The result is a `u8` (any byte is valid; a C `bool` from a
+        // buggy core could be neither 0 nor 1) and is tested with `!= 0`.
+        unsafe { f() != 0 }
     }
 
     pub fn set_ejected(&mut self, ejected: bool) -> Result<(), LibretroError> {
         let f = self.require(self.fns.set_eject_state)?;
-        // SAFETY: as in `is_ejected`; plain `bool` argument.
-        check(unsafe { f(ejected) }, "set_eject_state")
+        // SAFETY: as in `is_ejected`; plain `bool` argument, `u8` result.
+        check(unsafe { f(ejected) } != 0, "set_eject_state")
     }
 
     pub fn image_index(&mut self) -> u32 {
@@ -85,7 +86,7 @@ impl DiskControl<'_> {
     pub fn set_image_index(&mut self, index: u32) -> Result<(), LibretroError> {
         let f = self.require(self.fns.set_image_index)?;
         // SAFETY: as in `is_ejected`; libretro.h makes the core validate `index` (it returns false).
-        check(unsafe { f(c_uint::from(index)) }, "set_image_index")
+        check(unsafe { f(c_uint::from(index)) } != 0, "set_image_index")
     }
 
     pub fn num_images(&mut self) -> u32 {
@@ -106,7 +107,7 @@ impl DiskControl<'_> {
         let ok = match image {
             None => {
                 // SAFETY: as in `is_ejected`; libretro.h documents a NULL `info` as "remove this image".
-                unsafe { f(c_uint::from(index), std::ptr::null()) }
+                unsafe { f(c_uint::from(index), std::ptr::null()) != 0 }
             }
             Some(path) => {
                 let path = self.core.retain_disk_path(disk_cstring(path)?);
@@ -118,7 +119,7 @@ impl DiskControl<'_> {
                 };
                 // SAFETY: as in `is_ejected`. `info` lives on this stack frame for the call; its `path` is a
                 // NUL-terminated string kept by `Core` until the content is unloaded; `data` is NULL with size 0.
-                unsafe { f(c_uint::from(index), &raw const info) }
+                unsafe { f(c_uint::from(index), &raw const info) != 0 }
             }
         };
         check(ok, "replace_image_index")
@@ -128,7 +129,7 @@ impl DiskControl<'_> {
     pub fn add_image(&mut self) -> Result<(), LibretroError> {
         let f = self.require(self.fns.add_image_index)?;
         // SAFETY: as in `is_ejected`.
-        check(unsafe { f() }, "add_image_index")
+        check(unsafe { f() } != 0, "add_image_index")
     }
 
     /// Extended only, and only before `load_game` (restores the disk inserted at the previous session):
@@ -146,7 +147,10 @@ impl DiskControl<'_> {
         let path = self.core.retain_disk_path(disk_cstring(path)?);
         // SAFETY: registered by this core, whose library is loaded; owning thread; libretro.h asks for this call
         // before `retro_load_game` (checked above). `path` is NUL-terminated and kept by `Core`.
-        check(unsafe { f(c_uint::from(index), path) }, "set_initial_image")
+        check(
+            unsafe { f(c_uint::from(index), path) } != 0,
+            "set_initial_image",
+        )
     }
 
     /// Extended only; `None` otherwise or when the core has no path.
@@ -155,7 +159,7 @@ impl DiskControl<'_> {
         let bytes = read_text(|buf, len| {
             // SAFETY: as in `is_ejected`; `buf` is writable for `len` bytes during the call (`read_text`) and the
             // core writes at most `len` bytes (libretro.h contract of `s` / `len`).
-            unsafe { f(c_uint::from(index), buf, len) }
+            unsafe { f(c_uint::from(index), buf, len) != 0 }
         })?;
         Some(path_from_bytes(bytes))
     }
@@ -165,7 +169,7 @@ impl DiskControl<'_> {
         let f = self.query(self.fns.get_image_label)?;
         let bytes = read_text(|buf, len| {
             // SAFETY: as in `image_path`.
-            unsafe { f(c_uint::from(index), buf, len) }
+            unsafe { f(c_uint::from(index), buf, len) != 0 }
         })?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
