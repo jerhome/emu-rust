@@ -860,11 +860,31 @@ impl EnvState {
                 self.log_unhandled(cmd);
                 false
             }
-            // Rumble, perf, VFS, frame-time / audio callbacks…
+            // Optional interfaces some cores (puae) probe at startup: declined on purpose, so they are not
+            // reported as unhandled. The core falls back to its own implementation.
+            sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE
+            | sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE
+            | sys::RETRO_ENVIRONMENT_GET_LED_INTERFACE
+            | sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE => {
+                self.log_declined(cmd);
+                false
+            }
+            // Rumble, frame-time / audio callbacks…
             _ => {
                 self.log_unhandled(cmd);
                 false
             }
+        }
+    }
+
+    fn log_declined(&mut self, cmd: c_uint) {
+        if !self.logged_commands.contains(&cmd) {
+            self.logged_commands.push(cmd);
+            tracing::debug!(
+                cmd,
+                base = cmd & 0xffff,
+                "libretro environment command declined (not supported by this frontend)"
+            );
         }
     }
 
@@ -1256,6 +1276,17 @@ mod tests {
             sys::RETRO_ENVIRONMENT_GET_OVERSCAN,
             (&raw mut overscan).cast()
         ));
+        let mut scratch = [0u8; 64];
+        for cmd in [
+            sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE,
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
+            sys::RETRO_ENVIRONMENT_GET_LED_INTERFACE,
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+        ] {
+            assert!(!env(cmd, scratch.as_mut_ptr().cast()), "{cmd}");
+            assert!(!env(cmd, std::ptr::null_mut()), "{cmd} null");
+        }
+        assert!(scratch.iter().all(|b| *b == 0), "declined: nothing written");
         let mut msg_version: c_uint = 0;
         assert!(env(
             sys::RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION,

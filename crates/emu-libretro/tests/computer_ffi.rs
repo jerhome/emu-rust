@@ -16,7 +16,9 @@ use emu_libretro::{
     KeyModifiers, LibretroError, PixelFormat, RetroKey, VideoFrame, mouse_id,
 };
 
-const VARS: [&str; 5] = [
+const VARS: [&str; 7] = [
+    "MOCK_DISK_NO_INITIAL",
+    "MOCK_ENV_PROBE",
     "MOCK_KEYBOARD",
     "MOCK_MOUSE",
     "MOCK_DISK",
@@ -114,6 +116,7 @@ fn computer_features_on_mock_core() {
     keyboard_and_mouse(&lib);
     disk_ext(&lib);
     disk_basic(&lib);
+    puae_like(&lib);
     no_game(&lib);
     set_protocol(&[]);
 }
@@ -268,6 +271,35 @@ fn disk_ext(lib: &Path) {
         "ext, replace and add seen: {flags:#b}"
     );
     assert_eq!(probe.cell(3, 6), 2, "initial image index + 1");
+}
+
+/// What puae needs: 28 / 45 / 46 / 64 declined, and an ext disk interface without `set_initial_image`.
+fn puae_like(lib: &Path) {
+    set_protocol(&[
+        ("MOCK_DISK", "ext"),
+        ("MOCK_DISK_DUMP", "1"),
+        ("MOCK_DISK_NO_INITIAL", "1"),
+        ("MOCK_ENV_PROBE", "1"),
+    ]);
+    let dir = out_dir("puae-like");
+    std::fs::write(dir.join("d1.st"), "d1").unwrap();
+    let mut core = load(lib, &dir);
+    let env = std::fs::read_to_string(dir.join("saves/mock-env.txt")).unwrap();
+    assert_eq!(env, "env28=0\nenv45=0\nenv46=0\nenv64=0\n");
+    {
+        let mut disks = core.disk_control().expect("disk control");
+        assert_eq!(disks.kind(), DiskControlKind::Extended);
+        assert!(matches!(
+            disks.set_initial_image(0, &dir.join("d1.st")),
+            Err(LibretroError::DiskControlUnsupported)
+        ));
+    }
+    core.load_game(&dir.join("d1.st")).unwrap();
+    let mut probe = Probe::default();
+    core.run(&mut probe).unwrap();
+    assert_eq!(probe.cell(3, 6), 0, "no initial image");
+    let dump = std::fs::read_to_string(dir.join("saves/mock-disk.txt")).unwrap();
+    assert!(dump.contains("initial=-"), "{dump}");
 }
 
 fn disk_basic(lib: &Path) {
