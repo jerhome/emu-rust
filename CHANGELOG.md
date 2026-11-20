@@ -2,9 +2,9 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
-## [Unreleased]
+## [2.1.0-rc.1] - 2026-11-21
 
-Version 2.1 (non publiée) : **Mega CD**, **manette PS4** et arrêt propre.
+Pré-release de la 2.1 : **Mega CD**, **manette PS4** et arrêt propre.
 
 ### Ajouté
 
