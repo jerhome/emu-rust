@@ -328,7 +328,10 @@ pub fn import_firmware(
         md5
     };
 
+    // Same lock as the free BIOS manager: the manifest update below must not interleave with an install.
+    let _guard = super::lock_manifests();
     let mut backup = None;
+    let mut noclobber = true;
     let replaces_free = match target_state(system_dir, name, &md5)? {
         TargetState::Same => {
             tracing::info!("BIOS déjà installé : {name}");
@@ -339,7 +342,10 @@ pub fn import_firmware(
             });
         }
         TargetState::Absent => false,
-        TargetState::FreeInstalled => true,
+        TargetState::FreeInstalled => {
+            noclobber = false;
+            true
+        }
         TargetState::Other { .. } => match policy {
             ReplacePolicy::Refuse => return Err(BiosError::TargetExists(name.to_owned())),
             ReplacePolicy::BackupAndReplace => {
@@ -348,9 +354,22 @@ pub fn import_firmware(
             }
         },
     };
-    temp.persist(&target).map_err(|e| BiosError::Io {
-        path: target.clone(),
-        source: e.error,
+    // A file that appeared since `target_state` (copied by hand meanwhile) is never overwritten; the temporary
+    // is removed when `PersistError` drops.
+    let persisted = if noclobber {
+        temp.persist_noclobber(&target)
+    } else {
+        temp.persist(&target)
+    };
+    persisted.map_err(|e| {
+        if noclobber && e.error.kind() == io::ErrorKind::AlreadyExists {
+            BiosError::TargetExists(name.to_owned())
+        } else {
+            BiosError::Io {
+                path: target.clone(),
+                source: e.error,
+            }
+        }
     })?;
     crate::http::sync_dir(&parent);
     tracing::info!(
@@ -389,7 +408,8 @@ pub fn import_firmware(
     })
 }
 
-/// Rules of the module doc. `/` is accepted (sub-folders declared by `.info` files, `vice/JiffyDOS_C64.bin`);
+/// Rules of the module doc. `/` is accepted (sub-folders declared by `.info` files, `vice/JiffyDOS_C64.bin`),
+/// so callers must only pass names from the firmware catalogue (`expected_names()`), never free user input;
 /// every component must be safe on every target, and the file name must not be hidden (manifest, temporary
 /// files).
 fn validate_target_name(name: &str) -> Result<(), BiosError> {
@@ -875,6 +895,27 @@ mod tests {
             target_state(&system, "kick.A1200", &md5_of(b"ks13")),
             Err(BiosError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn import_waits_for_the_manifest_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        let src = write(dir.path(), "src.bin", b"ks13");
+        let guard = crate::bios::lock_manifests();
+        let sys = system.clone();
+        let worker = std::thread::spawn(move || {
+            import_firmware(&sys, &src, "kick.A500", ReplacePolicy::Refuse, true).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !system.join("kick.A500").exists(),
+            "import ran under the lock"
+        );
+        drop(guard);
+        worker.join().unwrap();
+        assert!(system.join("kick.A500").exists());
+        assert!(imported(&system).contains_key("kick.A500"));
     }
 
     #[test]

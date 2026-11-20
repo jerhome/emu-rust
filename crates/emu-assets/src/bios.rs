@@ -470,7 +470,6 @@ struct ManifestEntry {
 pub struct FreeBiosManager {
     system_dir: PathBuf,
     http: HttpClient,
-    write: Mutex<()>,
 }
 
 impl FreeBiosManager {
@@ -498,7 +497,6 @@ impl FreeBiosManager {
         let manager = Self {
             system_dir: system_dir.to_path_buf(),
             http,
-            write: Mutex::new(()),
         };
         manager.clean_stale_temporaries();
         Ok(manager)
@@ -626,8 +624,8 @@ impl FreeBiosManager {
             .collect()
     }
 
-    fn lock(&self) -> MutexGuard<'_, ()> {
-        self.write.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'static, ()> {
+        lock_manifests()
     }
 
     fn check_policy(&self, bios: &FreeBios, policy: ReplacePolicy) -> Result<(), BiosError> {
@@ -797,6 +795,15 @@ fn read_manifest(system_dir: &Path) -> Manifest {
         tracing::warn!("{} invalide : {e}", path.display());
         Manifest::default()
     })
+}
+
+/// One process-wide lock for every read-modify-write of the system directory (installs, removals, firmware
+/// imports): they all end in a manifest update that would otherwise lose entries. Held by `install` during the
+/// download, so an import waits meanwhile (worker threads only).
+static MANIFEST_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn lock_manifests() -> MutexGuard<'static, ()> {
+    MANIFEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn update_manifest(system_dir: &Path, change: impl FnOnce(&mut Manifest)) -> Result<(), BiosError> {
