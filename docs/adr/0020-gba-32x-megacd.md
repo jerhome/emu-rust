@@ -1,6 +1,7 @@
 # ADR 0020 — Version 6.0 : Game Boy Advance, 32X et Mega CD (rendu logiciel)
 
-Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
+Statut : **accepté** (2026-11-21, après re-validation contre le code réel : les deux amendements du 2026-11-21 en fin
+de document **priment** sur le texte antérieur ; `docs/design/v6.0-gba-32x-megacd.md` §10) — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
 PlayStation + 3DO en rendu logiciel** ; Saturn, Dreamcast et rendu matériel plus tard ; revue croisée : corrections
 I2, I9, I13, M3, M4, M5, M6, M8). Remplace l'intitulé de la phase 7 de la feuille de route (« 32 bits : PS1, Saturn,
 3DO, GBA, 32X ; rendu matériel GL ») : **la 6.0 = GBA + 32X + Mega CD**. La mention initiale « PS1, Saturn et 3DO ne
@@ -199,3 +200,22 @@ Conséquences pour la 6.0 :
 - `DiscRegion`, `DiscFormat`, `DISC_EXTENSIONS` et `cue_references` existent dès la 2.1 dans
   `emu-library/src/disc.rs` : GX0 et DX0 les reprennent sans les redéfinir.
 
+## Amendement du 2026-11-21 (2) — re-validation contre le code (3.0 posée, Mega CD express livré en `v2.1.0-rc.1`)
+
+Complète l'amendement précédent ; détail : design 6.0 §10.
+
+- **§2, contrôle du BIOS** : fait par `check_core_firmware` (3.0) avec la variante `Game::region` ; il **remplace** le
+  contrôle propre au Mega CD de la 2.1 (`emu-ui/src/library/megacd.rs`), sans perte de comportement : quand la région
+  est inconnue (`.chd` sans étiquette), le lancement n'est pas bloqué dès qu'un des trois BIOS est présent (règle de
+  la 2.1, tenue côté UI grâce à `others_present`) ; un md5 différent de la référence avertit sans bloquer.
+- **§3, bibliothèque** : la restriction de `cue` / `chd` / `iso` au dossier et la sonde d'en-tête hors dossier sont
+  posées par la 4.0 (ADR 0018, amendement) ; la 6.0 ajoute `.m3u`, Redump et `disc = true`. `id = "megacd"` et
+  `database = "Sega - Mega-CD - Sega CD"` sont persistés.
+- **§4, sauvegardes** : motif `game_saves = ["{game}.brm"]`, appliqué au dossier de sauvegarde de l'identité de jeu
+  (2.1) ; la cartouche RAM partagée (`cart.brm`) n'est jamais effacée par « Réinitialiser ».
+- **§5, schéma** : v6 = colonne `game.region` seulement ; la région des jeux déjà en base est complétée au scan.
+- **Contexte, données de test** : les phrases « aucune ROM 32X libre démarrable » et « aucun disque Mega CD libre »
+  sont dépassées — `hexgl32x` (MIT) et 240p Test Suite Sega CD (GPL-2.0) existent
+  (`docs/design/donnees-test-4-7.md`) ; il reste qu'aucun jeu Mega CD ne démarre sans BIOS commercial.
+- **§7, suite** : la 7.0 n'est pas abordée sans le feu vert de l'utilisateur (ADR 0021 abandonnée) ; le §7 vaut
+  pour mémoire.

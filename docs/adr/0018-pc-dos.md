@@ -1,6 +1,7 @@
 # ADR 0018 — PC-DOS (version 4.0) : core dosbox_pure, contenus, modifications séparées, MIDI, clavier PC
 
-Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (SoundFont GeneralUser GS **autorisée** ; mode
+Statut : **accepté** (2026-11-21, après re-validation contre le code réel de la 3.0 et de la 2.1 : amendement en fin
+de document et `docs/design/v4.0-dos.md` §10) — décisions utilisateur du 2026-11-21 intégrées (SoundFont GeneralUser GS **autorisée** ; mode
 d'entrée par défaut **Clavier** ; revue croisée : corrections I1, I4, I5, I6, I7, I8, I10, I13, M3). Réutilise ADR 0015
 (infrastructure « ordinateur » de la 2.0), ADR 0017 (3.0 : « Importer un BIOS… », bouton du dossier des ROMs,
 `DatSource::Libretro`) et les **règles communes du design 3.0** (`docs/design/v3.0-amiga.md` §3.2 `MediaRules`,
@@ -269,7 +270,7 @@ Faits vérifiés le 2026-11-20 :
 ## Conséquences
 
 - Nouvelles API (détail : design §3) : `emu_libretro::CoreConfig::provide_vfs`, `Core::reset_with` ;
-  `emu_runtime::{snapshot_folder, snapshot_is_current, SnapshotLimits, ContentSpec::Folder}`,
+  `emu_runtime::{snapshot_folder, snapshot_status, SnapshotLimits, ContentSpec::Folder}`,
   `Emulator::reset_with_keys`, `PadState` analogique ; `emu_assets` : `FreeBiosKind`, archive `raw`, limite par type
   de ressource, `CorePreferences::{folder_policy, provides_vfs, featured_options(core, système), layout_option,
   analog}` ; `emu_library` : `SystemInfo::folder_games`, jeux-dossiers, identification DOS, `cue_references`.
@@ -288,3 +289,20 @@ Faits vérifiés le 2026-11-20 :
   `layout_option`, axes analogiques, reset avec touches, règles CD de la bibliothèque) servent à d'autres cores
   (cap32, genesis_plus_gx / Mega CD, PlayStation et 3DO en 7.0, ScummVM).
 - L'axe analogique (tâche DG1) dépend de la manette livrée en **2.1** ; sans elle, DG1 est reporté sans bloquer la 4.0.
+
+## Amendement du 2026-11-21 — re-validation contre le code (3.0 posée, 2.1 livrée)
+
+Les décisions ci-dessus sont confirmées. Précisions (détail : design 4.0 §10) :
+
+- **Identité de jeu (2.1)** : l'instantané d'un dossier porte le `save_name` du jeu ; le `.pure.zip` est écrit dans le
+  dossier de sauvegarde de l'identité (`saves/dosbox_pure/`, ou `saves/dosbox_pure/<save_name>/` pour un homonyme) :
+  deux jeux de même nom ne partagent plus leurs modifications. `<nom>` = `Emulator::content_name()`.
+- **Règles CD de la bibliothèque (§8)** : `cue_references`, `DISC_EXTENSIONS`, le masquage des pistes et l'absence de
+  hash ont été livrés par la 2.1 (Mega CD express, `emu-library/src/disc.rs`) ; la 4.0 les généralise au lieu de les
+  poser. Elle restreint `cue` / `chd` / `iso` au dossier pour `megacd` comme pour `dos` et garde la sonde d'en-tête
+  Sega CD hors dossier ; un `.chd` hors dossier devient « non classé ». Le refus « CD dans un zip » de la 2.1 ne
+  s'applique pas aux zips DOS.
+- **Jeux-dossiers (§9)** : `Game::is_dir` (schéma v5 = cette seule colonne) ; les métadonnées `genre` /
+  `releaseyear` / `developer` de `DOS.dat` ne sont pas importées en 4.0.
+- **MT-32 (§5)** : la section « DOS » de `firmware.toml` existe depuis la 3.0 (A3) ; la 4.0 n'y ajoute rien.
+- `m3u8` est traité comme `m3u` dans les trois crates qui lisent des listes.
