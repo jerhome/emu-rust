@@ -11,9 +11,11 @@ use rusqlite::{Connection, params};
 use zip::ZipArchive;
 
 use crate::db::{
-    NameIndex, db_error, extension_of, identification_text, identify, load_media, sha1_from, to_i64,
+    Identified, NameIndex, dat_match, db_error, extension_of, identification_text, identify,
+    load_media, sha1_from, to_i64,
 };
 use crate::media::{parse_m3u, strip_media_marker};
+use crate::systems::{Attribution, attribute};
 use crate::{
     Identification, LibraryError, MAX_HASH_SIZE, RomHashes, SystemInfo, SystemKind, group_media,
     hash_reader, systems_for_extension,
@@ -102,16 +104,38 @@ struct Existing {
     entry: Option<String>,
     system: String,
     pinned: bool,
+    /// Stored identification name (`sha1`, `crc32_size`, `name`, `unknown`).
+    identification: String,
     media: Vec<String>,
+}
+
+/// How the system of an analysed file is decided once the DATs can be read (design v3.0 §3.5.2).
+enum Rule {
+    /// Identification among `candidates`, the first one when nothing matches. `pinned`: the folder rule chose.
+    Identify {
+        candidates: Vec<&'static SystemInfo>,
+        pinned: bool,
+    },
+    /// Shared extension: a DAT hash match in exactly one candidate, else unclassified.
+    ByDat(Vec<&'static SystemInfo>),
+    /// `.m3u`: the system of its entries, else the folder rule of the playlist, else unclassified.
+    Playlist {
+        entries: Vec<EntryCheck>,
+        folder: Option<&'static SystemInfo>,
+    },
+}
+
+/// One image listed by a `.m3u`, hashed only when the DATs may be needed to attribute it.
+struct EntryCheck {
+    attribution: Attribution,
+    hashes: Option<RomHashes>,
 }
 
 struct Analysis {
     entry: Option<String>,
     size: u64,
     hashes: Option<RomHashes>,
-    candidates: Vec<&'static SystemInfo>,
-    /// The folder rule reduced `candidates` to one system.
-    pinned: bool,
+    rule: Rule,
     stem: String,
 }
 
@@ -119,6 +143,8 @@ enum Failure {
     Cancelled,
     /// Archive whose only recognised entries are empty: ignored, not an error.
     Empty,
+    /// No system takes the file without a DAT match (folder-only extension outside its folder).
+    Unclassified,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -500,32 +526,109 @@ fn header_of(candidates: &[&SystemInfo]) -> Option<crate::HeaderRule> {
     candidates.iter().find_map(|s| s.header)
 }
 
-/// The folder rule: a path component equal to a candidate id pins the system.
-fn folder_pin<'s>(candidates: &[&'s SystemInfo], folders: &[String]) -> Option<&'s SystemInfo> {
-    candidates.iter().copied().find(|s| folders.contains(&s.id))
-}
-
-/// `candidates` reduced by the folder rule, and whether it applied.
-fn pin(
-    candidates: Vec<&'static SystemInfo>,
-    folders: &[String],
-) -> (Vec<&'static SystemInfo>, bool) {
-    match folder_pin(&candidates, folders) {
-        Some(s) => (vec![s], true),
-        None => (candidates, false),
+fn rule_of(attribution: Attribution) -> Result<Rule, Failure> {
+    match attribution {
+        Attribution::Folder(s) => Ok(Rule::Identify {
+            candidates: vec![s],
+            pinned: true,
+        }),
+        Attribution::Candidates(candidates) => Ok(Rule::Identify {
+            candidates,
+            pinned: false,
+        }),
+        Attribution::ByDat(candidates) => Ok(Rule::ByDat(candidates)),
+        Attribution::Unclassified => Err(Failure::Unclassified),
     }
 }
 
-/// An unchanged file is not hashed again unless the folder rule now gives another answer (the roots changed, or
-/// a v1 row whose migrated flag was approximate): the stored system and flag must match the rule.
+/// The attribution needs the DATs (a shared extension, or consoles sharing one).
+fn needs_hashes(attribution: &Attribution) -> bool {
+    match attribution {
+        Attribution::ByDat(_) => true,
+        Attribution::Candidates(c) => c.len() > 1,
+        Attribution::Folder(_) | Attribution::Unclassified => false,
+    }
+}
+
+fn is_playlist(found: &Found) -> bool {
+    !found.media.is_empty() && lower_ext(&found.path).as_deref() == Some("m3u")
+}
+
+/// Folders of a playlist entry: those of the playlist, plus the sub-folders between it and the entry.
+fn entry_folders(found: &Found, entry: &Path) -> Vec<String> {
+    let mut folders = found.folders.clone();
+    if let (Some(dir), Some(parent)) = (found.path.parent(), entry.parent())
+        && let Ok(rel) = parent.strip_prefix(dir)
+    {
+        folders.extend(
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+        );
+    }
+    folders
+}
+
+/// The system accepting `.m3u` named by a folder of the playlist.
+fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
+    match attribute("m3u", &found.folders) {
+        Attribution::Folder(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// An unchanged file is not hashed again unless the attribution rules now give another answer (the roots
+/// changed, a v1 row whose migrated flag was approximate, a 2.0 `.ipf` outside any folder): the stored system
+/// and flag must match the rules.
 fn pin_agrees(old: &Existing, found: &Found) -> bool {
+    if is_playlist(found) {
+        return playlist_agrees(old, found);
+    }
     let Some(ext) = extension_of(&found.path, old.entry.as_deref()) else {
         return true;
     };
-    match folder_pin(&systems_for_extension(&ext), &found.folders) {
-        Some(s) => old.pinned && old.system == s.id,
-        None => !old.pinned,
+    let accepts = |c: &[&SystemInfo]| c.iter().any(|s| s.id == old.system);
+    match attribute(&ext, &found.folders) {
+        Attribution::Folder(s) => old.pinned && old.system == s.id,
+        Attribution::Candidates(c) => !old.pinned && accepts(&c),
+        // Kept only while the DATs still attribute it (a DAT import re-identifies and sets `unknown` otherwise).
+        Attribution::ByDat(c) => {
+            !old.pinned
+                && accepts(&c)
+                && matches!(old.identification.as_str(), "sha1" | "crc32_size")
+        }
+        Attribution::Unclassified => false,
     }
+}
+
+/// Without hashing: entries needing the DATs always send the playlist to a new analysis.
+fn playlist_agrees(old: &Existing, found: &Found) -> bool {
+    let mut systems: Vec<&str> = Vec::new();
+    for entry in &found.media {
+        let path = Path::new(entry);
+        let Some(ext) = lower_ext(path) else {
+            continue;
+        };
+        let attribution = attribute(&ext, &entry_folders(found, path));
+        if needs_hashes(&attribution) {
+            return false;
+        }
+        if let Attribution::Folder(s) = &attribution {
+            systems.push(&s.id);
+        } else if let Attribution::Candidates(c) = &attribution {
+            systems.extend(c.first().map(|s| s.id.as_str()));
+        }
+    }
+    systems.sort_unstable();
+    systems.dedup();
+    let folder = playlist_folder(found);
+    let system = match systems.as_slice() {
+        [one] => *one,
+        _ => match folder {
+            Some(f) => f.id.as_str(),
+            None => return false,
+        },
+    };
+    old.system == system && old.pinned == folder.is_some_and(|f| f.id == system)
 }
 
 fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
@@ -575,14 +678,17 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             break;
         }
     }
-    let Some((index, name, declared, candidates)) = chosen else {
+    let Some((index, name, declared, _)) = chosen else {
         return Err(if saw_empty {
             Failure::Empty
         } else {
             "aucun jeu reconnu dans l'archive".to_owned().into()
         });
     };
-    let (candidates, pinned) = pin(candidates, &found.folders);
+    let Some(ext) = lower_ext(Path::new(&name)) else {
+        return Err("extension inconnue".to_owned().into());
+    };
+    let rule = rule_of(attribute(&ext, &found.folders))?;
     let hashes = if declared > max {
         None
     } else {
@@ -592,7 +698,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         // `hash_reader` fails past `declared` bytes: a lying entry (zip bomb) is never read further.
         let reader = entry.take(declared.saturating_add(1));
         Some(
-            hash_reader(reader, declared, header_of(&candidates), max)
+            hash_reader(reader, declared, header_of(rule_systems(&rule)), max)
                 .map_err(|e| format!("archive illisible : {}", hash_error_message(&e)))?,
         )
     };
@@ -600,10 +706,72 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         entry: Some(name),
         size: declared,
         hashes,
-        candidates,
-        pinned,
+        rule,
         stem: stem_of(&found.path),
     })
+}
+
+fn rule_systems(rule: &Rule) -> &[&'static SystemInfo] {
+    match rule {
+        Rule::Identify { candidates, .. } | Rule::ByDat(candidates) => candidates,
+        Rule::Playlist { .. } => &[],
+    }
+}
+
+/// Hashes of a file of `size` bytes (`None` above `max`).
+fn hash_file(
+    path: &Path,
+    size: u64,
+    header: Option<crate::HeaderRule>,
+    max: u64,
+    cancel: &AtomicBool,
+) -> Result<Option<RomHashes>, String> {
+    if size > max {
+        return Ok(None);
+    }
+    let file = open_regular(path)?;
+    hash_reader(
+        CancelRead {
+            inner: file,
+            cancel,
+        },
+        size,
+        header,
+        max,
+    )
+    .map(Some)
+    .map_err(|e| hash_error_message(&e))
+}
+
+/// The entries of a playlist are hashed only when their attribution needs the DATs; an unreadable entry is
+/// left unattributed (the playlist then follows its folder).
+fn playlist_rule(found: &Found, max: u64, cancel: &AtomicBool) -> Rule {
+    let entries = found
+        .media
+        .iter()
+        .filter_map(|entry| {
+            let path = Path::new(entry);
+            let attribution = attribute(&lower_ext(path)?, &entry_folders(found, path));
+            let hashes = if needs_hashes(&attribution) {
+                let size = fs::metadata(path).map(|m| m.len()).ok()?;
+                let header = match &attribution {
+                    Attribution::ByDat(c) | Attribution::Candidates(c) => header_of(c),
+                    _ => None,
+                };
+                hash_file(path, size, header, max, cancel).ok().flatten()
+            } else {
+                None
+            };
+            Some(EntryCheck {
+                attribution,
+                hashes,
+            })
+        })
+        .collect();
+    Rule::Playlist {
+        entries,
+        folder: playlist_folder(found),
+    }
 }
 
 fn stem_of(path: &Path) -> String {
@@ -628,30 +796,23 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
     if ext == "zip" {
         return analyze_zip(found, max, cancel);
     }
-    let (candidates, pinned) = pin(systems_for_extension(&ext), &found.folders);
-    let hashes = if found.file_size > max {
-        None
+    let rule = if is_playlist(found) {
+        playlist_rule(found, max, cancel)
     } else {
-        let file = open_regular(&found.path)?;
-        Some(
-            hash_reader(
-                CancelRead {
-                    inner: file,
-                    cancel,
-                },
-                found.file_size,
-                header_of(&candidates),
-                max,
-            )
-            .map_err(|e| hash_error_message(&e))?,
-        )
+        rule_of(attribute(&ext, &found.folders))?
     };
+    let hashes = hash_file(
+        &found.path,
+        found.file_size,
+        header_of(rule_systems(&rule)),
+        max,
+        cancel,
+    )?;
     Ok(Analysis {
         entry: None,
         size: found.file_size,
         hashes,
-        candidates,
-        pinned,
+        rule,
         stem: stem_of(&found.path),
     })
 }
@@ -659,7 +820,10 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
 fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, LibraryError> {
     let mut media = load_media(conn, None)?;
     let mut stmt = conn
-        .prepare("SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned FROM game")
+        .prepare(
+            "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification
+             FROM game",
+        )
         .map_err(db_error)?;
     stmt.query_map([], |r| {
         Ok((
@@ -672,6 +836,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 entry: r.get(5)?,
                 system: r.get(6)?,
                 pinned: r.get::<_, i64>(7)? != 0,
+                identification: r.get(8)?,
                 media: Vec::new(),
             },
         ))
@@ -712,21 +877,88 @@ fn store_media(conn: &Connection, key: &str, media: &[String]) -> Result<(), Lib
     Ok(())
 }
 
-/// Inserts or updates the row of `found`; returns whether it was identified.
+/// The single system given by the classified entries of a playlist (design v3.0 §3.5.2).
+fn playlist_system(
+    conn: &Connection,
+    names: &mut NameIndex,
+    entries: &[EntryCheck],
+) -> Result<Option<&'static SystemInfo>, LibraryError> {
+    let mut systems: Vec<&'static SystemInfo> = Vec::new();
+    for e in entries {
+        let system = match &e.attribution {
+            Attribution::Folder(s) => Some(*s),
+            Attribution::Candidates(c) if c.len() == 1 => Some(c[0]),
+            Attribution::Candidates(c) => {
+                let id = identify(conn, names, c, e.hashes.as_ref(), "")?;
+                c.iter().copied().find(|s| s.id == id.system)
+            }
+            Attribution::ByDat(c) => dat_match(conn, names, c, e.hashes.as_ref())?
+                .and_then(|id| c.iter().copied().find(|s| s.id == id.system)),
+            Attribution::Unclassified => None,
+        };
+        if let Some(s) = system
+            && !systems.iter().any(|k| k.id == s.id)
+        {
+            systems.push(s);
+        }
+    }
+    Ok(match systems.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    })
+}
+
+/// Identification and folder flag of an analysed file; `None` when it is unclassified.
+fn resolve(
+    conn: &Connection,
+    names: &mut NameIndex,
+    analysis: &Analysis,
+) -> Result<Option<(Identified, bool)>, LibraryError> {
+    let hashes = analysis.hashes.as_ref();
+    Ok(match &analysis.rule {
+        Rule::Identify { candidates, pinned } => Some((
+            identify(conn, names, candidates, hashes, &analysis.stem)?,
+            *pinned,
+        )),
+        Rule::ByDat(candidates) => {
+            dat_match(conn, names, candidates, hashes)?.map(|id| (id, false))
+        }
+        Rule::Playlist { entries, folder } => {
+            let system = match playlist_system(conn, names, entries)? {
+                Some(s) => Some(s),
+                None => *folder,
+            };
+            match system {
+                Some(s) => Some((
+                    identify(conn, names, &[s], hashes, &analysis.stem)?,
+                    folder.is_some_and(|f| f.id == s.id),
+                )),
+                None => None,
+            }
+        }
+    })
+}
+
+enum Stored {
+    Identified,
+    Unknown,
+    /// Not stored; a row of an earlier scan is removed.
+    Unclassified,
+}
+
+/// Inserts or updates the row of `found`.
 fn store(
     conn: &Connection,
     names: &mut NameIndex,
     found: &Found,
     analysis: &Analysis,
     existing: Option<&Existing>,
-) -> Result<bool, LibraryError> {
-    let id = identify(
-        conn,
-        names,
-        &analysis.candidates,
-        analysis.hashes.as_ref(),
-        &analysis.stem,
-    )?;
+) -> Result<Stored, LibraryError> {
+    let Some((id, pinned)) = resolve(conn, names, analysis)? else {
+        conn.execute("DELETE FROM game WHERE path = ?1", [&found.key])
+            .map_err(db_error)?;
+        return Ok(Stored::Unclassified);
+    };
     let title = if found.media.is_empty() {
         id.title
     } else {
@@ -756,7 +988,7 @@ fn store(
             headerless.as_ref().map(|h| &h.sha1[..]),
             title,
             identification_text(id.how),
-            analysis.pinned,
+            pinned,
         ],
     )
     .map_err(db_error)?;
@@ -768,7 +1000,11 @@ fn store(
         conn.execute("DELETE FROM cover WHERE game = ?1", [old.id])
             .map_err(db_error)?;
     }
-    Ok(id.how != Identification::Unknown)
+    Ok(if id.how == Identification::Unknown {
+        Stored::Unknown
+    } else {
+        Stored::Identified
+    })
 }
 
 /// Writes the analysed files of `pending` in one short transaction, then empties it.
@@ -776,9 +1012,10 @@ fn store_batch(
     conn: &mut Connection,
     names: &mut NameIndex,
     existing: &HashMap<String, Existing>,
-    pending: &mut Vec<(&Found, Analysis)>,
+    pending: &mut Vec<(usize, &Found, Analysis)>,
     state: &mut ScanProgress,
     report: &mut ScanReport,
+    unclassified: &mut Vec<(usize, PathBuf)>,
 ) -> Result<(), LibraryError> {
     if pending.is_empty() {
         return Ok(());
@@ -786,10 +1023,16 @@ fn store_batch(
     let tx = conn.transaction().map_err(db_error)?;
     let mut added = 0;
     let mut updated = 0;
-    for (f, analysis) in pending.iter() {
+    let mut skipped = Vec::new();
+    for (index, f, analysis) in pending.iter() {
         let old = existing.get(&f.key);
-        if store(&tx, names, f, analysis, old)? {
-            state.identified += 1;
+        match store(&tx, names, f, analysis, old)? {
+            Stored::Unclassified => {
+                skipped.push((*index, f.path.clone()));
+                continue;
+            }
+            Stored::Identified => state.identified += 1,
+            Stored::Unknown => {}
         }
         if old.is_some() {
             updated += 1;
@@ -801,6 +1044,7 @@ fn store_batch(
     // Counted after the commit: a failed batch reports nothing as stored.
     report.added += added;
     report.updated += updated;
+    unclassified.extend(skipped);
     pending.clear();
     Ok(())
 }
@@ -832,10 +1076,12 @@ pub(crate) fn run(
     let mut names = NameIndex::default();
     let mut state = ScanProgress::default();
     let mut last_emit: Option<Instant> = None;
-    let mut pending: Vec<(&Found, Analysis)> = Vec::new();
+    let mut pending: Vec<(usize, &Found, Analysis)> = Vec::new();
+    // (scan order, path): sorted at the end, files rejected before hashing and after a DAT lookup mixed.
+    let mut unclassified: Vec<(usize, PathBuf)> = Vec::new();
     let mut batch_start = Instant::now();
     let mut cancelled = false;
-    for f in &found {
+    for (index, f) in found.iter().enumerate() {
         if is_cancelled(cancel) {
             cancelled = true;
             break;
@@ -857,11 +1103,15 @@ pub(crate) fn run(
                     if analysis.hashes.is_some() {
                         state.hashed += 1;
                     }
-                    pending.push((f, analysis));
+                    pending.push((index, f, analysis));
                 }
                 Err(Failure::Cancelled) => {
                     cancelled = true;
                     break;
+                }
+                Err(Failure::Unclassified) => {
+                    unclassified.push((index, f.path.clone()));
+                    seen.remove(&f.key);
                 }
                 Err(Failure::Empty) => {
                     report.ignored_empty += 1;
@@ -882,6 +1132,7 @@ pub(crate) fn run(
                 &mut pending,
                 &mut state,
                 &mut report,
+                &mut unclassified,
             )?;
             batch_start = Instant::now();
         }
@@ -898,6 +1149,7 @@ pub(crate) fn run(
         &mut pending,
         &mut state,
         &mut report,
+        &mut unclassified,
     )?;
     if cancelled || is_cancelled(cancel) {
         return Err(LibraryError::Cancelled);
@@ -913,6 +1165,13 @@ pub(crate) fn run(
             .map_err(db_error)? as u64;
     }
     tx.commit().map_err(db_error)?;
+    unclassified.sort_by_key(|(index, _)| *index);
+    report.unclassified = unclassified.len() as u64;
+    report.unclassified_paths = unclassified
+        .into_iter()
+        .take(MAX_UNCLASSIFIED_PATHS)
+        .map(|(_, path)| path)
+        .collect();
     state.current = None;
     progress(&state);
     Ok(report)
@@ -1007,14 +1266,17 @@ mod tests {
 
     #[test]
     fn folder_rule() {
-        let gb = systems_for_extension("gb");
-        let (pinned, applied) = pin(gb.clone(), &["roms".into(), "gb".into()]);
-        assert_eq!((pinned[0].id.as_str(), applied), ("gb", true));
-        assert!(!pin(gb, &["roms".into()]).1);
+        let pinned = |ext: &str, folders: &[&str]| match rule_of(attribute(
+            ext,
+            &folders.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )) {
+            Ok(Rule::Identify { candidates, pinned }) => (candidates[0].id.clone(), pinned),
+            _ => panic!("{ext}"),
+        };
+        assert_eq!(pinned("gb", &["roms", "gb"]), ("gb".into(), true));
+        assert!(!pinned("gb", &["roms"]).1);
         // A folder naming a system that does not accept the extension does not pin.
-        let sfc = systems_for_extension("sfc");
-        let (pinned, applied) = pin(sfc, &["gb".into()]);
-        assert_eq!((pinned[0].id.as_str(), applied), ("snes", false));
+        assert_eq!(pinned("sfc", &["gb"]), ("snes".into(), false));
     }
 
     #[test]

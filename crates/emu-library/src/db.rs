@@ -10,15 +10,14 @@ use rusqlite::{
     Connection, DropBehavior, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params,
 };
 
+use crate::systems::{Attribution, attribute};
 use crate::{
     Dat, DatSource, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport, SystemInfo,
     normalize_title, systems_for_extension,
 };
 
-/// `PRAGMA user_version` written by this code.
-// TODO(B3): 4 with the v3 → v4 migration (`dat_info` / `dat_entry` keyed by `(system, source)`, design v3.0
-// §3.4). Bumped together with the migration, never before: `MIGRATIONS.len()` is checked at compile time.
-pub const SCHEMA_VERSION: u32 = 3;
+/// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -173,6 +172,45 @@ CREATE TABLE game_media (
     PRIMARY KEY (game_id, idx)
 );
 "#,
+    // Frozen once shipped in a tag: a fix is a new migration. The source given to existing rows is the one each
+    // system declared when v3 was current (2.0 catalog: `atarist` = tosec, the consoles = no-intro), written here
+    // rather than read from the catalog so that the step never changes. The ETag of the ST DAT is dropped: 2.0
+    // downloaded it from No-Intro (design v3.0 §10 #4), the next update fetches the TOSEC file.
+    r#"
+ALTER TABLE dat_entry RENAME TO dat_entry_v3;
+ALTER TABLE dat_info RENAME TO dat_info_v3;
+CREATE TABLE dat_info (
+    system TEXT NOT NULL,
+    source TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version TEXT,
+    entries INTEGER NOT NULL,
+    imported_unix INTEGER NOT NULL,
+    etag TEXT,
+    PRIMARY KEY (system, source)
+);
+CREATE TABLE dat_entry (
+    system TEXT NOT NULL,
+    source TEXT NOT NULL,
+    game TEXT NOT NULL,
+    rom_name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    crc32 INTEGER NOT NULL,
+    sha1 BLOB,
+    FOREIGN KEY (system, source) REFERENCES dat_info(system, source) ON DELETE CASCADE
+);
+INSERT INTO dat_info (system, source, name, version, entries, imported_unix, etag)
+    SELECT system, CASE system WHEN 'atarist' THEN 'tosec' ELSE 'no-intro' END, name, version, entries,
+           imported_unix, CASE system WHEN 'atarist' THEN NULL ELSE etag END
+    FROM dat_info_v3;
+INSERT INTO dat_entry (system, source, game, rom_name, size, crc32, sha1)
+    SELECT system, CASE system WHEN 'atarist' THEN 'tosec' ELSE 'no-intro' END, game, rom_name, size, crc32, sha1
+    FROM dat_entry_v3 ORDER BY rowid;
+DROP TABLE dat_entry_v3;
+DROP TABLE dat_info_v3;
+CREATE INDEX dat_entry_sha1 ON dat_entry(sha1);
+CREATE INDEX dat_entry_crc ON dat_entry(system, crc32, size);
+"#,
 ];
 
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
@@ -316,7 +354,17 @@ fn migrate(conn: &mut Connection, from: u32) -> Result<(), OpenError> {
         if user_version(&tx)? >= version {
             continue;
         }
-        tx.execute_batch(sql)?;
+        // A step that fails on the user's file (rolled back) sends it to quarantine like a corrupt one: the
+        // app keeps working on a new base and the old file is kept aside. A lock timeout is not a failure of
+        // the file.
+        tx.execute_batch(sql)
+            .map_err(|e| match e.sqlite_error_code() {
+                Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => OpenError::from(e),
+                _ => {
+                    tracing::warn!("library migration to v{version} failed: {e}");
+                    OpenError::Corrupt
+                }
+            })?;
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
     }
@@ -384,27 +432,38 @@ fn try_open(path: &Path, create: bool) -> Result<Library, OpenError> {
 pub(crate) struct NameIndex(HashMap<String, HashMap<String, String>>);
 
 impl NameIndex {
+    /// The first declared DAT source of `system` wins on a name present in several.
     fn lookup(
         &mut self,
         conn: &Connection,
-        system: &str,
+        system: &SystemInfo,
         normalized: &str,
     ) -> Result<Option<String>, LibraryError> {
-        if !self.0.contains_key(system) {
+        if !self.0.contains_key(&system.id) {
             let mut stmt = conn
-                .prepare_cached("SELECT game FROM dat_entry WHERE system = ?1")
+                .prepare_cached(
+                    "SELECT source, game FROM dat_entry WHERE system = ?1 ORDER BY rowid",
+                )
                 .map_err(db_error)?;
+            let mut rows: Vec<(usize, String)> = stmt
+                .query_map([&system.id], |r| {
+                    Ok((system.dat_rank(&r.get::<_, String>(0)?), r.get(1)?))
+                })
+                .map_err(db_error)?
+                .collect::<Result<_, _>>()
+                .map_err(db_error)?;
+            rows.sort_by_key(|(rank, _)| *rank);
             let mut map = HashMap::new();
-            let rows = stmt
-                .query_map([system], |r| r.get::<_, String>(0))
-                .map_err(db_error)?;
-            for game in rows {
-                let game = game.map_err(db_error)?;
+            for (_, game) in rows {
                 map.entry(normalize_title(&game)).or_insert(game);
             }
-            self.0.insert(system.to_owned(), map);
+            self.0.insert(system.id.clone(), map);
         }
-        Ok(self.0.get(system).and_then(|m| m.get(normalized)).cloned())
+        Ok(self
+            .0
+            .get(&system.id)
+            .and_then(|m| m.get(normalized))
+            .cloned())
     }
 }
 
@@ -415,7 +474,8 @@ pub(crate) struct Identified {
 }
 
 /// SHA1 (full, then headerless) > CRC32 + size > normalized file name = DAT game name > first candidate.
-/// `candidates` is non-empty and in catalog order (or the single system pinned by the folder name).
+/// `candidates` is non-empty and in catalog order (or the single system pinned by the folder name). Within a
+/// system, the DATs are tried in `SystemInfo::dats` order (first match wins).
 pub(crate) fn identify(
     conn: &Connection,
     names: &mut NameIndex,
@@ -431,34 +491,45 @@ pub(crate) fn identify(
     if let Some(h) = hashes {
         let variants: Vec<_> = std::iter::once(h.full).chain(h.headerless).collect();
         let mut stmt = conn
-            .prepare_cached("SELECT system, game FROM dat_entry WHERE sha1 = ?1")
+            .prepare_cached(
+                "SELECT system, source, game FROM dat_entry WHERE sha1 = ?1 ORDER BY rowid",
+            )
             .map_err(db_error)?;
         for v in &variants {
-            let rows: Vec<(String, String)> = stmt
-                .query_map([&v.sha1[..]], |r| Ok((r.get(0)?, r.get(1)?)))
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([&v.sha1[..]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .map_err(db_error)?
                 .collect::<Result<_, _>>()
                 .map_err(db_error)?;
             for c in candidates {
-                if let Some((_, game)) = rows.iter().find(|(s, _)| *s == c.id) {
+                let best = rows
+                    .iter()
+                    .filter(|(s, _, _)| *s == c.id)
+                    .min_by_key(|(_, source, _)| c.dat_rank(source));
+                if let Some((_, _, game)) = best {
                     return Ok(found(c, game.clone(), Identification::Sha1));
                 }
             }
         }
         let mut stmt = conn
             .prepare_cached(
-                "SELECT game FROM dat_entry WHERE system = ?1 AND crc32 = ?2 AND size = ?3 LIMIT 1",
+                "SELECT source, game FROM dat_entry WHERE system = ?1 AND crc32 = ?2 AND size = ?3
+                 ORDER BY rowid",
             )
             .map_err(db_error)?;
         for c in candidates {
             for v in &variants {
-                let game: Option<String> = stmt
-                    .query_row(params![c.id, i64::from(v.crc32), to_i64(v.size)], |r| {
-                        r.get(0)
+                let rows: Vec<(String, String)> = stmt
+                    .query_map(params![c.id, i64::from(v.crc32), to_i64(v.size)], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
                     })
-                    .optional()
+                    .map_err(db_error)?
+                    .collect::<Result<_, _>>()
                     .map_err(db_error)?;
-                if let Some(game) = game {
+                if let Some((_, game)) = rows
+                    .into_iter()
+                    .min_by_key(|(source, _)| c.dat_rank(source))
+                {
                     return Ok(found(c, game, Identification::Crc32Size));
                 }
             }
@@ -467,7 +538,7 @@ pub(crate) fn identify(
     let normalized = normalize_title(stem);
     if !normalized.is_empty() {
         for c in candidates {
-            if let Some(game) = names.lookup(conn, &c.id, &normalized)? {
+            if let Some(game) = names.lookup(conn, c, &normalized)? {
                 return Ok(found(c, game, Identification::Name));
             }
         }
@@ -476,6 +547,30 @@ pub(crate) fn identify(
         .first()
         .ok_or_else(|| LibraryError::Database("aucun système candidat".into()))?;
     Ok(found(first, stem.to_owned(), Identification::Unknown))
+}
+
+/// Attribution of a file of a shared extension (design v3.0 §3.5.2, `Attribution::ByDat`): the hashes must be
+/// found (SHA1 or CRC32 + size, not the file name) in the DATs of exactly one candidate.
+pub(crate) fn dat_match(
+    conn: &Connection,
+    names: &mut NameIndex,
+    candidates: &[&SystemInfo],
+    hashes: Option<&RomHashes>,
+) -> Result<Option<Identified>, LibraryError> {
+    let Some(hashes) = hashes else {
+        return Ok(None);
+    };
+    let mut hit = None;
+    for c in candidates {
+        let id = identify(conn, names, &[c], Some(hashes), "")?;
+        if matches!(id.how, Identification::Sha1 | Identification::Crc32Size) {
+            if hit.is_some() {
+                return Ok(None);
+            }
+            hit = Some(id);
+        }
+    }
+    Ok(hit)
 }
 
 /// Header length removed for the stored headerless hashes of `system` (to rebuild their size).
@@ -497,7 +592,9 @@ pub(crate) fn extension_of(path: &Path, entry: Option<&str>) -> Option<String> {
 }
 
 /// Re-runs the identification of every game whose extension may belong to `system` (after a DAT import).
-/// A game pinned by the scan's folder rule (`game.pinned`) stays on its system.
+/// A game pinned by the scan's folder rule (`game.pinned`) stays on its system. Playlists are left to the next
+/// scan (their system comes from their entries); a file of a shared extension no longer found in the DATs keeps
+/// its system as "unknown", and the next scan re-evaluates it (design v3.0 §3.5.2).
 fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
     struct Row {
         id: i64,
@@ -544,6 +641,9 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
         let Some(ext) = extension_of(&path, row.entry.as_deref()) else {
             continue;
         };
+        if ext == "m3u" {
+            continue;
+        }
         let all = systems_for_extension(&ext);
         if !all.iter().any(|s| s.id == system) {
             continue;
@@ -552,9 +652,14 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
             .iter()
             .copied()
             .find(|s| row.pinned && s.id == row.system);
-        let candidates: Vec<&SystemInfo> = match pinned {
-            Some(p) => vec![p],
-            None => all,
+        let (candidates, by_dat): (Vec<&SystemInfo>, bool) = match pinned {
+            Some(p) => (vec![p], false),
+            None => match attribute(&ext, &[]) {
+                Attribution::Folder(s) => (vec![s], false),
+                Attribution::Candidates(c) => (c, false),
+                Attribution::ByDat(c) => (c, true),
+                Attribution::Unclassified => continue,
+            },
         };
         let size = u64::try_from(row.size).unwrap_or(0);
         let hashes = match (crc_from(row.crc32), sha1_from(row.sha1)) {
@@ -579,7 +684,18 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let id = identify(conn, &mut names, &candidates, hashes.as_ref(), &stem)?;
+        let id = if by_dat {
+            match dat_match(conn, &mut names, &candidates, hashes.as_ref())? {
+                Some(id) => id,
+                None => Identified {
+                    system: row.system.clone(),
+                    title: stem,
+                    how: Identification::Unknown,
+                },
+            }
+        } else {
+            identify(conn, &mut names, &candidates, hashes.as_ref(), &stem)?
+        };
         changed += update
             .execute(params![
                 row.id,
@@ -614,6 +730,30 @@ pub(crate) fn load_media(
         map.entry(id).or_default().push(PathBuf::from(path));
     }
     Ok(map)
+}
+
+const DAT_INFO_COLUMNS: &str = "system, source, name, version, entries, imported_unix, etag";
+
+/// `None` for a source this build does not know (written by a newer version sharing the schema).
+fn dat_info_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DatInfo>> {
+    let Some(source) = DatSource::from_id(&r.get::<_, String>(1)?) else {
+        return Ok(None);
+    };
+    Ok(Some(DatInfo {
+        system: r.get(0)?,
+        source,
+        name: r.get(2)?,
+        version: r.get(3)?,
+        entries: u64::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
+        imported_unix: r.get(5)?,
+        etag: r.get(6)?,
+    }))
+}
+
+fn first_source(system: &str) -> Result<DatSource, LibraryError> {
+    crate::system(system)
+        .and_then(|s| s.dats.first().copied())
+        .ok_or_else(|| LibraryError::UnknownSystem(system.to_owned()))
 }
 
 pub(crate) fn identification_text(i: Identification) -> &'static str {
@@ -690,60 +830,16 @@ impl Library {
         })
     }
 
-    /// Replaces the entries of `system` in one transaction, then re-identifies its games. Returns the entry count.
+    /// Replaces the entries of the **first declared source** of `system` in one transaction, then re-identifies
+    /// its games. Returns the entry count.
     pub fn import_dat(
         &mut self,
         system: &str,
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        if crate::system(system).is_none() {
-            return Err(LibraryError::UnknownSystem(system.to_owned()));
-        }
-        let tx = self.conn.transaction().map_err(db_error)?;
-        tx.execute("DELETE FROM dat_entry WHERE system = ?1", [system])
-            .map_err(db_error)?;
-        tx.execute(
-            "INSERT INTO dat_info (system, name, version, entries, imported_unix, etag)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5)
-             ON CONFLICT(system) DO UPDATE SET name = excluded.name, version = excluded.version,
-                 entries = 0, imported_unix = excluded.imported_unix, etag = excluded.etag",
-            params![system, dat.name, dat.version, now_unix(), etag],
-        )
-        .map_err(db_error)?;
-        let mut count = 0u64;
-        {
-            let mut insert = tx
-                .prepare(
-                    "INSERT INTO dat_entry (system, game, rom_name, size, crc32, sha1)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                )
-                .map_err(db_error)?;
-            for e in &dat.entries {
-                let Ok(size) = i64::try_from(e.size) else {
-                    continue;
-                };
-                insert
-                    .execute(params![
-                        system,
-                        e.game,
-                        e.rom_name,
-                        size,
-                        i64::from(e.crc32),
-                        e.sha1.as_ref().map(|s| &s[..])
-                    ])
-                    .map_err(db_error)?;
-                count += 1;
-            }
-        }
-        tx.execute(
-            "UPDATE dat_info SET entries = ?2 WHERE system = ?1",
-            params![system, to_i64(count)],
-        )
-        .map_err(db_error)?;
-        reidentify(&tx, system)?;
-        tx.commit().map_err(db_error)?;
-        Ok(count)
+        let source = first_source(system)?;
+        self.import_dat_source(system, source, dat, etag)
     }
 
     /// Schema v4: replaces the entries of the couple `(system, source)` only, then re-identifies the games of
@@ -756,8 +852,62 @@ impl Library {
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        let _ = (system, source, dat, etag);
-        todo!("B3: design v3.0 §3.4")
+        let declared = crate::system(system).is_some_and(|s| s.dats.contains(&source));
+        if !declared {
+            return Err(LibraryError::UnknownSystem(format!(
+                "{system} ({})",
+                source.id()
+            )));
+        }
+        let source = source.id();
+        let tx = self.conn.transaction().map_err(db_error)?;
+        tx.execute(
+            "DELETE FROM dat_entry WHERE system = ?1 AND source = ?2",
+            [system, source],
+        )
+        .map_err(db_error)?;
+        tx.execute(
+            "INSERT INTO dat_info (system, source, name, version, entries, imported_unix, etag)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)
+             ON CONFLICT(system, source) DO UPDATE SET name = excluded.name, version = excluded.version,
+                 entries = 0, imported_unix = excluded.imported_unix, etag = excluded.etag",
+            params![system, source, dat.name, dat.version, now_unix(), etag],
+        )
+        .map_err(db_error)?;
+        let mut count = 0u64;
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT INTO dat_entry (system, source, game, rom_name, size, crc32, sha1)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .map_err(db_error)?;
+            for e in &dat.entries {
+                let Ok(size) = i64::try_from(e.size) else {
+                    continue;
+                };
+                insert
+                    .execute(params![
+                        system,
+                        source,
+                        e.game,
+                        e.rom_name,
+                        size,
+                        i64::from(e.crc32),
+                        e.sha1.as_ref().map(|s| &s[..])
+                    ])
+                    .map_err(db_error)?;
+                count += 1;
+            }
+        }
+        tx.execute(
+            "UPDATE dat_info SET entries = ?3 WHERE system = ?1 AND source = ?2",
+            params![system, source, to_i64(count)],
+        )
+        .map_err(db_error)?;
+        reidentify(&tx, system)?;
+        tx.commit().map_err(db_error)?;
+        Ok(count)
     }
 
     /// DAT of one source of a system.
@@ -766,39 +916,47 @@ impl Library {
         system: &str,
         source: DatSource,
     ) -> Result<Option<DatInfo>, LibraryError> {
-        let _ = (system, source);
-        todo!("B3: design v3.0 §3.4")
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {DAT_INFO_COLUMNS} FROM dat_info WHERE system = ?1 AND source = ?2"
+                ),
+                [system, source.id()],
+                dat_info_from_row,
+            )
+            .optional()
+            .map_err(db_error)
+            .map(Option::flatten)
     }
 
-    /// Imported DATs of a system, in `SystemInfo::dats` order.
+    /// Imported DATs of a system, in `SystemInfo::dats` order (sources the catalog no longer declares last).
     pub fn dat_infos(&self, system: &str) -> Result<Vec<DatInfo>, LibraryError> {
-        let _ = system;
-        todo!("B3: design v3.0 §3.4")
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {DAT_INFO_COLUMNS} FROM dat_info WHERE system = ?1 ORDER BY source"
+            ))
+            .map_err(db_error)?;
+        let mut infos: Vec<DatInfo> = stmt
+            .query_map([system], dat_info_from_row)
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?
+            .into_iter()
+            .flatten()
+            .collect();
+        if let Some(info) = crate::system(system) {
+            infos.sort_by_key(|d| info.dat_rank(d.source.id()));
+        }
+        Ok(infos)
     }
 
     /// DAT of the **first declared source** of the system (2.0 callers; `dat_info_for` for the others).
     pub fn dat_info(&self, system: &str) -> Result<Option<DatInfo>, LibraryError> {
-        let source = crate::system(system)
-            .and_then(|s| s.dats.first().copied())
-            .unwrap_or_default();
-        self.conn
-            .query_row(
-                "SELECT system, name, version, entries, imported_unix, etag FROM dat_info WHERE system = ?1",
-                [system],
-                |r| {
-                    Ok(DatInfo {
-                        system: r.get(0)?,
-                        source,
-                        name: r.get(1)?,
-                        version: r.get(2)?,
-                        entries: u64::try_from(r.get::<_, i64>(3)?).unwrap_or(0),
-                        imported_unix: r.get(4)?,
-                        etag: r.get(5)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(db_error)
+        match first_source(system) {
+            Ok(source) => self.dat_info_for(system, source),
+            Err(_) => Ok(None),
+        }
     }
 
     /// Incremental: unchanged (path, size, mtime) is not hashed again. Games under a missing root are kept.
@@ -1013,7 +1171,7 @@ mod tests {
         }
         let (lib, outcome) = Library::open(&db).unwrap();
         assert_eq!(outcome, OpenOutcome::Opened);
-        assert_eq!(user_version(&lib.conn).ok(), Some(3));
+        assert_eq!(user_version(&lib.conn).ok(), Some(SCHEMA_VERSION));
         let games = lib.games().unwrap();
         assert_eq!(games.len(), 2);
         let a = &games[0];
@@ -1043,6 +1201,155 @@ mod tests {
                 .execute("INSERT INTO game_media VALUES (2, 0, '/r/gb/a.gb')", [])
                 .is_err()
         );
+    }
+
+    /// A 2.0 base: the frozen v1-v3 steps, then rows as the 2.0 code writes them (scan, DAT imports, favorites,
+    /// history, covers in both states, a multi-disk ST game).
+    fn base_v3(db: &Path) {
+        let conn = Connection::open(db).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute_batch(
+            "INSERT INTO dat_info VALUES ('gb', 'Nintendo - Game Boy', '20251101', 2, 100, '\"gb-etag\"');
+             INSERT INTO dat_info VALUES ('atarist', 'Atari - ST', NULL, 1, 200, '\"nointro-st\"');
+             INSERT INTO dat_entry VALUES ('gb', 'Tetris (World)', 'Tetris (World).gb', 3, 7, x'0102');
+             INSERT INTO dat_entry VALUES ('gb', 'Other (World)', 'Other (World).gb', 4, 8, NULL);
+             INSERT INTO dat_entry VALUES ('atarist', 'Saga (Disk 1 of 2)', 'Saga (Disk 1 of 2).st', 9, 11, NULL);
+             INSERT INTO game (id, path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh,
+                               sha1_nh, title, identification, favorite, last_played_unix, play_count, pinned)
+             VALUES (1, '/r/gb/t.gb', NULL, 'gb', 3, 3, 9, 7, x'0102', NULL, NULL, 'Tetris (World)', 'sha1',
+                     1, 1700000000, 5, 1),
+                    (2, '/r/s.zip', 's.sms', 'mastersystem', 4, 8, 10, NULL, NULL, NULL, NULL, 's', 'unknown',
+                     0, NULL, 0, 0),
+                    (3, '/r/atarist/Saga (Disk 1 of 2).st', NULL, 'atarist', 9, 9, 11, 11, NULL, NULL, NULL,
+                     'Saga', 'crc32_size', 1, 1700000500, 2, 1);
+             INSERT INTO game_media VALUES (3, 0, '/r/atarist/Saga (Disk 1 of 2).st'),
+                                           (3, 1, '/r/atarist/Saga (Disk 2 of 2).st');
+             INSERT INTO cover VALUES (1, 'boxart', 'cached', 'gb/boxart/Tetris (World).png', 'libretro', 50);
+             INSERT INTO cover VALUES (2, 'boxart', 'missing', NULL, NULL, 77);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn v4_migration_keeps_a_2_0_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("library.sqlite");
+        base_v3(&db);
+        let before = Library {
+            conn: Connection::open(&db).unwrap(),
+        }
+        .games()
+        .unwrap();
+        let (lib, outcome) = Library::open(&db).unwrap();
+        assert_eq!(outcome, OpenOutcome::Opened);
+        assert_eq!(user_version(&lib.conn).ok(), Some(4));
+        // Games, favorites, history, disks: identical.
+        assert_eq!(lib.games().unwrap(), before);
+        assert_eq!(before[2].media.len(), 2);
+        assert!(before[0].favorite && before[2].favorite);
+        assert_eq!(
+            lib.cover(GameId(1), CoverKind::Boxart)
+                .unwrap()
+                .unwrap()
+                .state,
+            CoverState::Cached {
+                path: "gb/boxart/Tetris (World).png".into(),
+                source: "libretro".into()
+            }
+        );
+        assert_eq!(
+            lib.cover(GameId(2), CoverKind::Boxart)
+                .unwrap()
+                .unwrap()
+                .state,
+            CoverState::Missing { checked_unix: 77 }
+        );
+        // DATs: source of the 2.0 catalog, the ST ETag dropped.
+        let gb = lib.dat_info("gb").unwrap().unwrap();
+        assert_eq!(
+            (
+                gb.source,
+                gb.entries,
+                gb.etag.as_deref(),
+                gb.version.as_deref()
+            ),
+            (DatSource::NoIntro, 2, Some("\"gb-etag\""), Some("20251101"))
+        );
+        let st = lib
+            .dat_info_for("atarist", DatSource::Tosec)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (st.entries, st.etag.as_deref(), st.imported_unix),
+            (1, None, 200)
+        );
+        assert_eq!(lib.dat_infos("atarist").unwrap(), [st]);
+        let entries: Vec<(String, String, String, Option<Vec<u8>>)> = lib
+            .conn
+            .prepare("SELECT system, source, game, sha1 FROM dat_entry ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].3.as_deref(), Some(&[1u8, 2][..]));
+        assert_eq!(
+            entries.iter().map(|e| e.1.as_str()).collect::<Vec<_>>(),
+            ["no-intro", "no-intro", "tosec"]
+        );
+        let fk: Option<String> = lib
+            .conn
+            .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(fk, None);
+        let indexes: Vec<String> = lib
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'dat_entry' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(indexes, ["dat_entry_crc", "dat_entry_sha1"]);
+        // The foreign key follows the new key: removing a DAT removes its entries only.
+        lib.conn
+            .execute("DELETE FROM dat_info WHERE system = 'gb'", [])
+            .unwrap();
+        let left: i64 = lib
+            .conn
+            .query_row("SELECT count(*) FROM dat_entry", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn failed_migration_goes_to_quarantine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("library.sqlite");
+        base_v3(&db);
+        {
+            // A name the v4 step needs is taken: the step fails on this file.
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE dat_info_v3 (x)").unwrap();
+        }
+        let (lib, outcome) = Library::open(&db).unwrap();
+        let OpenOutcome::Recovered { quarantined } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(lib.games().unwrap().is_empty());
+        let old = Connection::open(&quarantined).unwrap();
+        assert_eq!(user_version(&old).ok(), Some(3));
+        let games: i64 = old
+            .query_row("SELECT count(*) FROM game", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(games, 3);
     }
 
     #[test]

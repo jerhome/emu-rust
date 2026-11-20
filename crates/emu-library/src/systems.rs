@@ -107,12 +107,36 @@ enum RawKind {
     Computer,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 enum RawDat {
-    #[default]
     NoIntro,
     Tosec,
+    Libretro,
+}
+
+impl RawDat {
+    fn source(self) -> DatSource {
+        match self {
+            RawDat::NoIntro => DatSource::NoIntro,
+            RawDat::Tosec => DatSource::Tosec,
+            RawDat::Libretro => DatSource::Libretro,
+        }
+    }
+}
+
+/// `dat = "tosec"` or `dat = ["tosec", "libretro"]`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawDats {
+    One(RawDat),
+    Many(Vec<RawDat>),
+}
+
+impl Default for RawDats {
+    fn default() -> Self {
+        RawDats::One(RawDat::NoIntro)
+    }
 }
 
 #[derive(Deserialize)]
@@ -128,10 +152,14 @@ struct RawSystem {
     #[serde(default)]
     kind: RawKind,
     #[serde(default)]
-    dat: RawDat,
+    dat: RawDats,
+    #[serde(default)]
+    folder_extensions: Vec<String>,
 }
 
-/// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database.
+/// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database,
+/// a non-empty list of distinct DAT sources, `folder_extensions` a subset of `extensions` (`m3u` excluded: the
+/// system of a playlist comes from its entries).
 fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
     let raw: RawCatalog = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut ids = HashSet::new();
@@ -163,6 +191,19 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 return Err(format!("`{}`: invalid extension `{ext}`", s.id));
             }
         }
+        let dats: Vec<DatSource> = match s.dat {
+            RawDats::One(d) => vec![d.source()],
+            RawDats::Many(list) => list.into_iter().map(RawDat::source).collect(),
+        };
+        if dats.is_empty() || dats.iter().collect::<HashSet<_>>().len() != dats.len() {
+            return Err(format!("`{}`: empty or repeated `dat`", s.id));
+        }
+        let mut restricted = HashSet::new();
+        for ext in &s.folder_extensions {
+            if !s.extensions.contains(ext) || ext == "m3u" || !restricted.insert(ext) {
+                return Err(format!("`{}`: invalid folder extension `{ext}`", s.id));
+            }
+        }
         out.push(SystemInfo {
             id: s.id,
             name: s.name,
@@ -178,13 +219,8 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 RawKind::Console => SystemKind::Console,
                 RawKind::Computer => SystemKind::Computer,
             },
-            // TODO(B3): `dat` as a string or a list (`libretro` included), `folder_extensions` parsed and
-            // checked against `extensions`.
-            dats: vec![match s.dat {
-                RawDat::NoIntro => DatSource::NoIntro,
-                RawDat::Tosec => DatSource::Tosec,
-            }],
-            folder_extensions: Vec::new(),
+            dats,
+            folder_extensions: s.folder_extensions,
         });
     }
     Ok(out)
@@ -206,7 +242,57 @@ pub fn system(id: &str) -> Option<&'static SystemInfo> {
     systems().iter().find(|s| s.id == id)
 }
 
-/// Systems accepting `extension` (case-insensitive, without the dot), in catalog order.
+impl SystemInfo {
+    /// `extension` (lower case) is accepted by this system only under a folder named after its id.
+    pub(crate) fn is_folder_only(&self, extension: &str) -> bool {
+        self.folder_extensions.iter().any(|e| e == extension)
+    }
+
+    /// Rank of `source` in [`SystemInfo::dats`] (identification order); undeclared sources come last.
+    pub(crate) fn dat_rank(&self, source: &str) -> usize {
+        self.dats
+            .iter()
+            .position(|d| d.id() == source)
+            .unwrap_or(self.dats.len())
+    }
+}
+
+/// How a file of a given extension is attributed to a system (design v3.0 §3.5.2), before any DAT lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Attribution {
+    /// Folder rule: a folder named after a system accepting the extension (restricted or not).
+    Folder(&'static SystemInfo),
+    /// Systems accepting the extension outside their folder, in catalog order. The identification picks among
+    /// them and falls back to the first (1.0 rule: one system, or consoles sharing `.gb`).
+    Candidates(Vec<&'static SystemInfo>),
+    /// Shared by several systems, a computer among them (`.ipf`): only a DAT hash match in exactly one of them
+    /// attributes the file, otherwise it is unclassified.
+    ByDat(Vec<&'static SystemInfo>),
+    /// No system takes the extension here (a folder-only extension outside its folder).
+    Unclassified,
+}
+
+/// `extension` is lower case without the dot; `folders` are the path components checked against system ids
+/// (exact match, as the 1.0 folder rule).
+pub(crate) fn attribute(extension: &str, folders: &[String]) -> Attribution {
+    let all = systems_for_extension(extension);
+    if let Some(s) = all.iter().copied().find(|s| folders.contains(&s.id)) {
+        return Attribution::Folder(s);
+    }
+    let open: Vec<&'static SystemInfo> = all
+        .into_iter()
+        .filter(|s| !s.is_folder_only(extension))
+        .collect();
+    match open.len() {
+        0 => Attribution::Unclassified,
+        1 => Attribution::Candidates(open),
+        _ if open.iter().any(|s| s.kind == SystemKind::Computer) => Attribution::ByDat(open),
+        _ => Attribution::Candidates(open),
+    }
+}
+
+/// Systems accepting `extension` (case-insensitive, without the dot), in catalog order. Includes the systems that
+/// restrict it to their folder (`SystemInfo::folder_extensions`).
 pub fn systems_for_extension(extension: &str) -> Vec<&'static SystemInfo> {
     systems()
         .iter()
@@ -236,7 +322,8 @@ mod tests {
                 "gbc",
                 "gamegear",
                 "mastersystem",
-                "atarist"
+                "atarist",
+                "amiga"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -260,17 +347,76 @@ mod tests {
             ("tosec", "metadat/tosec")
         );
         assert_eq!(DatSource::from_id("libretro"), Some(DatSource::Libretro));
-        for s in systems().iter().filter(|s| s.id != "atarist") {
-            assert_eq!(
-                (s.kind, s.dats.as_slice()),
-                (SystemKind::Console, &[DatSource::NoIntro][..])
-            );
+        assert!(st.folder_extensions.is_empty());
+        for s in systems().iter().filter(|s| s.kind == SystemKind::Console) {
+            assert_eq!(s.dats.as_slice(), &[DatSource::NoIntro][..], "{}", s.id);
+            assert!(s.folder_extensions.is_empty(), "{}", s.id);
         }
-        assert!(
-            systems_for_extension("m3u")
-                .iter()
-                .all(|s| s.id == "atarist")
+        let m3u: Vec<_> = systems_for_extension("m3u").iter().map(|s| &s.id).collect();
+        assert_eq!(m3u, ["atarist", "amiga"]);
+    }
+
+    #[test]
+    fn amiga_has_two_dats_and_folder_only_extensions() {
+        let amiga = system("amiga").unwrap();
+        assert_eq!(amiga.kind, SystemKind::Computer);
+        assert_eq!(amiga.database, "Commodore - Amiga");
+        assert_eq!(amiga.dats, [DatSource::Tosec, DatSource::Libretro]);
+        assert_eq!(amiga.folder_extensions, ["hdf", "hdz", "lha"]);
+        assert!(amiga.is_folder_only("lha") && !amiga.is_folder_only("adf"));
+        assert_eq!(
+            (
+                amiga.dat_rank("tosec"),
+                amiga.dat_rank("libretro"),
+                amiga.dat_rank("no-intro")
+            ),
+            (0, 1, 2)
         );
+        let ipf: Vec<_> = systems_for_extension("ipf").iter().map(|s| &s.id).collect();
+        assert_eq!(ipf, ["atarist", "amiga"]);
+        assert_eq!(DatSource::Libretro.repo_dir(), "dat");
+        for d in [DatSource::NoIntro, DatSource::Tosec, DatSource::Libretro] {
+            assert_eq!(DatSource::from_id(d.id()), Some(d));
+        }
+        assert_eq!(DatSource::from_id("redump"), None);
+    }
+
+    #[test]
+    fn attribution_rules() {
+        let f = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ids = |a: Attribution| match a {
+            Attribution::Folder(s) => format!("folder:{}", s.id),
+            Attribution::Candidates(c) => format!(
+                "candidates:{}",
+                c.iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Attribution::ByDat(c) => format!(
+                "dat:{}",
+                c.iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Attribution::Unclassified => "unclassified".into(),
+        };
+        assert_eq!(ids(attribute("st", &[])), "candidates:atarist");
+        assert_eq!(ids(attribute("adf", &[])), "candidates:amiga");
+        assert_eq!(ids(attribute("gb", &[])), "candidates:gb,gbc");
+        assert_eq!(ids(attribute("gb", &f(&["roms", "gbc"]))), "folder:gbc");
+        assert_eq!(ids(attribute("ipf", &[])), "dat:atarist,amiga");
+        assert_eq!(ids(attribute("ipf", &f(&["amiga"]))), "folder:amiga");
+        assert_eq!(ids(attribute("ipf", &f(&["atarist"]))), "folder:atarist");
+        assert_eq!(ids(attribute("lha", &[])), "unclassified");
+        assert_eq!(ids(attribute("lha", &f(&["atarist"]))), "unclassified");
+        assert_eq!(
+            ids(attribute("hdf", &f(&["roms", "amiga", "whd"]))),
+            "folder:amiga"
+        );
+        // Exact folder names, as in 1.0.
+        assert_eq!(ids(attribute("hdf", &f(&["Amiga"]))), "unclassified");
     }
 
     #[test]
@@ -321,5 +467,25 @@ mod tests {
             )))
             .is_ok()
         );
+        let parsed = parse_catalog(&one(&format!(
+            "id = \"a\"\n{base}\ndat = [\"libretro\", \"no-intro\"]"
+        )))
+        .unwrap();
+        assert_eq!(parsed[0].dats, [DatSource::Libretro, DatSource::NoIntro]);
+        for bad in [
+            "dat = []",
+            "dat = [\"tosec\", \"tosec\"]",
+            "dat = [\"tosec\", \"redump\"]",
+            "folder_extensions = [\"y\"]",
+            "folder_extensions = [\"x\", \"x\"]",
+        ] {
+            assert!(
+                parse_catalog(&one(&format!("id = \"a\"\n{base}\n{bad}"))).is_err(),
+                "{bad}"
+            );
+        }
+        let m3u = "id = \"a\"\nname = \"N\"\ndatabase = \"D\"\nextensions = [\"x\", \"m3u\"]";
+        assert!(parse_catalog(&one(&format!("{m3u}\nfolder_extensions = [\"x\"]"))).is_ok());
+        assert!(parse_catalog(&one(&format!("{m3u}\nfolder_extensions = [\"m3u\"]"))).is_err());
     }
 }

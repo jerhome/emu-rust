@@ -1,4 +1,5 @@
-//! clrmamepro DAT (No-Intro, libretro-database `metadat/no-intro/`). Untrusted text: bounded, no panic.
+//! clrmamepro DAT (libretro-database `metadat/no-intro/`, `metadat/tosec/`, `dat/`).
+//! Untrusted text: bounded, no panic.
 
 use std::fs::File;
 use std::io::Read;

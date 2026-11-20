@@ -4,8 +4,13 @@
 # `header`: "ines" (strip 16 bytes when the file starts with "NES\x1A"), "snes_copier" (strip 512 bytes when
 # size % 1024 == 512).
 # `screenscraper` / `igdb`: platform ids, to be checked against systemesListe.php and the IGDB platforms endpoint.
-# `kind`: "console" (default) or "computer" (disks, keyboard, mouse). `dat`: "no-intro" (default) or "tosec"
-# (folder of libretro-database/metadat/ holding `<database>.dat`).
+# `kind`: "console" (default) or "computer" (disks, keyboard, mouse).
+# `dat`: one source or a list, in identification order (first match wins): "no-intro" (default, metadat/no-intro/),
+# "tosec" (metadat/tosec/), "libretro" (top-level dat/ of libretro-database); each holds `<database>.dat`.
+# `folder_extensions`: subset of `extensions` kept for the system only under a folder named after its `id`
+# (generic archives, formats of other machines). An extension accepted by several computers outside their folders
+# is attributed by the DATs, else left unclassified (design v3.0 §3.5.2).
+# Blocks are appended at the end, never reordered.
 
 [[system]]
 id = "megadrive"
@@ -78,3 +83,17 @@ dat = "tosec"
 # (no network in the dev container): to confirm before the first real cover lookup.
 screenscraper = 42
 igdb = 63
+
+[[system]]
+id = "amiga"
+name = "Amiga"
+kind = "computer"
+# `.ipf` is shared with `atarist`; `.hdf` / `.hdz` / `.lha` are generic formats, only taken under `amiga/`.
+extensions = ["adf", "adz", "dms", "fdi", "ipf", "hdf", "hdz", "lha", "m3u"]
+folder_extensions = ["hdf", "hdz", "lha"]
+database = "Commodore - Amiga"
+# TOSEC (floppies), then the WHDLoad Retroplay sets of dat/Commodore - Amiga.dat (`.lha`).
+dat = ["tosec", "libretro"]
+# Not yet confirmed against systemesListe.php / the IGDB platforms endpoint (no network in the dev container).
+screenscraper = 64
+igdb = 16
