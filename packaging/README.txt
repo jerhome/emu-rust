@@ -92,4 +92,5 @@ Linux : dépendances (Debian/Ubuntu) :
 
 Licence : MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Licences des dépendances : THIRD-PARTY-LICENSES.html.
-Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0) : THIRD-PARTY-DATA.txt.
+Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0 ; base de manettes
+SDL_GameControllerDB, zlib) : THIRD-PARTY-DATA.txt.
