@@ -1,4 +1,4 @@
-# Intégration « en largeur » des versions 2.1 à 7.0 — plan de l'agent harmonie
+# Intégration « en largeur » des versions 2.1 à 6.0 — plan de l'agent harmonie
 
 Décision utilisateur du 2026-11-21 : avancer plusieurs versions en parallèle, avec un agent (« harmonie » =
 `architecte`) garant des fichiers partagés, de l'ordre des migrations et des points de fusion. Ce document fait foi
@@ -10,6 +10,11 @@ plus de 10 Go libres (un `target/` de `cargo check` ≈ 1 Go, avec les tests ≈
 worktree (verrou de `target/`) : `CARGO_BUILD_JOBS=3` avec 2 worktrees actifs, **`2` avec 3** ; `rm -rf
 target/debug/incremental` entre les vagues ; dans C, `cargo check` et tests ciblés (`-p <crate>`) seulement, la
 vérification complète se fait en B.
+
+Décisions utilisateur de la nuit (prioritaires) : **la 7.0 n'est pas abordée sans son feu vert** (ADR 0021
+abandonnée, aucune tâche 7.0 ci-dessous ne doit être lancée) ; **tout jusqu'à la 6.0 est validé par nous-mêmes**
+(les tâches « essai réel » E3, DE1, CE1, KE1, GE1 ne bloquent plus la version suivante : la revue et la vérification
+complète suffisent pour le tag rc) ; **Mega CD express dans la 2.1** (§8), à livrer en `v2.1.0-rc.1` cette nuit.
 
 ## 1. Branches
 
@@ -48,9 +53,9 @@ précédente.
 | `emu-ui` : `lib.rs`, `Cargo.toml` | 2.1 T2 (gilrs) → 3.0 U3 (`opener`, `rfd`, lignes `mod`) → suivantes | U3 après M1 ; U3 n'ajoute à `lib.rs` que des lignes `mod` |
 | `emu-ui` : `config_computer.rs`, `game_options.rs`, `computer/computed.rs`, `computer/keymap.rs`, `content.rs` | 3.0 U3 → 4.0 DU1 → 5.0 CU1 / KU1 → 6.0 GU1 | Logique pure ; série par version |
 | `emu-ui/data/keyboards/*.toml` | un fichier par machine (`amiga` U3, `pc` DU1, `cpc` CU1, `c64` KU1) | Fichiers neufs : aucun conflit ; l'`include_str!` se fait dans `vkbd.rs` (tâche d'intégration) |
-| `emu-library/data/systems.toml` | B3 (`amiga`) → DB1 (`dos`) → CB1 (`cpc`), KB1 (`c64`) → GB1 (`gba`, `32x`, `megacd`) → 7.0 | Blocs ajoutés **en fin de fichier**, jamais réordonnés. Nouvelles clés : `dat` en liste, `folder_extensions` (3.0) ; `default_input` (5.0). Pas de bloc posé d'avance : l'analyseur refuse les clés inconnues et des tests énumèrent les systèmes |
-| `emu-assets/data/cores.toml` | A3 → DA1 → CA1, KA1 → GA1 → 7.0 | Même règle. Clés : `media_direct`, `game_saves`, `builtin_firmware`, `required_firmware` (3.0) ; `featured_options`, `layout_option`, `analog` (4.0) ; `save_scope`, `options_by_extension`, `m3u_launch`, `actions` (5.0) ; 6.0 et 7.0 : données seulement |
-| `emu-assets/data/firmware.toml` | **A3, en une passe** | A3 ajoute d'un coup toutes les sections utiles de `System.dat` (même commit épinglé) : Amiga, Atari ST, DOS (MT-32), Mega CD s'il manque, PlayStation, 3DO, JiffyDOS s'il y figure. Données inertes tant qu'aucun core ne les demande ; l'import de BIOS les reconnaît dès la 3.0. `THIRD-PARTY-DATA.txt` mis à jour une fois (P3). Les versions suivantes n'y touchent plus, sauf oubli |
+| `emu-library/data/systems.toml` | **2.1 Mega CD express (`megacd`)** → B3 (`amiga`) → DB1 (`dos`) → CB1 (`cpc`), KB1 (`c64`) → GB1 (`gba`, `32x` ; `megacd` étendu) | Blocs ajoutés **en fin de fichier**, jamais réordonnés. Nouvelles clés : `dat` en liste, `folder_extensions` (3.0) ; `default_input` (5.0). Pas de bloc posé d'avance : l'analyseur refuse les clés inconnues et des tests énumèrent les systèmes |
+| `emu-assets/data/cores.toml` | **2.1 Mega CD express** → A3 → DA1 → CA1, KA1 → GA1 | Même règle. Clés : `media_direct`, `game_saves`, `builtin_firmware`, `required_firmware` (3.0) ; `featured_options`, `layout_option`, `analog` (4.0) ; `save_scope`, `options_by_extension`, `m3u_launch`, `actions` (5.0) ; 6.0 et 7.0 : données seulement |
+| `emu-assets/data/firmware.toml` | **A3, en une passe** | A3 ajoute d'un coup toutes les sections utiles de `System.dat` (même commit épinglé) : Amiga, Atari ST, DOS (MT-32), JiffyDOS s'il y figure (les BIOS Mega CD y sont déjà depuis la 1.0 ; PlayStation et 3DO : pas avant le feu vert de la 7.0). Données inertes tant qu'aucun core ne les demande ; l'import de BIOS les reconnaît dès la 3.0. `THIRD-PARTY-DATA.txt` mis à jour une fois (P3). Les versions suivantes n'y touchent plus, sauf oubli |
 | `emu-assets/data/free_bios.toml` | 4.0 DA1 seulement (SoundFont) | — |
 | `emu-assets/src/cores/{select,firmware}.rs`, `bios.rs` | A3 → DA1 → CA1 → GA1 | Série |
 | `emu-library/src/db.rs` et migrations | **v4 = B3 (3.0) → v5 = DB1 (4.0) → v6 = GB1 (6.0)** ; 5.0 et 2.1 : aucune | `MIGRATIONS` en ajout seul. `SCHEMA_VERSION` monte **dans le même commit** que sa migration (X0 l'a laissé à 3). v4 est **gelée au point M3** : DB1 n'écrit v5 qu'après. Une migration contenue dans un tag rc n'est plus jamais modifiée (correctif = migration suivante) |
@@ -104,7 +109,8 @@ disjoints. A = `wip-2.1`, B = `wip-3.0`, C = `wip-4.0` (à partir de M3).
 |---|---|---|---|---|
 | 1 (en cours) | 2.1 T2-T4 | `ui` | A | — |
 | 1 (en cours) | 2.1 T5 | `platform-build` | A | — |
-| 1 (en cours) | ADR 0021, design 7.0, design 2.1 « identité / disques » (docs seulement) | `architecte` (Fable) | A | — |
+| 1 (en cours) | design 2.1 « identité / disques » et **design Mega CD express** (`docs/design/v2.1-megacd-express.md`), docs seulement | `architecte` (Fable) | A | — |
+| 2-3 | **Mega CD express** (§8) : tâches du design, relu par harmonie avant code | `library-assets`, `ui` (après T3 : `app.rs`), `qa-systems` | A | design relu ; prioritaire sur l'identité de jeu |
 | 1 (en cours) | **Q4** core factice, `mkadf.py` | `qa-systems` (sonnet) | B | — |
 | 1 (fait) | X0 3.0, ce plan | harmonie | B | — |
 | **2** | **A3** import de BIOS, cores Amiga, `check_required`, `recommended_on`, `firmware.toml` en une passe | `library-assets` (**opus**) | B | X0 |
@@ -131,9 +137,9 @@ Largeur maximale réaliste : vague 2 = 6 agents (2 en A qui finissent, 4 à 5 en
 de B partagent un seul `target/` : leurs `cargo` s'attendent les uns les autres ; leur demander `cargo check -p
 <crate>` et `cargo test -p <crate>` pendant le travail, la vérification complète une seule fois à la fin.
 
-Ce qui peut avancer **sans attendre la 3.0** (4.0, 5.0, 6.0, 7.0) :
+Ce qui peut avancer **sans attendre la 3.0** (4.0, 5.0, 6.0) :
 
-- **documents** : ADR 0021 et design 7.0 (en cours, autre `architecte`), re-validation des designs 4.0 / 5.0 / 6.0 contre le code réel, guides d'essai ;
+- **documents** : re-validation des designs 4.0 / 5.0 / 6.0 contre le code réel, guides d'essai ;
 - **outils de test neufs** (`tests/tools/mkdos.py`, `mkcd.py` ; extensions de `mkcpc`, `mkcdt`, `mkc64`, `mktap`),
   fichiers inertes pour la 3.0, commités sur `wip-3.0` ;
 - **données en une passe** : sections `System.dat` de `firmware.toml` (A3), blocs de `fetch-test-assets.sh` (P3),
@@ -162,3 +168,56 @@ Contrat posé sur `wip-3.0`, `cargo check --workspace --all-targets` vert, compo
 existants délèguent ; seules les fonctions neuves sont en `todo!()`). Détail et écarts avec le design : design 3.0
 §10. Fichiers de la zone en cours de modification sur `wip-2.1` touchés : **`crates/emu-ui/src/app.rs` seulement**,
 un bloc (`App::build`, `matches!` sur `ContentSpec::Media { rules, .. }`).
+
+## 8. Mega CD express dans la 2.1 : contraintes d'harmonie (à respecter par son design)
+
+Le design (`docs/design/v2.1-megacd-express.md`, sur `wip-2.1`) n'existait pas encore à l'écriture de cette section ;
+harmonie le relit dès qu'il existe. Il avance d'une partie de la 6.0 avant la 3.0 : il doit donc **n'utiliser que les
+mécanismes de la 2.0** et rester un sous-ensemble strict de ce que la 6.0 (ADR 0020) fera avec les mécanismes de la
+3.0. Contraintes :
+
+| Sujet | Contrainte pour la 2.1 express | Reprise |
+|---|---|---|
+| `systems.toml` | Un bloc `megacd` **en fin de fichier**, clés 2.0 seulement (`id`, `name`, `extensions`, `database`, `screenscraper`, `igdb`, `dat`), `id = "megacd"` et `database = "Sega - Mega-CD - Sega CD"` (ceux de la 6.0, **persistés** : ne plus les changer). Pas de `folder_extensions` (3.0) : les extensions `cue` / `chd` / `iso` ne sont partagées avec aucun système avant la 4.0, donc aucune ambiguïté en 2.1 | B3 ajoute `amiga` **après** ce bloc (conflit de fusion trivial à M1) ; DB1 (4.0) rend `cue` / `chd` / `iso` restreintes au dossier pour `dos` et `megacd` (`folder_extensions`, design 3.0 §3.5.2) ; GB1 (6.0) ajoute Redump, la sonde `SEGADISCSYSTEM` et la région |
+| `cores.toml` | `[systems."Sega - Mega-CD - Sega CD"] cores = ["genesis_plus_gx", "picodrive"]`, clés 2.0 seulement ; **pas** de `required_firmware` (clé 3.0 : l'analyseur de la 2.1 la refuserait) | A3 n'y touche pas ; **GA1 (6.0)** ajoute la table `required_firmware` par région |
+| `firmware.toml` | **Rien à ajouter** : `bios_CD_E/J/U.bin` y sont depuis la 1.0 | — |
+| Contrôle du BIOS avant lancement | Le contrôle `.info` de la 1.0 (`check_firmware`, avertissement « lancer quand même ») ; au plus un message qui nomme le fichier attendu. **Ne pas** poser de `check_required`, de `FirmwareCheck` ni de variante « région » sur `wip-2.1` : ces noms sont posés sur `wip-3.0` (X0, 0a1ff5a), un doublon donnerait un conflit de fusion sémantique | 6.0 : contrôle unique par région (données) |
+| `.m3u` multi-CD | En 2.0, `.m3u` est une extension partagée attribuée par dossier, sinon au premier système du catalogue (`atarist`) : un `.m3u` de CD n'est donc reconnu `megacd` que **sous un dossier `megacd/`**. À dire dans le guide ; ne pas réécrire l'attribution (c'est B3, design 3.0 §3.5.2) | B3 : système d'un `.m3u` = celui de ses entrées |
+| Schéma de la bibliothèque | **Aucune migration** en 2.1 (la v4 appartient à B3, déjà lancée) : pas de `game.region`, pas de table nouvelle | v6 (GB1) |
+| Bibliothèque : `.cue` + pistes `.bin` | Risque principal : sans règle, chaque piste `.bin` devient un « jeu » (ou `.bin` est pris pour une ROM Mega Drive). Règle minimale permise : dans `scan.rs`, un `.bin` / `.iso` référencé par un `.cue` du même dossier n'est pas listé. À écrire comme une fonction isolée (`cue_references`, nom et signature du design 4.0 §3.4) pour que DB1 la **reprenne sans la réécrire** | DB1 (4.0) : règles CD génériques ; GB1 : Redump, `disc_serial` |
+| Fichiers de code | `emu-library/src/{scan,systems}.rs` sont aussi modifiés par **B3 (en cours en B)** : la tâche express y fait des ajouts localisés (fonction neuve + un appel), signalés à harmonie pour la fusion M1. `emu-runtime/src/media.rs` et `emulator.rs` (R3 en cours) : **ne pas y toucher** ; un `.cue` / `.chd` se lance par le chemin 1.0 (`ContentSpec::File`, `needs_fullpath`), un jeu multi-CD par `.m3u` (2.0). `app.rs` : après T3, même agent `ui` | — |
+| Sauvegardes | RAM interne du Mega CD : fichier `.brm` écrit par le core dans `saves/` ; rien à coder. Ne pas ajouter `game_saves` (clé 3.0) | 6.0 : `game_saves = ["{game}.brm"]` |
+| Import du BIOS | Pas de bouton « Importer un BIOS… » en 2.1 (c'est A3 + U4, 3.0) : dépôt manuel dans `system/`, à expliquer dans le guide d'essai (`docs/bios-utilisateur.md`) | 3.0 |
+| Tests | Aucun BIOS ni jeu commercial : image CD générée (`tests/tools/mkcd.py`, fichier neuf, repris tel quel par la 6.0) ; lancement réel non testable sans BIOS ⇒ tests de scan et de choix du core seulement, essai réel par l'utilisateur (Dune) | GQ1 / GQ2 |
+
+Ordre des propriétaires amendé (§2) : `systems.toml` et `cores.toml` commencent par la **2.1 express**, puis B3 / A3.
+Conséquence pour la 6.0 : le périmètre Mega CD de l'ADR 0020 devient « compléter » (région, Redump, contrôle par
+région, sonde, `.brm` par jeu) ; à noter dans l'ADR 0020 quand le design express est accepté.
+
+Conflits à surveiller à **M1** : `emu-library/src/scan.rs` (express ↔ B3), `data/systems.toml` (deux blocs ajoutés
+en fin), `crates/emu-ui/src/app.rs` (bloc de X0), `Cargo.lock`. Aucun autre attendu si les contraintes ci-dessus
+sont tenues.
+
+## 9. Relecture du design 2.1 « identité de jeu, disquettes ajoutées » (risque H1)
+
+`docs/design/v2.1-identite-disques.md` (sur `wip-2.1`) : **bon pour lancer I0 → I1 / I2 → I3**, aux conditions
+ci-dessous. Il est cohérent avec la 3.0 : `save_name` reste le nom nu pour les jeux non homonymes (aucun nommage
+nouveau dans R3), `Emulator::content_name()` est exactement le `{game}` du §3.5.3, aucune migration de schéma.
+
+**R3 n'a rien à changer** : `reset_core_game_files(dir, content_name, motifs)` ne regarde que le dossier reçu, non
+récursif ; c'est l'appelant (U4) qui passera `identity.core_save_dir` au lieu de `<saves>/<core_id>`. Le premier
+paramètre se lit donc « dossier de sauvegarde donné au core pour ce jeu ».
+
+| # | Condition / point de fusion | Pour |
+|---|---|---|
+| C1 | Sur `wip-2.1`, tout code neuf qui filtre `ContentSpec::Media` écrit `{ set, .. }` et ne nomme jamais le champ `policy` (devenu `rules` sur `wip-3.0`) ; `prepare_media` n'est pas appelée par du code neuf hors `emulator.rs` | I0, I1 |
+| C2 | `lib.rs` d'`emu-runtime` : les exports nouveaux vont dans des lignes `pub use` **séparées** (la liste `media::{…}` a déjà changé sur `wip-3.0`) | I0 |
+| C3 | I2 : le code des disquettes ajoutées et des orphelins (`added`, `forget_added`, `adopt_orphan`, `orphan_copies`, `remove_orphan_copies`) et ses tests vont dans un **fichier neuf** (`added.rs`, `impl Disks<'_>` y compris) ; dans `media.rs`, seulement les retouches indispensables de `stage_added_copy` / `Disks::add`. R3 modifie le haut du fichier (`prepare_media_with`, `Stage`, listes `.m3u`) et y ajoute des tests | I0, I2 |
+| C4 | `emulator.rs` : `load_content_as` est une fonction neuve ; le bloc `ContentSpec::Media { … }` de `load_content` (modifié par X0) n'est retouché que pour `set.name` | I1 |
+| C5 | `EmulatorOptions` gagne un champ : 19 littéraux `EmulatorOptions { … }` existent, d'autres naissent en B (tests de R3, Q5) ; `StateHeader` de même (2 hors `saves.rs`). À M2, harmonie complète les littéraux de `wip-3.0` (conflit sémantique, pas textuel) | M2 |
+| C6 | `mock_core.c` : I4 (« expose le dossier de sauvegarde reçu ») et Q4 (déjà commité sur `wip-3.0`, ecc023a) modifient le même fichier ⇒ conflit textuel à M2, à résoudre en gardant les deux comportements ; I4 garde chaque ajout derrière sa propre variable `MOCK_*` et n'en réordonne aucune | I4, M2 |
+| C7 | `app.rs` : I3 réécrit le début de `App::build` (`content_spec` → identité → options), là où X0 a changé le calcul de `working_copy` : conflit attendu à M2, résolu par harmonie (garder la forme `rules.policy`) | M2 |
+| C8 | **Ordre dans la 2.1** : le design place le Mega CD express « après I3 » ; la priorité utilisateur (essai de Dune demain) impose l'inverse : T3 / T4 → **Mega CD express (UI)** → `v2.1.0-rc.1` ; I3 ensuite (dans la rc.1 seulement s'il est vert et revu à temps, sinon rc.2). I0, I1, I2 (`emu-runtime`) peuvent tourner en parallèle de l'express, qui ne touche pas ce crate | session principale |
+| C9 | U4 (3.0) a besoin de `GameIdentity` et de `content_name()` : **M2 se fait après I1-I3**. Si l'identité glisse en rc.2, faire une fusion intermédiaire `wip-2.1` → `wip-3.0` dès qu'I2 est vert, pour ne pas retarder U4 | M2 |
+| C10 | 5.0 : `save_scope = "game"` devient « sous-dossier `<save_name>/` pour tous les jeux du core » ; à reporter dans le design 5.0 lors de sa re-validation | architecte |
+
