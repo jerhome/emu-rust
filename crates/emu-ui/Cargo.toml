@@ -25,6 +25,11 @@ toml = { workspace = true }
 tracing = { workspace = true }
 winit = { workspace = true, features = ["serde"] }
 sys-locale = "0.3"
+# Native file dialog (MIT): on Linux the xdg-desktop-portal through libdbus loaded at run time (zenity fallback),
+# no OpenSSL, nothing linked at build time. Docker uses the built-in egui browser instead.
+rfd = "0.18"
+# Opens the ROM folder in the system file manager (MIT OR Apache-2.0); never goes through a shell.
+opener = { version = "0.9", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

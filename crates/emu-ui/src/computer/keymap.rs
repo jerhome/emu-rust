@@ -1,11 +1,14 @@
 //! Positional winit `KeyCode` → libretro `RetroKey` (US layout names): the emulated machine's own keyboard layout
 //! (TOS) turns positions into characters, whatever the host layout is.
 
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::HashSet;
 
 use emu_runtime::{KeyModifiers, RetroKey};
 use winit::keyboard::{KeyCode, ModifiersState};
+
+use super::vkbd::KeyboardLayout;
 
 /// `RETROK_*` name (lower-case, see `RetroKey::name`) of a physical key; `None` for keys a computer has no use for.
 fn name(code: KeyCode) -> Option<&'static str> {
@@ -130,6 +133,44 @@ fn name(code: KeyCode) -> Option<&'static str> {
 /// Physical key → libretro key; `None` when the key has no libretro equivalent (media keys, IME…).
 pub(crate) fn retro_key(code: KeyCode) -> Option<RetroKey> {
     name(code).and_then(RetroKey::from_name)
+}
+
+/// Per-layout overrides of the positional map: the layout file's `[remap]` table (identical on the three OSes),
+/// then the user's `[computer.remap.<layout>]`, which wins. Empty for a layout without any (Atari ST).
+// Used by `ComputerKeyboard` once U4 wires the layout in.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeyRemap(BTreeMap<KeyCode, RetroKey>);
+
+#[allow(dead_code)]
+impl KeyRemap {
+    /// Entries naming an unknown `KeyCode` or libretro key are skipped with a warning: a typo in the user's
+    /// config must not disable the keyboard.
+    pub fn for_layout(layout: &KeyboardLayout, user: &BTreeMap<String, String>) -> Self {
+        let mut map = BTreeMap::new();
+        for (from, to) in layout.remap.iter().chain(user) {
+            match (parse_key_code(from), RetroKey::from_name(to)) {
+                (Some(code), Some(key)) if key != RetroKey::UNKNOWN => {
+                    map.insert(code, key);
+                }
+                _ => tracing::warn!("remap ignoré ({}) : {from} = {to}", layout.id),
+            }
+        }
+        Self(map)
+    }
+
+    /// Override, else the positional default.
+    pub fn map(&self, code: KeyCode) -> Option<RetroKey> {
+        self.0.get(&code).copied().or_else(|| retro_key(code))
+    }
+}
+
+#[allow(dead_code)]
+/// winit `KeyCode` from its variant name (`"AltLeft"`).
+fn parse_key_code(name: &str) -> Option<KeyCode> {
+    use serde::Deserialize;
+    use serde::de::value::{Error, StrDeserializer};
+    KeyCode::deserialize(StrDeserializer::<Error>::new(name)).ok()
 }
 
 /// State of the lock keys, which winit does not report in `ModifiersState`: tracked by the caller from key events.
@@ -490,5 +531,49 @@ mod tests {
         assert!(!h.update(KeyCode::KeyB, false));
         assert_eq!(h.drain(), vec![KeyCode::KeyA]);
         assert!(h.drain().is_empty());
+    }
+
+    fn layout_with(remap: &[(&str, &str)]) -> KeyboardLayout {
+        let mut l = KeyboardLayout::load("atari_st").unwrap();
+        l.remap = remap
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect();
+        l
+    }
+
+    #[test]
+    fn remap_overrides_then_user_wins() {
+        let layout = layout_with(&[("AltLeft", "lsuper"), ("AltRight", "rsuper")]);
+        let user = BTreeMap::from([("AltRight".to_owned(), "RALT".to_owned())]);
+        let r = KeyRemap::for_layout(&layout, &user);
+        let name = |c| r.map(c).and_then(RetroKey::name);
+        assert_eq!(name(KeyCode::AltLeft), Some("lsuper"));
+        assert_eq!(name(KeyCode::AltRight), Some("ralt"));
+        assert_eq!(name(KeyCode::KeyA), Some("a"));
+        assert_eq!(name(KeyCode::MediaPlayPause), None);
+    }
+
+    #[test]
+    fn bad_remap_entries_are_skipped() {
+        let user = BTreeMap::from([
+            ("NotAKey".to_owned(), "a".to_owned()),
+            ("KeyB".to_owned(), "nope".to_owned()),
+            ("KeyC".to_owned(), "unknown".to_owned()),
+        ]);
+        let r = KeyRemap::for_layout(&layout_with(&[]), &user);
+        assert_eq!(r, KeyRemap::default());
+        assert_eq!(r.map(KeyCode::KeyB).and_then(RetroKey::name), Some("b"));
+    }
+
+    #[test]
+    fn amiga_layout_remaps_alt_keys_only() {
+        let layout = KeyboardLayout::load("amiga").unwrap();
+        let r = KeyRemap::for_layout(&layout, &BTreeMap::new());
+        let name = |c| r.map(c).and_then(RetroKey::name);
+        assert_eq!(name(KeyCode::AltLeft), Some("lsuper"));
+        assert_eq!(name(KeyCode::AltRight), Some("rsuper"));
+        assert_eq!(name(KeyCode::SuperLeft), Some("lsuper"));
+        assert_eq!(layout.remap.len(), 2);
     }
 }

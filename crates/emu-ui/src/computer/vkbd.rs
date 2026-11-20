@@ -16,6 +16,7 @@ use crate::ui::text;
 const HOLD_FRAMES: u8 = 3;
 
 const ATARI_ST: &str = include_str!("../../data/keyboards/atari_st.toml");
+const AMIGA: &str = include_str!("../../data/keyboards/amiga.toml");
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LayoutKey {
@@ -39,6 +40,9 @@ pub(crate) struct KeyboardLayout {
     pub id: String,
     pub name: String,
     pub rows: Vec<Vec<LayoutKey>>,
+    /// Physical key (winit `KeyCode` name) → libretro key name, replacing the positional default
+    /// (`keymap::KeyRemap::for_layout` validates and applies it).
+    pub remap: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +51,8 @@ struct RawLayout {
     id: String,
     name: String,
     row: Vec<RawRow>,
+    #[serde(default)]
+    remap: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -73,10 +79,11 @@ struct RawKey {
 }
 
 impl KeyboardLayout {
-    /// Built-in layout by id (`atari_st`); `None` for an unknown id.
+    /// Built-in layout by id (`atari_st`, `amiga`); `None` for an unknown id.
     pub fn load(id: &str) -> Option<Self> {
         let text = match id {
             "atari_st" => ATARI_ST,
+            "amiga" => AMIGA,
             _ => return None,
         };
         match Self::parse(text) {
@@ -123,6 +130,7 @@ impl KeyboardLayout {
             id: raw.id,
             name: raw.name,
             rows,
+            remap: raw.remap,
         })
     }
 
@@ -352,7 +360,8 @@ mod tests {
         let q = all.iter().find(|k| k.key == key("q")).unwrap();
         assert_eq!(q.legend("fr"), "A");
         assert_eq!(q.legend("us"), "Q");
-        assert!(KeyboardLayout::load("amiga").is_none());
+        assert!(KeyboardLayout::load("amiga").is_some());
+        assert!(KeyboardLayout::load("nope").is_none());
         assert!(
             KeyboardLayout::parse("id='x'\nname='x'\n[[row]]\nkeys=[{key='nope',label='?'}]")
                 .is_err()

@@ -1,5 +1,5 @@
 //! Host platform facts: container detection and the "open the ROM folder" decision (design v3.0 §2.3, §4).
-//! Pure logic; the actual `opener::open` call is added by U3b. No shell is ever involved.
+//! The decision is pure ([`plan_open_folder`]); [`open_folder`] adds the `opener::open` call. No shell is involved.
 
 use std::path::{Path, PathBuf};
 
@@ -63,6 +63,56 @@ pub(crate) fn plan_open_folder(
     }
 }
 
+/// Opens `path` in the system file manager, or says where it is when that is impossible (container, no opener,
+/// failure). May wait for the opener process: call it off the UI thread ([`spawn_open_folder`]).
+pub(crate) fn open_folder(path: &Path) -> FolderOutcome {
+    open_folder_with(path, running_in_container(), host_roms_hint(), |p| {
+        opener::open(p).map_err(|e| e.to_string())
+    })
+}
+
+/// [`open_folder`] with its inputs injected (tests): the opener is never called in a container.
+fn open_folder_with(
+    path: &Path,
+    in_container: bool,
+    host_hint: Option<String>,
+    open: impl FnOnce(&Path) -> Result<(), String>,
+) -> FolderOutcome {
+    match plan_open_folder(path, in_container, host_hint.clone()) {
+        FolderPlan::ShowPath { path, host_hint } => FolderOutcome::ShowPath { path, host_hint },
+        FolderPlan::TryOpen => match open(path) {
+            Ok(()) => FolderOutcome::Opened,
+            Err(e) => {
+                tracing::warn!("ouverture du dossier impossible : {e}");
+                FolderOutcome::ShowPath {
+                    path: path.to_owned(),
+                    host_hint,
+                }
+            }
+        },
+    }
+}
+
+/// Runs [`open_folder`] on a worker thread; the receiver yields exactly one outcome (a failure to spawn the
+/// thread yields the `ShowPath` fallback).
+pub(crate) fn spawn_open_folder(path: PathBuf) -> std::sync::mpsc::Receiver<FolderOutcome> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let fallback = FolderOutcome::ShowPath {
+        path: path.clone(),
+        host_hint: host_roms_hint(),
+    };
+    let tx2 = tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("open-folder".into())
+        .spawn(move || {
+            let _ = tx.send(open_folder(&path));
+        });
+    if spawned.is_err() {
+        let _ = tx2.send(fallback);
+    }
+    rx
+}
+
 /// Current OS as a core-catalog platform; `None` on unsupported targets.
 pub(crate) fn current_platform() -> Option<Platform> {
     Platform::current()
@@ -107,6 +157,23 @@ mod tests {
             }
         );
         assert_eq!(plan_open_folder(p, false, None), FolderPlan::TryOpen);
+    }
+
+    #[test]
+    fn open_folder_outcomes() {
+        let p = Path::new("/r");
+        let ok = open_folder_with(p, false, None, |_| Ok(()));
+        assert_eq!(ok, FolderOutcome::Opened);
+        let failed = open_folder_with(p, false, Some("h".into()), |_| Err("no".into()));
+        assert_eq!(
+            failed,
+            FolderOutcome::ShowPath {
+                path: p.to_owned(),
+                host_hint: Some("h".into())
+            }
+        );
+        let container = open_folder_with(p, true, None, |_| panic!("opener called in a container"));
+        assert!(matches!(container, FolderOutcome::ShowPath { .. }));
     }
 
     #[test]

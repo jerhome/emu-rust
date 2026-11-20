@@ -1,5 +1,5 @@
 //! Per-game options (ADR 0015, design §5): `<data>/game-options/<core_id>/<game>.toml`. Priority, lowest first:
-//! core defaults < frontend defaults (`cores.toml`) < global (`config.toml`) < game.
+//! core defaults < frontend defaults (`cores.toml`) < computed defaults < global (`config.toml`) < game.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -20,6 +20,9 @@ pub struct GameInput {
     pub keyboard_mode: Option<KeyboardModeChoice>,
     /// Absent: `[computer] auto_capture`.
     pub auto_capture: Option<bool>,
+    /// The user accepted launching this game with the built-in AROS instead of a Kickstart (warned once per game).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub aros_acknowledged: bool,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -174,15 +177,27 @@ impl GameOptions {
     }
 }
 
-/// Core option values to apply: later layers override earlier ones. Sorted by key.
+/// Core option values to apply: later layers override earlier ones. Sorted by key. No computed layer.
 pub(crate) fn effective_core_options(
     core_defaults: &[(String, String)],
     frontend: &[(String, String)],
     global: &BTreeMap<String, String>,
     game: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
+    effective_core_options_with(core_defaults, frontend, &[], global, game)
+}
+
+/// [`effective_core_options`] with the computed defaults layer (design v3.0 §3.5.4) between `cores.toml` and the
+/// config: `computed` is never persisted, so any explicit `global` / `game` value overrides it.
+pub(crate) fn effective_core_options_with(
+    core_defaults: &[(String, String)],
+    frontend: &[(String, String)],
+    computed: &[(String, String)],
+    global: &BTreeMap<String, String>,
+    game: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
     let mut map: BTreeMap<&str, &str> = BTreeMap::new();
-    for (k, v) in core_defaults.iter().chain(frontend) {
+    for (k, v) in core_defaults.iter().chain(frontend).chain(computed) {
         map.insert(k, v);
     }
     for (k, v) in global.iter().chain(game) {
@@ -237,6 +252,35 @@ mod tests {
                 ("e", "game")
             ])
         );
+    }
+
+    #[test]
+    fn computed_sits_between_frontend_and_config() {
+        let out = effective_core_options_with(
+            &pairs(&[("k", "core"), ("m", "core")]),
+            &pairs(&[("k", "front"), ("m", "front")]),
+            &pairs(&[("k", "aros"), ("m", "aros"), ("n", "aros")]),
+            &map(&[("m", "global")]),
+            &map(&[]),
+        );
+        assert_eq!(out, pairs(&[("k", "aros"), ("m", "global"), ("n", "aros")]));
+        let game = effective_core_options_with(
+            &[],
+            &[],
+            &pairs(&[("k", "aros")]),
+            &map(&[]),
+            &map(&[("k", "kick")]),
+        );
+        assert_eq!(game, pairs(&[("k", "kick")]));
+    }
+
+    #[test]
+    fn aros_flag_round_trips_and_is_omitted_when_false() {
+        let mut o = GameOptions::default();
+        assert!(!toml::to_string(&o).unwrap().contains("aros_acknowledged"));
+        o.input.aros_acknowledged = true;
+        let back: GameOptions = toml::from_str(&toml::to_string(&o).unwrap()).unwrap();
+        assert!(back.input.aros_acknowledged);
     }
 
     #[test]

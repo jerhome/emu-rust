@@ -88,8 +88,10 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         }
         _ => MediaPolicy::Direct,
     };
-    // TODO(U4, design v3.0 §3.2): fill `media_direct` from `CorePreferences::media_direct`.
-    let rules = MediaRules::new(policy);
+    let mut rules = MediaRules::new(policy);
+    if let Some(id) = &id {
+        rules.media_direct = prefs.media_direct(id);
+    }
     if files.len() == 1 && is_m3u(&files[0]) {
         return ContentSpec::Media {
             set: MediaSet {
@@ -147,6 +149,18 @@ mod tests {
                 ContentSpec::File(PathBuf::from(name)),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn puae_hands_ipf_and_lha_over_in_place() {
+        let prefs = CorePreferences::builtin();
+        match content_spec("puae", &files(&["/g/Zool.adf", "/g/Zool 2.adf"]), &prefs) {
+            ContentSpec::Media { rules, .. } => {
+                assert_eq!(rules.policy, MediaPolicy::WorkingCopy);
+                assert_eq!(rules.media_direct, ["ipf", "lha"]);
+            }
+            other => panic!("{other:?}"),
         }
     }
 

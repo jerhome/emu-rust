@@ -9,6 +9,9 @@ mod config_library;
 mod content;
 mod cores_ui;
 mod egui_layer;
+// Used by U4 (`FileBrowser::show`, import dialog).
+#[allow(dead_code)]
+mod file_picker;
 mod game_options;
 mod gamepad;
 mod hotkeys;

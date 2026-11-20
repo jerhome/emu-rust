@@ -1,5 +1,7 @@
 //! `[computer]` section of `config.toml` (ADR 0015, design §5). Unknown keys are written back unchanged.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Keyboard mode of a game (also the value of `[input] keyboard_mode` in the game options).
@@ -27,6 +29,10 @@ pub struct ComputerConfig {
     pub grab_pointer: bool,
     /// EmuTOS variant id (`"192fr"`); absent: derived from the system language, else the catalogue default.
     pub emutos_variant: Option<String>,
+    /// User key overrides per keyboard layout id (`[computer.remap.amiga]`): winit `KeyCode` name → libretro key
+    /// name, above the layout file's own `[remap]`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub remap: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -39,6 +45,7 @@ impl Default for ComputerConfig {
             default_keyboard_mode: KeyboardModeChoice::default(),
             grab_pointer: true,
             emutos_variant: None,
+            remap: BTreeMap::new(),
             extra: toml::Table::new(),
         }
     }
@@ -112,6 +119,23 @@ mod tests {
         let back: ComputerConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
         assert!(toml::to_string(&c).unwrap().contains("future = 3"));
+    }
+
+    #[test]
+    fn remap_table_round_trips() {
+        let text = "mouse_sensitivity = 2.0\n[remap.amiga]\nContextMenu = \"RALT\"\n";
+        let c: ComputerConfig = toml::from_str(text).unwrap();
+        assert_eq!(c.remap["amiga"]["ContextMenu"], "RALT");
+        assert!(c.extra.is_empty());
+        let out = toml::to_string(&c).unwrap();
+        let back: ComputerConfig = toml::from_str(&out).unwrap();
+        assert_eq!(back, c);
+        assert!(!c.is_default());
+        assert!(
+            !toml::to_string(&ComputerConfig::default())
+                .unwrap()
+                .contains("remap")
+        );
     }
 
     #[test]
