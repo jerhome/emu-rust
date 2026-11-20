@@ -18,3 +18,4 @@ tests/cores/*
 CLAUDE.local.md
 .claude/*
 !.claude/agents/
+__pycache__/
