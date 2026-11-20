@@ -562,3 +562,32 @@ fn dat_import_uses_the_folder_rule_of_the_scan() {
     let r = scan(&mut lib, &options(&[&tmp.path().join("gb")]));
     assert_eq!(r.unchanged, 2, "{r:?}");
 }
+
+#[test]
+fn empty_files_and_empty_zip_entries_are_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = tmp.path().join("roms");
+    write(&roms.join("empty.gb"), b"");
+    write(
+        &roms.join("emptyzip.zip"),
+        &build_zip(&[(b"inner.gb", b"", None)]),
+    );
+    write(
+        &roms.join("path.zip"),
+        &build_zip(&[(b"../dir/Name.gb", &rom(9, 600), None)]),
+    );
+    let mut lib = Library::open_in_memory().unwrap();
+    let r = scan(&mut lib, &options(&[&roms]));
+    assert_eq!((r.added, r.ignored_empty), (1, 2), "{r:?}");
+    assert!(r.errors.is_empty(), "{r:?}");
+    let g = by_file(&lib, "path.zip");
+    // The title comes from the archive name, the entry is a base name: no path component survives.
+    assert_eq!(g.title, "path");
+    assert_eq!(g.entry.as_deref(), Some("Name.gb"));
+
+    // A file emptied after a first scan leaves the list.
+    write(&roms.join("path.zip"), b"");
+    let r = scan(&mut lib, &options(&[&roms]));
+    assert_eq!((r.removed, r.ignored_empty), (1, 3), "{r:?}");
+    assert!(lib.games().unwrap().is_empty());
+}

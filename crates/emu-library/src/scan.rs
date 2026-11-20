@@ -53,6 +53,8 @@ pub struct ScanReport {
     /// Unchanged path, size and mtime: not hashed again.
     pub unchanged: u64,
     pub removed: u64,
+    /// Empty files (0 byte) and archives holding only empty entries: not listed, nothing to launch.
+    pub ignored_empty: u64,
     /// Roots that did not exist: their games are kept (unmounted drive), not removed.
     pub missing_roots: Vec<PathBuf>,
     /// Unreadable files and archives (path + French message), the scan goes on.
@@ -102,6 +104,8 @@ struct Analysis {
 
 enum Failure {
     Cancelled,
+    /// Archive whose only recognised entries are empty: ignored, not an error.
+    Empty,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -255,6 +259,10 @@ impl Walk<'_> {
                         .push((path, "chemin non UTF-8 ignoré".to_owned()));
                     continue;
                 };
+                if meta.len() == 0 {
+                    self.report.ignored_empty += 1;
+                    continue;
+                }
                 if !self.seen.insert(key.clone()) {
                     continue;
                 }
@@ -389,17 +397,17 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
     }
 }
 
-fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, String> {
+fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
     if found.file_size > MAX_ARCHIVE_SIZE {
-        return Err("archive trop grosse".to_owned());
+        return Err("archive trop grosse".to_owned().into());
     }
     let mut file = open_regular(&found.path)?;
     match declared_entries(&mut file, found.file_size) {
         Ok(Some(n)) if n > MAX_ARCHIVE_ENTRIES => {
-            return Err(format!("archive illisible : trop d'entrées ({n})"));
+            return Err(format!("archive illisible : trop d'entrées ({n})").into());
         }
         Ok(_) => {}
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(e.to_string().into()),
     }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(BufReader::new(CancelRead {
@@ -408,10 +416,11 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     }))
     .map_err(|e| format!("archive illisible : {e}"))?;
     if archive.len() as u64 > MAX_ARCHIVE_ENTRIES {
-        return Err("archive illisible : trop d'entrées".to_owned());
+        return Err("archive illisible : trop d'entrées".to_owned().into());
     }
     // First file entry with a catalog extension, as emu-runtime picks the first accepted entry.
     let mut chosen = None;
+    let mut saw_empty = false;
     for index in 0..archive.len() {
         let entry = archive
             .by_index_data(index)
@@ -427,12 +436,20 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         };
         let candidates = systems_for_extension(&ext);
         if !candidates.is_empty() {
+            if entry.size() == 0 {
+                saw_empty = true;
+                continue;
+            }
             chosen = Some((index, name, entry.size(), candidates));
             break;
         }
     }
     let Some((index, name, declared, candidates)) = chosen else {
-        return Err("aucun jeu reconnu dans l'archive".to_owned());
+        return Err(if saw_empty {
+            Failure::Empty
+        } else {
+            "aucun jeu reconnu dans l'archive".to_owned().into()
+        });
     };
     let (candidates, pinned) = pin(candidates, &found.folders);
     let hashes = if declared > max {
@@ -470,12 +487,12 @@ fn analyze(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Fai
     if result.is_err() && is_cancelled(cancel) {
         return Err(Failure::Cancelled);
     }
-    result.map_err(Failure::from)
+    result
 }
 
-fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, String> {
+fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
     let Some(ext) = lower_ext(&found.path) else {
-        return Err("extension inconnue".to_owned());
+        return Err("extension inconnue".to_owned().into());
     };
     if ext == "zip" {
         return analyze_zip(found, max, cancel);
@@ -670,6 +687,11 @@ pub(crate) fn run(
                 Err(Failure::Cancelled) => {
                     cancelled = true;
                     break;
+                }
+                Err(Failure::Empty) => {
+                    report.ignored_empty += 1;
+                    // Not seen: a row stored by an earlier scan is removed.
+                    seen.remove(&f.key);
                 }
                 Err(Failure::Message(message)) => {
                     tracing::warn!("cannot scan {}: {message}", f.path.display());

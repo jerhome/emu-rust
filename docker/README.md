@@ -39,7 +39,7 @@ Tant que la 1.0 n'est pas publiée, les liens manuels de `packaging/README.txt` 
 ```text
 /data/cores/    cores libretro (*.so)
 /data/roms/     ROMs (jamais fournies par l'application ni l'image)
-/data/bios/     BIOS
+/data/system/   BIOS et fichiers système des cores
 /data/saves/    SRAM : saves/<core_id>/<jeu>.srm (compatible RetroArch)
 /data/states/   savestates à emplacements, par core puis par jeu
 /data/assets/   covers et métadonnées téléchargées
@@ -49,7 +49,7 @@ Tant que la 1.0 n'est pas publiée, les liens manuels de `packaging/README.txt` 
 ```
 
 Un seul volume porte tout le persistant ; le dossier de données est `EMU_DATA_DIR=/data` (équivalent de
-`--data-dir /data`, voir ADR 0011). L'entrypoint crée `saves/ states/ assets/ cores/ covers/ database/` s'ils manquent et remet `config.toml`
+`--data-dir /data`, voir ADR 0011). L'entrypoint crée `roms/ system/ saves/ states/ assets/ cores/ covers/ database/` s'ils manquent et remet `config.toml`
 en `0600` (il pourra contenir des identifiants). Sauvegarde du volume :
 
 ```sh
