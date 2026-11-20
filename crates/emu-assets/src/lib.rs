@@ -1,6 +1,8 @@
 //! Downloads (ADR 0005, ADR 0014): shared HTTP client, No-Intro DAT files, covers, cover image validation.
 //! Cores and BIOS (ADR 0013) reuse `http`. Contract: `docs/design/v1.0-bibliotheque.md` §6.2.
 
+/// Free BIOS installer (ADR 0015, `docs/design/v2.0-atari-st.md`).
+pub mod bios;
 /// Core manager (ADR 0013, `docs/design/v1.0-cores.md`).
 pub mod cores;
 mod covers;

@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use emu_libretro::JoypadButton;
+use emu_libretro::{JoypadButton, KeyEvent, RetroKey};
 
 /// Number of virtual controller ports exposed to cores in phase 1.
 pub const MAX_PORTS: usize = 2;
@@ -37,6 +37,56 @@ impl PadState {
 #[non_exhaustive]
 pub struct InputFrame {
     pub pads: [PadState; MAX_PORTS],
+    /// Keys held during this frame (`RETRO_DEVICE_KEYBOARD` polling). ADR 0015.
+    pub keyboard: KeyboardState,
+    /// Transitions since the previous frame, in order, for cores with a keyboard callback. Backends append.
+    pub key_events: Vec<KeyEvent>,
+    /// Mouse of port 0 (`RETRO_DEVICE_MOUSE`); computers have a single mouse.
+    pub mouse: MouseState,
+}
+
+/// Set of held `RetroKey`s (bit n = key n, `RetroKey::LAST` bits).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyboardState {
+    bits: [u64; KEYBOARD_WORDS],
+}
+
+const KEYBOARD_WORDS: usize = (RetroKey::LAST as usize).div_ceil(64);
+
+impl KeyboardState {
+    pub fn set(&mut self, key: RetroKey, pressed: bool) {
+        let _ = (key, pressed);
+        todo!("runtime-av (2.0)")
+    }
+
+    pub fn is_pressed(&self, key: RetroKey) -> bool {
+        let _ = (key, self.bits);
+        todo!("runtime-av (2.0)")
+    }
+}
+
+/// Mouse state for one frame. Backends combine by adding deltas and OR-ing buttons.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MouseState {
+    /// Relative motion accumulated since the previous frame, already scaled by the sensitivity setting.
+    pub dx: i32,
+    pub dy: i32,
+    /// Wheel notches since the previous frame (positive = up / right).
+    pub wheel: i32,
+    pub hwheel: i32,
+    /// Bit n = `MouseButton` n.
+    pub buttons: u8,
+}
+
+/// Buttons of [`MouseState::buttons`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum MouseButton {
+    Left = 0,
+    Right = 1,
+    Middle = 2,
+    Button4 = 3,
+    Button5 = 4,
 }
 
 /// Source of input (keyboard, scripted, gamepad in phase 6).

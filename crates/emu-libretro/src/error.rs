@@ -48,4 +48,12 @@ pub enum LibretroError {
     UnknownOption(String),
     #[error("invalid value `{value}` for core option `{key}`")]
     InvalidOptionValue { key: String, value: String },
+    /// The core registered no disk control interface, or the call needs the extended one.
+    #[error("core does not support this disk control operation")]
+    DiskControlUnsupported,
+    /// A disk control callback returned `false` (`&'static str` = operation name).
+    #[error("core refused disk control operation `{0}`")]
+    DiskControlFailed(&'static str),
+    #[error("core cannot start without content")]
+    NoGameUnsupported,
 }

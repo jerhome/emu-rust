@@ -26,4 +26,10 @@ pub enum RuntimeError {
     InvalidSlot(u8),
     #[error(transparent)]
     StateFile(#[from] crate::saves::StateFileError),
+    /// A media set is empty or has more than `MAX_MEDIA_IMAGES` images.
+    #[error("invalid disk set: {0}")]
+    InvalidMediaSet(String),
+    /// The running core registered no disk control interface.
+    #[error("the core does not support disk swapping")]
+    NoDiskControl,
 }

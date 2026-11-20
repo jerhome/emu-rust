@@ -31,7 +31,7 @@
 | 0.1.x (stable) | **Clôturée** (2026-11-20) : pas d'essais des versions < 1.0, donc pas de 0.1.x | — |
 | 0.2 … 0.x | **Clôturée** : la 1.0 a été développée directement | — |
 | 1.0 ✅ (1.0.0 stable publiée le 2026-11-20, après essais Windows et macOS) | **Petites consoles** (choix de l'utilisateur, 2026-11-19) : **Game Boy, NES, Game Gear, Master System** (Master System et Game Gear déjà pris en charge par genesis_plus_gx ; cores Game Boy et NES à choisir par l'architecte), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release `v1.0.0-rc.1` → **premiers essais de l'utilisateur** (guide : `docs/guide-essai-1.0.md`) → corrections → 1.0.0 stable |
-| 2.0 | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
+| 2.0 (**conception en cours**, 2026-11-20 : ADR 0015, `docs/design/v2.0-atari-st.md`) | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
 | 3.0 | **Amiga** (puae ; AROS + Kickstart fourni par l'utilisateur), réutilise l'infrastructure de la 2.0 | Même cycle |
 | 4.0 | **PC-DOS** (dosbox_pure) | Même cycle |
 
@@ -50,6 +50,6 @@ Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable s
 | 3 | Gestionnaire de cores | Téléchargement et mise à jour des cores depuis l'UI, vérification des BIOS, dossiers système. ✅ (1.0.0-rc.1, ADR 0013) |
 | 4 | Bibliothèque et covers | Scan, identification, SQLite, covers (libretro-thumbnails → ScreenScraper → IGDB). ✅ (1.0.0-rc.1, ADR 0014) |
 | 5 | Ordinateurs | ST, Amiga, DOS : clavier/souris émulés, disquettes multiples, EmuTOS/AROS automatiques. Découpée en versions 2.0 (ST), 3.0 (Amiga), 4.0 (DOS) |
-| 6 | Windows et manette | Manette PS4 (DualShock 4), CI en matrice complète (core factice `.dll`). Le build Windows est avancé dans la release 0.1 |
+| 6 | Windows et manette | Manette PS4 (DualShock 4), CI en matrice complète (core factice `.dll`). Le build Windows est avancé dans la release 0.1. **Conception prête** (2026-11-20, version après 1.0, ordre vs 2.0 à décider) : `docs/adr/0016-manette.md` (gilrs, repli SDL3), `docs/design/phase6-manette.md` |
 | 7 | 32 bits | PS1, Saturn, 3DO, GBA, 32X ; rendu matériel GL (puis Vulkan) |
 | 8 | Sources de ROMs | Téléchargement de ROMs du domaine public / homebrew |

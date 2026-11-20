@@ -13,14 +13,16 @@ mod frame;
 mod fsname;
 mod gl;
 mod input;
+mod media;
 mod pacing;
 mod resample;
 mod saves;
 mod timing;
 
 pub use emu_libretro::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, GameGeometry,
-    JoypadButton, LogLevel, MemoryKind, SystemInfo, SystemTiming,
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, DiskControlKind,
+    GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LogLevel, MemoryKind, RetroKey, SystemInfo,
+    SystemTiming, mouse_id,
 };
 
 pub use crate::audio::{AudioSink, CollectSink, NullSink, write_wav};
@@ -34,7 +36,14 @@ pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SI
 pub use crate::error::RuntimeError;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
-pub use crate::input::{InputBackend, InputFrame, MAX_PORTS, NullInput, PadState, ScriptedInput};
+pub use crate::input::{
+    InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState, NullInput,
+    PadState, ScriptedInput,
+};
+pub use crate::media::{
+    ContentSpec, DiskSlot, Disks, MAX_MEDIA_IMAGES, MediaPolicy, MediaSet, PreparedMedia,
+    prepare_media, reset_working_copies,
+};
 pub use crate::pacing::{
     AudioLevel, DEFAULT_FAST_FORWARD_RATIO, MAX_BURST, PaceDecision, Pacer, Speed, SyncMode,
 };
