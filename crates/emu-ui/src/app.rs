@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use emu_assets::cores::CoreId;
 use emu_runtime::{
     AudioConfig, AudioOutput, ContentSpec, CoreOption, CoreOptionCategory, Emulator,
-    EmulatorOptions, GlWindow, LogLevel, MAX_BURST, MediaPolicy, PaceDecision, Pacer, STATE_SLOTS,
-    Scaling, SyncMode, core_id_from_path,
+    EmulatorOptions, GlWindow, InputBackend, InputFrame, LogLevel, MAX_BURST, MediaPolicy,
+    PaceDecision, Pacer, STATE_SLOTS, Scaling, SyncMode, core_id_from_path,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -27,8 +27,10 @@ use crate::egui_layer::EguiLayer;
 use crate::game_options::{
     GameOptions, LoadedGameOptions, effective_core_options, game_options_path,
 };
+use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
+use crate::shutdown;
 use crate::ui::{
     self, CaptureOutcome, ComputerView, DisksView, OsdLevel, Overlay, StatsView, UiAction, UiData,
     apply_capture, profile_map, text,
@@ -51,6 +53,8 @@ pub(crate) struct Detached {
     pub error: Option<UiError>,
     /// The game asked to be started again (library only).
     pub restart: Option<Restart>,
+    /// The pad backend, kept by the library for the next game (gilrs is opened once per session).
+    pub gamepad: Option<PadBackend>,
 }
 
 /// Why a hosted game ends to be started again by the library.
@@ -85,6 +89,51 @@ impl Restart {
     }
 }
 
+/// Pad polling period while nothing else wakes the loop (paused game, open menu): gilrs does not wake winit.
+const PAD_POLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Polling period while the backend exists but no pad is plugged in (hotplug detection only).
+const PAD_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Loop wake-up period for the pad backend: fast with a pad attached, slow otherwise.
+fn pad_poll_interval(has_pad: bool) -> Duration {
+    if has_pad {
+        PAD_POLL_INTERVAL
+    } else {
+        PAD_IDLE_POLL_INTERVAL
+    }
+}
+
+/// Opens the pad backend for `run` or the library. On failure the app goes on with the keyboard alone and the
+/// returned notice is shown once.
+pub(crate) fn open_gamepad(
+    allowed: bool,
+    config: &crate::Config,
+) -> (Option<PadBackend>, Option<&'static str>) {
+    match crate::gamepad::open_backend(allowed, &config.input.gamepad) {
+        Ok(pad) => (pad, None),
+        Err(e) => {
+            tracing::warn!("manettes indisponibles : {e}");
+            (None, Some(text::GAMEPAD_UNAVAILABLE))
+        }
+    }
+}
+
+/// The game's input backend plus the pad, OR-combined (the pad never replaces the keyboard).
+struct WithPad<'a> {
+    inner: &'a mut dyn InputBackend,
+    pad: Option<&'a mut PadBackend>,
+}
+
+impl InputBackend for WithPad<'_> {
+    fn poll(&mut self, frame_index: u64, state: &mut InputFrame) {
+        self.inner.poll(frame_index, state);
+        if let Some(pad) = &mut self.pad {
+            pad.poll(frame_index, state);
+        }
+    }
+}
+
 /// Mouse wheel: pixels per notch for touchpads reporting pixel deltas.
 const WHEEL_PIXELS_PER_NOTCH: f64 = 40.0;
 /// Most images listed by « ajouter une image du même dossier ».
@@ -98,6 +147,10 @@ pub(crate) struct App {
     emulator: Emulator,
     pacer: Option<Pacer>,
     keyboard: KeyboardInput,
+    /// Pad backend (ADR 0016), next to the keyboard; `None` without pad support or with `--no-gamepad`.
+    gamepad: Option<PadBackend>,
+    /// PS + R2 held on the previous poll (fast-forward is a held action).
+    pad_fast_forward: bool,
     /// The active keymap binds Ctrl/Alt/Super to a button: Ctrl/Alt shortcuts are disabled.
     modifier_bound: bool,
     /// Ctrl held (tracked from `ModifiersChanged`); enables the F-key-free shortcuts.
@@ -200,19 +253,93 @@ fn initial_scale(base_height: u32, aspect: f32, wanted: u32) -> u32 {
 pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
     let event_loop = EventLoop::new().map_err(|e| UiError::EventLoop(e.to_string()))?;
     let mut app = App::build(options, false)?;
-    let result = event_loop.run_app(&mut app);
-    app.teardown();
-    app.flush_sram();
-    app.save_config();
-    app.log_audio_stats();
+    let (pad, notice) = open_gamepad(app.options.gamepad, &app.options.config);
+    app.set_gamepad(pad);
+    if let Some(notice) = notice {
+        app.warn(notice.to_owned());
+    }
+    let proxy = event_loop.create_proxy();
+    shutdown::set_waker(Some(Box::new(move || {
+        // Only fails once the loop is gone: nothing left to wake.
+        let _ = proxy.send_event(());
+    })));
+    let mut standalone = Standalone {
+        app: Some(app),
+        outcome: None,
+    };
+    let result = event_loop.run_app(&mut standalone);
+    shutdown::set_waker(None);
+    standalone.shutdown();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
-    if let Some(e) = app.error.take() {
-        return Err(e);
+    standalone.outcome.unwrap_or(Ok(()))
+}
+
+/// Standalone window (`--core/--rom`). It owns the game so that `exiting` can unload it: on macOS, ⌘Q / « Quitter »
+/// ends the process from `applicationWillTerminate` without returning from `run_app`, and the core writes some
+/// files only in `retro_unload_game` (Mega CD `.brm`).
+struct Standalone {
+    app: Option<App>,
+    outcome: Option<Result<(), UiError>>,
+}
+
+impl Standalone {
+    /// Writes everything and unloads the game; idempotent (`exiting`, then again after `run_app`).
+    fn shutdown(&mut self) {
+        let Some(mut app) = self.app.take() else {
+            return;
+        };
+        app.teardown();
+        app.flush_sram();
+        app.save_config();
+        app.log_audio_stats();
+        let mut outcome = app.error.take().map_or(Ok(()), Err);
+        if outcome.is_ok()
+            && let Some(path) = &app.options.dump_last_frame
+        {
+            outcome = app.emulator.frame().write_png(path).map_err(UiError::from);
+        }
+        // `Drop for Emulator`: last SRAM flush, then `retro_unload_game`.
+        drop(app);
+        tracing::info!("jeu fermé, sauvegardes écrites");
+        self.outcome = Some(outcome);
     }
-    if let Some(path) = &app.options.dump_last_frame {
-        app.emulator.frame().write_png(path)?;
+}
+
+impl ApplicationHandler for Standalone {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            app.resumed(event_loop);
+        }
     }
-    Ok(())
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(app) = &mut self.app {
+            app.window_event(event_loop, id, event);
+        }
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+        if let Some(app) = &mut self.app {
+            app.device_event(event_loop, id, event);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if shutdown::requested() {
+            if !event_loop.exiting() {
+                tracing::info!("arrêt demandé : fermeture du jeu");
+                event_loop.exit();
+            }
+            return;
+        }
+        if let Some(app) = &mut self.app {
+            app.about_to_wait(event_loop);
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown();
+    }
 }
 
 impl App {
@@ -346,6 +473,8 @@ impl App {
             pacer: None,
             modifier_bound: keymap.binds_modifier(),
             keyboard: KeyboardInput::new(keymap),
+            gamepad: None,
+            pad_fast_forward: false,
             ctrl: false,
             alt: false,
             options,
@@ -438,7 +567,24 @@ impl App {
             config: self.options.config.clone(),
             error: self.error.take(),
             restart: self.restart.take(),
+            gamepad: self.gamepad.take(),
         }
+    }
+
+    /// Gives the game the pad backend (opened by `run`, or lent by the library) with this game's map and the
+    /// current settings. Presses made before the game started are dropped; connection notices are kept.
+    pub(crate) fn set_gamepad(&mut self, pad: Option<PadBackend>) {
+        let config = &self.options.config.input.gamepad;
+        self.gamepad = pad.map(|mut pad| {
+            pad.set_settings(GamepadSettings::from_config(config));
+            pad.set_map(PadMap::from_config(self.style, &self.profile, config));
+            pad.set_ui_capture(false);
+            pad.pump();
+            let _ = pad.take_hotkeys();
+            let _ = pad.take_nav();
+            pad
+        });
+        self.pad_fast_forward = false;
     }
 
     pub(crate) fn ended(&self) -> bool {
@@ -1176,16 +1322,124 @@ impl App {
         self.request_redraw();
     }
 
+    /// Drains the pad on every loop turn (also while paused or in a menu): notices, hotkeys, held
+    /// fast-forward, and menu / virtual keyboard navigation.
+    fn poll_gamepad(&mut self, event_loop: &ActiveEventLoop) {
+        let vkbd_open = self.computer.as_ref().is_some_and(|c| c.vkbd.is_open());
+        let menu_open = self.overlay.is_open();
+        let Some(pad) = &mut self.gamepad else {
+            return;
+        };
+        pad.set_ui_capture(menu_open || vkbd_open);
+        pad.pump();
+        let notices = pad.take_notices();
+        let hotkeys = pad.take_hotkeys();
+        let nav = pad.take_nav();
+        let fast_forward = pad.fast_forward_held();
+        let pause_on_disconnect = pad.settings().pause_on_disconnect;
+        let now = Instant::now();
+        for notice in notices {
+            match notice {
+                GamepadNotice::Connected { name, port } => {
+                    tracing::info!("manette branchée sur le port {port}");
+                    self.overlay
+                        .osd
+                        .info(text::gamepad_connected(&name, port), now);
+                }
+                GamepadNotice::Disconnected { port } => {
+                    tracing::info!("manette du port {port} débranchée");
+                    let paused_now = pause_on_disconnect && !self.speed.paused && !menu_open;
+                    self.overlay.osd.push(
+                        if paused_now {
+                            text::GAMEPAD_PAUSED.to_owned()
+                        } else {
+                            text::gamepad_disconnected(port)
+                        },
+                        OsdLevel::Warn,
+                        Duration::from_secs(4),
+                        now,
+                    );
+                    if paused_now {
+                        self.speed.paused = true;
+                        self.release_inputs();
+                        self.flush_sram();
+                        self.apply_speed();
+                    }
+                }
+            }
+            self.request_redraw();
+        }
+        if fast_forward != self.pad_fast_forward {
+            self.pad_fast_forward = fast_forward;
+            self.hotkey(event_loop, HotkeyAction::FastForward, fast_forward);
+        }
+        for action in hotkeys {
+            if event_loop.exiting() || self.ended {
+                return;
+            }
+            let computer_only = matches!(
+                action,
+                HotkeyAction::ToggleVirtualKeyboard | HotkeyAction::NextDisk
+            );
+            if computer_only && self.computer.is_none() {
+                continue;
+            }
+            if self.overlay.is_open() {
+                // Like the keyboard: in a menu only the menu shortcut acts (back / close).
+                if action == HotkeyAction::Menu && self.overlay.capture().is_none() {
+                    self.go_back();
+                }
+                continue;
+            }
+            self.hotkey(event_loop, action, true);
+        }
+        if nav.is_empty() || self.overlay.capture().is_some() {
+            return;
+        }
+        for key in nav {
+            let egui_key = match key {
+                NavKey::Up => egui::Key::ArrowUp,
+                NavKey::Down => egui::Key::ArrowDown,
+                NavKey::Left => egui::Key::ArrowLeft,
+                NavKey::Right => egui::Key::ArrowRight,
+                NavKey::Activate => egui::Key::Enter,
+                NavKey::Back => {
+                    if self.overlay.is_open() {
+                        self.go_back();
+                    } else if let Some(c) = &mut self.computer {
+                        c.vkbd.set_open(false);
+                    }
+                    continue;
+                }
+            };
+            if let Some(egui) = &mut self.egui {
+                egui.inject_key(egui_key);
+            }
+        }
+        self.request_redraw();
+    }
+
     fn step(&mut self, event_loop: &ActiveEventLoop) {
+        let pad = self.gamepad.as_mut();
         let result = match &mut self.computer {
             Some(session) => {
                 let mut inputs = ComputerInputs {
                     pad: &mut self.keyboard,
                     session,
                 };
-                self.emulator.run_frame(&mut inputs, &mut self.audio)
+                let mut all = WithPad {
+                    inner: &mut inputs,
+                    pad,
+                };
+                self.emulator.run_frame(&mut all, &mut self.audio)
             }
-            None => self.emulator.run_frame(&mut self.keyboard, &mut self.audio),
+            None => {
+                let mut all = WithPad {
+                    inner: &mut self.keyboard,
+                    pad,
+                };
+                self.emulator.run_frame(&mut all, &mut self.audio)
+            }
         };
         let status = match result {
             Ok(s) => s,
@@ -1632,6 +1886,10 @@ impl ApplicationHandler for App {
             event_loop.set_control_flow(ControlFlow::Poll);
             return;
         }
+        self.poll_gamepad(event_loop);
+        if event_loop.exiting() || self.ended || self.pacer.is_none() {
+            return;
+        }
         let now = Instant::now();
         if let Some(t) = self.ui_repaint_at
             && t <= now
@@ -1646,7 +1904,14 @@ impl ApplicationHandler for App {
             let Some(pacer) = &mut self.pacer else {
                 return;
             };
-            let wake = |t: Instant| self.ui_repaint_at.map_or(t, |u| u.min(t));
+            let pad_at = self
+                .gamepad
+                .as_ref()
+                .map(|p| now + pad_poll_interval(!p.attached().is_empty()));
+            let wake = |t: Instant| {
+                let t = self.ui_repaint_at.map_or(t, |u| u.min(t));
+                pad_at.map_or(t, |p| p.min(t))
+            };
             match pacer.poll(now, level) {
                 PaceDecision::Run => {
                     self.step(event_loop);
@@ -1662,6 +1927,7 @@ impl ApplicationHandler for App {
                 PaceDecision::Idle => {
                     let flow = self
                         .ui_repaint_at
+                        .map_or(pad_at, |u| Some(pad_at.map_or(u, |p| p.min(u))))
                         .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
                     event_loop.set_control_flow(flow);
                     return;
@@ -1695,6 +1961,12 @@ fn modifier_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_poll_is_slow_without_pad() {
+        assert_eq!(pad_poll_interval(true), PAD_POLL_INTERVAL);
+        assert!(pad_poll_interval(false) > PAD_POLL_INTERVAL);
+    }
 
     #[test]
     fn reset_disks_deletes_only_the_session_work_dir() {

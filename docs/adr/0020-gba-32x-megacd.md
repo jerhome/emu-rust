@@ -181,3 +181,21 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
   l'utilisateur (ses ROM et BIOS). Construire une ROM 32X libre (yatssd + marsdev) est une option ouverte (design §9).
 - Les fichiers `.brm` du Mega CD ne passent pas par le runtime : « réinitialiser les sauvegardes » d'un jeu doit
   aussi viser `<jeu>.brm` (motifs par core, mécanisme `game_saves` / `reset_core_game_files` de la 3.0).
+
+## Amendement du 2026-11-21 — Mega CD avancé en 2.1 (« express »)
+
+Décision de l'utilisateur : essayer Dune (Mega CD) dès le 21/11. Un sous-ensemble du Mega CD est livré en **2.1**
+avec les mécanismes de la 2.0 seulement (`docs/design/v2.1-megacd-express.md`) : système `megacd` (`id` et
+`database` de cette ADR, désormais **persistés**), `.cue` / `.chd` / `.iso` en lecture directe, pistes masquées
+(`cue_references`), aucun hash d'image, sonde d'en-tête et région, contrôle du BIOS dans l'UI, RAM interne par jeu.
+Conséquences pour la 6.0 :
+
+- son périmètre Mega CD devient **« compléter »** : Redump, `game.region` (v6), contrôle unique par région
+  (`required_firmware`), `core_error`, multi-CD, `game_saves`, import de BIOS dans le dialogue ;
+- **correction** : la région d'un disque Mega CD se lit d'abord dans **l'en-tête** (octet 0x20B du secteur 0 :
+  `0x64` Europe, `0xA1` Japon, sinon USA — règle constatée du core genesis_plus_gx `v1.7.4 b9c2316`) ; le DAT
+  Redump et l'étiquette du nom ne servent que si l'en-tête est illisible (`.chd`). Le §2.2 du design 6.0 est à
+  mettre à jour à sa re-validation ;
+- `DiscRegion`, `DiscFormat`, `DISC_EXTENSIONS` et `cue_references` existent dès la 2.1 dans
+  `emu-library/src/disc.rs` : GX0 et DX0 les reprennent sans les redéfinir.
+

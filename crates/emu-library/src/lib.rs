@@ -4,6 +4,7 @@
 
 mod dat;
 mod db;
+mod disc;
 mod error;
 mod filter;
 mod hash;
@@ -15,6 +16,9 @@ pub use crate::dat::{Dat, DatEntry, MAX_DAT_SIZE, load_dat_file, parse_clrmamepr
 pub use crate::db::{
     CoverKind, CoverRecord, CoverState, DatInfo, Game, GameId, Identification, Library,
     OpenOutcome, SCHEMA_VERSION,
+};
+pub use crate::disc::{
+    DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references, disc_info, region_from_name,
 };
 pub use crate::error::LibraryError;
 pub use crate::filter::{GameFilter, SortOrder, filter_games, normalize_title};

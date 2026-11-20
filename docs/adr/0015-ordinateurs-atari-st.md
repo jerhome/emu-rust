@@ -6,6 +6,8 @@ point-and-click : la souris est prioritaire) ; 2.0 d'abord, manette en parallèl
 `docs/design/v2.0-atari-st.md` §9 : défauts recommandés. Précise ADR 0003 (entrées
 « ordinateur »), 0005 (BIOS libres), 0006 / 0011 (emplacements), 0013 (cores, BIOS), 0014 (catalogue, DAT).
 Points de contact avec la manette : ADR 0016. Étude préalable : `docs/essais-hatari.md`.
+**Amendée le 2026-11-21** (section « Amendement 2.1 » en fin de document) : `.disks` et options par jeu nommés
+d'après le `save_name` (ADR 0011 amendée), disquettes ajoutées restaurées, retirables, nettoyage explicite.
 
 ## Contexte
 
@@ -203,3 +205,30 @@ Faits vérifiés le 2026-11-20 :
   **Correction du 2026-11-21** : cette ligne annonçait « ajouter `aros` à `free_bios.toml` » ; c'est abandonné —
   l'AROS utilisé est celui **intégré au core puae**, rien n'est téléchargé ni installé par emu-rust (ADR 0017 §2,
   ADR 0005 amendée). `free_bios.toml` ne contient pas d'entrée `aros`.
+
+## Amendement 2.1 (2026-11-21) — disquettes ajoutées, identité de jeu
+
+Conception : `docs/design/v2.1-identite-disques.md` (§2.3, §6). Contrat posé par I0 : `emu_runtime::{AddedDisk,
+OrphanKind, OrphanCopy, orphan_copies, remove_orphan_copies, archive_entry_names}`, `Disks::{added, forget_added,
+adopt_orphan}` ; le champ `EmulatorOptions::restore_added_disks` est ajouté avec I1 (il exige de retoucher
+le littéral d'`App::build`).
+
+1. **§5 et §8 : `<jeu>` = `save_name`** (ADR 0011 amendée) : `<saves>/<core_id>/<save_name>.disks/`,
+   `<save_name>.m3u` généré, `<data>/game-options/<core_id>/<save_name>.toml`. Identiques au nom 2.0 pour un jeu non
+   homonyme. Le manifeste `.emu-rust-disks` garde son format (version 1) ; une entrée `Added` sans source est admise.
+2. **Disquettes ajoutées** (§5 « ajouter une image », qui ne valait que pour la session) : les copies `Added` du
+   manifeste dont le fichier existe sont **rajoutées au core à chaque session**, dans l'ordre d'ajout, sans être
+   insérées, que la source existe encore ou non (`EmulatorOptions::restore_added_disks`, `true` dans l'UI) ; un
+   échec est journalisé et n'empêche pas le jeu de démarrer. Au-delà de `MAX_MEDIA_IMAGES`, l'ajout est **refusé**
+   (plus d'oubli silencieux).
+3. **Retrait et nettoyage** : « Retirer » (liste du core et manifeste ; copie gardée) ou « Retirer et supprimer la
+   copie » (confirmation) pour une disquette ajoutée non insérée ; « Nettoyer les copies… » liste les fichiers non
+   référencés du dossier `.disks` (copies rc.1, copies oubliées, ancien `.m3u` généré) et ne supprime **que les
+   lignes cochées**, après confirmation ; « Reprendre » en refait une disquette ajoutée. **Jamais de suppression
+   automatique**, sauf les temporaires `.tmp-*` de plus d'une heure. Les suppressions refusent tout nom qui n'est pas
+   un simple nom de fichier du dossier, toute entrée référencée, le manifeste, tout lien, et tout dossier qui n'est
+   pas un `*.disks` directement sous `<saves>/<core_id>/`.
+4. **Core inconnu + `.zip`** : l'UI lit le répertoire central (`archive_entry_names`, sans extraction) ; toutes les
+   entrées ont une extension de console du catalogue ⇒ fichier transmis (comportement 1.0) ; sinon copie de travail.
+5. « Réinitialiser les disquettes » inchangé (supprime tout le dossier, disquettes ajoutées comprises) ; ne touche
+   pas au registre des identités.

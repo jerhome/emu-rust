@@ -45,6 +45,14 @@ impl Limits {
     };
 }
 
+/// File names of the archive's entries (central directory only, nothing extracted; bounds of
+/// `Limits::DEFAULT`), for the UI to tell a console ROM zip from a disk zip when the core is unknown (2.1, §2.4).
+/// Directories and empty entries are left out.
+pub fn archive_entry_names(zip: &Path) -> Result<Vec<String>, RuntimeError> {
+    let _ = zip;
+    todo!("I2: open_archive + entry_file_name, no extraction")
+}
+
 /// See the contract on `Emulator::load`.
 pub(crate) fn prepare(
     rom: &Path,

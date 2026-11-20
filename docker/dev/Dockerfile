@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
         libgl-dev libegl-dev libgl1 libegl1 libglx-mesa0 libegl-mesa0 libgl1-mesa-dri mesa-utils \
         xkb-data libxkbcommon-x11-0 \
-        libasound2-dev libpulse-dev \
+        libasound2-dev libpulse-dev libudev-dev \
         xvfb xauth imagemagick x11-utils x11-apps \
     && rm -rf /var/lib/apt/lists/*
 

@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libasound2-dev libxkbcommon-dev \
+            build-essential pkg-config libasound2-dev libudev-dev libxkbcommon-dev \
             libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
             libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
             xvfb libgl1-mesa-dri
@@ -53,6 +53,7 @@ jobs:
         run: xvfb-run -a cargo test --locked --workspace --no-fail-fast
 
       - name: Build without default features
+        # Guards the build without gilrs (the `gamepad` feature is on by default in emu-app, ADR 0016).
         run: cargo build --locked --workspace --no-default-features
 
       - name: Build release

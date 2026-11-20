@@ -450,6 +450,12 @@ mod tests {
             prefs.for_system("Commodore - Amiga")[1].to_string(),
             "puae2021"
         );
+        let mcd: Vec<String> = prefs
+            .for_system("Sega - Mega-CD - Sega CD")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(mcd, ["genesis_plus_gx", "picodrive"]);
         assert!(prefs.for_system("Unknown").is_empty());
     }
 
@@ -465,6 +471,17 @@ mod tests {
         assert_eq!(
             prefs.frontend_options(&id("hatari")),
             [("hatari_vkbd".to_owned(), "disabled".to_owned())]
+        );
+        assert_eq!(
+            prefs.frontend_options(&id("genesis_plus_gx")),
+            [(
+                "genesis_plus_gx_system_bram".to_owned(),
+                "per game".to_owned()
+            )]
+        );
+        assert_eq!(
+            prefs.media_policy(&id("genesis_plus_gx")),
+            CoreMediaPolicy::Direct
         );
         assert!(prefs.frontend_options(&id("hatarib")).is_empty());
         assert!(prefs.frontend_options(&id("snes9x")).is_empty());

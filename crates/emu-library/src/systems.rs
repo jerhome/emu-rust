@@ -323,6 +323,7 @@ mod tests {
                 "gamegear",
                 "mastersystem",
                 "atarist",
+                "megacd",
                 "amiga"
             ]
         );

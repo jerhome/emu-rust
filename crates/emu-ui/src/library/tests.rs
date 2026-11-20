@@ -271,6 +271,7 @@ fn game_over_returns_home_and_records_history() {
         content: crate::GameContent::Files(vec![g.path.clone()]),
         computer: false,
         warnings: Vec::new(),
+        failure_hint: None,
     };
     h.ui.game_started(&request);
     let mut config = h.ui.config.clone();
@@ -516,6 +517,7 @@ fn captures_never_record_history() {
         content: crate::GameContent::Files(vec![g.path.clone()]),
         computer: false,
         warnings: Vec::new(),
+        failure_hint: None,
     };
     h.ui.game_started(&request);
     let played = h.ui.db.as_ref().unwrap().game(g.id).unwrap().unwrap();
@@ -554,7 +556,187 @@ fn starting_a_game_forgets_the_waiting_install() {
         content: crate::GameContent::NoGame,
         computer: false,
         warnings: Vec::new(),
+        failure_hint: None,
     };
     h.ui.game_started(&request);
     assert!(h.ui.awaiting_core.is_none());
+}
+
+// ---- Mega CD (design v2.1-megacd-express §5) ------------------------------------------------------------
+
+fn megacd_request(title: &str, path: &Path) -> LaunchRequest {
+    LaunchRequest {
+        game: None,
+        title: title.to_owned(),
+        core: emu_assets::cores::CoreId::new("genesis_plus_gx").unwrap(),
+        core_path: "/x".into(),
+        content: crate::GameContent::Files(vec![path.to_path_buf()]),
+        computer: false,
+        warnings: Vec::new(),
+        failure_hint: Some("indice".into()),
+    }
+}
+
+fn open_megacd_dialog(h: &mut Harness, region: Option<emu_library::DiscRegion>) {
+    let system = h.ui.dirs.system.clone();
+    let statuses = Vec::new();
+    let verdict = megacd::bios_verdict(region, &statuses, &system);
+    let path = h._tmp.path().join("Dune (Europe).cue");
+    h.ui.open_dialog(Dialog::MegaCdBios {
+        request: megacd_request("Dune", &path),
+        verdict,
+        region,
+        retried: false,
+        copied: false,
+    });
+}
+
+#[test]
+fn megacd_texts_name_the_file_the_region_and_the_folder() {
+    let dir = Path::new("/Users/moi/Library/Application Support/emu-rust/system");
+    let title = text::megacd_missing_title(&["bios_CD_E.bin"], Some("Mega CD, Europe"));
+    assert_eq!(
+        title,
+        "BIOS Mega CD manquant : bios_CD_E.bin (Mega CD, Europe)"
+    );
+    let body = text::megacd_missing_body("Dune", Some("Europe"), &["bios_CD_E.bin"], &[]);
+    assert!(body.contains("« Dune » est un disque Europe"), "{body}");
+    assert!(body.contains("nom exact bios_CD_E.bin"), "{body}");
+    assert!(body.contains("Réessayer"), "{body}");
+    assert!(body.contains(text::MEGACD_NO_DOWNLOAD));
+    assert!(!body.contains("présent"), "no other BIOS: {body}");
+    let body = text::megacd_missing_body(
+        "Dune",
+        Some("Europe"),
+        &["bios_CD_E.bin"],
+        &["bios_CD_U.bin"],
+    );
+    assert!(
+        body.contains("bios_CD_U.bin est présent, mais ce disque est Europe."),
+        "{body}"
+    );
+    let unknown = text::megacd_missing_body("X", None, &megacd::BIOS_NAMES, &[]);
+    assert!(
+        unknown.contains("bios_CD_E.bin (Europe), bios_CD_U.bin (USA) ou bios_CD_J.bin (Japon)"),
+        "{unknown}"
+    );
+    let failed = text::megacd_load_failed("Dune", &["bios_CD_E.bin"], dir);
+    assert!(failed.contains("bios_CD_E.bin (Europe)"), "{failed}");
+    assert!(failed.contains(&dir.display().to_string()), "{failed}");
+    // Never an offer to download a BIOS.
+    for t in [&body, &unknown, &failed] {
+        assert!(!t.contains("Télécharg"), "{t}");
+    }
+    // Untrusted titles are cleaned.
+    let body = text::megacd_missing_body("A\u{1b}[2J", Some("USA"), &["bios_CD_U.bin"], &[]);
+    assert!(!body.contains('\u{1b}'));
+}
+
+#[test]
+fn megacd_dialog_retry_with_the_keyboard_launches_once_the_bios_is_there() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, Some(emu_library::DiscRegion::Europe));
+    h.frame(Vec::new());
+    // Focus on « Réessayer »: Enter retries; still missing.
+    assert!(h.key(Key::Enter).is_empty());
+    assert!(
+        matches!(
+            &h.ui.dialog,
+            Some(Dialog::MegaCdBios { retried: true, verdict: megacd::BiosVerdict::Missing { wanted, .. }, .. })
+                if wanted == &vec!["bios_CD_E.bin"]
+        ),
+        "dialog kept, marked as retried"
+    );
+    std::fs::write(h.ui.dirs.system.join("bios_CD_E.bin"), b"bios").unwrap();
+    h.frame(Vec::new());
+    let events = h.key(Key::Enter);
+    assert!(h.ui.dialog.is_none());
+    let [LibraryEvent::Launch(request)] = events.as_slice() else {
+        panic!("one launch expected: {events:?}");
+    };
+    assert_eq!(request.title, "Dune");
+    assert_eq!(request.failure_hint.as_deref(), Some("indice"));
+}
+
+#[test]
+fn megacd_dialog_escape_cancels_without_launch() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, None);
+    h.frame(Vec::new());
+    assert!(h.key(Key::Escape).is_empty());
+    assert!(h.ui.dialog.is_none());
+}
+
+#[test]
+fn megacd_dialog_launch_anyway_is_reachable_with_tab() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, Some(emu_library::DiscRegion::Japan));
+    h.frame(Vec::new());
+    // Réessayer → Copier le chemin → Annuler → Lancer quand même.
+    for _ in 0..3 {
+        h.key(Key::Tab);
+    }
+    let events = h.key(Key::Enter);
+    assert!(
+        matches!(events.as_slice(), [LibraryEvent::Launch(_)]),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn dat_download_skips_megacd() {
+    use std::time::Duration;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = rt.block_on(MockServer::start());
+    rt.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server),
+    );
+    let client = emu_assets::http::HttpClient::new(emu_assets::http::HttpConfig {
+        allow_loopback_http: true,
+        timeout: Duration::from_secs(10),
+        ..emu_assets::http::HttpConfig::default()
+    })
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = Library::open_in_memory().unwrap();
+    let catalog: Vec<_> = systems()
+        .iter()
+        .filter(|s| s.id == "megacd" || s.id == "gb")
+        .cloned()
+        .collect();
+    assert_eq!(catalog.len(), 2, "megacd is in the catalogue");
+    let mut seen = Vec::new();
+    let summary = worker::download_dats(
+        &mut db,
+        &client,
+        &format!("{}/", server.uri()),
+        tmp.path(),
+        &catalog,
+        &AtomicBool::new(false),
+        &mut |p| seen.push(p),
+    );
+    assert_eq!(seen.len(), 1, "megacd not even announced");
+    assert_eq!(
+        summary.failed.len(),
+        1,
+        "only the Game Boy 404: {summary:?}"
+    );
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests.iter().all(|r| !r.url.path().contains("Mega-CD")),
+        "no request for the Mega CD DAT"
+    );
 }

@@ -46,6 +46,14 @@ ROM de test libres (240p Test Suite mini, GPL-2.0, v0.23) :
   Master System : https://github.com/haroldo-ok/sub-rescue/releases/download/v0.3/sub_rescue-0.3.zip (Sub Rescue, MIT)
   Game Gear     : https://github.com/joyrider3774/waternet/releases/download/v1.0/Waternet.Sega.Game.Gear.zip (Waternet, MIT)
 
+Mega CD / Sega CD (genesis_plus_gx, 2.1) : disques .cue + .bin/.iso (ou .chd, .m3u). Le BIOS du Mega CD est commercial :
+  il n'est jamais téléchargé, vous le déposez vous-même dans le dossier system/ (Réglages : dossier de données) sous le
+  nom bios_CD_U.bin (USA, et région inconnue), bios_CD_E.bin (Europe) ou bios_CD_J.bin (Japon) ; le core choisit celui
+  de la région du disque, l'application vérifie son empreinte avant le lancement.
+Disque de test libre (240p Test Suite Sega CD 1.21, GPL-2.0, même auteur ; zip de 5,5 Mo, version USA .cue + .iso + 2 .wav) :
+  https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-SegaCD-1.21.zip/download
+  (à dézipper : le .cue référence les autres fichiers par leur nom)
+
 Le core et la ROM peuvent être n'importe où : on passe leur chemin en ligne de commande.
 
 2. Lancer (ligne de commande)
@@ -85,11 +93,12 @@ Windows (SmartScreen) : « Informations complémentaires » > « Exécuter quand
   Le core doit être une DLL 64 bits (x86_64).
 Linux : dépendances (Debian/Ubuntu) :
     sudo apt install libasound2t64 libasound2-plugins libxkbcommon-x11-0 libgl1 libegl1 \
-      libwayland-client0 libxcursor1 libxrandr2 libxi6        (Ubuntu 22.04 : libasound2)
+      libwayland-client0 libxcursor1 libxrandr2 libxi6 libudev1        (Ubuntu 22.04 : libasound2)
   Son sous WSLg : ~/.asoundrc contenant
     pcm.!default pulse
     ctl.!default pulse
 
 Licence : MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Licences des dépendances : THIRD-PARTY-LICENSES.html.
-Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0) : THIRD-PARTY-DATA.txt.
+Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0 ; base de manettes
+SDL_GameControllerDB, zlib) : THIRD-PARTY-DATA.txt.

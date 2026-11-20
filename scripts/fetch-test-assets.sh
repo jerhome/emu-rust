@@ -13,6 +13,9 @@
 #     (installed in tests/roms/system/, with tos.img = the US image, the name the hatari core expects)
 #   - Nova Defense (geekychris/atari_st_games, MIT), SHA256 pinned, turned into a 720 KB floppy by tests/tools/mkst.py
 #     (reproducible output, SHA256 pinned)
+#   - 240p Test Suite (Sega CD / Mega CD) 1.21, GPL-2.0 (ArtemioUrbina/240pTestSuite), SHA256 pinned; only the USA
+#     disc (cue + iso + 2 wav, ~40 MiB) is extracted. The ISO boot sector carries the standard Sega licence text
+#     (format template, not Sega code). Test data only, never shipped in a package.
 set -euo pipefail
 
 usage() {
@@ -114,6 +117,21 @@ NOVA_ZIP_NAME='nova_defense-atari-2026-10-30.zip'
 NOVA_PRG_SHA256='94a24e206f435522c9e731866841a01a407abfe64c76a16d971f9fb6453f01f5'
 NOVA_ST_NAME='nova-defense.st'
 NOVA_ST_SHA256='bb3bb0c633094f0df0545017b2e6993d2a15df1f3def774be1614d2e60d7e681'
+
+# 240p Test Suite Sega CD 1.21 (GPL-2.0); the zip holds 3 ISOs (107 MB), only the USA files are extracted.
+SCD_ZIP_URL='https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-SegaCD-1.21.zip/download'
+SCD_ZIP_SHA256='61e7a67d08cddfff9d8f6b5a901daec87d004a80d28cd1854b104901abe4bde3'
+SCD_ZIP_NAME='240pSuite-SegaCD-1.21.zip'
+SCD_DIR='240pSuite-SegaCD-1.21-USA'
+SCD_MEMBERS=(240p_SegaCD_USA.iso 240pSuite_USA.cue 240p_SegaCD_Track-02.wav 240p_SegaCD_Track-03.wav)
+SCD_SHA256S=(
+    f0b2a2849b269bdbd1d7f2092197109ff186b96f9617bf55595bb23105ae4428
+    6e832cc64eee9782da21562f6869a5b67c482aecbb0dc9311de7baa8ee6fda73
+    9d6003f937bb4d7105a7d2e740c3b306efe18e3dbb6db11157fab1528fba418d
+    2d819faa2f65f6792c212a79bf846a135430228a57e2d7cf76bffdb915e2042e
+)
+# Announced uncompressed size of the 4 USA members (bounded extraction: the others are never written to disk).
+SCD_MAX_BYTES=$((48 * 1024 * 1024))
 
 MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
 
@@ -276,6 +294,44 @@ fetch_nova() {
     echo "ROM installed: $st"
 }
 
+# fetch_segacd : 240p Test Suite Sega CD, USA disc only, into tests/roms/$SCD_DIR/ (the cue references the files by name).
+fetch_segacd() {
+    local zip="$roms_dir/$SCD_ZIP_NAME" dir="$roms_dir/$SCD_DIR" i member dest work todo=0
+    for i in "${!SCD_MEMBERS[@]}"; do
+        dest="$dir/${SCD_MEMBERS[$i]}"
+        if [ -f "$dest" ] && [ "$(sha_of "$dest")" = "${SCD_SHA256S[$i]}" ]; then
+            echo "File ok: $dest"
+        else
+            todo=1
+        fi
+    done
+    [ "$todo" = 1 ] || return 0
+    fetch_zip "$SCD_ZIP_URL" "$SCD_ZIP_SHA256" "$zip"
+    mkdir -p "$dir"
+    work="$(mktemp -d)"; tmp_dirs+=("$work")
+    # Exact member names (no wildcard), then a size check on what the archive announces for them.
+    local total=0 size
+    for member in "${SCD_MEMBERS[@]}"; do
+        size="$(unzip -Z -l "$zip" "$member" | awk -v m="$member" '$NF==m {print $4}' | head -n 1)"
+        case "$size" in ''|*[!0-9]*) echo "error: $member not found in archive" >&2; exit 1 ;; esac
+        total=$((total + size))
+    done
+    [ "$total" -le "$SCD_MAX_BYTES" ] \
+        || { echo "error: Sega CD members too large ($total bytes)" >&2; exit 1; }
+    unzip -q -o -j "$zip" "${SCD_MEMBERS[@]}" -d "$work"
+    for i in "${!SCD_MEMBERS[@]}"; do
+        member="${SCD_MEMBERS[$i]}"
+        [ "$(sha_of "$work/$member")" = "${SCD_SHA256S[$i]}" ] \
+            || { echo "error: SHA256 mismatch for $member" >&2; exit 1; }
+    done
+    for member in "${SCD_MEMBERS[@]}"; do
+        part_files+=("$dir/$member.part")
+        cp -f "$work/$member" "$dir/$member.part"
+        mv -f "$dir/$member.part" "$dir/$member"
+        echo "File installed: $dir/$member"
+    done
+}
+
 # fetch_core CORE_NAME (TOFU)
 fetch_core() {
     local name="$1" core_path="$cores_dir/$1" work sum expected
@@ -309,4 +365,5 @@ fetch_file "$NES_URL" "$NES_NAME" "$NES_SHA256"
 fetch_file "$CGB_URL" "$CGB_NAME" "$CGB_SHA256"
 fetch_emutos
 fetch_nova
+fetch_segacd
 for core in "${CORES[@]}"; do fetch_core "$core"; done

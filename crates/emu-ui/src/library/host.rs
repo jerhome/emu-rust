@@ -14,8 +14,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{WindowAttributes, WindowId};
 
 use super::{LaunchRequest, LibraryEvent, LibraryUi, Page, text};
-use crate::app::{App, Restart};
+use crate::app::{App, Restart, open_gamepad};
 use crate::egui_layer::EguiLayer;
+use crate::gamepad::PadBackend;
 use crate::{LaunchOptions, LibraryOptions, LibraryScreen, UiError};
 
 const WINDOW: (u32, u32) = (1280, 720);
@@ -37,6 +38,10 @@ struct Host {
     window: Option<GlWindow>,
     library: LibraryUi,
     audio: bool,
+    /// `--no-gamepad` absent. The backend is opened at the first launch and lent to each game.
+    gamepad_allowed: bool,
+    gamepad_opened: bool,
+    gamepad: Option<PadBackend>,
     screen: Option<LibraryScreen>,
     dump_window: Option<std::path::PathBuf>,
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
@@ -66,6 +71,9 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         window: None,
         library,
         audio: options.audio,
+        gamepad_allowed: options.gamepad,
+        gamepad_opened: false,
+        gamepad: None,
         screen: options.screen,
         dump_window: options.dump_window,
         proxy,
@@ -76,18 +84,32 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         repaint_at: None,
         error: None,
     };
+    let wake = Arc::clone(&host.proxy);
+    crate::shutdown::set_waker(Some(Box::new(move || {
+        if let Ok(p) = wake.lock() {
+            // Only fails once the loop is gone: nothing left to wake.
+            let _ = p.send_event(Wake);
+        }
+    })));
     let result = event_loop.run_app(&mut host);
-    host.end_game(None);
-    if let (Some(egui), Some(w)) = (&mut host.egui, &host.window) {
-        egui.destroy(w);
-    }
-    host.egui = None;
-    host.window = None;
+    crate::shutdown::set_waker(None);
+    host.shutdown();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     host.error.map_or(Ok(()), Err)
 }
 
 impl Host {
+    /// Ends the game (saves written, core unloaded) and frees egui's GL objects before the window. Idempotent:
+    /// called from `exiting` (macOS ⌘Q may end the process there) and again after `run_app`.
+    fn shutdown(&mut self) {
+        self.end_game(None);
+        if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
+            egui.destroy(w);
+        }
+        self.egui = None;
+        self.window = None;
+    }
+
     fn capturing(&self) -> bool {
         self.dump_window.is_some() && self.screen.is_some()
     }
@@ -108,6 +130,7 @@ impl Host {
             config: self.library.config().clone(),
             scale: None,
             audio: self.audio,
+            gamepad: self.gamepad_allowed,
             exit_after_frames: launch_capture.then_some(LAUNCH_CAPTURE_FRAMES),
             dump_last_frame: None,
             screen: None,
@@ -129,13 +152,30 @@ impl Host {
                 for w in &request.warnings {
                     app.warn(w.clone());
                 }
+                // Only a real attempt (backend enabled) counts as "opened"; a disabled pad is retried later.
+                if should_open_gamepad(
+                    self.gamepad_allowed,
+                    self.library.config().input.gamepad.enabled,
+                    self.gamepad_opened,
+                ) {
+                    self.gamepad_opened = true;
+                    let (pad, notice) = open_gamepad(self.gamepad_allowed, self.library.config());
+                    self.gamepad = pad;
+                    if let Some(notice) = notice {
+                        app.warn(notice.to_owned());
+                    }
+                }
+                app.set_gamepad(self.gamepad.take());
                 app.attach(event_loop, window, self.egui.take());
                 self.game = Some(Box::new(app));
                 self.current = Some(request);
             }
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
-                let msg = text::game_failed(&request.title, &e.to_string());
+                let msg = request
+                    .failure_hint
+                    .clone()
+                    .unwrap_or_else(|| text::game_failed(&request.title, &e.to_string()));
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }
@@ -150,8 +190,10 @@ impl Host {
         let back = game.detach();
         // The core is unloaded here: working copies can be deleted and the game loaded again.
         drop(game);
+        tracing::info!("jeu fermé, sauvegardes écrites");
         self.window = back.window;
         self.egui = back.egui;
+        self.gamepad = back.gamepad;
         if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
             egui.assume_focused(w.window());
         }
@@ -334,6 +376,15 @@ impl ApplicationHandler<Wake> for Host {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if crate::shutdown::requested() {
+            if !event_loop.exiting() {
+                tracing::info!("arrêt demandé : fermeture de la bibliothèque");
+                // Same path as closing the window.
+                self.end_game(None);
+                event_loop.exit();
+            }
+            return;
+        }
         if let Some(game) = &mut self.game {
             game.about_to_wait(event_loop);
             if game.ended() {
@@ -348,5 +399,27 @@ impl ApplicationHandler<Wake> for Host {
             .repaint_at
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         event_loop.set_control_flow(flow);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown();
+    }
+}
+
+/// Opens only on a real attempt: a disabled pad is retried once it is enabled.
+fn should_open_gamepad(allowed: bool, enabled: bool, opened: bool) -> bool {
+    allowed && enabled && !opened
+}
+
+#[cfg(test)]
+mod gamepad_open_tests {
+    use super::should_open_gamepad;
+
+    #[test]
+    fn disabled_pad_is_retried_when_enabled() {
+        assert!(!should_open_gamepad(true, false, false));
+        assert!(!should_open_gamepad(false, true, false));
+        assert!(should_open_gamepad(true, true, false));
+        assert!(!should_open_gamepad(true, true, true));
     }
 }

@@ -69,6 +69,34 @@ pub enum GamepadNotice {
     Disconnected { port: usize },
 }
 
+/// Menu / virtual keyboard navigation from the pad (`GamepadInput::set_ui_capture`): the app turns these into
+/// egui arrow / Enter presses and « back ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// Cross (South): activate the focused widget.
+    Activate,
+    /// Circle (East): back / close.
+    Back,
+}
+
+impl NavKey {
+    fn from_button(button: PadButton) -> Option<Self> {
+        match button {
+            PadButton::DPadUp => Some(Self::Up),
+            PadButton::DPadDown => Some(Self::Down),
+            PadButton::DPadLeft => Some(Self::Left),
+            PadButton::DPadRight => Some(Self::Right),
+            PadButton::South => Some(Self::Activate),
+            PadButton::East => Some(Self::Back),
+            _ => None,
+        }
+    }
+}
+
 /// Live state of one attached pad.
 #[derive(Debug)]
 struct Pad {
@@ -121,6 +149,9 @@ pub struct GamepadInput<S: GamepadSource> {
     pads: Vec<Pad>,
     hotkeys: Vec<HotkeyAction>,
     notices: Vec<GamepadNotice>,
+    nav: Vec<NavKey>,
+    /// A menu or the virtual keyboard has the focus: buttons navigate instead of reaching the core.
+    ui_capture: bool,
     scratch: Vec<PadEvent>,
 }
 
@@ -133,8 +164,48 @@ impl<S: GamepadSource> GamepadInput<S> {
             pads: Vec::new(),
             hotkeys: Vec::new(),
             notices: Vec::new(),
+            nav: Vec::new(),
+            ui_capture: false,
             scratch: Vec::new(),
         }
+    }
+
+    /// New settings (configuration edited between two games). Attached pads keep their port and deadzone.
+    pub fn set_settings(&mut self, settings: GamepadSettings) {
+        self.settings = settings;
+    }
+
+    pub fn settings(&self) -> &GamepadSettings {
+        &self.settings
+    }
+
+    /// Drains the source and updates the pad state, hotkeys, notices and navigation, without touching any
+    /// frame. The app calls it on every loop turn, so hotkeys work while the game is paused or a menu is open.
+    pub fn pump(&mut self) {
+        let mut events = std::mem::take(&mut self.scratch);
+        events.clear();
+        self.source.poll_events(&mut events);
+        if self.settings.enabled {
+            for event in events.drain(..) {
+                self.handle(event);
+            }
+        }
+        events.clear();
+        self.scratch = events;
+    }
+
+    /// While `true` (menu or virtual keyboard open), no pad button reaches the core; presses of the D-pad, the
+    /// left stick, Cross and Circle become `NavKey`s (`take_nav`). Hotkeys keep working.
+    pub fn set_ui_capture(&mut self, capture: bool) {
+        if capture != self.ui_capture {
+            self.ui_capture = capture;
+            self.nav.clear();
+        }
+    }
+
+    /// Navigation presses since the last call (empty unless `set_ui_capture(true)`).
+    pub fn take_nav(&mut self) -> Vec<NavKey> {
+        std::mem::take(&mut self.nav)
     }
 
     /// Replaces the button map (new game launched, or remap screen).
@@ -194,6 +265,9 @@ impl<S: GamepadSource> GamepadInput<S> {
             P::North => Some(H::ToggleFullscreen),
             P::West => Some(H::Reset),
             P::South => Some(H::ToggleStats),
+            // Computer systems (ADR 0016 amendment, point 3); the app ignores them on consoles.
+            P::R3 => Some(H::ToggleVirtualKeyboard),
+            P::L3 => Some(H::NextDisk),
             _ => None,
         }
     }
@@ -258,18 +332,24 @@ impl<S: GamepadSource> GamepadInput<S> {
             self.pads[idx].held.remove(&button);
         }
         let held_modifier = self.pads[idx].held.contains(&modifier);
-        if pressed
-            && !was_down
-            && button != modifier
-            && held_modifier
-            && let Some(action) = self.hotkey_for(button)
+        if !pressed || was_down || button == modifier {
+            return;
+        }
+        if held_modifier {
+            if let Some(action) = self.hotkey_for(button) {
+                self.hotkeys.push(action);
+            }
+        } else if self.ui_capture
+            && let Some(nav) = NavKey::from_button(button)
         {
-            self.hotkeys.push(action);
+            self.nav.push(nav);
         }
     }
 
     fn axis(&mut self, id: PadId, axis: PadAxis, value: f32) {
         let threshold = self.settings.trigger_threshold;
+        let modifier = self.modifier_button();
+        let ui_capture = self.ui_capture;
         let Some(pad) = self.pads.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -290,23 +370,24 @@ impl<S: GamepadSource> GamepadInput<S> {
             PadAxis::R2 => pad.trigger_r2 = trigger(pad.trigger_r2),
             PadAxis::RightX | PadAxis::RightY => {}
         }
+        let before = pad.stick_dirs;
         pad.update_stick_dirs();
+        if ui_capture && !pad.held.contains(&modifier) {
+            let dirs = [NavKey::Up, NavKey::Down, NavKey::Left, NavKey::Right];
+            for ((was, now), nav) in before.iter().zip(pad.stick_dirs).zip(dirs) {
+                if now && !was {
+                    self.nav.push(nav);
+                }
+            }
+        }
     }
 }
 
 impl<S: GamepadSource> InputBackend for GamepadInput<S> {
-    /// Drains the source, then ORs the held buttons of every attached pad into `state.pads[port]`.
+    /// Drains the source (`pump`), then ORs the held buttons of every attached pad into `state.pads[port]`.
     fn poll(&mut self, _frame_index: u64, state: &mut InputFrame) {
-        let mut events = std::mem::take(&mut self.scratch);
-        events.clear();
-        self.source.poll_events(&mut events);
-        if self.settings.enabled {
-            for event in events.drain(..) {
-                self.handle(event);
-            }
-        }
-        self.scratch = events;
-        if !self.settings.enabled {
+        self.pump();
+        if !self.settings.enabled || self.ui_capture {
             return;
         }
         for pad in &self.pads {
@@ -649,6 +730,8 @@ mod tests {
             (P::North, H::ToggleFullscreen),
             (P::West, H::Reset),
             (P::South, H::ToggleStats),
+            (P::R3, H::ToggleVirtualKeyboard),
+            (P::L3, H::NextDisk),
         ];
         let mut events = vec![connected(A, "g"), btn(A, P::Mode, true)];
         events.extend(table.iter().map(|(b, _)| btn(A, *b, true)));
@@ -762,6 +845,79 @@ mod tests {
         i.poll(0, &mut f);
         assert!(f.pads[0].is_pressed(JoypadButton::Start));
         assert!(f.pads[0].is_pressed(JoypadButton::B));
+    }
+
+    #[test]
+    fn ui_capture_turns_buttons_into_navigation() {
+        let mut i = input(
+            PadStyle::Nes,
+            vec![
+                vec![connected(A, "g")],
+                vec![
+                    btn(A, PadButton::DPadDown, true),
+                    btn(A, PadButton::DPadDown, true),
+                    btn(A, PadButton::South, true),
+                    btn(A, PadButton::East, true),
+                    btn(A, PadButton::Start, true),
+                    axis(A, PadAxis::LeftX, -0.9),
+                    axis(A, PadAxis::LeftX, -0.95),
+                ],
+                vec![
+                    btn(A, PadButton::Mode, true),
+                    btn(A, PadButton::R3, true),
+                    btn(A, PadButton::DPadUp, true),
+                ],
+            ],
+        );
+        i.pump();
+        i.set_ui_capture(true);
+        let f = poll(&mut i);
+        assert_eq!(
+            f.pads[0].bits(),
+            0,
+            "the core sees nothing while a menu is open"
+        );
+        assert_eq!(
+            i.take_nav(),
+            vec![NavKey::Down, NavKey::Activate, NavKey::Back, NavKey::Left]
+        );
+        i.pump();
+        assert!(i.take_nav().is_empty(), "PS held: hotkeys, not navigation");
+        assert_eq!(i.take_hotkeys(), vec![HotkeyAction::ToggleVirtualKeyboard]);
+        i.set_ui_capture(false);
+        assert!(i.take_nav().is_empty());
+    }
+
+    #[test]
+    fn navigation_is_off_without_ui_capture() {
+        let mut i = input(
+            PadStyle::Nes,
+            vec![vec![connected(A, "g"), btn(A, PadButton::DPadUp, true)]],
+        );
+        i.pump();
+        assert!(i.take_nav().is_empty());
+        assert!(poll(&mut i).pads[0].is_pressed(JoypadButton::Up));
+    }
+
+    #[test]
+    fn pump_updates_state_without_a_frame() {
+        let mut i = input(
+            PadStyle::Nes,
+            vec![vec![
+                connected(A, "g"),
+                btn(A, PadButton::Mode, true),
+                btn(A, PadButton::L3, true),
+            ]],
+        );
+        i.pump();
+        assert_eq!(i.take_hotkeys(), vec![HotkeyAction::NextDisk]);
+        assert_eq!(i.attached(), vec![(0, A)]);
+        i.set_settings(GamepadSettings {
+            enabled: false,
+            ..GamepadSettings::default()
+        });
+        assert!(!i.settings().enabled);
+        assert_eq!(poll(&mut i).pads[0].bits(), 0);
     }
 
     #[test]

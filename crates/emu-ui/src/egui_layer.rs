@@ -12,6 +12,8 @@ pub struct EguiLayer {
     state: egui_winit::State,
     painter: egui_glow::Painter,
     pending: Option<Pending>,
+    /// Key presses synthesised from the gamepad (menu navigation), fed to the next pass.
+    injected: Vec<egui::Event>,
     destroyed: bool,
 }
 
@@ -44,6 +46,7 @@ impl EguiLayer {
             state,
             painter,
             pending: None,
+            injected: Vec::new(),
             destroyed: false,
         })
     }
@@ -65,9 +68,28 @@ impl EguiLayer {
             .on_window_event(window, &WindowEvent::Focused(true));
     }
 
+    /// Queues a press and release of `key` for the next pass (gamepad navigation: arrows, Enter).
+    pub fn inject_key(&mut self, key: egui::Key) {
+        for pressed in [true, false] {
+            self.injected.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+    }
+
+    fn take_input(&mut self, window: &Window) -> egui::RawInput {
+        let mut raw = self.state.take_egui_input(window);
+        raw.events.append(&mut self.injected);
+        raw
+    }
+
     /// Runs one egui pass and keeps its output for `paint`. Returns egui's requested repaint delay.
     pub fn run(&mut self, window: &Window, ui: impl FnMut(&Context)) -> std::time::Duration {
-        let raw = self.state.take_egui_input(window);
+        let raw = self.take_input(window);
         let output = self.ctx.run_pass(raw, ui);
         self.finish_pass(window, output)
     }
@@ -78,7 +100,7 @@ impl EguiLayer {
         window: &Window,
         ui: impl FnMut(&mut egui::Ui),
     ) -> std::time::Duration {
-        let raw = self.state.take_egui_input(window);
+        let raw = self.take_input(window);
         let output = self.ctx.run_ui(raw, ui);
         self.finish_pass(window, output)
     }

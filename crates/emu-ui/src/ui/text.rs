@@ -327,6 +327,22 @@ pub const NO_DISK_CONTROL: &str = "Ce core ne permet pas de changer de disquette
 pub const GAME_OPTIONS_LOCKED: &str =
     "Options du jeu invalides : fichier conservé, changements non enregistrés.";
 
+pub const GAMEPAD_UNAVAILABLE: &str = "Manettes indisponibles sur ce système : clavier seul.";
+pub const GAMEPAD_PAUSED: &str = "Manette déconnectée : jeu en pause.";
+
+/// `port` is 0-based.
+pub fn gamepad_connected(name: &str, port: usize) -> String {
+    format!(
+        "Manette connectée : {} (joueur {})",
+        sanitize_core_text(name),
+        port + 1
+    )
+}
+
+pub fn gamepad_disconnected(port: usize) -> String {
+    format!("Manette déconnectée (joueur {})", port + 1)
+}
+
 pub fn vkbd_title(machine: &str) -> String {
     format!("Clavier {machine}")
 }

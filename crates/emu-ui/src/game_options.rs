@@ -71,6 +71,20 @@ pub(crate) fn game_options_path(dir: &Path, core_id: &str, game: &str) -> PathBu
     game_options_dir(dir, core_id).join(format!("{}.toml", sanitize_component(game)))
 }
 
+/// Copies `<from>.toml` to `<to>.toml` in the core's folder of `dir` (`DataDirs::game_options`) when the target
+/// is absent (homonym inheriting the shared 2.0 options, `GameIdentity::inherits_legacy`). `Ok(true)` if a copy
+/// was written; `Ok(false)` if the source is missing or the target exists. Atomic; never overwrites.
+#[allow(dead_code)] // wired into App::build by I3
+pub(crate) fn inherit_game_options(
+    dir: &Path,
+    core_id: &str,
+    from: &str,
+    to: &str,
+) -> io::Result<bool> {
+    let _ = (dir, core_id, from, to);
+    todo!("I3: game_options_path(from) -> game_options_path(to), target absent only")
+}
+
 /// One path component: separators, control and reserved characters become `_`; never empty, never `.` / `..`.
 fn sanitize_component(name: &str) -> String {
     let cleaned: String = name

@@ -1,6 +1,7 @@
 //! Emulation loop, software-frame conversion, audio sinks, input backends, pacing and GL presentation.
 #![allow(unsafe_code)]
 
+mod added;
 mod audio;
 mod audio_out;
 #[cfg(any(feature = "audio-cpal", test))]
@@ -12,6 +13,7 @@ mod error;
 mod frame;
 mod fsname;
 mod gl;
+mod identity;
 mod input;
 mod media;
 mod pacing;
@@ -26,6 +28,8 @@ pub use emu_libretro::{
     SystemTiming, mouse_id,
 };
 
+pub use crate::added::{AddedDisk, OrphanCopy, OrphanKind};
+pub use crate::added::{orphan_copies, remove_orphan_copies};
 pub use crate::audio::{AudioSink, CollectSink, NullSink, write_wav};
 #[cfg(feature = "audio-cpal")]
 pub use crate::audio_out::CpalSink;
@@ -33,10 +37,13 @@ pub use crate::audio_out::{AudioOutput, AudioStatus};
 pub use crate::audio_ring::{
     AudioConfig, AudioError, AudioStats, OutputSample, RingReader, RingSink, audio_ring,
 };
+pub use crate::content::archive_entry_names;
 pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SIZE};
 pub use crate::error::RuntimeError;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
+pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest};
+pub use crate::identity::{identity_request_for, resolve_game_identity};
 pub use crate::input::{
     InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState, NullInput,
     PadState, ScriptedInput,
@@ -50,6 +57,7 @@ pub use crate::pacing::{
     AudioLevel, DEFAULT_FAST_FORWARD_RATIO, MAX_BURST, PaceDecision, Pacer, Speed, SyncMode,
 };
 pub use crate::resample::{MAX_RATE_ADJUST, StereoResampler, rate_adjust};
+pub use crate::saves::StateOrigin;
 pub use crate::saves::{
     FileMode, STATE_FORMAT_VERSION, STATE_MAGIC, STATE_SLOTS, StateFileError, StateHeader,
     core_id_from_path, decode_state, encode_state, game_name_from_path, sram_path, state_path,

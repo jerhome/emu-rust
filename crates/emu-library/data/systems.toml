@@ -85,6 +85,16 @@ screenscraper = 42
 igdb = 63
 
 [[system]]
+id = "megacd"
+name = "Mega CD / Sega CD"
+# Disc images are never hashed and never copied; tracks referenced by a `.cue` are hidden by the scanner.
+extensions = ["cue", "chd", "iso"]
+database = "Sega - Mega-CD - Sega CD"
+# Ids from memory, NOT yet confirmed (same caveat as atarist).
+screenscraper = 20
+igdb = 78
+
+[[system]]
 id = "amiga"
 name = "Amiga"
 kind = "computer"

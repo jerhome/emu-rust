@@ -26,6 +26,9 @@ cores = ["mesen", "nestopia", "fceumm"]           # GPLv3, GPLv2, GPLv2
 [systems."Atari - ST"]
 cores = ["hatari", "hatarib"]                     # GPLv2, GPLv2 (ADR 0015 §1)
 
+[systems."Sega - Mega-CD - Sega CD"]
+cores = ["genesis_plus_gx", "picodrive"]          # Non-commercial, MAME (non-commercial)
+
 [systems."Commodore - Amiga"]
 cores = ["puae", "puae2021"]                      # GPLv2, GPLv2 (ADR 0017 §1); same order on every OS
 
@@ -51,6 +54,9 @@ options = { hatari_vkbd = "disabled" }            # the frontend's virtual keybo
 
 [cores.hatarib]
 media = "direct"                                  # writes modified floppies to saves/, never the original
+
+[cores.genesis_plus_gx]
+options = { genesis_plus_gx_system_bram = "per game" }   # Mega CD only: one internal backup RAM file per game
 
 [cores.puae]
 media = "working_copy"                            # writes into the floppy images (puae_floppy_write_redirect off)

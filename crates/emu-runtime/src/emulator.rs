@@ -13,14 +13,15 @@ use crate::audio::AudioSink;
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
+use crate::identity::GameIdentity;
 use crate::input::{InputBackend, InputFrame, MouseState};
 use crate::media::{
     ContentSpec, Disks, MediaRules, NO_GAME_NAME, PreparedMedia, prepare_media_with,
 };
 use crate::saves::{
-    FileMode, STATE_SLOTS, StateFileError, StateHeader, core_id_from_path, decode_state,
-    encode_state, game_name_from_path, game_name_from_str, read_bounded, read_state_header,
-    write_atomic,
+    FileMode, STATE_SLOTS, StateFileError, StateHeader, StateOrigin, core_id_from_path,
+    decode_state, encode_state, game_name_from_path, game_name_from_str, read_bounded,
+    read_state_header, write_atomic,
 };
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
@@ -62,6 +63,8 @@ pub struct Emulator {
     frame_count: u64,
     pub(crate) core_id: String,
     pub(crate) game_name: String,
+    /// 2.1 identity. Until I1, `load_content` builds `GameIdentity::legacy(game_name)` (2.0 behaviour).
+    pub(crate) identity: GameIdentity,
     pub(crate) save_root: PathBuf,
     state_root: PathBuf,
     /// SRAM as last restored or written; `flush_sram` writes only when the core's copy differs.
@@ -141,6 +144,21 @@ impl Emulator {
         Self::load_with_limits(core, content, options, Limits::DEFAULT)
     }
 
+    /// 2.1 entry point: same as [`Self::load_content`] with an identity the caller resolved beforehand
+    /// ([`crate::resolve_game_identity`], needed earlier for per-game options). `save_name` keys SRAM, states and
+    /// the working-copy folder (`set.name` of a `ContentSpec::Media` is replaced by it); the core gets
+    /// `identity.core_save_dir` as `GET_SAVE_DIRECTORY`. With `restore_added_disks`, disks added from the menu in
+    /// earlier sessions are re-added after `retro_load_game` (design §2.3; a failure is logged, never fatal).
+    pub fn load_content_as(
+        core: &Path,
+        content: ContentSpec,
+        identity: GameIdentity,
+        options: EmulatorOptions,
+    ) -> Result<Self, RuntimeError> {
+        let _ = (core, content, identity, options);
+        todo!("I1: load_with_limits taking the identity")
+    }
+
     pub(crate) fn load_with_limits(
         core_path: &Path,
         spec: ContentSpec,
@@ -155,6 +173,7 @@ impl Emulator {
         };
         let core_save_dir = options.save_dir.join(&core_id);
         fs::create_dir_all(&core_save_dir).map_err(io_err(&core_save_dir))?;
+        let identity = GameIdentity::legacy(&game_name, &core_save_dir);
         let core_state_dir = options.state_dir.join(&core_id);
         fs::create_dir_all(&core_state_dir).map_err(io_err(&core_state_dir))?;
 
@@ -224,6 +243,7 @@ impl Emulator {
             frame_count: 0,
             core_id,
             game_name,
+            identity,
             save_root: options.save_dir,
             state_root: options.state_dir,
             sram_snapshot,
@@ -350,6 +370,24 @@ impl Emulator {
         &self.game_name
     }
 
+    /// Identity the session was loaded with (`save_name`, `core_save_dir`).
+    pub fn identity(&self) -> &GameIdentity {
+        &self.identity
+    }
+
+    /// Stem of the path handed to `retro_load_game` (`{game}` of the 3.0 `game_saves` patterns): differs from
+    /// `save_name` for a single image under a working copy (`disk1`). `None` for `NoGame` or an in-memory load.
+    pub fn content_name(&self) -> Option<&str> {
+        todo!("I1: stem of the GameSource::Path given to the core")
+    }
+
+    /// Origin of slot `slot` relative to the running game (`game_fp` of its header vs. the identity's).
+    /// `None`: empty, unreadable or invalid slot.
+    pub fn state_origin(&self, slot: u8) -> Option<StateOrigin> {
+        let _ = slot;
+        todo!("I1: compare StateHeader::game_fp (design §2.1, « États »)")
+    }
+
     /// Where SRAM is persisted (whether or not the core exposes any).
     pub fn sram_path(&self) -> PathBuf {
         crate::saves::sram_path(&self.save_root, &self.core_id, &self.game_name)
@@ -413,6 +451,7 @@ impl Emulator {
             created_unix: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
+            game_fp: self.identity.game_fp(),
         };
         write_atomic(&path, &encode_state(&header, &payload), FileMode::Default)
             .map_err(io_err(&path))?;

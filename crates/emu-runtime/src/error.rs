@@ -35,4 +35,11 @@ pub enum RuntimeError {
     /// The running core registered no disk control interface.
     #[error("the core does not support disk swapping")]
     NoDiskControl,
+    /// `Disks::forget_added` on the inserted disk: eject or insert another one first.
+    #[error("the disk is inserted: eject it first")]
+    DiskInserted,
+    /// A removal outside what `remove_orphan_copies` / `forget_added` may delete (referenced copy, manifest,
+    /// link, not a plain file name, folder that is not a `*.disks` of the core's save folder). Nothing deleted.
+    #[error("refused to delete {path}: {reason}")]
+    RemovalRefused { path: PathBuf, reason: String },
 }

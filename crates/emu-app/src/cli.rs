@@ -10,9 +10,10 @@ use emu_ui::{LibraryScreen, MAX_SCALE, MIN_SCALE, Screen};
 pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibliothèque de jeux\n\
                          \x20      emu-rust --core <ID|chemin> [--rom <fichier> [--rom <disquette 2> ...] | --no-game]\n\
                          \x20                [--data-dir DIR] [--system-dir DIR] [--save-dir DIR] [--scale N]\n\
-                         \x20                [--no-audio] [--frames N] [--dump-frame sortie.png]\n\
+                         \x20                [--no-audio] [--no-gamepad] [--frames N] [--dump-frame sortie.png]\n\
                          \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
-                         \x20      emu-rust [--data-dir DIR] [--no-audio] [--screen library|library-settings|cores|library-launch]\n\
+                         \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad]\n\
+                         \x20                [--screen library|library-settings|cores|library-launch]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -22,6 +23,9 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          --core accepte l'identifiant d'un core installé (ex. gambatte) ou le chemin d'un fichier.\n\
                          --rom répété : disquettes d'un même jeu, dans l'ordre ; sans --rom : démarrage sans\n\
                          contenu (bureau d'un ordinateur, ex. --core hatari).\n\
+                         --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
+                         PS + R1 / L1 = sauver / charger l'état, PS + R2 maintenu = avance rapide ;\n\
+                         ordinateurs : PS + R3 = clavier virtuel, PS + L3 = disquette suivante.\n\
                          Racine de données : --data-dir, sinon EMU_DATA_DIR, sinon le dossier standard.";
 
 /// `--core` value: a managed core id, or a path as in 0.1.
@@ -62,6 +66,8 @@ pub struct Cli {
     pub save_dir: Option<PathBuf>,
     pub scale: Option<u32>,
     pub audio: bool,
+    /// `false` with `--no-gamepad`.
+    pub gamepad: bool,
     pub frames: Option<u64>,
     pub dump_frame: Option<PathBuf>,
     pub screen: Option<Screen>,
@@ -75,6 +81,7 @@ pub struct LibraryCli {
     pub system_dir: Option<PathBuf>,
     pub save_dir: Option<PathBuf>,
     pub audio: bool,
+    pub gamepad: bool,
     pub screen: Option<LibraryScreen>,
     pub dump_window: Option<PathBuf>,
 }
@@ -134,6 +141,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut save_dir = None;
     let mut scale = None;
     let mut audio = true;
+    let mut gamepad = true;
     let mut frames = None;
     let mut dump_frame = None;
     let mut screen = None;
@@ -189,6 +197,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--system-dir" => system_dir = Some(PathBuf::from(value(&mut it)?)),
             "--save-dir" => save_dir = Some(PathBuf::from(value(&mut it)?)),
             "--no-audio" => audio = false,
+            "--no-gamepad" => gamepad = false,
             "--screen" => {
                 screen = Some(match value(&mut it)?.to_string_lossy().as_ref() {
                     "menu" => ScreenArg::Game(Screen::Menu),
@@ -278,6 +287,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         let ignored: Vec<&str> = [
             (save_dir.is_some(), "--save-dir"),
             (!audio, "--no-audio"),
+            (!gamepad, "--no-gamepad"),
             (scale.is_some(), "--scale"),
             (frames.is_some(), "--frames"),
             (dump_frame.is_some(), "--dump-frame"),
@@ -317,6 +327,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             system_dir,
             save_dir,
             audio,
+            gamepad,
             screen,
             dump_window,
         })));
@@ -341,6 +352,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         save_dir,
         scale,
         audio,
+        gamepad,
         frames,
         dump_frame,
         screen,
@@ -487,6 +499,20 @@ mod tests {
             panic!()
         };
         assert!(!o.audio);
+        assert!(o.gamepad);
+    }
+
+    #[test]
+    fn no_gamepad() {
+        let Command::Run(o) = p(&["--core", "c", "--rom", "r", "--no-gamepad"]).unwrap() else {
+            panic!()
+        };
+        assert!(!o.gamepad && o.audio);
+        let Command::Library(l) = p(&["--no-gamepad"]).unwrap() else {
+            panic!()
+        };
+        assert!(!l.gamepad);
+        assert!(USAGE.contains("--no-gamepad"));
     }
 
     #[test]
@@ -620,6 +646,7 @@ mod tests {
         for extra in [
             &["--save-dir", "s"][..],
             &["--no-audio"],
+            &["--no-gamepad"],
             &["--scale", "2"],
             &["--dump-window", "w.png"],
             &["--frames", "3"],
