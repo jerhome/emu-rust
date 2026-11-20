@@ -84,18 +84,32 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         repaint_at: None,
         error: None,
     };
+    let wake = Arc::clone(&host.proxy);
+    crate::shutdown::set_waker(Some(Box::new(move || {
+        if let Ok(p) = wake.lock() {
+            // Only fails once the loop is gone: nothing left to wake.
+            let _ = p.send_event(Wake);
+        }
+    })));
     let result = event_loop.run_app(&mut host);
-    host.end_game(None);
-    if let (Some(egui), Some(w)) = (&mut host.egui, &host.window) {
-        egui.destroy(w);
-    }
-    host.egui = None;
-    host.window = None;
+    crate::shutdown::set_waker(None);
+    host.shutdown();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     host.error.map_or(Ok(()), Err)
 }
 
 impl Host {
+    /// Ends the game (saves written, core unloaded) and frees egui's GL objects before the window. Idempotent:
+    /// called from `exiting` (macOS ⌘Q may end the process there) and again after `run_app`.
+    fn shutdown(&mut self) {
+        self.end_game(None);
+        if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
+            egui.destroy(w);
+        }
+        self.egui = None;
+        self.window = None;
+    }
+
     fn capturing(&self) -> bool {
         self.dump_window.is_some() && self.screen.is_some()
     }
@@ -158,7 +172,10 @@ impl Host {
             }
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
-                let msg = text::game_failed(&request.title, &e.to_string());
+                let msg = request
+                    .failure_hint
+                    .clone()
+                    .unwrap_or_else(|| text::game_failed(&request.title, &e.to_string()));
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }
@@ -173,6 +190,7 @@ impl Host {
         let back = game.detach();
         // The core is unloaded here: working copies can be deleted and the game loaded again.
         drop(game);
+        tracing::info!("jeu fermé, sauvegardes écrites");
         self.window = back.window;
         self.egui = back.egui;
         self.gamepad = back.gamepad;
@@ -358,6 +376,15 @@ impl ApplicationHandler<Wake> for Host {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if crate::shutdown::requested() {
+            if !event_loop.exiting() {
+                tracing::info!("arrêt demandé : fermeture de la bibliothèque");
+                // Same path as closing the window.
+                self.end_game(None);
+                event_loop.exit();
+            }
+            return;
+        }
         if let Some(game) = &mut self.game {
             game.about_to_wait(event_loop);
             if game.ended() {
@@ -372,6 +399,10 @@ impl ApplicationHandler<Wake> for Host {
             .repaint_at
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         event_loop.set_control_flow(flow);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown();
     }
 }
 

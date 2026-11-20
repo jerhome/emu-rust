@@ -14,6 +14,7 @@ mod gamepad;
 mod hotkeys;
 mod keyboard;
 mod library;
+mod shutdown;
 mod ui;
 
 use std::path::PathBuf;
@@ -40,6 +41,7 @@ pub use crate::gamepad::{
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::shutdown::request_shutdown;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.

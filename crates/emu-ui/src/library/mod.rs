@@ -6,6 +6,7 @@ mod covers;
 mod grid;
 mod home;
 mod host;
+mod megacd;
 mod settings;
 pub(crate) mod text;
 mod worker;
@@ -60,6 +61,8 @@ pub(crate) struct LaunchRequest {
     pub computer: bool,
     /// Shown in the game's OSD (optional BIOS missing…).
     pub warnings: Vec<String>,
+    /// Replaces the generic message when the core refuses the game (Mega CD: BIOS names and folder).
+    pub failure_hint: Option<String>,
 }
 
 #[derive(Debug)]
@@ -90,6 +93,16 @@ enum Dialog {
         game_id: GameId,
     },
     Message(String),
+    /// Mega CD disc without its BIOS (or with another revision): exact name, region, `system/` folder.
+    MegaCdBios {
+        request: LaunchRequest,
+        verdict: megacd::BiosVerdict,
+        region: Option<emu_library::DiscRegion>,
+        /// « Réessayer » found nothing new.
+        retried: bool,
+        /// « Copier le chemin » was used.
+        copied: bool,
+    },
     /// First scan without any DAT: offer the download (ADR 0014 design §1).
     OfferDat,
 }
@@ -509,6 +522,14 @@ impl LibraryUi {
         let prefs = cores_ui::preferences(&self.config.cores);
         let database = emu_library::system(system_id).map(|s| s.database.as_str());
         let check = cores_ui::plan_launch(&manager, &prefs, database, ext);
+        let megacd_region = (system_id == megacd::SYSTEM_ID).then(|| match &content {
+            GameContent::Files(files) => files.first().and_then(|p| megacd::region_of(p)),
+            GameContent::NoGame => None,
+        });
+        let failure_hint = megacd_region.map(|region| {
+            let names = region.map_or(megacd::BIOS_NAMES.to_vec(), |r| vec![megacd::bios_name(r)]);
+            text::megacd_load_failed(&title, &names, &self.dirs.system)
+        });
         let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
             game: game_id,
             title: title.clone(),
@@ -517,6 +538,14 @@ impl LibraryUi {
             content: content.clone(),
             computer,
             warnings,
+            failure_hint: failure_hint.clone(),
+        };
+        let check = match megacd_region {
+            Some(region) => match self.megacd_gate(&manager, check, region, &request) {
+                Some(check) => check,
+                None => return,
+            },
+            None => check,
         };
         match check {
             LaunchCheck::Ready { id, path, warnings } => {
@@ -563,6 +592,175 @@ impl LibraryUi {
                     .blocking_message()
                     .unwrap_or_else(|| text::LAUNCH_FAILED_TITLE.to_owned());
                 self.open_dialog(Dialog::Message(text::game_failed(&title, &msg)));
+            }
+        }
+    }
+
+    /// Mega CD (design v2.1-megacd-express §2.3): checks the BIOS of the disc's region. `None`: a dialog took
+    /// over (the core stays marked in use until it is closed). Otherwise the check to carry on with, without the
+    /// `bios_CD_*` names (handled here, never in the generic BIOS warning).
+    fn megacd_gate(
+        &mut self,
+        manager: &emu_assets::cores::CoreManager,
+        check: LaunchCheck,
+        region: Option<emu_library::DiscRegion>,
+        request: &dyn Fn(CoreId, PathBuf, Vec<String>) -> LaunchRequest,
+    ) -> Option<LaunchCheck> {
+        let (id, path, others, required) = match check {
+            LaunchCheck::Ready { id, path, warnings } => (id, path, warnings, false),
+            LaunchCheck::FirmwareMissing { id, path, missing } => (id, path, missing, true),
+            other => return Some(other),
+        };
+        let others: Vec<FirmwareStatus> = others
+            .into_iter()
+            .filter(|f| !megacd::is_bios_name(&f.spec.path))
+            .collect();
+        let verdict =
+            megacd::bios_verdict(region, &manager.firmware_status(&id), &self.dirs.system);
+        if verdict == megacd::BiosVerdict::Ready {
+            return Some(if required && !others.is_empty() {
+                LaunchCheck::FirmwareMissing {
+                    id,
+                    path,
+                    missing: others,
+                }
+            } else {
+                LaunchCheck::Ready {
+                    id,
+                    path,
+                    warnings: if required { Vec::new() } else { others },
+                }
+            });
+        }
+        let names = firmware_names(&others);
+        let warnings = if names.is_empty() {
+            Vec::new()
+        } else {
+            vec![text::firmware_warning(&names)]
+        };
+        tracing::info!("BIOS Mega CD : {verdict:?} (région {region:?})");
+        self.open_dialog(Dialog::MegaCdBios {
+            request: request(id, path, warnings),
+            verdict,
+            region,
+            retried: false,
+            copied: false,
+        });
+        None
+    }
+
+    /// « Réessayer »: the same check again; the game starts as soon as the BIOS is there.
+    fn megacd_retry(&mut self) {
+        let manager = self.cores.manager().cloned();
+        let Some(Dialog::MegaCdBios {
+            request,
+            verdict,
+            region,
+            retried,
+            ..
+        }) = &mut self.dialog
+        else {
+            return;
+        };
+        let statuses = manager
+            .map(|m| m.firmware_status(&request.core))
+            .unwrap_or_default();
+        let fresh = megacd::bios_verdict(*region, &statuses, &self.dirs.system);
+        if fresh == megacd::BiosVerdict::Ready {
+            if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
+                self.focus = Some(Focus::Grid);
+                self.events.push(LibraryEvent::Launch(request));
+            }
+            return;
+        }
+        *retried = fresh == *verdict;
+        *verdict = fresh;
+        self.focus_dialog = true;
+    }
+
+    fn megacd_dialog(&mut self, ctx: &egui::Context) {
+        let Some(Dialog::MegaCdBios {
+            request,
+            verdict,
+            region,
+            retried,
+            copied,
+        }) = &self.dialog
+        else {
+            return;
+        };
+        let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let dir = text::megacd_system_dir(&self.dirs.system);
+        let region_name = region.map(megacd::region_name);
+        let (title, body, missing) = match verdict {
+            megacd::BiosVerdict::Missing {
+                wanted,
+                others_present,
+            } => (
+                text::megacd_missing_title(wanted, region.map(megacd::region_label)),
+                text::megacd_missing_body(&request.title, region_name, wanted, others_present),
+                true,
+            ),
+            megacd::BiosVerdict::Different { name } => (
+                text::MEGACD_DIFFERENT_TITLE.to_owned(),
+                text::megacd_different_body(&request.title, name),
+                false,
+            ),
+            megacd::BiosVerdict::Ready => (String::new(), String::new(), false),
+        };
+        let (retried, copied) = (*retried, *copied);
+        let (mut retry, mut copy, mut cancel, mut anyway) = (false, false, escape, false);
+        egui::Modal::new(egui::Id::unique("library-megacd-dialog")).show(ctx, |ui| {
+            ui.set_max_width(600.0);
+            ui.heading(&title);
+            ui.label(&body);
+            if missing {
+                ui.add_space(6.0);
+                // Selectable: the path can also be copied with the mouse or Ctrl+C.
+                ui.add(egui::Label::new(RichText::new(&dir).monospace()).selectable(true));
+                if retried {
+                    ui.colored_label(WARNING, text::MEGACD_STILL_MISSING);
+                }
+                if copied {
+                    weak(ui, text::MEGACD_PATH_COPIED);
+                }
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                // Safe default first: « Réessayer » (or « Annuler »), never the launch.
+                let first = missing.then(|| {
+                    let r = ui.button(text::MEGACD_RETRY);
+                    retry = r.clicked();
+                    copy = ui.button(text::MEGACD_COPY_PATH).clicked();
+                    r
+                });
+                let c = ui.button(text::LAUNCH_CANCEL);
+                cancel |= c.clicked();
+                anyway = ui.button(text::LAUNCH_ANYWAY).clicked();
+                if focus {
+                    first.unwrap_or(c).request_focus();
+                }
+            });
+        });
+        if copy {
+            ctx.copy_text(self.dirs.system.display().to_string());
+            if let Some(Dialog::MegaCdBios { copied, .. }) = &mut self.dialog {
+                *copied = true;
+            }
+        } else if retry {
+            self.megacd_retry();
+        } else if anyway {
+            if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
+                self.focus = Some(Focus::Grid);
+                self.events.push(LibraryEvent::Launch(request));
+            }
+        } else if cancel {
+            self.dialog = None;
+            self.focus = Some(Focus::Grid);
+            // The core was marked in use by `prepare_launch`.
+            if let Some(m) = self.cores.manager() {
+                cores_ui::release(m);
             }
         }
     }
@@ -833,6 +1031,9 @@ impl LibraryUi {
         if matches!(self.dialog, Some(Dialog::FreeBios { .. })) {
             return self.free_bios_dialog(ctx);
         }
+        if matches!(self.dialog, Some(Dialog::MegaCdBios { .. })) {
+            return self.megacd_dialog(ctx);
+        }
         let Some(dialog) = &self.dialog else {
             return;
         };
@@ -871,7 +1072,9 @@ impl LibraryUi {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
-                Dialog::FreeBios { .. } => (text::LAUNCH_FAILED_TITLE, String::new()),
+                Dialog::FreeBios { .. } | Dialog::MegaCdBios { .. } => {
+                    (text::LAUNCH_FAILED_TITLE, String::new())
+                }
                 Dialog::OfferDat => (text::DAT_OFFER_TITLE, text::DAT_OFFER.to_owned()),
             };
             ui.heading(title);
@@ -900,7 +1103,10 @@ impl LibraryUi {
                         }
                         Some(r)
                     }
-                    Dialog::Firmware { .. } | Dialog::Message(_) | Dialog::FreeBios { .. } => None,
+                    Dialog::Firmware { .. }
+                    | Dialog::Message(_)
+                    | Dialog::FreeBios { .. }
+                    | Dialog::MegaCdBios { .. } => None,
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
                 let cancel_label = match dialog {

@@ -185,6 +185,9 @@ pub(crate) fn spawn_dat_download(
 }
 
 /// The stored ETag is sent only when the file is still there: otherwise a 304 would leave it missing for good.
+/// Systems skipped by the automatic DAT download: their DAT is not under `metadat/no-intro/` (redump: 6.0).
+const NO_AUTO_DAT: &[&str] = &["megacd"];
+
 pub(crate) fn download_dats(
     library: &mut Library,
     client: &HttpClient,
@@ -196,6 +199,10 @@ pub(crate) fn download_dats(
 ) -> DatSummary {
     let mut summary = DatSummary::default();
     let mut network_errors = 0;
+    let catalog: Vec<&SystemInfo> = catalog
+        .iter()
+        .filter(|s| !NO_AUTO_DAT.contains(&s.id.as_str()))
+        .collect();
     for (i, s) in catalog.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;

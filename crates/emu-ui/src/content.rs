@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use emu_assets::cores::{CoreId, CoreMediaPolicy, CorePreferences};
-use emu_runtime::{ContentSpec, MediaPolicy, MediaSet};
+use emu_runtime::{ContentSpec, GameIdentity, MediaPolicy, MediaSet};
 
 /// What to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,12 +120,32 @@ pub(crate) fn game_key(spec: &ContentSpec) -> String {
     }
 }
 
+/// 2.1 key of the game's options file: `GameIdentity::save_name` (design v2.1-identite-disques §3.2). Replaces
+/// [`game_key`] once `App::build` resolves the identity first (task I3, which then renames it `game_key`).
+#[allow(dead_code)] // wired into App::build by I3
+pub(crate) fn game_key_of(identity: &GameIdentity) -> &str {
+    &identity.save_name
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn files(names: &[&str]) -> GameContent {
         GameContent::Files(names.iter().map(PathBuf::from).collect())
+    }
+
+    /// Mega CD (2.1): discs go to genesis_plus_gx in place, never as a media set (no copy, no extraction).
+    #[test]
+    fn mega_cd_discs_are_loaded_in_place() {
+        let prefs = CorePreferences::builtin();
+        for name in ["/g/Dune (Europe).cue", "/g/Dune.chd", "/g/Dune.iso"] {
+            assert_eq!(
+                content_spec("genesis_plus_gx", &files(&[name]), &prefs),
+                ContentSpec::File(PathBuf::from(name)),
+                "{name}"
+            );
+        }
     }
 
     #[test]

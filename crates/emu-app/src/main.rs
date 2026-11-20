@@ -71,6 +71,24 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     })
 }
 
+/// SIGINT / SIGTERM / SIGHUP (Ctrl+C, `kill`, closed terminal; console events on Windows): the window quits
+/// through its normal path, so the game is unloaded and its saves are written. A second signal forces the exit.
+/// Installed only for the window modes: the CLI subcommands keep the default behaviour.
+fn install_signal_handler() {
+    let result = ctrlc::set_handler(|| {
+        if emu_ui::request_shutdown() {
+            eprintln!("arrêt forcé");
+            std::process::exit(130);
+        }
+        eprintln!(
+            "arrêt demandé : fermeture propre et écriture des sauvegardes (Ctrl+C de nouveau pour forcer)"
+        );
+    });
+    if let Err(e) = result {
+        tracing::warn!("gestionnaire d'arrêt non installé : {e}");
+    }
+}
+
 fn fail(message: &str) -> ExitCode {
     eprintln!("erreur : {message}");
     ExitCode::FAILURE
@@ -108,18 +126,24 @@ fn main() -> ExitCode {
             Err(e) => fail(&e),
         },
         Ok(cli::Command::Library(l)) => match prepare(l.data_dir, l.system_dir, l.save_dir) {
-            Ok((dirs, config)) => report(emu_ui::run_library(emu_ui::LibraryOptions {
-                dirs,
-                config,
-                audio: l.audio,
-                gamepad: l.gamepad,
-                screen: l.screen,
-                dump_window: l.dump_window,
-            })),
+            Ok((dirs, config)) => {
+                install_signal_handler();
+                report(emu_ui::run_library(emu_ui::LibraryOptions {
+                    dirs,
+                    config,
+                    audio: l.audio,
+                    gamepad: l.gamepad,
+                    screen: l.screen,
+                    dump_window: l.dump_window,
+                }))
+            }
             Err(e) => fail(&e),
         },
         Ok(cli::Command::Run(c)) => match build_options(*c) {
-            Ok(options) => report(emu_ui::run(options)),
+            Ok(options) => {
+                install_signal_handler();
+                report(emu_ui::run(options))
+            }
             Err(e) => fail(&e),
         },
         Err(e) => {

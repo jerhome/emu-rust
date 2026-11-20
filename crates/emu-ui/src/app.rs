@@ -30,6 +30,7 @@ use crate::game_options::{
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
+use crate::shutdown;
 use crate::ui::{
     self, CaptureOutcome, ComputerView, DisksView, OsdLevel, Overlay, StatsView, UiAction, UiData,
     apply_capture, profile_map, text,
@@ -257,19 +258,88 @@ pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
     if let Some(notice) = notice {
         app.warn(notice.to_owned());
     }
-    let result = event_loop.run_app(&mut app);
-    app.teardown();
-    app.flush_sram();
-    app.save_config();
-    app.log_audio_stats();
+    let proxy = event_loop.create_proxy();
+    shutdown::set_waker(Some(Box::new(move || {
+        // Only fails once the loop is gone: nothing left to wake.
+        let _ = proxy.send_event(());
+    })));
+    let mut standalone = Standalone {
+        app: Some(app),
+        outcome: None,
+    };
+    let result = event_loop.run_app(&mut standalone);
+    shutdown::set_waker(None);
+    standalone.shutdown();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
-    if let Some(e) = app.error.take() {
-        return Err(e);
+    standalone.outcome.unwrap_or(Ok(()))
+}
+
+/// Standalone window (`--core/--rom`). It owns the game so that `exiting` can unload it: on macOS, ⌘Q / « Quitter »
+/// ends the process from `applicationWillTerminate` without returning from `run_app`, and the core writes some
+/// files only in `retro_unload_game` (Mega CD `.brm`).
+struct Standalone {
+    app: Option<App>,
+    outcome: Option<Result<(), UiError>>,
+}
+
+impl Standalone {
+    /// Writes everything and unloads the game; idempotent (`exiting`, then again after `run_app`).
+    fn shutdown(&mut self) {
+        let Some(mut app) = self.app.take() else {
+            return;
+        };
+        app.teardown();
+        app.flush_sram();
+        app.save_config();
+        app.log_audio_stats();
+        let mut outcome = app.error.take().map_or(Ok(()), Err);
+        if outcome.is_ok()
+            && let Some(path) = &app.options.dump_last_frame
+        {
+            outcome = app.emulator.frame().write_png(path).map_err(UiError::from);
+        }
+        // `Drop for Emulator`: last SRAM flush, then `retro_unload_game`.
+        drop(app);
+        tracing::info!("jeu fermé, sauvegardes écrites");
+        self.outcome = Some(outcome);
     }
-    if let Some(path) = &app.options.dump_last_frame {
-        app.emulator.frame().write_png(path)?;
+}
+
+impl ApplicationHandler for Standalone {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            app.resumed(event_loop);
+        }
     }
-    Ok(())
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(app) = &mut self.app {
+            app.window_event(event_loop, id, event);
+        }
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+        if let Some(app) = &mut self.app {
+            app.device_event(event_loop, id, event);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if shutdown::requested() {
+            if !event_loop.exiting() {
+                tracing::info!("arrêt demandé : fermeture du jeu");
+                event_loop.exit();
+            }
+            return;
+        }
+        if let Some(app) = &mut self.app {
+            app.about_to_wait(event_loop);
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown();
+    }
 }
 
 impl App {

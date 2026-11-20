@@ -77,7 +77,7 @@ des quatre noms `MT32_CONTROL.ROM`, `MT32_PCM.ROM`, `CM32L_CONTROL.ROM`, `CM32L_
 
 | Système | Fichier(s) | Intérêt |
 |---|---|---|
-| Mega CD / Sega CD | `bios_CD_E.bin` (Europe), `bios_CD_U.bin` (USA), `bios_CD_J.bin` (Japon) | **Requis** : aucun jeu Mega CD ne démarre sans le BIOS **de la région du jeu** ; l'application le contrôle avant le lancement et propose l'import |
+| Mega CD / Sega CD | `bios_CD_E.bin` (Europe), `bios_CD_U.bin` (USA), `bios_CD_J.bin` (Japon) | **Requis** : aucun jeu Mega CD ne démarre sans le BIOS **de la région du jeu**. **Dès la 2.1** : dépôt manuel dans `system/` sous le nom exact ; l'application lit la région dans l'en-tête du disque, contrôle le BIOS avant le lancement et affiche le nom attendu et le chemin du dossier (import par bouton en 6.0) |
 | Game Boy Advance | `gba_bios.bin` | Facultatif (le core mgba a un BIOS de remplacement intégré) ; logo de démarrage, compatibilité un peu meilleure |
 | 32X | — | Rien à fournir (BIOS intégrés au core picodrive) |
 
@@ -96,5 +96,5 @@ des quatre noms `MT32_CONTROL.ROM`, `MT32_PCM.ROM`, `CM32L_CONTROL.ROM`, `CM32L_
 
 ## Ordre d'intérêt (résumé)
 
-1. Kickstart 1.3 et 3.1 (Amiga) · 2. BIOS Mega CD de vos régions (6.0, requis) · 3. MT-32 (DOS) · 4. TOS 1.04 (ST) ·
+1. Kickstart 1.3 et 3.1 (Amiga) · 2. BIOS Mega CD de vos régions (2.1, requis) · 3. MT-32 (DOS) · 4. TOS 1.04 (ST) ·
 5. `capsimg` (ST/Amiga) · 6. BIOS GBC · 7. le reste, surtout cosmétique.

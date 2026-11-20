@@ -575,6 +575,22 @@ mod tests {
         );
     }
 
+    /// Mega CD discs (2.1): Mega Drive pad and the `genesis_plus_gx` profile, whatever the disc format; the
+    /// images are never opened to detect the style.
+    #[test]
+    fn mega_cd_discs_use_the_mega_drive_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["Dune (Europe).cue", "Dune.chd", "Dune.iso", "absent.cue"] {
+            let path = dir.path().join(name);
+            if name != "absent.cue" {
+                std::fs::write(&path, b"SEGADISCSYSTEM  ").unwrap();
+            }
+            let style = PadStyle::detect("genesis_plus_gx", &path);
+            assert_eq!(style, PadStyle::MegaDrive, "{name}");
+            assert_eq!(style.profile_key("genesis_plus_gx"), "genesis_plus_gx");
+        }
+    }
+
     #[test]
     fn profile_key_separates_systems_of_one_core() {
         assert_eq!(
