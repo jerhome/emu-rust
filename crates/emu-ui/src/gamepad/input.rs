@@ -1,6 +1,7 @@
 //! Pad state -> `InputFrame`: ports, hotplug, deadzone, hotkeys.
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::{Duration, Instant};
 
 use emu_runtime::{InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 
@@ -15,6 +16,9 @@ const DEADZONE_MAX: f32 = 0.60;
 const STICK_ON: f32 = 0.5;
 const STICK_OFF: f32 = 0.4;
 const TRIGGER_HYSTERESIS: f32 = 0.1;
+/// Held direction in a menu: first repeat after `REPEAT_DELAY`, then one every `REPEAT_INTERVAL`.
+pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
+pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 
 /// Runtime settings extracted from `GamepadConfig` for one launch.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +88,10 @@ pub enum NavKey {
 }
 
 impl NavKey {
+    fn is_direction(self) -> bool {
+        matches!(self, Self::Up | Self::Down | Self::Left | Self::Right)
+    }
+
     fn from_button(button: PadButton) -> Option<Self> {
         match button {
             PadButton::DPadUp => Some(Self::Up),
@@ -101,6 +109,7 @@ impl NavKey {
 #[derive(Debug)]
 struct Pad {
     id: PadId,
+    name: String,
     port: usize,
     deadzone: f32,
     held: HashSet<PadButton>,
@@ -150,6 +159,13 @@ pub struct GamepadInput<S: GamepadSource> {
     hotkeys: Vec<HotkeyAction>,
     notices: Vec<GamepadNotice>,
     nav: Vec<NavKey>,
+    /// Direction pressed since the last `pump_at`: starts the auto-repeat.
+    fresh_dir: Option<NavKey>,
+    /// Direction being repeated and when its next repeat is due.
+    repeat: Option<(NavKey, Instant)>,
+    /// Remap screen: the next pressed button is reported by `take_learned` instead of being acted on.
+    learning: bool,
+    learned: Option<PadButton>,
     /// A menu or the virtual keyboard has the focus: buttons navigate instead of reaching the core.
     ui_capture: bool,
     scratch: Vec<PadEvent>,
@@ -165,6 +181,10 @@ impl<S: GamepadSource> GamepadInput<S> {
             hotkeys: Vec::new(),
             notices: Vec::new(),
             nav: Vec::new(),
+            fresh_dir: None,
+            repeat: None,
+            learning: false,
+            learned: None,
             ui_capture: false,
             scratch: Vec::new(),
         }
@@ -182,6 +202,11 @@ impl<S: GamepadSource> GamepadInput<S> {
     /// Drains the source and updates the pad state, hotkeys, notices and navigation, without touching any
     /// frame. The app calls it on every loop turn, so hotkeys work while the game is paused or a menu is open.
     pub fn pump(&mut self) {
+        self.pump_at(Instant::now());
+    }
+
+    /// `pump` with an explicit clock (auto-repeat of held directions while a menu has the focus).
+    pub fn pump_at(&mut self, now: Instant) {
         let mut events = std::mem::take(&mut self.scratch);
         events.clear();
         self.source.poll_events(&mut events);
@@ -192,6 +217,59 @@ impl<S: GamepadSource> GamepadInput<S> {
         }
         events.clear();
         self.scratch = events;
+        self.update_repeat(now);
+    }
+
+    fn direction_held(&self, key: NavKey) -> bool {
+        let (button, idx) = match key {
+            NavKey::Up => (PadButton::DPadUp, 0),
+            NavKey::Down => (PadButton::DPadDown, 1),
+            NavKey::Left => (PadButton::DPadLeft, 2),
+            NavKey::Right => (PadButton::DPadRight, 3),
+            _ => return false,
+        };
+        self.pads
+            .iter()
+            .any(|p| !self.modifier_held(p) && (p.held.contains(&button) || p.stick_dirs[idx]))
+    }
+
+    fn update_repeat(&mut self, now: Instant) {
+        if !self.ui_capture || !self.settings.enabled {
+            self.repeat = None;
+            self.fresh_dir = None;
+            return;
+        }
+        if let Some(key) = self.fresh_dir.take() {
+            self.repeat = Some((key, now + REPEAT_DELAY));
+        }
+        if let Some((key, due)) = self.repeat {
+            if !self.direction_held(key) {
+                self.repeat = None;
+            } else if now >= due {
+                self.nav.push(key);
+                self.repeat = Some((key, now + REPEAT_INTERVAL));
+            }
+        }
+    }
+
+    /// Remap screen: while `true`, the next button pressed on any pad is kept for `take_learned` and goes
+    /// nowhere else (no game input, no hotkey, no navigation).
+    pub fn set_learning(&mut self, learning: bool) {
+        if learning != self.learning {
+            self.learning = learning;
+            self.learned = None;
+        }
+    }
+
+    pub fn take_learned(&mut self) -> Option<PadButton> {
+        self.learned.take()
+    }
+
+    /// Attached pads, `(port, name)`, for the settings screen.
+    pub fn attached_names(&self) -> Vec<(usize, String)> {
+        let mut v: Vec<_> = self.pads.iter().map(|p| (p.port, p.name.clone())).collect();
+        v.sort();
+        v
     }
 
     /// While `true` (menu or virtual keyboard open), no pad button reaches the core; presses of the D-pad, the
@@ -200,6 +278,8 @@ impl<S: GamepadSource> GamepadInput<S> {
         if capture != self.ui_capture {
             self.ui_capture = capture;
             self.nav.clear();
+            self.repeat = None;
+            self.fresh_dir = None;
         }
     }
 
@@ -301,6 +381,7 @@ impl<S: GamepadSource> GamepadInput<S> {
             });
         self.pads.push(Pad {
             id,
+            name: name.clone(),
             port,
             deadzone,
             held: HashSet::new(),
@@ -326,6 +407,17 @@ impl<S: GamepadSource> GamepadInput<S> {
             return;
         };
         let was_down = self.pads[idx].held.contains(&button);
+        if self.learning {
+            if pressed && !was_down {
+                self.learned = Some(button);
+            }
+            if pressed {
+                self.pads[idx].held.insert(button);
+            } else {
+                self.pads[idx].held.remove(&button);
+            }
+            return;
+        }
         if pressed {
             self.pads[idx].held.insert(button);
         } else {
@@ -342,6 +434,9 @@ impl<S: GamepadSource> GamepadInput<S> {
         } else if self.ui_capture
             && let Some(nav) = NavKey::from_button(button)
         {
+            if nav.is_direction() {
+                self.fresh_dir = Some(nav);
+            }
             self.nav.push(nav);
         }
     }
@@ -350,6 +445,7 @@ impl<S: GamepadSource> GamepadInput<S> {
         let threshold = self.settings.trigger_threshold;
         let modifier = self.modifier_button();
         let ui_capture = self.ui_capture;
+        let learning = self.learning;
         let Some(pad) = self.pads.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -366,16 +462,30 @@ impl<S: GamepadSource> GamepadInput<S> {
         match axis {
             PadAxis::LeftX => pad.stick.0 = value,
             PadAxis::LeftY => pad.stick.1 = value,
-            PadAxis::L2 => pad.trigger_l2 = trigger(pad.trigger_l2),
-            PadAxis::R2 => pad.trigger_r2 = trigger(pad.trigger_r2),
+            PadAxis::L2 | PadAxis::R2 => {
+                let (state, button) = if axis == PadAxis::L2 {
+                    (&mut pad.trigger_l2, PadButton::L2)
+                } else {
+                    (&mut pad.trigger_r2, PadButton::R2)
+                };
+                let was = *state;
+                *state = trigger(was);
+                if learning && *state && !was {
+                    self.learned = Some(button);
+                }
+            }
             PadAxis::RightX | PadAxis::RightY => {}
         }
         let before = pad.stick_dirs;
         pad.update_stick_dirs();
+        if learning {
+            return;
+        }
         if ui_capture && !pad.held.contains(&modifier) {
             let dirs = [NavKey::Up, NavKey::Down, NavKey::Left, NavKey::Right];
             for ((was, now), nav) in before.iter().zip(pad.stick_dirs).zip(dirs) {
                 if now && !was {
+                    self.fresh_dir = Some(nav);
                     self.nav.push(nav);
                 }
             }
@@ -936,5 +1046,96 @@ mod tests {
         };
         assert_eq!(GamepadSettings::from_config(&cfg).deadzone, 0.05);
         assert_eq!(GamepadSettings::default().deadzone, 0.25);
+    }
+
+    fn nav_input(batches: Vec<Vec<PadEvent>>) -> GamepadInput<ScriptedPadSource> {
+        let mut i = input(PadStyle::MegaDrive, batches);
+        i.set_ui_capture(true);
+        i
+    }
+
+    #[test]
+    fn held_direction_repeats_after_delay_then_at_interval() {
+        let t0 = Instant::now();
+        let mut i = nav_input(vec![
+            vec![connected(A, "g"), btn(A, PadButton::DPadDown, true)],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![btn(A, PadButton::DPadDown, false)],
+            vec![],
+        ]);
+        i.pump_at(t0);
+        assert_eq!(i.take_nav(), vec![NavKey::Down]);
+        i.pump_at(t0 + REPEAT_DELAY - Duration::from_millis(1));
+        assert!(i.take_nav().is_empty());
+        i.pump_at(t0 + REPEAT_DELAY);
+        assert_eq!(i.take_nav(), vec![NavKey::Down]);
+        i.pump_at(t0 + REPEAT_DELAY + REPEAT_INTERVAL - Duration::from_millis(1));
+        assert!(i.take_nav().is_empty());
+        i.pump_at(t0 + REPEAT_DELAY + REPEAT_INTERVAL);
+        assert_eq!(i.take_nav(), vec![NavKey::Down]);
+        // Released: nothing more, however late.
+        i.pump_at(t0 + Duration::from_secs(5));
+        assert!(i.take_nav().is_empty());
+        i.pump_at(t0 + Duration::from_secs(6));
+        assert!(i.take_nav().is_empty());
+    }
+
+    #[test]
+    fn stick_direction_repeats_and_activate_does_not() {
+        let t0 = Instant::now();
+        let mut i = nav_input(vec![
+            vec![
+                connected(A, "g"),
+                axis(A, PadAxis::LeftX, 1.0),
+                btn(A, PadButton::South, true),
+            ],
+            vec![],
+        ]);
+        i.pump_at(t0);
+        assert_eq!(i.take_nav(), vec![NavKey::Right, NavKey::Activate]);
+        i.pump_at(t0 + REPEAT_DELAY);
+        assert_eq!(i.take_nav(), vec![NavKey::Right]);
+    }
+
+    #[test]
+    fn repeat_stops_when_capture_ends() {
+        let t0 = Instant::now();
+        let mut i = nav_input(vec![
+            vec![connected(A, "g"), btn(A, PadButton::DPadUp, true)],
+            vec![],
+        ]);
+        i.pump_at(t0);
+        let _ = i.take_nav();
+        i.set_ui_capture(false);
+        i.pump_at(t0 + Duration::from_secs(1));
+        assert!(i.take_nav().is_empty());
+    }
+
+    #[test]
+    fn learning_keeps_the_next_button_and_nothing_else() {
+        let mut i = nav_input(vec![
+            vec![connected(A, "g")],
+            vec![btn(A, PadButton::North, true)],
+            vec![axis(A, PadAxis::R2, 1.0)],
+        ]);
+        i.pump();
+        i.set_learning(true);
+        i.pump();
+        assert_eq!(i.take_learned(), Some(PadButton::North));
+        assert!(i.take_nav().is_empty());
+        i.pump();
+        assert_eq!(i.take_learned(), Some(PadButton::R2));
+        i.set_learning(false);
+        assert_eq!(i.take_learned(), None);
+    }
+
+    #[test]
+    fn attached_names_lists_ports() {
+        let mut i = input(PadStyle::MegaDrive, vec![vec![connected(B, "g")]]);
+        i.pump();
+        assert_eq!(i.attached_names(), vec![(0, "DS4".to_owned())]);
     }
 }

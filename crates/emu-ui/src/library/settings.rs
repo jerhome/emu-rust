@@ -31,7 +31,7 @@ pub(super) struct State {
     /// Masked input of the secret being edited; cleared as soon as it is stored or cancelled.
     pub(super) secret_buf: String,
     focus_secret: bool,
-    dirty: bool,
+    pub(super) dirty: bool,
     /// File system and database reads, refreshed when the page opens and after each action (not per frame).
     root_exists: Vec<bool>,
     /// `(system name, « n entrées, importé le … »)`, `None` = no DAT.
@@ -203,10 +203,14 @@ impl LibraryUi {
                     self.covers_section(ui);
                     ui.separator();
                     self.credentials_section(ui);
+                    ui.separator();
+                    self.gamepad_section(ui);
                 });
         });
         if escape {
-            if self.settings.editing.is_some() {
+            if self.cancel_pad_learning() {
+                // Remap cancelled: stay on the page.
+            } else if self.settings.editing.is_some() {
                 self.end_secret_edit();
             } else {
                 self.leave_settings();

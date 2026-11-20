@@ -41,6 +41,7 @@ pub use crate::gamepad::{
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::library::megacd_cli_hint;
 pub use crate::shutdown::request_shutdown;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;

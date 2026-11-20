@@ -15,7 +15,7 @@ mod source;
 #[cfg(feature = "gamepad")]
 pub use gilrs_source::GilrsSource;
 pub use input::{GamepadInput, GamepadNotice, GamepadSettings, NavKey};
-pub use mapping::{PadButton, PadMap, retropad_from_name, retropad_name};
+pub use mapping::{PadButton, PadMap, retropad_from_name, retropad_name, set_binding};
 pub use source::{
     GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, ScriptedPadSource,
 };

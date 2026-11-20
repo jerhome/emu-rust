@@ -96,7 +96,7 @@ const PAD_POLL_INTERVAL: Duration = Duration::from_millis(16);
 const PAD_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Loop wake-up period for the pad backend: fast with a pad attached, slow otherwise.
-fn pad_poll_interval(has_pad: bool) -> Duration {
+pub(crate) fn pad_poll_interval(has_pad: bool) -> Duration {
     if has_pad {
         PAD_POLL_INTERVAL
     } else {
