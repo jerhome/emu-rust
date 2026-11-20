@@ -17,12 +17,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use egui::{Color32, Key, RichText, Ui};
 use emu_assets::cores::{CoreId, FirmwareStatus};
 use emu_library::{
-    Game, GameFilter, GameId, Library, OpenOutcome, ScanProgress, SortOrder, filter_games, systems,
+    Game, GameFilter, GameId, Library, OpenOutcome, ScanProgress, SortOrder, SystemKind,
+    filter_games, systems,
 };
 
 use self::covers::{CoverProvider, Covers, Placeholder};
 pub(crate) use self::host::run;
 use self::worker::{DatDownloadTask, DatProgress, DatTask, Notify, ScanTask};
+use crate::GameContent;
 use crate::config::{Config, DataDirs};
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
 
@@ -48,11 +50,14 @@ pub(crate) enum View {
 /// A game ready to run: verified core (marked in use), ROM path.
 #[derive(Debug, Clone)]
 pub(crate) struct LaunchRequest {
-    pub game: GameId,
+    /// `None` for the computer desktop (no game in the library).
+    pub game: Option<GameId>,
     pub title: String,
     pub core: CoreId,
     pub core_path: PathBuf,
-    pub rom: PathBuf,
+    pub content: GameContent,
+    /// System of kind `computer` (ADR 0015).
+    pub computer: bool,
     /// Shown in the game's OSD (optional BIOS missing…).
     pub warnings: Vec<String>,
 }
@@ -72,6 +77,13 @@ enum Dialog {
     Firmware {
         request: LaunchRequest,
         missing: Vec<String>,
+    },
+    /// The core needs a TOS: offer the free one (EmuTOS), then launch.
+    FreeBios {
+        request: LaunchRequest,
+        bios: usize,
+        /// Download running for this dialog.
+        installing: bool,
     },
     Reinstall {
         core: CoreId,
@@ -456,20 +468,54 @@ impl LibraryUi {
     }
 
     fn launch_game(&mut self, game: Game) {
+        let system = emu_library::system(&game.system);
+        let computer = system.is_some_and(|s| s.kind == SystemKind::Computer);
+        let files = if computer && !game.media.is_empty() {
+            game.media.clone()
+        } else {
+            vec![game.path.clone()]
+        };
+        let ext = grid::launch_extension(&game);
+        self.launch(
+            Some(game.id),
+            game.title.clone(),
+            &game.system,
+            ext.as_deref(),
+            GameContent::Files(files),
+            computer,
+        );
+    }
+
+    /// « Bureau Atari ST »: the machine without a disk (`ContentSpec::NoGame`), keyboard mode.
+    fn launch_desktop(&mut self, system_id: &str) {
+        let title = emu_library::system(system_id)
+            .map_or_else(|| system_id.to_owned(), |s| text::desktop_title(&s.name));
+        self.launch(None, title, system_id, None, GameContent::NoGame, true);
+    }
+
+    fn launch(
+        &mut self,
+        game_id: Option<GameId>,
+        title: String,
+        system_id: &str,
+        ext: Option<&str>,
+        content: GameContent,
+        computer: bool,
+    ) {
         let Some(manager) = self.cores.manager().cloned() else {
             self.open_dialog(Dialog::Message(text::NO_MANAGER.to_owned()));
             return;
         };
         let prefs = cores_ui::preferences(&self.config.cores);
-        let database = emu_library::system(&game.system).map(|s| s.database.as_str());
-        let ext = grid::launch_extension(&game);
-        let check = cores_ui::plan_launch(&manager, &prefs, database, ext.as_deref());
+        let database = emu_library::system(system_id).map(|s| s.database.as_str());
+        let check = cores_ui::plan_launch(&manager, &prefs, database, ext);
         let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
-            game: game.id,
-            title: game.title.clone(),
+            game: game_id,
+            title: title.clone(),
             core,
             core_path,
-            rom: game.path.clone(),
+            content: content.clone(),
+            computer,
             warnings,
         };
         match check {
@@ -483,29 +529,40 @@ impl LibraryUi {
                 self.events
                     .push(LibraryEvent::Launch(request(id, path, warnings)));
             }
-            LaunchCheck::NeedsInstall(core) => self.open_dialog(Dialog::Install {
-                core,
-                game: game.title.clone(),
-                game_id: game.id,
-            }),
+            LaunchCheck::NeedsInstall(core) => match game_id {
+                Some(game_id) => self.open_dialog(Dialog::Install {
+                    core,
+                    game: title.clone(),
+                    game_id,
+                }),
+                // The desktop is not a library game: the core is installed from the cores screen.
+                None => self.open_dialog(Dialog::Message(text::desktop_needs_core(core.as_str()))),
+            },
             LaunchCheck::FirmwareMissing { id, path, missing } => {
-                let missing = firmware_names(&missing);
-                self.open_dialog(Dialog::Firmware {
-                    request: request(id, path, Vec::new()),
-                    missing,
-                });
+                let free = database.and_then(|db| self.cores.bios.for_missing(db, &missing));
+                let request = request(id, path, Vec::new());
+                match free {
+                    Some(bios) => self.open_dialog(Dialog::FreeBios {
+                        request,
+                        bios,
+                        installing: false,
+                    }),
+                    None => self.open_dialog(Dialog::Firmware {
+                        request,
+                        missing: firmware_names(&missing),
+                    }),
+                }
             }
-            LaunchCheck::Failed(emu_assets::cores::CoreError::Tampered { id, .. }) => {
-                self.open_dialog(Dialog::Reinstall {
-                    core: id,
-                    game_id: game.id,
-                });
-            }
+            LaunchCheck::Failed(emu_assets::cores::CoreError::Tampered { id, .. }) => match game_id
+            {
+                Some(game_id) => self.open_dialog(Dialog::Reinstall { core: id, game_id }),
+                None => self.open_dialog(Dialog::Message(text::tampered(id.as_str()))),
+            },
             other => {
                 let msg = other
                     .blocking_message()
                     .unwrap_or_else(|| text::LAUNCH_FAILED_TITLE.to_owned());
-                self.open_dialog(Dialog::Message(text::game_failed(&game.title, &msg)));
+                self.open_dialog(Dialog::Message(text::game_failed(&title, &msg)));
             }
         }
     }
@@ -544,11 +601,17 @@ impl LibraryUi {
         self.awaiting_core = None;
         if !self.capture
             && let Some(db) = &mut self.db
-            && let Err(e) = db.record_played(request.game, now_unix())
+            && let Some(game) = request.game
+            && let Err(e) = db.record_played(game, now_unix())
         {
             tracing::warn!("historique non enregistré : {e}");
         }
         self.cores.set_in_use(Some(request.core.clone()));
+    }
+
+    /// A game restarting keeps its core in use; only the configuration it edited comes back.
+    pub(crate) fn config_from_game(&mut self, config: Config) {
+        self.config = config;
     }
 
     /// Back from a game (or a failed load): core released, config taken back, error shown.
@@ -610,6 +673,7 @@ impl LibraryUi {
             self.cores.poll(&ctx);
         }
         self.relaunch_after_install();
+        self.bios_completed();
         match self.page {
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
@@ -656,7 +720,119 @@ impl LibraryUi {
         }
     }
 
+    /// Free BIOS installs that finished (cores screen or launch dialog): variant remembered, game launched.
+    fn bios_completed(&mut self) {
+        for done in self.cores.bios.take_done() {
+            self.cores.mark_dirty();
+            if done.ok && done.bios == "emutos" && !self.capture {
+                self.config.computer.emutos_variant = Some(done.variant.clone());
+                self.save_config();
+            }
+            if let Some(Dialog::FreeBios {
+                installing: true, ..
+            }) = &self.dialog
+            {
+                let Some(Dialog::FreeBios { request, .. }) = self.dialog.take() else {
+                    continue;
+                };
+                if done.ok {
+                    self.events.push(LibraryEvent::Launch(request));
+                } else {
+                    if let Some(m) = self.cores.manager() {
+                        cores_ui::release(m);
+                    }
+                    let msg = done.error.unwrap_or_default();
+                    self.open_dialog(Dialog::Message(text::game_failed(&request.title, &msg)));
+                }
+            }
+        }
+    }
+
+    fn free_bios_dialog(&mut self, ctx: &egui::Context) {
+        let Some(Dialog::FreeBios {
+            request,
+            bios,
+            installing,
+        }) = &self.dialog
+        else {
+            return;
+        };
+        let (index, installing, title) = (*bios, *installing, request.title.clone());
+        let Some(info) = self.cores.bios.bios(index).cloned() else {
+            return;
+        };
+        let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let progress = self.cores.bios.progress();
+        let (mut install, mut cancel, mut anyway) = (false, escape, false);
+        let bios_ui = &mut self.cores.bios;
+        egui::Modal::new(egui::Id::unique("library-bios-dialog")).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            ui.heading(text::LAUNCH_FIRMWARE_TITLE);
+            ui.label(cores_ui::text::bios_offer(
+                &info.name,
+                &info.license,
+                &title,
+            ));
+            ui.horizontal(|ui| {
+                ui.label(cores_ui::text::BIOS_VARIANT);
+                bios_ui.variant_picker(ui, index, !installing);
+            });
+            ui.add_space(8.0);
+            if installing {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(cores_ui::text::BIOS_INSTALLING);
+                    if let Some(p) = progress {
+                        ui.label(cores_ui::text::progress(p.done, p.total));
+                    }
+                    let c = ui.button(text::LAUNCH_CANCEL);
+                    if focus {
+                        c.request_focus();
+                    }
+                    cancel |= c.clicked();
+                });
+                return;
+            }
+            ui.horizontal(|ui| {
+                install = ui.button(text::BIOS_INSTALL_AND_LAUNCH).clicked();
+                let c = ui.button(text::LAUNCH_CANCEL);
+                if focus {
+                    c.request_focus();
+                }
+                cancel |= c.clicked();
+                anyway = ui.button(text::LAUNCH_ANYWAY).clicked();
+            });
+            ui.label(RichText::new(cores_ui::text::BIOS_NOTE).small().weak());
+        });
+        if install && !self.cores.bios.busy() {
+            self.cores
+                .bios
+                .start_install(index, emu_assets::bios::ReplacePolicy::Refuse, ctx);
+            if let Some(Dialog::FreeBios { installing, .. }) = &mut self.dialog {
+                *installing = true;
+            }
+            self.focus_dialog = true;
+        } else if anyway {
+            if let Some(Dialog::FreeBios { request, .. }) = self.dialog.take() {
+                self.events.push(LibraryEvent::Launch(request));
+            }
+        } else if cancel {
+            if installing {
+                self.cores.bios.cancel();
+            }
+            self.dialog = None;
+            self.focus = Some(Focus::Grid);
+            if let Some(m) = self.cores.manager() {
+                cores_ui::release(m);
+            }
+        }
+    }
+
     fn dialog_ui(&mut self, ctx: &egui::Context) {
+        if matches!(self.dialog, Some(Dialog::FreeBios { .. })) {
+            return self.free_bios_dialog(ctx);
+        }
         let Some(dialog) = &self.dialog else {
             return;
         };
@@ -695,6 +871,7 @@ impl LibraryUi {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
+                Dialog::FreeBios { .. } => (text::LAUNCH_FAILED_TITLE, String::new()),
                 Dialog::OfferDat => (text::DAT_OFFER_TITLE, text::DAT_OFFER.to_owned()),
             };
             ui.heading(title);
@@ -723,7 +900,7 @@ impl LibraryUi {
                         }
                         Some(r)
                     }
-                    Dialog::Firmware { .. } | Dialog::Message(_) => None,
+                    Dialog::Firmware { .. } | Dialog::Message(_) | Dialog::FreeBios { .. } => None,
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
                 let cancel_label = match dialog {

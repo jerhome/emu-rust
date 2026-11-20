@@ -1,0 +1,77 @@
+# Atari ST keyboard for the frontend's virtual keyboard (ADR 0015 §7).
+# `key` = libretro key name (`RetroKey::name`), positional (US place of the key); the machine's TOS language gives
+# the character. `label` = US legend; `fr` / `de` = legends of the French / German ST keyboards when they differ.
+# `width` in key units (default 1); `gap` = empty space before the key; `sticky` = modifier held until the next key.
+# Help / Undo: hatari maps them from Page Up / Page Down (Hatari symbolic keymap) — to confirm on the real core (Q2).
+# The keypad ( and ) keys have no libretro key: left out.
+id = "atari_st"
+name = "Atari ST"
+
+[[row]]
+keys = [
+  { key = "f1", label = "F1", width = 1.5 }, { key = "f2", label = "F2", width = 1.5 },
+  { key = "f3", label = "F3", width = 1.5 }, { key = "f4", label = "F4", width = 1.5 },
+  { key = "f5", label = "F5", width = 1.5 }, { key = "f6", label = "F6", width = 1.5 },
+  { key = "f7", label = "F7", width = 1.5 }, { key = "f8", label = "F8", width = 1.5 },
+  { key = "f9", label = "F9", width = 1.5 }, { key = "f10", label = "F10", width = 1.5 },
+  { key = "pageup", label = "Help", fr = "Help", de = "Help", width = 1.5, gap = 0.5 },
+  { key = "pagedown", label = "Undo", fr = "Undo", de = "Undo", width = 1.5 },
+]
+
+[[row]]
+keys = [
+  { key = "escape", label = "Esc" },
+  { key = "1", label = "1", fr = "&" }, { key = "2", label = "2", fr = "é" }, { key = "3", label = "3", fr = "\"" },
+  { key = "4", label = "4", fr = "'" }, { key = "5", label = "5", fr = "(" }, { key = "6", label = "6", fr = "§" },
+  { key = "7", label = "7", fr = "è" }, { key = "8", label = "8", fr = "!" }, { key = "9", label = "9", fr = "ç" },
+  { key = "0", label = "0", fr = "à" }, { key = "minus", label = "-", fr = ")", de = "ß" },
+  { key = "equals", label = "=", fr = "-", de = "´" }, { key = "backquote", label = "`", fr = "`", de = "#" },
+  { key = "backspace", label = "BkSp", width = 1.5 },
+  { key = "insert", label = "Insert", width = 1.5, gap = 0.5 }, { key = "up", label = "^" },
+  { key = "home", label = "Clr/Home", width = 1.5 },
+  { key = "kp_divide", label = "/", gap = 0.5 }, { key = "kp_multiply", label = "*" },
+  { key = "kp_minus", label = "-" },
+]
+
+[[row]]
+keys = [
+  { key = "tab", label = "Tab", width = 1.5 },
+  { key = "q", label = "Q", fr = "A" }, { key = "w", label = "W", fr = "Z" }, { key = "e", label = "E" },
+  { key = "r", label = "R" }, { key = "t", label = "T" }, { key = "y", label = "Y", de = "Z" },
+  { key = "u", label = "U" }, { key = "i", label = "I" }, { key = "o", label = "O" }, { key = "p", label = "P" },
+  { key = "leftbracket", label = "[", fr = "^", de = "Ü" }, { key = "rightbracket", label = "]", fr = "$", de = "+" },
+  { key = "return", label = "Return", width = 1.5 }, { key = "delete", label = "Delete" },
+  { key = "left", label = "<-", gap = 0.5 }, { key = "down", label = "v" }, { key = "right", label = "->" },
+  { key = "kp7", label = "7", gap = 0.5 }, { key = "kp8", label = "8" }, { key = "kp9", label = "9" },
+  { key = "kp_plus", label = "+" },
+]
+
+[[row]]
+keys = [
+  { key = "lctrl", label = "Control", width = 1.75, sticky = true },
+  { key = "a", label = "A", fr = "Q" }, { key = "s", label = "S" }, { key = "d", label = "D" },
+  { key = "f", label = "F" }, { key = "g", label = "G" }, { key = "h", label = "H" }, { key = "j", label = "J" },
+  { key = "k", label = "K" }, { key = "l", label = "L" }, { key = "semicolon", label = ";", fr = "M", de = "Ö" },
+  { key = "quote", label = "'", fr = "ù", de = "Ä" }, { key = "backslash", label = "\\", fr = "#", de = "~" },
+  { key = "kp4", label = "4", gap = 4.0 }, { key = "kp5", label = "5" }, { key = "kp6", label = "6" },
+]
+
+[[row]]
+keys = [
+  { key = "lshift", label = "Shift", width = 1.25, sticky = true }, { key = "oem_102", label = "<", fr = "<", de = "<" },
+  { key = "z", label = "Z", fr = "W", de = "Y" }, { key = "x", label = "X" }, { key = "c", label = "C" },
+  { key = "v", label = "V" }, { key = "b", label = "B" }, { key = "n", label = "N" },
+  { key = "m", label = "M", fr = "," }, { key = "comma", label = ",", fr = ";" },
+  { key = "period", label = ".", fr = ":" }, { key = "slash", label = "/", fr = "=", de = "-" },
+  { key = "rshift", label = "Shift", width = 1.75, sticky = true },
+  { key = "kp1", label = "1", gap = 3.75 }, { key = "kp2", label = "2" }, { key = "kp3", label = "3" },
+  { key = "kp_enter", label = "Enter" },
+]
+
+[[row]]
+keys = [
+  { key = "lalt", label = "Alternate", width = 1.75, sticky = true, gap = 1.0 },
+  { key = "space", label = "", width = 8.0 },
+  { key = "capslock", label = "Caps Lock", width = 1.75 },
+  { key = "kp0", label = "0", width = 2.0, gap = 4.25 }, { key = "kp_period", label = "." },
+]

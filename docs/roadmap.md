@@ -19,9 +19,9 @@
 | Super Nintendo | snes9x, bsnes, mesen-s | — |
 | Mega Drive / 32X | genesis_plus_gx, picodrive | — (Mega-CD : fourni par l'utilisateur) |
 | Atari ST | hatari | EmuTOS (libre, téléchargé) |
-| Amiga | puae | AROS (libre, téléchargé) ; Kickstart d'origine fourni par l'utilisateur |
+| Amiga | puae | AROS (libre, intégré au core puae) ; Kickstart d'origine fourni par l'utilisateur |
 | PC DOS | dosbox_pure | — |
-| 32 bits (phase 7) | swanstation / beetle-psx, beetle-saturn, opera, mgba | fourni par l'utilisateur |
+| GBA, 32X, Mega CD (6.0) | mgba, picodrive, genesis_plus_gx | GBA : facultatif ; Mega CD : requis, fourni par l'utilisateur (PS1, Saturn, 3DO non prévus) |
 
 ## Versions
 
@@ -31,9 +31,11 @@
 | 0.1.x (stable) | **Clôturée** (2026-11-20) : pas d'essais des versions < 1.0, donc pas de 0.1.x | — |
 | 0.2 … 0.x | **Clôturée** : la 1.0 a été développée directement | — |
 | 1.0 ✅ (1.0.0 stable publiée le 2026-11-20, après essais Windows et macOS) | **Petites consoles** (choix de l'utilisateur, 2026-11-19) : **Game Boy, NES, Game Gear, Master System** (Master System et Game Gear déjà pris en charge par genesis_plus_gx ; cores Game Boy et NES à choisir par l'architecte), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release `v1.0.0-rc.1` → **premiers essais de l'utilisateur** (guide : `docs/guide-essai-1.0.md`) → corrections → 1.0.0 stable |
-| 2.0 (**conception en cours**, 2026-11-20 : ADR 0015, `docs/design/v2.0-atari-st.md`) | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
-| 3.0 | **Amiga** (puae ; AROS + Kickstart fourni par l'utilisateur), réutilise l'infrastructure de la 2.0. **Demande utilisateur (2026-11-20)** : bouton sur l'écran principal (bibliothèque) qui ouvre le dossier des ROMs dans le gestionnaire de fichiers du système (Explorateur, Finder, gestionnaire Linux ; sous Docker : afficher le chemin du volume à la place) | Même cycle |
-| 4.0 | **PC-DOS** (dosbox_pure) | Même cycle |
+| 2.0 (**en développement** sur `wip-2.0`, 2026-11-20 : ADR 0015, `docs/design/v2.0-atari-st.md`) | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
+| 3.0 (**conception prête**, 2026-11-20 : ADR 0017 (proposé), `docs/design/v3.0-amiga.md`, étude `docs/essais-puae.md`) | **Amiga** (puae ; AROS intégré au core + Kickstart fourni par l'utilisateur), réutilise l'infrastructure de la 2.0. **Demande utilisateur (2026-11-20)** : bouton sur l'écran principal (bibliothèque) qui ouvre le dossier des ROMs dans le gestionnaire de fichiers du système (Explorateur, Finder, gestionnaire Linux ; sous Docker : afficher le chemin du volume à la place) ; bouton « Importer un BIOS… » (sélecteur natif, hash vérifié, copie sous le nom attendu par le core) | Même cycle |
+| 4.0 (**conception prête**, 2026-11-20 : ADR 0018 proposé, `docs/design/v4.0-dos.md`, étude `docs/essais-dosbox.md`) | **PC-DOS** (dosbox_pure) | Même cycle |
+| 5.0 (**conception prête**, 2026-11-20 : ADR 0019 (proposé), `docs/design/v5.0-cpc-c64.md`, étude `docs/essais-cpc-c64.md`) | **Amstrad CPC** (cap32) et **Commodore 64** (vice_x64sc recommandé, vice_x64 en alternative) : une seule version (décision du 2026-11-20), une conception commune ; CPC livré en premier en pré-release, puis C64 (repli : C64 en 5.1 s'il bloque). Réutilise l'infrastructure ordinateur 2.0-4.0 (clavier complet, touche hôte, médias multiples, options par jeu, import de BIOS) ; ROMs système intégrées aux cores (licences : ADR 0019 §2 ; ROM C64 soumises à l'accord de l'utilisateur) | Même cycle |
+| 6.0 (**conception prête**, 2026-11-20 : ADR 0020 (proposé), `docs/design/v6.0-gba-32x-megacd.md`, étude `docs/essais-gba-32x-megacd.md`) | **Game Boy Advance** (mgba), **32X** (picodrive) et **Mega CD** (genesis_plus_gx, BIOS fourni par l'utilisateur), rendu logiciel (décision du 2026-11-20 ; issue de la phase 7). PS1, Saturn et 3DO **non prévus** | Même cycle |
 
 Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable sans ROM propriétaire (EmuTOS), il valide l'infrastructure ordinateur avant l'Amiga.
 
@@ -51,5 +53,5 @@ Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable s
 | 4 | Bibliothèque et covers | Scan, identification, SQLite, covers (libretro-thumbnails → ScreenScraper → IGDB). ✅ (1.0.0-rc.1, ADR 0014) |
 | 5 | Ordinateurs | ST, Amiga, DOS : clavier/souris émulés, disquettes multiples, EmuTOS/AROS automatiques. Découpée en versions 2.0 (ST), 3.0 (Amiga), 4.0 (DOS) |
 | 6 | Windows et manette | Manette PS4 (DualShock 4), CI en matrice complète (core factice `.dll`). Le build Windows est avancé dans la release 0.1. **Conception prête** (2026-11-20, version après 1.0, ordre vs 2.0 à décider) : `docs/adr/0016-manette.md` (gilrs, repli SDL3), `docs/design/phase6-manette.md` |
-| 7 | 32 bits | PS1, Saturn, 3DO, GBA, 32X ; rendu matériel GL (puis Vulkan) |
+| 7 | 32 bits | Réduite (2026-11-20) : **GBA, 32X et Mega CD en version 6.0** (**conception prête** : ADR 0020, `docs/design/v6.0-gba-32x-megacd.md`) ; PS1, Saturn, 3DO et rendu matériel GL/Vulkan non prévus |
 | 8 | Sources de ROMs | Téléchargement de ROMs du domaine public / homebrew |

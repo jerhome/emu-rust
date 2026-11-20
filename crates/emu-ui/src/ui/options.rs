@@ -18,6 +18,20 @@ pub(super) fn show(
     screen_window(ctx, text::CORE_OPTIONS, |ui, max_height| {
         locked_banner(ui, data, overlay, actions);
         let w = ui.available_width();
+        let scope = if data.game_scope {
+            text::SCOPE_GAME
+        } else {
+            text::SCOPE_ALL
+        };
+        ui.horizontal(|ui| {
+            ui.label(text::OPTIONS_SCOPE);
+            let resp = ui
+                .add(Button::new(format!("<  {scope}  >")).min_size([w * 0.45, ROW_HEIGHT].into()));
+            nav(&resp, &mut false);
+            if stepper(ui, &resp) != 0 {
+                actions.push(UiAction::SetGameScope(!data.game_scope));
+            }
+        });
         let groups = group_options(data.options, data.categories);
         let mut focused_info: Option<String> = None;
         if groups.is_empty() {
@@ -35,7 +49,12 @@ pub(super) fn show(
                                 ui.label(RichText::new(title).strong().size(16.0));
                                 ui.end_row();
                                 for opt in opts {
-                                    ui.label(text::sanitize_core_text(&opt.label));
+                                    let label = text::sanitize_core_text(&opt.label);
+                                    if data.game_overrides.contains_key(&opt.key) {
+                                        ui.label(format!("{label} {}", text::OPTION_GAME_MARK));
+                                    } else {
+                                        ui.label(label);
+                                    }
                                     let value = text::sanitize_core_text(
                                         opt.values
                                             .iter()
@@ -74,6 +93,13 @@ pub(super) fn show(
             nav(&resp, &mut false);
             if resp.clicked() {
                 actions.push(UiAction::DefaultOptions);
+            }
+        }
+        if data.hosted {
+            let resp = ui.add(Button::new(text::RESTART_GAME).min_size([w, ROW_HEIGHT].into()));
+            nav(&resp, &mut false);
+            if resp.clicked() {
+                actions.push(UiAction::Restart);
             }
         }
         let resp = ui.add(Button::new(text::BACK).min_size([w, ROW_HEIGHT].into()));

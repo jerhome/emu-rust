@@ -150,3 +150,55 @@ pub fn queued_waiting(n: usize) -> String {
 pub fn no_core_for_system() -> &'static str {
     "Aucun core connu pour ce système."
 }
+
+// ---- free BIOS (ADR 0015 §2) -------------------------------------------------------------------------------
+
+pub const BIOS_SECTION: &str = "BIOS libres";
+pub const BIOS_VARIANT: &str = "Variante";
+pub const BIOS_INSTALL: &str = "Installer";
+pub const BIOS_REINSTALL: &str = "Installer cette variante";
+pub const BIOS_REMOVE: &str = "Supprimer";
+pub const BIOS_REPLACE: &str = "Remplacer le fichier existant…";
+pub const BIOS_REPLACE_CONFIRM: &str = "Le fichier actuel n'a pas été installé par emu-rust (TOS d'origine ?). \
+                                        Il sera renommé « .user-<date> », jamais effacé. Confirmer ?";
+pub const BIOS_REPLACE_YES: &str = "Oui, remplacer";
+pub const BIOS_MISSING: &str = "non installé";
+pub const BIOS_MODIFIED: &str = "installé puis modifié hors d'emu-rust";
+pub const BIOS_INSTALLED_OK: &str = "BIOS libre installé.";
+pub const BIOS_REMOVED: &str = "BIOS libre supprimé.";
+pub const BIOS_NOT_REMOVED: &str =
+    "Rien à supprimer : le fichier n'a pas été installé par emu-rust ou a été modifié.";
+pub const BIOS_INSTALLING: &str = "Téléchargement du BIOS libre…";
+pub const BIOS_NOTE: &str = "Téléchargé depuis SourceForge, vérifié par empreinte SHA-256. La langue fixe aussi \
+                             la disposition du clavier de la machine (français = AZERTY).";
+
+pub fn bios_installed(label: &str) -> String {
+    format!("installé : {label}")
+}
+
+pub fn bios_user_file(file: &str) -> String {
+    format!("{file} fourni par vous (conservé)")
+}
+
+pub fn bios_user_copy(label: &str) -> String {
+    format!("{label} (copié hors d'emu-rust, conservé)")
+}
+
+pub fn bios_unreadable(e: &str) -> String {
+    format!("illisible : {e}")
+}
+
+pub fn bios_header(name: &str, version: &str, license: &str, system: &str, file: &str) -> String {
+    format!("{name} {version} ({license}) — {system}, installé sous {file}")
+}
+
+pub fn bios_error(e: &emu_assets::bios::BiosError) -> String {
+    format!("Échec : {e}")
+}
+
+pub fn bios_offer(name: &str, license: &str, game: &str) -> String {
+    format!(
+        "« {game} » a besoin d'un TOS. Installer {name} ({license}, libre, ~2 Mo depuis SourceForge) ? \
+         Sinon, copiez votre propre TOS sous le nom tos.img dans le dossier des BIOS."
+    )
+}

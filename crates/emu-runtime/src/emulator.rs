@@ -5,17 +5,22 @@ use std::time::SystemTime;
 
 use emu_libretro::{
     AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FrontendHandler,
-    InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind, SystemInfo, VideoFrame,
+    GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind, RetroKey,
+    SystemInfo, VideoFrame, mouse_id,
 };
 
 use crate::audio::AudioSink;
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
-use crate::input::{InputBackend, InputFrame};
+use crate::input::{InputBackend, InputFrame, MouseState};
+use crate::media::{
+    ContentSpec, Disks, MediaPolicy, NO_GAME_NAME, PreparedMedia, prepare_media_with,
+};
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, core_id_from_path, decode_state,
-    encode_state, game_name_from_path, read_bounded, read_state_header, write_atomic,
+    encode_state, game_name_from_path, game_name_from_str, read_bounded, read_state_header,
+    write_atomic,
 };
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
@@ -49,21 +54,30 @@ pub struct FrameStatus {
 
 /// Headless emulation session: one core, one game. Same threading rules as `emu_libretro::Core` (!Send).
 pub struct Emulator {
-    core: Core,
+    pub(crate) core: Core,
     /// Cached copy so `av_info()` is infallible; refreshed when the core reports a change.
     av_info: AvInfo,
     frame: FrameRgba,
     input: InputFrame,
     frame_count: u64,
-    core_id: String,
-    game_name: String,
-    save_root: PathBuf,
+    pub(crate) core_id: String,
+    pub(crate) game_name: String,
+    pub(crate) save_root: PathBuf,
     state_root: PathBuf,
     /// SRAM as last restored or written; `flush_sram` writes only when the core's copy differs.
     sram_snapshot: Vec<u8>,
     /// Backs `GameSource::Path` for archives extracted for a `need_fullpath` core. Removed in `Drop` after the
     /// game is unloaded (Windows cannot delete a file the core still holds open).
     content_dir: Option<tempfile::TempDir>,
+    /// `ContentSpec::Media` sessions; holds the private temp directory of a `Direct` set (dropped after the
+    /// game is unloaded, see `Drop`).
+    pub(crate) prepared: Option<PreparedMedia>,
+    /// `None` for `File` / `NoGame`: disks added from the menu then get working copies.
+    pub(crate) media_policy: Option<MediaPolicy>,
+    pub(crate) limits: Limits,
+    /// The core asked for `RETRO_DEVICE_KEYBOARD` / `RETRO_DEVICE_MOUSE` at least once.
+    keyboard_polled: bool,
+    mouse_polled: bool,
 }
 
 /// Copies the `.srm` file into the core's SRAM (right after `retro_load_game`); returns the resulting SRAM,
@@ -106,19 +120,38 @@ fn io_err(path: &Path) -> impl FnOnce(io::Error) -> RuntimeError + '_ {
 
 impl Emulator {
     /// Loads the core then the game (contract below, "Phase 2"). Fails with `AlreadyLoaded` if another
-    /// session is alive in the process.
+    /// session is alive in the process. Same as `load_content(core, ContentSpec::File(rom), options)`.
     pub fn load(core: &Path, rom: &Path, options: EmulatorOptions) -> Result<Self, RuntimeError> {
-        Self::load_with_limits(core, rom, options, Limits::DEFAULT)
+        Self::load_with_limits(
+            core,
+            ContentSpec::File(rom.to_path_buf()),
+            options,
+            Limits::DEFAULT,
+        )
     }
 
-    fn load_with_limits(
+    /// 2.0 entry point (ADR 0015): one file, a disk set (prepared by [`crate::prepare_media`] once the core is
+    /// loaded, with the extensions the binary accepts) or no content at all.
+    pub fn load_content(
+        core: &Path,
+        content: ContentSpec,
+        options: EmulatorOptions,
+    ) -> Result<Self, RuntimeError> {
+        Self::load_with_limits(core, content, options, Limits::DEFAULT)
+    }
+
+    pub(crate) fn load_with_limits(
         core_path: &Path,
-        rom: &Path,
+        spec: ContentSpec,
         options: EmulatorOptions,
         limits: Limits,
     ) -> Result<Self, RuntimeError> {
         let core_id = core_id_from_path(core_path);
-        let game_name = game_name_from_path(rom);
+        let game_name = match &spec {
+            ContentSpec::File(rom) => game_name_from_path(rom),
+            ContentSpec::Media { set, .. } => game_name_from_str(&set.name),
+            ContentSpec::NoGame => NO_GAME_NAME.to_owned(),
+        };
         let core_save_dir = options.save_dir.join(&core_id);
         fs::create_dir_all(&core_save_dir).map_err(io_err(&core_save_dir))?;
         let core_state_dir = options.state_dir.join(&core_id);
@@ -126,26 +159,47 @@ impl Emulator {
 
         let config = CoreConfig {
             system_dir: options.system_dir,
-            save_dir: core_save_dir,
+            save_dir: core_save_dir.clone(),
             assets_dir: options.assets_dir,
             variables: options.core_variables,
         };
         let mut core = Core::load(core_path, config)?;
-        let content = content::prepare(rom, core.system_info(), limits)?;
+        let mut content_dir = None;
+        let mut prepared = None;
+        let mut media_policy = None;
+        let source = match spec {
+            ContentSpec::File(rom) => {
+                let content = content::prepare(&rom, core.system_info(), limits)?;
+                content_dir = content.temp_dir;
+                Some(content.source)
+            }
+            ContentSpec::Media { set, policy } => {
+                let exts = &core.system_info().valid_extensions;
+                let media = prepare_media_with(&set, policy, exts, &core_save_dir, limits)?;
+                let source = GameSource::Path(media.content.clone());
+                prepared = Some(media);
+                media_policy = Some(policy);
+                Some(source)
+            }
+            ContentSpec::NoGame => None,
+        };
         let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
-        let loaded = core
-            .load_game_from(content.source)
-            .map_err(RuntimeError::from)
-            .and_then(|av_info| Ok((av_info, restore_sram(&mut core, &sram_path)?)));
+        let loaded = match source {
+            Some(source) => core.load_game_from(source),
+            None => core.load_no_game(),
+        }
+        .map_err(RuntimeError::from)
+        .and_then(|av_info| Ok((av_info, restore_sram(&mut core, &sram_path)?)));
         let (av_info, sram_snapshot) = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {
                 // Unload the core before the temporary content goes away. No `Emulator` exists yet, so no
                 // SRAM flush can overwrite a save file that failed to load.
                 drop(core);
-                if let Some(dir) = content.temp_dir {
+                if let Some(dir) = content_dir {
                     content::remove_temp_dir(dir);
                 }
+                drop(prepared);
                 return Err(e);
             }
         };
@@ -172,8 +226,34 @@ impl Emulator {
             save_root: options.save_dir,
             state_root: options.state_dir,
             sram_snapshot,
-            content_dir: content.temp_dir,
+            content_dir,
+            prepared,
+            media_policy,
+            limits,
+            keyboard_polled: false,
+            mouse_polled: false,
         })
+    }
+
+    /// `None` when the core registered no disk control interface.
+    pub fn disks(&mut self) -> Option<Disks<'_>> {
+        self.core.disk_control()?;
+        Some(Disks { emulator: self })
+    }
+
+    /// Images prepared at load time (`ContentSpec::Media`), for the disk menu and « réinitialiser ».
+    pub fn prepared_media(&self) -> Option<&PreparedMedia> {
+        self.prepared.as_ref()
+    }
+
+    /// The core registered a keyboard callback or polled `RETRO_DEVICE_KEYBOARD` at least once.
+    pub fn uses_keyboard(&self) -> bool {
+        self.keyboard_polled || self.core.has_keyboard_callback()
+    }
+
+    /// The core polled `RETRO_DEVICE_MOUSE` at least once (drives mouse capture in the UI).
+    pub fn uses_mouse(&self) -> bool {
+        self.mouse_polled
     }
 
     pub fn system_info(&self) -> &SystemInfo {
@@ -192,18 +272,33 @@ impl Emulator {
         audio: &mut dyn AudioSink,
     ) -> Result<FrameStatus, RuntimeError> {
         // Polled once before `retro_run` rather than in `input_poll`: deterministic even for cores that read
-        // input without polling, and the backend sees exactly one call per frame.
-        self.input = InputFrame::default();
+        // input without polling, and the backend sees exactly one call per frame. `clear` keeps the event
+        // buffer's capacity (no allocation per frame).
+        self.input.clear();
         input.poll(self.frame_count, &mut self.input);
+        // The keyboard callback must not run inside `retro_run` (ADR 0015 §3): delivered first, in order.
+        for event in &self.input.key_events {
+            self.core.send_key_event(*event);
+        }
 
         let mut bridge = Bridge {
             input: &self.input,
             audio,
             frame: &mut self.frame,
             video_updated: false,
+            polled: Polled::default(),
         };
-        let events = self.core.run(&mut bridge)?;
+        let result = self.core.run(&mut bridge);
         let video_updated = bridge.video_updated;
+        let polled = bridge.polled;
+        self.keyboard_polled |= polled.keyboard;
+        self.mouse_polled |= polled.mouse;
+        // Relative motion belongs to this frame only (constant during it, gone afterwards).
+        self.input.mouse = MouseState {
+            buttons: self.input.mouse.buttons,
+            ..MouseState::default()
+        };
+        let events = result?;
         self.frame_count += 1;
 
         if events.av_info_changed
@@ -399,8 +494,10 @@ impl Drop for Emulator {
         if let Err(e) = self.flush_sram() {
             tracing::error!("SRAM not saved: {e}");
         }
+        // Before any temporary content (`content_dir`, `prepared`) goes away: Windows cannot delete a file the
+        // core still holds open.
+        self.core.unload_game();
         if let Some(dir) = self.content_dir.take() {
-            self.core.unload_game();
             content::remove_temp_dir(dir);
         }
     }
@@ -412,6 +509,14 @@ struct Bridge<'a> {
     audio: &'a mut dyn AudioSink,
     frame: &'a mut FrameRgba,
     video_updated: bool,
+    polled: Polled,
+}
+
+/// Device classes the core asked about during one `retro_run`.
+#[derive(Debug, Clone, Copy, Default)]
+struct Polled {
+    keyboard: bool,
+    mouse: bool,
 }
 
 impl FrontendHandler for Bridge<'_> {
@@ -429,14 +534,50 @@ impl FrontendHandler for Bridge<'_> {
     fn input_poll(&mut self) {}
 
     fn input_state(&mut self, query: InputQuery) -> i16 {
+        match query.device {
+            InputDevice::Keyboard => self.polled.keyboard = true,
+            InputDevice::Mouse => self.polled.mouse = true,
+            _ => {}
+        }
         input_state(self.input, query)
     }
 }
 
 fn input_state(input: &InputFrame, query: InputQuery) -> i16 {
-    if query.device != InputDevice::Joypad {
-        return 0;
+    match query.device {
+        InputDevice::Joypad => joypad_state(input, query),
+        // One keyboard, whatever the port.
+        InputDevice::Keyboard => u16::try_from(query.id)
+            .ok()
+            .and_then(RetroKey::new)
+            .map_or(0, |key| i16::from(input.keyboard.is_pressed(key))),
+        // Computers have a single mouse, on port 0.
+        InputDevice::Mouse if query.port == 0 => mouse_state(&input.mouse, query.id),
+        _ => 0,
     }
+}
+
+fn mouse_state(mouse: &MouseState, id: u32) -> i16 {
+    use crate::input::MouseButton;
+    let axis = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let button = |b: MouseButton| i16::from(mouse.is_pressed(b));
+    match id {
+        mouse_id::X => axis(mouse.dx),
+        mouse_id::Y => axis(mouse.dy),
+        mouse_id::LEFT => button(MouseButton::Left),
+        mouse_id::RIGHT => button(MouseButton::Right),
+        mouse_id::MIDDLE => button(MouseButton::Middle),
+        mouse_id::BUTTON_4 => button(MouseButton::Button4),
+        mouse_id::BUTTON_5 => button(MouseButton::Button5),
+        mouse_id::WHEEL_UP => i16::from(mouse.wheel > 0),
+        mouse_id::WHEEL_DOWN => i16::from(mouse.wheel < 0),
+        mouse_id::HORIZ_WHEEL_UP => i16::from(mouse.hwheel > 0),
+        mouse_id::HORIZ_WHEEL_DOWN => i16::from(mouse.hwheel < 0),
+        _ => 0,
+    }
+}
+
+fn joypad_state(input: &InputFrame, query: InputQuery) -> i16 {
     let Some(pad) = usize::try_from(query.port)
         .ok()
         .and_then(|port| input.pads.get(port))
@@ -496,6 +637,55 @@ mod tests {
     }
 
     #[test]
+    fn input_state_keyboard_and_mouse() {
+        use crate::input::MouseButton;
+        let a = RetroKey::new(97).unwrap();
+        let mut input = InputFrame::default();
+        ScriptedInput::new()
+            .key(a, 0..1)
+            .mouse(-40_000, 7, MouseButton::Right.bit(), 0..1)
+            .poll(0, &mut input);
+        input.mouse.wheel = -1;
+        input.mouse.hwheel = 2;
+        let kb = |port, id| input_state(&input, query(port, InputDevice::Keyboard, id));
+        assert_eq!(kb(0, 97), 1);
+        assert_eq!(kb(1, 97), 1, "single keyboard whatever the port");
+        assert_eq!(kb(0, 98), 0);
+        assert_eq!(kb(0, u32::from(RetroKey::LAST)), 0);
+        assert_eq!(kb(0, u32::MAX), 0);
+        let mouse = |port, id| input_state(&input, query(port, InputDevice::Mouse, id));
+        assert_eq!(mouse(0, mouse_id::X), i16::MIN, "clamped");
+        assert_eq!(mouse(0, mouse_id::Y), 7);
+        assert_eq!(mouse(0, mouse_id::RIGHT), 1);
+        assert_eq!(mouse(0, mouse_id::LEFT), 0);
+        assert_eq!(mouse(0, mouse_id::WHEEL_DOWN), 1);
+        assert_eq!(mouse(0, mouse_id::WHEEL_UP), 0);
+        assert_eq!(mouse(0, mouse_id::HORIZ_WHEEL_UP), 1);
+        assert_eq!(mouse(0, 99), 0);
+        assert_eq!(mouse(1, mouse_id::Y), 0, "one mouse, port 0");
+    }
+
+    #[test]
+    fn bridge_records_polled_devices() {
+        let input = InputFrame::default();
+        let mut audio = CollectSink::default();
+        let mut frame = FrameRgba::default();
+        let mut bridge = Bridge {
+            input: &input,
+            audio: &mut audio,
+            frame: &mut frame,
+            video_updated: false,
+            polled: Polled::default(),
+        };
+        bridge.input_state(query(0, InputDevice::Joypad, 0));
+        assert!(!bridge.polled.keyboard && !bridge.polled.mouse);
+        bridge.input_state(query(0, InputDevice::Mouse, mouse_id::X));
+        assert!(bridge.polled.mouse && !bridge.polled.keyboard);
+        bridge.input_state(query(0, InputDevice::Keyboard, 13));
+        assert!(bridge.polled.keyboard);
+    }
+
+    #[test]
     fn bridge_converts_video_and_forwards_audio() {
         let input = InputFrame::default();
         let mut audio = CollectSink::default();
@@ -505,6 +695,7 @@ mod tests {
             audio: &mut audio,
             frame: &mut frame,
             video_updated: false,
+            polled: Polled::default(),
         };
         bridge.video_refresh(None);
         assert!(!bridge.video_updated);

@@ -1,6 +1,4 @@
 //! `[computer]` section of `config.toml` (ADR 0015, design §5). Unknown keys are written back unchanged.
-//! Not wired yet: `app.rs` uses it in task U2 (remove this allow then).
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +22,9 @@ pub struct ComputerConfig {
     pub auto_capture: bool,
     /// Mode of games launched from the library; the desktop (no game) is always `Keyboard`.
     pub default_keyboard_mode: KeyboardModeChoice,
+    /// `false`: never grab the pointer, always the uncaptured fallback (noVNC, WSLg setups where the grab
+    /// misbehaves).
+    pub grab_pointer: bool,
     /// EmuTOS variant id (`"192fr"`); absent: derived from the system language, else the catalogue default.
     pub emutos_variant: Option<String>,
     #[serde(flatten)]
@@ -36,6 +37,7 @@ impl Default for ComputerConfig {
             mouse_sensitivity: 1.0,
             auto_capture: true,
             default_keyboard_mode: KeyboardModeChoice::default(),
+            grab_pointer: true,
             emutos_variant: None,
             extra: toml::Table::new(),
         }
@@ -43,6 +45,10 @@ impl Default for ComputerConfig {
 }
 
 impl ComputerConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// Variant to install: the configured one, else the system language's, else `None` (catalogue default).
     pub fn emutos_variant_or_system(&self) -> Option<String> {
         self.emutos_variant

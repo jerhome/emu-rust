@@ -3,6 +3,7 @@
 //! thread except `installed()`, `verified_path()` and `firmware_status()` (a few files, snapshot refreshed only
 //! after an action). BIOS files are only checked, never downloaded.
 
+mod bios;
 mod capture;
 mod launch;
 mod rows;
@@ -20,6 +21,8 @@ use emu_assets::cores::{
 use emu_assets::http::{HttpClient, HttpConfig, Progress};
 use emu_assets::jobs::{Job, JobEvent, Notify};
 
+pub(crate) use self::bios::BiosUi;
+pub use self::bios::open_free_bios_manager;
 pub(crate) use self::capture::run_capture;
 #[cfg(test)]
 use self::launch::prepare_launch;
@@ -146,6 +149,8 @@ pub(crate) struct CoresUi {
     in_use: Option<CoreId>,
     focus_first: bool,
     focus_confirm: bool,
+    /// Free BIOS section (EmuTOS).
+    pub(crate) bios: BiosUi,
 }
 
 impl CoresUi {
@@ -154,12 +159,17 @@ impl CoresUi {
             Ok(m) => (Some(m), None),
             Err(e) => (None, Some(e)),
         };
-        Self::new(
+        let mut ui = Self::new(
             manager,
             init_error,
             dirs.system.clone(),
             preferences(&config.cores),
-        )
+        );
+        let bios = open_free_bios_manager(dirs)
+            .inspect_err(|e| tracing::warn!("{e}"))
+            .ok();
+        ui.bios = BiosUi::new(bios, config.computer.emutos_variant.as_deref());
+        ui
     }
 
     pub(crate) fn new(
@@ -192,6 +202,7 @@ impl CoresUi {
             in_use: None,
             focus_first: true,
             focus_confirm: false,
+            bios: BiosUi::new(None, None),
         }
     }
 
@@ -208,6 +219,12 @@ impl CoresUi {
     #[cfg(test)]
     pub(crate) fn push_completed(&mut self, id: CoreId, ok: bool) {
         self.completed.push((id, ok));
+    }
+
+    /// Firmware states changed (free BIOS installed or removed).
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.bios.mark_dirty();
     }
 
     pub(crate) fn manager(&self) -> Option<&Arc<CoreManager>> {
@@ -299,6 +316,7 @@ impl CoresUi {
     /// Drains job events of the refresh, installs and manager operations (also called while another page is
     /// shown, so that an install started from the library finishes and is reported).
     pub(crate) fn poll(&mut self, ctx: &egui::Context) {
+        self.bios.poll();
         let mut refreshed = None;
         if let Some(job) = &mut self.refresh {
             for ev in job.poll() {
@@ -492,6 +510,8 @@ impl CoresUi {
             } else if escape {
                 event = Some(CoresEvent::Back);
             }
+            self.bios.show(ui, &ctx);
+            ui.separator();
             self.filter_bar(ui);
             ui.separator();
             let actions = self.list(ui);

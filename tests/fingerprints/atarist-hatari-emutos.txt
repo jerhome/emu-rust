@@ -1,0 +1,4 @@
+# hatari + EmuTOS 1.4 (tos.img = etos192us), generated floppy with AUTO\EXIT.PRG, no input; core sha256 8274196693e38051a8796c733c6e6839507771e5c8da9041f0f0d0430abbd124
+frame=300 fingerprint=57dab5bd70f653aa
+frame=450 fingerprint=c466873a6355e9ca
+frame=600 fingerprint=56000fdffe723e32

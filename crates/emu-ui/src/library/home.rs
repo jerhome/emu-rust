@@ -97,6 +97,9 @@ impl LibraryUi {
                         self.start_scan(ui.ctx());
                     }
                 }
+                if ui.button(text::DESKTOP_BUTTON).clicked() {
+                    self.launch_desktop("atarist");
+                }
                 if ui.button(text::CORES).clicked() {
                     self.set_page(Page::Cores);
                 }

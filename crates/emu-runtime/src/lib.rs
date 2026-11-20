@@ -41,8 +41,8 @@ pub use crate::input::{
     PadState, ScriptedInput,
 };
 pub use crate::media::{
-    ContentSpec, DiskSlot, Disks, MAX_MEDIA_IMAGES, MediaPolicy, MediaSet, PreparedMedia,
-    prepare_media, reset_working_copies,
+    ContentSpec, DiskSlot, Disks, MAX_MEDIA_IMAGES, MediaPolicy, MediaSet, NO_GAME_NAME,
+    PreparedMedia, prepare_media, reset_working_copies,
 };
 pub use crate::pacing::{
     AudioLevel, DEFAULT_FAST_FORWARD_RATIO, MAX_BURST, PaceDecision, Pacer, Speed, SyncMode,

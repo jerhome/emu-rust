@@ -5,20 +5,25 @@
 //! The drawing code only reads `UiData` and returns `UiAction`s; the app applies them (no emulator access
 //! from inside an egui pass).
 
+mod computer;
+mod disks;
 mod keys;
 mod menu;
 mod options;
 mod osd;
 pub(crate) mod text;
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use egui::{Align2, Color32, Context, EventFilter, Id, Key, LayerId, Order, Response, Ui};
-use emu_runtime::{AudioStatus, CoreOption, CoreOptionCategory, JoypadButton};
+use emu_runtime::{AudioStatus, CoreOption, CoreOptionCategory, DiskSlot, JoypadButton};
 use winit::keyboard::KeyCode;
 
 pub use self::osd::{Osd, OsdLevel};
 use crate::Screen;
+use crate::computer::input::KeyboardMode;
 use crate::config::{Config, DEFAULT_PROFILE, Hotkeys};
 use crate::hotkeys::HotkeyAction;
 use crate::keyboard::{KeyMap, PadStyle, is_modifier_key};
@@ -168,6 +173,39 @@ pub enum UiAction {
     RestoreKeys(Profile),
     /// Overwrite an invalid `config.toml` with the current settings (after confirmation).
     UnlockConfig,
+    InsertDisk(u32),
+    EjectDisk,
+    AddDisk(PathBuf),
+    /// Delete the working copies and restart the game (after confirmation).
+    ResetDisks,
+    /// Restart the game (hosted: options that need it).
+    Restart,
+    ToggleVirtualKeyboard,
+    ToggleKeyboardMode,
+    SetAutoCapture(bool),
+    StepSensitivity(i32),
+    /// `true`: core option changes go to this game's options file.
+    SetGameScope(bool),
+}
+
+/// Computer settings shown by the menus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerView {
+    pub mode: KeyboardMode,
+    pub auto_capture: bool,
+    pub sensitivity: f32,
+    pub host_key: KeyCode,
+}
+
+/// Disk menu content (read once when the screen opens or after a change).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisksView {
+    pub slots: Vec<DiskSlot>,
+    pub current: Option<u32>,
+    /// Images of the game's folder not in the list yet.
+    pub addable: Vec<PathBuf>,
+    /// Working copies exist and the game can be restarted (library).
+    pub can_reset: bool,
 }
 
 /// F3 overlay figures.
@@ -199,6 +237,14 @@ pub struct UiData<'a> {
     pub hosted: bool,
     pub stats: Option<StatsView>,
     pub now: Instant,
+    /// Computer system: host key, keyboard mode, mouse.
+    pub computer: Option<&'a ComputerView>,
+    /// `None`: the core has no disk control interface.
+    pub disks: Option<&'a DisksView>,
+    /// Core option changes apply to this game only.
+    pub game_scope: bool,
+    /// This game's core option overrides.
+    pub game_overrides: &'a BTreeMap<String, String>,
 }
 
 /// Overlay state that lives across frames.
@@ -211,6 +257,7 @@ pub struct Overlay {
     capture: Option<JoypadButton>,
     notice: Option<String>,
     confirm_unlock: bool,
+    confirm_reset: bool,
     pub osd: Osd,
     pub show_stats: bool,
 }
@@ -225,6 +272,7 @@ impl Default for Overlay {
             capture: None,
             notice: None,
             confirm_unlock: false,
+            confirm_reset: false,
             osd: Osd::default(),
             show_stats: false,
         }
@@ -246,6 +294,7 @@ impl Overlay {
         self.capture = None;
         self.notice = None;
         self.confirm_unlock = false;
+        self.confirm_reset = false;
     }
 
     pub fn close(&mut self) {
@@ -260,8 +309,11 @@ impl Overlay {
             return;
         }
         match self.screen {
-            Some(Screen::Keys | Screen::CoreOptions) => self.open(Screen::Menu),
-            Some(Screen::Menu) | None => self.close(),
+            Some(Screen::Disks) if self.confirm_reset => self.confirm_reset = false,
+            Some(Screen::Keys | Screen::CoreOptions | Screen::Disks | Screen::Computer) => {
+                self.open(Screen::Menu);
+            }
+            Some(Screen::Menu | Screen::VirtualKeyboard) | None => self.close(),
         }
     }
 
@@ -309,6 +361,9 @@ pub fn show(ctx: &Context, overlay: &mut Overlay, data: &UiData<'_>) -> Vec<UiAc
             Screen::Menu => menu::show(ctx, overlay, data, &mut actions),
             Screen::Keys => keys::show(ctx, overlay, data, &mut actions),
             Screen::CoreOptions => options::show(ctx, overlay, data, &mut actions),
+            Screen::Disks => disks::show(ctx, overlay, data, &mut actions),
+            Screen::Computer => computer::show(ctx, overlay, data, &mut actions),
+            Screen::VirtualKeyboard => {}
         }
     }
     osd::show(ctx, &overlay.osd, data.now);
@@ -347,7 +402,7 @@ fn nav(resp: &Response, focus_first: &mut bool) {
 }
 
 /// A value row driven by Left / Right while focused (Enter or a click steps forward). Returns the step.
-fn stepper(ui: &mut Ui, resp: &Response) -> i32 {
+pub(crate) fn stepper(ui: &mut Ui, resp: &Response) -> i32 {
     let mut delta = 0;
     if resp.has_focus() {
         ui.memory_mut(|m| {

@@ -151,6 +151,7 @@ impl PadStyle {
             Self::MasterSystem | Self::GameGear => {
                 &[B::Up, B::Down, B::Left, B::Right, B::Start, B::B, B::A]
             }
+
             Self::GameBoy | Self::Nes => &[
                 B::Up,
                 B::Down,
@@ -241,6 +242,12 @@ fn zip_entry_names(path: &Path) -> Vec<String> {
         Some(names)
     }
     read(path).unwrap_or_default()
+}
+
+/// Profiles of computer cores (Atari ST, Amiga): the keyboard belongs to the emulated machine, so their joystick
+/// layout is small and the shared `"default"` profile never applies.
+pub fn is_computer_profile(profile: &str) -> bool {
+    matches!(profile, "hatari" | "hatarib" | "hatari2014" | "puae")
 }
 
 /// Physical key → (port, libretro button). Serialized by key/button names (see `config.rs`).
@@ -364,6 +371,35 @@ impl KeyMap {
         )
     }
 
+    /// Built-in layout of a keyboard profile: computer cores (joystick mode) get [`KeyMap::computer_default`],
+    /// the others the layout of their pad style.
+    pub fn builtin_for(profile: &str, style: PadStyle) -> Self {
+        if is_computer_profile(profile) {
+            Self::computer_default()
+        } else {
+            Self::default_for(style)
+        }
+    }
+
+    /// Port 0, joystick of a computer in « joystick » mode: as few keys as possible are taken from the emulated
+    /// keyboard. WASD (Z/Q/S/D on AZERTY) and the arrows move, J fires, K = second button.
+    pub fn computer_default() -> Self {
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::new(vec![
+            (K::KeyW, 0, B::Up),
+            (K::KeyS, 0, B::Down),
+            (K::KeyA, 0, B::Left),
+            (K::KeyD, 0, B::Right),
+            (K::ArrowUp, 0, B::Up),
+            (K::ArrowDown, 0, B::Down),
+            (K::ArrowLeft, 0, B::Left),
+            (K::ArrowRight, 0, B::Right),
+            (K::KeyJ, 0, B::B),
+            (K::KeyK, 0, B::A),
+        ])
+    }
+
     /// Port 0, plain RetroPad for unknown cores: the SNES layout plus E/R = L2/R2 and
     /// F/G = L3/R3 for PlayStation-like cores.
     pub fn generic_default() -> Self {
@@ -423,6 +459,11 @@ impl KeyboardInput {
             map,
             held: HashSet::new(),
         }
+    }
+
+    /// The key drives a pad button (joystick mode of computers routes on this).
+    pub fn binds(&self, key: KeyCode) -> bool {
+        self.map.bindings.iter().any(|(k, _, _)| *k == key)
     }
 
     /// Records a key transition; returns `true` if the key is bound (event consumed).

@@ -3,6 +3,11 @@ use std::time::{Duration, Instant};
 use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use emu_runtime::{CoreOptionValue, JoypadButton};
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use emu_runtime::DiskSlot;
+
 use super::*;
 
 fn opt(
@@ -154,6 +159,9 @@ struct Fixture {
     slots: Vec<Option<u64>>,
     options: Vec<CoreOption>,
     categories: Vec<CoreOptionCategory>,
+    computer: Option<ComputerView>,
+    disks: Option<DisksView>,
+    overrides: BTreeMap<String, String>,
 }
 
 impl Fixture {
@@ -176,6 +184,9 @@ impl Fixture {
                 true,
             )],
             categories: vec![cat("video")],
+            computer: None,
+            disks: None,
+            overrides: BTreeMap::new(),
         }
     }
 
@@ -209,6 +220,10 @@ impl Fixture {
             hosted: false,
             stats: None,
             now: Instant::now(),
+            computer: self.computer.as_ref(),
+            disks: self.disks.as_ref(),
+            game_scope: false,
+            game_overrides: &self.overrides,
         };
         let mut actions = Vec::new();
         self.ctx
@@ -316,8 +331,8 @@ fn locked_config_needs_confirmation_to_unlock() {
     std::fs::write(&path, "video = [[[").unwrap();
     f.config = Config::load_or_default(&path);
     let mut o = opened(Screen::CoreOptions, &f);
-    // Focus starts on the option row; the unlock button is above it.
-    let actions = f.keys(&mut o, 0, &[Key::ArrowUp, Key::Enter]);
+    // Focus starts on the option row; the scope row then the unlock button are above it.
+    let actions = f.keys(&mut o, 0, &[Key::ArrowUp, Key::ArrowUp, Key::Enter]);
     assert!(actions.is_empty());
     assert!(o.confirm_unlock);
     let actions = f.keys(&mut o, 0, &[Key::Tab, Key::Enter]);
@@ -344,4 +359,133 @@ fn capture_refuses_modifiers() {
     assert!(!map.binds_modifier());
     map.bind(KeyCode::AltLeft, 0, JoypadButton::A);
     assert!(map.binds_modifier());
+}
+
+fn computer_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    f.computer = Some(ComputerView {
+        mode: KeyboardMode::Keyboard,
+        auto_capture: true,
+        sensitivity: 1.0,
+        host_key: KeyCode::ControlRight,
+    });
+    f.disks = Some(DisksView {
+        slots: vec![
+            DiskSlot {
+                index: 0,
+                label: "Disque A".into(),
+                path: None,
+            },
+            DiskSlot {
+                index: 1,
+                label: "Disque B".into(),
+                path: None,
+            },
+        ],
+        current: Some(0),
+        addable: vec![PathBuf::from("/jeux/extra.st")],
+        can_reset: true,
+    });
+    f
+}
+
+#[test]
+fn computer_menu_lists_disks_and_virtual_keyboard() {
+    let f = computer_fixture();
+    let mut o = opened(Screen::Menu, &f);
+    // Resume, reset, slot, save, load (disabled), then Disquettes.
+    let actions = f.keys(
+        &mut o,
+        0,
+        &[Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Enter],
+    );
+    assert_eq!(actions, vec![UiAction::Open(Screen::Disks)]);
+    let actions = f.keys(&mut o, 0, &[Key::Tab, Key::Enter]);
+    assert_eq!(actions, vec![UiAction::ToggleVirtualKeyboard]);
+    // Consoles: no such entries.
+    let plain = Fixture::new();
+    let mut o = opened(Screen::Menu, &plain);
+    let actions = plain.keys(
+        &mut o,
+        0,
+        &[Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Enter],
+    );
+    assert_eq!(actions, vec![UiAction::Open(Screen::Keys)]);
+}
+
+#[test]
+fn disks_screen_inserts_adds_and_confirms_reset() {
+    let f = computer_fixture();
+    let mut o = opened(Screen::Disks, &f);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Enter]),
+        vec![UiAction::InsertDisk(0)]
+    );
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::InsertDisk(1)]
+    );
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::AddDisk(PathBuf::from("/jeux/extra.st"))]
+    );
+    // Eject, then « Réinitialiser » asks first; the safe answer has the focus.
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::EjectDisk]
+    );
+    assert!(f.keys(&mut o, 0, &[Key::Tab, Key::Enter]).is_empty());
+    assert!(o.confirm_reset);
+    f.pass(&mut o, 0, &[]);
+    assert!(f.keys(&mut o, 0, &[Key::Enter]).is_empty());
+    assert!(!o.confirm_reset);
+    o.confirm_reset = true;
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::ResetDisks]
+    );
+}
+
+#[test]
+fn back_from_computer_screens_goes_to_menu() {
+    let mut o = Overlay::default();
+    for screen in [Screen::Disks, Screen::Computer] {
+        o.open(screen);
+        o.back();
+        assert_eq!(o.screen(), Some(Screen::Menu));
+    }
+    o.open(Screen::Disks);
+    o.confirm_reset = true;
+    o.back();
+    assert_eq!(o.screen(), Some(Screen::Disks));
+    assert!(!o.confirm_reset);
+}
+
+#[test]
+fn computer_screen_steps_values() {
+    let f = computer_fixture();
+    let mut o = opened(Screen::Computer, &f);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::ArrowRight]),
+        vec![UiAction::ToggleKeyboardMode]
+    );
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::ArrowRight]),
+        vec![UiAction::SetAutoCapture(false)]
+    );
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::ArrowLeft]),
+        vec![UiAction::StepSensitivity(-1)]
+    );
+}
+
+#[test]
+fn options_scope_row_switches_to_this_game() {
+    let f = Fixture::new();
+    let mut o = opened(Screen::CoreOptions, &f);
+    let actions = f.keys(&mut o, 0, &[Key::ArrowUp, Key::ArrowRight]);
+    assert_eq!(actions, vec![UiAction::SetGameScope(true)]);
 }

@@ -4,51 +4,31 @@ Décisions : `docs/adr/0016-manette.md` (statut « proposé » jusqu'aux répons
 Livrable : version après 1.0 (ordre par rapport à la 2.0 Atari ST à décider ; les deux sont indépendantes, seul
 `docs/roadmap.md` et `config.rs` sont des points de contact éventuels).
 
-## 1. Interfaces publiques (à poser par l'architecte au lancement de la phase)
+## 1. Interfaces publiques (posées par T0, corps `todo!("T1"/"T2")`)
 
-Dans `crates/emu-ui/src/gamepad/` (fichiers `mod.rs`, `source.rs`, `mapping.rs`, `input.rs`, `ports.rs`,
-`hotkeys.rs`, `gilrs_source.rs` sous `#[cfg(feature = "gamepad")]`). Signatures cibles (corps `todo!()` avant remplissage) :
+Fichiers (`crates/emu-ui/src/`) : `gamepad/mod.rs`, `gamepad/source.rs` (`PadId`, `PadAxis`, `PadEventKind`, `PadEvent`,
+`GamepadError`, trait `GamepadSource`, `ScriptedPadSource::{new, push_batch}`), `gamepad/mapping.rs` (`PadButton`,
+`PadMap`), `gamepad/input.rs` (`GamepadSettings`, `GamepadNotice`, `GamepadInput<S>`, ports + hotkeys inclus),
+`gamepad/gilrs_source.rs` (`GilrsSource`, `#[cfg(feature = "gamepad")]`), `config_gamepad.rs` (`GamepadConfig`,
+`GamepadDeviceConfig`, `HotkeyButton`, serde, `extra` flatten). `mod.rs` porte `#![allow(dead_code, unused_imports)]`
+jusqu'au branchement (T3, qui le retire). Ajustements par rapport au projet initial : `HotkeyButton` vit dans
+`config_gamepad.rs` ; `GamepadNotice` est une enum à champs nommés ; `GamepadInput` gagne `set_map`,
+`fast_forward_held()` (l'avance rapide est une action **maintenue** : PS + R2, hors de `take_hotkeys`) et `attached()` ;
+`GamepadSettings::from_config`. `GamepadConfig` n'est PAS encore champ de `InputConfig` (T3, `config.rs` réservé à U2).
 
-```rust
-/// Stable-for-the-session identity of a connected pad.
-pub struct PadId(pub u32);
+Contrat des sources : une manette sans mapping de boutons (`MappingSource::None`) n'émet aucun événement ; les manettes
+déjà branchées sont annoncées `Connected` au premier `poll_events`.
 
-/// Physical buttons by position (South = Cross on a DS4).
-pub enum PadButton { South, East, West, North, L1, R1, L2, R2, Select, Start, Mode, L3, R3,
-                     DPadUp, DPadDown, DPadLeft, DPadRight }
-pub enum PadAxis { LeftX, LeftY, RightX, RightY, L2, R2 }   // [-1,1] ; L2/R2 in [0,1]
+Compatibilité 2.0 (vérifiée sur U1) : `ComputerKeyboard`/`ComputerMouse`/`KeyboardInput` implémentent `InputBackend`
+(OU dans `InputFrame`) ; `GamepadInput` s'ajoute comme backend supplémentaire, sans changement d'`emu-runtime`. Les
+raccourcis manette produisent des `HotkeyAction` ; en mode ordinateur `app.rs` les enveloppe dans
+`HostAction::Hotkey(..)` (`ToggleVirtualKeyboard`/`NextDisk`... restent clavier). En mode ordinateur la manette sert de
+joystick (port 0/1, boutons RetroPad) comme `ComputerKeyboard` en mode Joystick ; aucun conflit de port à gérer
+au-delà du OU.
 
-pub enum PadEventKind { Connected { name: String, guid: String }, Disconnected,
-                        Button { button: PadButton, pressed: bool }, Axis { axis: PadAxis, value: f32 } }
-pub struct PadEvent { pub id: PadId, pub kind: PadEventKind }
-
-/// Injectable source of normalised events (real = gilrs, tests = scripted).
-pub trait GamepadSource {
-    fn poll_events(&mut self, out: &mut Vec<PadEvent>);
-}
-pub struct ScriptedPadSource;              // events per call, for tests
-#[cfg(feature = "gamepad")] pub struct GilrsSource;
-#[cfg(feature = "gamepad")] impl GilrsSource { pub fn new() -> Result<Self, GamepadError>; }
-
-pub struct GamepadSettings { pub enabled: bool, pub deadzone: f32, pub trigger_threshold: f32,
-                             pub hotkey_button: HotkeyButton, pub pause_on_disconnect: bool }
-pub struct PadMap;                          // PadButton -> JoypadButton for one profile
-impl PadMap { pub fn default_for(style: PadStyle) -> Self; }
-
-pub struct GamepadInput<S: GamepadSource> { /* ports, states, map, settings */ }
-impl<S: GamepadSource> GamepadInput<S> {
-    pub fn new(source: S, map: PadMap, settings: GamepadSettings) -> Self;
-    pub fn take_hotkeys(&mut self) -> Vec<HotkeyAction>;     // PS + button actions since last call
-    pub fn take_notices(&mut self) -> Vec<GamepadNotice>;    // Connected(name, port) / Disconnected(port)
-}
-impl<S: GamepadSource> emu_runtime::InputBackend for GamepadInput<S> { /* poll drains the source */ }
-```
-
-`HotkeyAction` (existant) est réutilisé tel quel. `emu-ui/src/config.rs` : `InputConfig` gagne
-`gamepad: GamepadConfig` (serde, `#[serde(default)]`, `extra` flatten) selon le TOML de l'ADR 0016.
-
-`emu-runtime` : **aucun changement requis** pour le numérique. Différé (non planifié ici) : axes analogiques dans
-`PadState`/`InputFrame` (déjà `non_exhaustive`) pour `RETRO_DEVICE_ANALOG`, à ouvrir avec un core 3D.
+Features : `gilrs 0.11.2` (features par défaut : `wgi` pour Windows) au workspace ; `emu-ui/gamepad = ["dep:gilrs"]`,
+`emu-app/gamepad = ["emu-ui/gamepad"]`, **hors `default`** jusqu'à T4 (build Linux : `libudev-dev`, absent du conteneur
+de dev : `--features gamepad` ne compile pas ici tant que T5 / l'environnement ne l'installe pas).
 
 ## 2. Tâches par agent
 

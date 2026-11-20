@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 use emu_runtime::{GlWindow, Scaling};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{StartCause, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
 use super::{LaunchRequest, LibraryEvent, LibraryUi, Page, text};
-use crate::app::App;
+use crate::app::{App, Restart};
 use crate::egui_layer::EguiLayer;
 use crate::{LaunchOptions, LibraryOptions, LibraryScreen, UiError};
 
@@ -40,6 +40,8 @@ struct Host {
     screen: Option<LibraryScreen>,
     dump_window: Option<std::path::PathBuf>,
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
+    /// Request of the running game, kept to start it again (`Restart`).
+    current: Option<LaunchRequest>,
     passes_left: u32,
     launch_tried: bool,
     started: Instant,
@@ -67,6 +69,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         screen: options.screen,
         dump_window: options.dump_window,
         proxy,
+        current: None,
         passes_left: CAPTURE_PASSES,
         launch_tried: false,
         started: Instant::now(),
@@ -99,7 +102,8 @@ impl Host {
         let launch_capture = self.screen == Some(LibraryScreen::Launch);
         let options = LaunchOptions {
             core: request.core_path.clone(),
-            rom: request.rom.clone(),
+            content: request.content.clone(),
+            computer: request.computer,
             dirs: self.library.dirs().clone(),
             config: self.library.config().clone(),
             scale: None,
@@ -113,11 +117,7 @@ impl Host {
                 None
             },
         };
-        tracing::info!(
-            "lancement de {} avec {}",
-            request.rom.display(),
-            request.core
-        );
+        tracing::info!("lancement de « {} » avec {}", request.title, request.core);
         match App::build(options, true) {
             Ok(mut app) => {
                 let Some(window) = self.window.take() else {
@@ -131,6 +131,7 @@ impl Host {
                 }
                 app.attach(event_loop, window, self.egui.take());
                 self.game = Some(Box::new(app));
+                self.current = Some(request);
             }
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
@@ -147,11 +148,29 @@ impl Host {
             return;
         };
         let back = game.detach();
+        // The core is unloaded here: working copies can be deleted and the game loaded again.
         drop(game);
         self.window = back.window;
         self.egui = back.egui;
         if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
             egui.assume_focused(w.window());
+        }
+        let current = self.current.take();
+        if let (Some(restart), Some(request), Some(event_loop), None) =
+            (back.restart, current, event_loop, &back.error)
+        {
+            if let Restart::ResetDisks {
+                saves_core_dir,
+                game,
+            } = &restart
+            {
+                match emu_runtime::reset_working_copies(saves_core_dir, game) {
+                    Ok(_) => tracing::info!("disquettes réinitialisées : {game}"),
+                    Err(e) => tracing::warn!("réinitialisation des disquettes : {e}"),
+                }
+            }
+            self.library.config_from_game(back.config);
+            return self.start_game(event_loop, request);
         }
         let error = back.error.map(|e| e.to_string());
         self.library.game_over(Some(back.config), error);
@@ -309,6 +328,12 @@ impl ApplicationHandler<Wake> for Host {
             && egui.on_window_event(w.window(), &event)
         {
             w.window().request_redraw();
+        }
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+        if let Some(game) = &mut self.game {
+            game.device_event(event_loop, id, event);
         }
     }
 

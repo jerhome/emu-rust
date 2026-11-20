@@ -1,8 +1,8 @@
-//! Pure input logic of computer systems (ADR 0015): positional key map, host key, keyboard / mouse backends.
-//! No window here; `app.rs` feeds it winit events (task U2).
-//! Not wired yet: `app.rs` uses it in task U2 (remove this allow then).
-#![allow(dead_code)]
+//! Input of computer systems (ADR 0015): positional key map, host key, keyboard / mouse backends, the session that
+//! routes winit events between them, and the virtual keyboard. `app.rs` feeds it winit events.
 
 pub(crate) mod host;
 pub(crate) mod input;
 pub(crate) mod keymap;
+pub(crate) mod session;
+pub(crate) mod vkbd;

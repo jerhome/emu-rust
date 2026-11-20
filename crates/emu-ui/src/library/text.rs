@@ -267,3 +267,14 @@ pub fn dat_download_done(
 pub fn game_title(title: &str) -> String {
     clean(title)
 }
+
+pub const BIOS_INSTALL_AND_LAUNCH: &str = "Installer et lancer";
+pub const DESKTOP_BUTTON: &str = "Bureau Atari ST";
+
+pub fn desktop_title(system: &str) -> String {
+    format!("Bureau {system}")
+}
+
+pub fn desktop_needs_core(core: &str) -> String {
+    format!("Le core {core} n'est pas installé : l'installer depuis l'écran « Cores ».")
+}

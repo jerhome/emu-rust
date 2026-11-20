@@ -40,6 +40,8 @@ tempfile = "3.27.0"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1"
 directories = "6"
+# Phase 6 gamepad (ADR 0016). Apache-2.0/MIT; Linux build needs libudev-dev (libudev-sys). SDL_GameControllerDB: Zlib.
+gilrs = "0.11.2"
 
 [workspace.lints.rust]
 # Denied (not forbidden) so emu-libretro and emu-runtime can opt in with #![allow(unsafe_code)].

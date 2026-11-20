@@ -150,6 +150,17 @@ pub fn game_name_from_path(rom: &Path) -> String {
     }
 }
 
+/// Game name from a display name (multi-disk set, `MediaSet::name`): same rules as `game_name_from_path` but the
+/// whole string is kept (`Ys.Book.I` stays as is).
+pub(crate) fn game_name_from_str(name: &str) -> String {
+    let name = sanitize_component(name, MAX_GAME_NAME_BYTES);
+    if name.is_empty() {
+        "game".to_owned()
+    } else {
+        name
+    }
+}
+
 /// Keeps `<game>.state9` and `.<game>.srm.tmp-<pid>` (+ leading dot, pid up to 10 digits) under the 255-byte
 /// file name limit of common filesystems.
 const MAX_GAME_NAME_BYTES: usize = 200;

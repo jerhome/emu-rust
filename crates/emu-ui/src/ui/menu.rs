@@ -59,6 +59,17 @@ pub(super) fn show(
         }
         ui.separator();
 
+        if data.disks.is_some() && button(ui, text::DISKS, true, &mut false) {
+            actions.push(UiAction::Open(Screen::Disks));
+        }
+        if data.computer.is_some() {
+            if button(ui, text::VKBD, true, &mut false) {
+                actions.push(UiAction::ToggleVirtualKeyboard);
+            }
+            if button(ui, text::COMPUTER, true, &mut false) {
+                actions.push(UiAction::Open(Screen::Computer));
+            }
+        }
         if button(ui, text::KEYS, true, &mut false) {
             actions.push(UiAction::Open(Screen::Keys));
         }

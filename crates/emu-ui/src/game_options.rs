@@ -1,7 +1,5 @@
 //! Per-game options (ADR 0015, design §5): `<data>/game-options/<core_id>/<game>.toml`. Priority, lowest first:
 //! core defaults < frontend defaults (`cores.toml`) < global (`config.toml`) < game.
-//! Not wired yet: `app.rs` uses it in task U2 (remove this allow then).
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::io;
@@ -63,15 +61,14 @@ pub struct LoadedGameOptions {
     pub locked: bool,
 }
 
-pub(crate) fn game_options_dir(data_root: &Path, core_id: &str) -> PathBuf {
-    data_root
-        .join("game-options")
-        .join(sanitize_component(core_id))
+/// `dir` = `DataDirs::game_options`.
+pub(crate) fn game_options_dir(dir: &Path, core_id: &str) -> PathBuf {
+    dir.join(sanitize_component(core_id))
 }
 
 /// `<data>/game-options/<core_id>/<game>.toml`; `game` is a title or file stem, made safe as a file name.
-pub(crate) fn game_options_path(data_root: &Path, core_id: &str, game: &str) -> PathBuf {
-    game_options_dir(data_root, core_id).join(format!("{}.toml", sanitize_component(game)))
+pub(crate) fn game_options_path(dir: &Path, core_id: &str, game: &str) -> PathBuf {
+    game_options_dir(dir, core_id).join(format!("{}.toml", sanitize_component(game)))
 }
 
 /// One path component: separators, control and reserved characters become `_`; never empty, never `.` / `..`.
@@ -195,7 +192,7 @@ mod tests {
 
     #[test]
     fn path_is_confined() {
-        let root = Path::new("/data");
+        let root = Path::new("/data/game-options");
         assert_eq!(
             game_options_path(root, "hatari", "Nova Defense"),
             Path::new("/data/game-options/hatari/Nova Defense.toml")
@@ -211,7 +208,7 @@ mod tests {
     #[test]
     fn round_trip_keeps_unknown_keys() {
         let dir = tempfile::tempdir().unwrap();
-        let path = game_options_path(dir.path(), "hatari", "Jeu");
+        let path = game_options_path(&dir.path().join("game-options"), "hatari", "Jeu");
         assert_eq!(GameOptions::load(&path), LoadedGameOptions::default());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(

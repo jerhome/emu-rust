@@ -4,10 +4,13 @@ mod app;
 mod computer;
 mod config;
 mod config_computer;
+mod config_gamepad;
 mod config_library;
+mod content;
 mod cores_ui;
 mod egui_layer;
 mod game_options;
+mod gamepad;
 mod hotkeys;
 mod keyboard;
 mod library;
@@ -19,12 +22,14 @@ pub use crate::config::{
     AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
+pub use crate::config_computer::{ComputerConfig, KeyboardModeChoice};
 pub use crate::config_library::{
     CoresConfig, CoversConfig, CredentialsConfig, IgdbConfig, LibraryConfig, ScreenScraperConfig,
 };
-pub use crate::cores_ui::open_core_manager;
-pub use crate::hotkeys::{HostAction, HotkeyAction, SpeedState, step_slot};
-pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle};
+pub use crate::content::{GameContent, content_spec, media_set_name};
+pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
+pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.
@@ -36,13 +41,22 @@ pub enum Screen {
     Menu,
     Keys,
     CoreOptions,
+    /// Disk menu (computer systems, cores with a disk control interface).
+    Disks,
+    /// Keyboard and mouse settings of a computer game.
+    Computer,
+    /// Not a menu screen: the virtual keyboard over the running game (`--screen vkbd` captures).
+    VirtualKeyboard,
 }
 
-/// What `emu-app` asks the UI to launch (one core + one ROM, no library screen yet).
+/// What `emu-app` (or the library) asks the UI to launch: one core and its content.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaunchOptions {
     pub core: PathBuf,
-    pub rom: PathBuf,
+    /// Files of one game (disks in order), or nothing (computer desktop).
+    pub content: GameContent,
+    /// Computer system (ADR 0015: host key, full keyboard, mouse). Also implied by computer cores (`hatari`…).
+    pub computer: bool,
     pub dirs: DataDirs,
     pub config: Config,
     /// Overrides `config.video.scale` for this run only (not persisted).

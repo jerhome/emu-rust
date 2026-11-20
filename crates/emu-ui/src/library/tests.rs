@@ -264,11 +264,12 @@ fn game_over_returns_home_and_records_history() {
     let g = h.ui.selected_game().unwrap().clone();
     h.ui.set_page(Page::Settings);
     let request = LaunchRequest {
-        game: g.id,
+        game: Some(g.id),
         title: g.title.clone(),
         core: emu_assets::cores::CoreId::new("gambatte").unwrap(),
         core_path: "/x".into(),
-        rom: g.path.clone(),
+        content: crate::GameContent::Files(vec![g.path.clone()]),
+        computer: false,
         warnings: Vec::new(),
     };
     h.ui.game_started(&request);
@@ -508,11 +509,12 @@ fn captures_never_record_history() {
     h.frame(Vec::new());
     let g = h.ui.selected_game().unwrap().clone();
     let request = LaunchRequest {
-        game: g.id,
+        game: Some(g.id),
         title: g.title.clone(),
         core: CoreId::new("gambatte").unwrap(),
         core_path: "/x".into(),
-        rom: g.path.clone(),
+        content: crate::GameContent::Files(vec![g.path.clone()]),
+        computer: false,
         warnings: Vec::new(),
     };
     h.ui.game_started(&request);
@@ -545,11 +547,12 @@ fn starting_a_game_forgets_the_waiting_install() {
     let game = h.ui.selected_game().unwrap().clone();
     h.ui.awaiting_core = Some((CoreId::new("other").unwrap(), game.id));
     let request = LaunchRequest {
-        game: game.id,
+        game: Some(game.id),
         title: game.title.clone(),
         core: CoreId::new("mgba").unwrap(),
         core_path: PathBuf::new(),
-        rom: PathBuf::new(),
+        content: crate::GameContent::NoGame,
+        computer: false,
         warnings: Vec::new(),
     };
     h.ui.game_started(&request);

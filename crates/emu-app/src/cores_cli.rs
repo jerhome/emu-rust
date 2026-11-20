@@ -6,6 +6,9 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use emu_ui::assets::bios::{
+    BiosError, FreeBiosState, ReplacePolicy, builtin_free_bios, find_free_bios,
+};
 use emu_ui::assets::cores::{
     CoreId, CoreManager, CorePreferences, FirmwareState, FirmwareStatus, Origin,
 };
@@ -166,8 +169,106 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
     Ok(!required_problem)
 }
 
+fn list_bios(dirs: &DataDirs) -> Result<(), String> {
+    let manager = emu_ui::open_free_bios_manager(dirs)?;
+    println!("Dossier des BIOS : {}", dirs.system.display());
+    for bios in builtin_free_bios() {
+        let state = match manager.state(&bios) {
+            FreeBiosState::Missing => "non installé".to_owned(),
+            FreeBiosState::Installed { variant } => format!("installé ({variant})"),
+            FreeBiosState::UserFile { .. } => {
+                format!("{} fourni par l'utilisateur (conservé)", bios.install_as)
+            }
+            FreeBiosState::Modified => "installé puis modifié".to_owned(),
+            FreeBiosState::Unreadable(e) => format!("illisible : {e}"),
+        };
+        println!(
+            "{} : {} {} ({}) pour {}, fichier {} : {state}",
+            bios.id, bios.name, bios.version, bios.license, bios.system, bios.install_as
+        );
+        for v in &bios.variants {
+            let mark = if v.id == bios.default_variant {
+                " (défaut)"
+            } else {
+                ""
+            };
+            println!("  {}{mark} : {}", v.id, v.label);
+        }
+    }
+    Ok(())
+}
+
+/// Variant: the one asked, else `[computer] emutos_variant`, else the system language (fallback: catalogue).
+fn install_bios(
+    dirs: &DataDirs,
+    config: &Config,
+    id: &str,
+    variant: Option<&str>,
+    replace: bool,
+) -> Result<(), String> {
+    let bios = find_free_bios(id).map_err(|e| e.to_string())?;
+    let configured = config
+        .computer
+        .emutos_variant
+        .as_deref()
+        .filter(|_| id == "emutos");
+    let locale = sys_locale_tag();
+    let variant = match variant.or(configured) {
+        Some(v) => bios
+            .variant(v)
+            .ok_or_else(|| format!("variante inconnue : {v} (voir --list-bios)"))?,
+        None => bios
+            .preferred_variant(locale.as_deref())
+            .ok_or("catalogue de BIOS vide")?,
+    };
+    let manager = emu_ui::open_free_bios_manager(dirs)?;
+    let policy = if replace {
+        ReplacePolicy::BackupAndReplace
+    } else {
+        ReplacePolicy::Refuse
+    };
+    println!("{} ({}) : {}", bios.name, bios.license, variant.label);
+    let mut progress = progress_printer(format!("Téléchargement de {}", bios.name));
+    let result = manager.install(
+        &bios,
+        &variant.id,
+        policy,
+        &mut progress,
+        &CancelToken::new(),
+    );
+    end_progress();
+    match result {
+        Ok(path) => {
+            println!("Installé : {}", path.display());
+            Ok(())
+        }
+        Err(BiosError::UserFileExists(path)) => Err(format!(
+            "{} existe déjà et n'a pas été installé par emu-rust (TOS d'origine ?) : conservé.\n\
+             Pour le remplacer (il sera renommé, jamais effacé) : --replace-user-bios",
+            path.display()
+        )),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn sys_locale_tag() -> Option<String> {
+    std::env::var("LC_ALL")
+        .ok()
+        .or_else(|| std::env::var("LANG").ok())
+        .filter(|v| !v.is_empty() && v != "C" && v != "POSIX")
+}
+
 /// `Ok(true)` = success, `Ok(false)` = ran but found a problem (exit 1), `Err` = failure.
 pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<bool, String> {
+    match action {
+        CoresAction::ListBios => return list_bios(dirs).map(|()| true),
+        CoresAction::InstallBios {
+            id,
+            variant,
+            replace,
+        } => return install_bios(dirs, config, id, variant.as_deref(), *replace).map(|()| true),
+        _ => {}
+    }
     let manager = open_manager(dirs, config)?;
     match action {
         CoresAction::List => list(&manager),
@@ -216,6 +317,7 @@ pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<boo
             println!("{id} : supprimé (sauvegardes conservées).");
         }
         CoresAction::CheckBios(id) => return check_bios(&manager, dirs, id.as_deref()),
+        CoresAction::ListBios | CoresAction::InstallBios { .. } => {}
     }
     Ok(true)
 }

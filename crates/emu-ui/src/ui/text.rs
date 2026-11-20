@@ -185,6 +185,10 @@ pub fn hotkey_label(action: HotkeyAction) -> &'static str {
         A::FastForward => "avance rapide",
         A::ToggleFullscreen => "plein écran",
         A::ToggleStats => "statistiques",
+        A::ToggleVirtualKeyboard => "clavier virtuel",
+        A::ToggleMouseCapture => "capture de la souris",
+        A::ToggleKeyboardMode => "clavier / joystick",
+        A::NextDisk => "disquette suivante",
     }
 }
 
@@ -274,6 +278,99 @@ pub fn sanitize_core_text(s: &str) -> String {
             }
         })
         .collect()
+}
+
+// ---- computer systems (ADR 0015) ---------------------------------------------------------------------------
+
+pub const VKBD_CLOSE: &str = "Fermer";
+pub const VKBD_HINT: &str = "Flèches / Tab : choisir · Entrée : taper · Échap : fermer · Shift, Control, \
+                             Alternate restent enfoncées jusqu'à la touche suivante";
+pub const VKBD: &str = "Clavier virtuel";
+pub const DISKS: &str = "Disquettes…";
+pub const DISKS_TITLE: &str = "Disquettes";
+pub const DISKS_NONE: &str = "Aucune disquette dans la liste.";
+pub const DISKS_EMPTY_DRIVE: &str = "Lecteur vide";
+pub const DISKS_CURRENT: &str = "dans le lecteur";
+pub const DISKS_EJECT: &str = "Éjecter";
+pub const DISKS_ADD: &str = "Ajouter une image du même dossier :";
+pub const DISKS_RESET: &str = "Réinitialiser les disquettes…";
+pub const DISKS_RESET_CONFIRM: &str = "Les copies de travail (avec la progression enregistrée sur les \
+                                       disquettes) seront effacées et le jeu redémarré depuis vos fichiers \
+                                       d'origine, qui ne sont jamais modifiés. Confirmer ?";
+pub const DISKS_RESET_YES: &str = "Oui, réinitialiser";
+pub const DISKS_HINT: &str =
+    "Entrée sur une disquette : l'insérer. Raccourci : touche hôte + D (suivante).";
+pub const DISKS_UNAVAILABLE: &str = "Ce core ne permet pas de changer de disquette.";
+pub const COMPUTER: &str = "Clavier et souris…";
+pub const COMPUTER_TITLE: &str = "Clavier et souris";
+pub const KEYBOARD_MODE: &str = "Mode du clavier (ce jeu)";
+pub const MODE_KEYBOARD: &str = "Clavier (toutes les touches vers la machine)";
+pub const MODE_JOYSTICK: &str = "Joystick (ZQSD / flèches, J, K)";
+pub const AUTO_CAPTURE: &str = "Capturer la souris au clic (ce jeu)";
+pub const ON: &str = "oui";
+pub const OFF: &str = "non";
+pub const SENSITIVITY: &str = "Sensibilité de la souris (tous les jeux)";
+pub const OPTIONS_SCOPE: &str = "Portée des changements";
+pub const SCOPE_GAME: &str = "ce jeu";
+pub const SCOPE_ALL: &str = "tous les jeux";
+pub const OPTION_GAME_MARK: &str = "(ce jeu)";
+pub const RESTART_GAME: &str = "Redémarrer le jeu (options « Requires restarting »)";
+pub const MODE_SWITCHED_KEYBOARD: &str = "Mode clavier : toutes les touches vont à la machine.";
+pub const MODE_SWITCHED_JOYSTICK: &str =
+    "Mode joystick : ZQSD / flèches et J, K pilotent le joystick.";
+pub const MOUSE_RELEASED: &str = "Souris libérée.";
+pub const MOUSE_FALLBACK: &str =
+    "Souris sans capture (mode de repli) : gardez le pointeur sur l'image.";
+pub const STATES_DISKS_WARNING: &str = "Attention : l'état sauvegardé ne contient pas les disquettes ; \
+                                        recharger un état après des écritures disque peut être incohérent.";
+pub const NO_DISK_CONTROL: &str = "Ce core ne permet pas de changer de disquette.";
+pub const GAME_OPTIONS_LOCKED: &str =
+    "Options du jeu invalides : fichier conservé, changements non enregistrés.";
+
+pub fn vkbd_title(machine: &str) -> String {
+    format!("Clavier {machine}")
+}
+
+pub fn host_hint(host: KeyCode) -> String {
+    let h = key_label(host);
+    format!(
+        "{h} : menu · {h} + J : clavier / joystick · {h} + K : clavier virtuel · {h} + M : souris"
+    )
+}
+
+pub fn mouse_captured(host: KeyCode) -> String {
+    format!("Souris capturée — {} pour libérer", key_label(host))
+}
+
+pub fn disk_inserted(index: u32, total: usize, label: &str) -> String {
+    format!(
+        "Disquette {}/{total} : {}",
+        index + 1,
+        sanitize_core_text(label)
+    )
+}
+
+pub fn disk_failed(e: &dyn std::fmt::Display) -> String {
+    format!("Changement de disquette impossible : {e}")
+}
+
+pub fn disk_added(label: &str) -> String {
+    format!("Disquette ajoutée : {}", sanitize_core_text(label))
+}
+
+pub fn game_options_failed(e: &dyn std::fmt::Display) -> String {
+    format!("Options du jeu non enregistrées : {e}")
+}
+
+pub fn sensitivity_value(v: f32) -> String {
+    format!("{v:.1}")
+}
+
+pub fn host_key_line(host: KeyCode) -> String {
+    format!(
+        "Touche hôte : {} ([hotkeys] host_key dans config.toml ; ⌘ droit = SuperRight)",
+        key_label(host)
+    )
 }
 
 #[cfg(test)]

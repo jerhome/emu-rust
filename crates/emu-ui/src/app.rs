@@ -1,26 +1,37 @@
 //! winit `ApplicationHandler` driving the emulator: `Pacer` scheduling, shortcuts, SRAM flushing, and the egui
 //! overlay (menu open ⇒ emulation paused, keys go to egui instead of the game).
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use emu_assets::cores::CoreId;
 use emu_runtime::{
-    AudioConfig, AudioOutput, CoreOption, CoreOptionCategory, Emulator, EmulatorOptions, GlWindow,
-    LogLevel, MAX_BURST, PaceDecision, Pacer, STATE_SLOTS, Scaling, SyncMode, core_id_from_path,
+    AudioConfig, AudioOutput, ContentSpec, CoreOption, CoreOptionCategory, Emulator,
+    EmulatorOptions, GlWindow, LogLevel, MAX_BURST, MediaPolicy, PaceDecision, Pacer, STATE_SLOTS,
+    Scaling, SyncMode, core_id_from_path,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, WindowAttributes, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, WindowAttributes, WindowId};
 
+use crate::computer::input::{CaptureEffect, CaptureEvent, CaptureState, KeyboardMode, map_button};
+use crate::computer::session::{ComputerInputs, ComputerSession, KeyOutcome};
+use crate::computer::vkbd::{VirtualKeyboard, legend_for_variant};
 use crate::config::{MAX_SCALE, MIN_SCALE};
+use crate::config_computer::KeyboardModeChoice;
+use crate::content::{content_spec, game_key};
 use crate::egui_layer::EguiLayer;
+use crate::game_options::{
+    GameOptions, LoadedGameOptions, effective_core_options, game_options_path,
+};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
-use crate::keyboard::{KeyMap, PadStyle};
+use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::ui::{
-    self, CaptureOutcome, OsdLevel, Overlay, StatsView, UiAction, UiData, apply_capture,
-    profile_map, text,
+    self, CaptureOutcome, ComputerView, DisksView, OsdLevel, Overlay, StatsView, UiAction, UiData,
+    apply_capture, profile_map, text,
 };
 use crate::{KeyboardInput, LaunchOptions, ScalingChoice, Screen, SyncChoice, UiError};
 
@@ -38,7 +49,26 @@ pub(crate) struct Detached {
     pub egui: Option<EguiLayer>,
     pub config: crate::Config,
     pub error: Option<UiError>,
+    /// The game asked to be started again (library only).
+    pub restart: Option<Restart>,
 }
+
+/// Why a hosted game ends to be started again by the library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Restart {
+    /// Options that need a restart.
+    Plain,
+    /// « Réinitialiser les disquettes »: delete `<saves_core_dir>/<game>.disks` first.
+    ResetDisks {
+        saves_core_dir: PathBuf,
+        game: String,
+    },
+}
+
+/// Mouse wheel: pixels per notch for touchpads reporting pixel deltas.
+const WHEEL_PIXELS_PER_NOTCH: f64 = 40.0;
+/// Most images listed by « ajouter une image du même dossier ».
+const MAX_ADDABLE: usize = 64;
 
 // Field order is the drop order: egui painter, window/context (with its renderer), then the emulator
 // (ADR 0008). The painter is also destroyed explicitly while its context is alive (`teardown`).
@@ -80,6 +110,23 @@ pub(crate) struct App {
     hosted: bool,
     /// Hosted game over (quit, core shutdown, error): the host detaches the window and drops the game.
     ended: bool,
+    restart: Option<Restart>,
+    /// Computer system (ADR 0015): host key, machine keyboard, mouse, virtual keyboard.
+    computer: Option<ComputerSession>,
+    /// Console: the host key is held (it acts as Ctrl for the 1.0 shortcuts).
+    host_held: bool,
+    game_options: LoadedGameOptions,
+    game_options_path: PathBuf,
+    game_options_dirty: bool,
+    /// Core option changes go to this game's options.
+    game_scope: bool,
+    /// Global overrides + frontend defaults: what a game override is compared with.
+    frontend_options: Vec<(String, String)>,
+    disks_view: Option<DisksView>,
+    working_copy: bool,
+    /// The files the game was launched with (disk menu: « ajouter une image du même dossier »).
+    content_files: Vec<PathBuf>,
+    states_warned: bool,
 }
 
 struct FpsMeter {
@@ -153,15 +200,42 @@ impl App {
     /// through [`App::attach`]).
     pub(crate) fn build(mut options: LaunchOptions, hosted: bool) -> Result<Self, UiError> {
         let core_id = core_id_from_path(&options.core);
-        let emulator = Emulator::load(
+        let prefs = crate::cores_ui::preferences(&options.config.cores);
+        let spec = content_spec(&core_id, &options.content, &prefs);
+        let no_game = spec == ContentSpec::NoGame;
+        let working_copy = matches!(
+            spec,
+            ContentSpec::Media {
+                policy: MediaPolicy::WorkingCopy,
+                ..
+            }
+        );
+        let game_options_path =
+            game_options_path(&options.dirs.game_options, &core_id, &game_key(&spec));
+        let game_options = GameOptions::load(&game_options_path);
+        let frontend_options = CoreId::new(&core_id)
+            .map(|id| prefs.frontend_options(&id))
+            .unwrap_or_default();
+        let core_variables = effective_core_options(
+            &[],
+            &frontend_options,
+            &options
+                .config
+                .core_options
+                .get(&core_id)
+                .cloned()
+                .unwrap_or_default(),
+            &game_options.options.core_options,
+        );
+        let mut emulator = Emulator::load_content(
             &options.core,
-            &options.rom,
+            spec,
             EmulatorOptions {
                 system_dir: options.dirs.system.clone(),
                 save_dir: options.dirs.saves.clone(),
                 state_dir: options.dirs.states.clone(),
                 assets_dir: options.dirs.assets.clone(),
-                core_variables: options.config.core_variables(&core_id),
+                core_variables,
             },
         )?;
         let audio = if options.audio && options.config.audio.enabled {
@@ -173,7 +247,7 @@ impl App {
         } else {
             AudioOutput::null()
         };
-        let style = PadStyle::detect(&core_id, &options.rom);
+        let style = PadStyle::detect(&core_id, options.content.first().unwrap_or(Path::new("")));
         let profile = style.profile_key(&core_id);
         let keymap = options.config.keymap_for(&profile, style);
         tracing::info!(
@@ -188,9 +262,58 @@ impl App {
         }
         let now = Instant::now();
         let mut overlay = Overlay::default();
-        overlay
-            .osd
-            .info(text::menu_hint(options.config.hotkeys.menu), now);
+        let computer = (options.computer || is_computer_profile(&core_id)).then(|| {
+            let input = &game_options.options.input;
+            let mode = match input.keyboard_mode {
+                Some(m) => m,
+                None if no_game => KeyboardModeChoice::Keyboard,
+                None => options.config.computer.default_keyboard_mode,
+            };
+            let legend = input
+                .extra
+                .get("keyboard_layout")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    legend_for_variant(
+                        options
+                            .config
+                            .computer
+                            .emutos_variant_or_system()
+                            .as_deref(),
+                    )
+                    .to_owned()
+                });
+            let mut session = ComputerSession::new(
+                options.config.hotkeys.host_key,
+                KeyboardMode::from(mode),
+                VirtualKeyboard::new("atari_st", &legend),
+            );
+            session.auto_capture = input
+                .auto_capture
+                .unwrap_or(options.config.computer.auto_capture);
+            session.grab_allowed = options.config.computer.grab_pointer;
+            session
+                .mouse
+                .set_sensitivity(options.config.computer.mouse_sensitivity);
+            session
+        });
+        let hint = if computer.is_some() {
+            text::host_hint(options.config.hotkeys.host_key)
+        } else {
+            text::menu_hint(options.config.hotkeys.menu)
+        };
+        overlay.osd.info(hint, now);
+        if let Some(disk) = game_options.options.media.last_disk.filter(|d| *d > 0)
+            && let Some(mut disks) = emulator.disks()
+            && let Err(e) = disks.insert(disk)
+        {
+            tracing::warn!("disquette {} non réinsérée : {e}", disk + 1);
+        }
+        let content_files = match &options.content {
+            crate::GameContent::Files(f) => f.clone(),
+            crate::GameContent::NoGame => Vec::new(),
+        };
         Ok(Self {
             egui: None,
             window: None,
@@ -224,6 +347,18 @@ impl App {
             ui_repaint_at: None,
             hosted,
             ended: false,
+            restart: None,
+            computer,
+            host_held: false,
+            game_options,
+            game_options_path,
+            game_options_dirty: false,
+            game_scope: false,
+            frontend_options,
+            disks_view: None,
+            working_copy,
+            content_files,
+            states_warned: false,
         })
     }
 
@@ -264,10 +399,12 @@ impl App {
     /// Hosted mode, game over: SRAM and config written, window and egui handed back with the (possibly edited)
     /// configuration and the error that ended the game, if any. The emulator is dropped by the caller.
     pub(crate) fn detach(&mut self) -> Detached {
-        self.keyboard.release_all();
+        self.release_inputs();
+        self.capture(CaptureEvent::FocusLost);
         self.audio.set_paused(true);
         self.flush_sram();
         self.save_config();
+        self.save_game_options();
         self.log_audio_stats();
         self.pacer = None;
         Detached {
@@ -275,6 +412,7 @@ impl App {
             egui: self.egui.take(),
             config: self.options.config.clone(),
             error: self.error.take(),
+            restart: self.restart.take(),
         }
     }
 
@@ -290,6 +428,215 @@ impl App {
             Duration::from_secs(6),
             Instant::now(),
         );
+    }
+
+    /// Keys, buttons and held host actions released (menu, focus lost, pause, end of game).
+    fn release_inputs(&mut self) {
+        self.keyboard.release_all();
+        self.host_held = false;
+        if let Some(c) = &mut self.computer {
+            for action in c.release_all(&mut self.keyboard) {
+                if action == HotkeyAction::FastForward {
+                    self.speed.fast_forward = false;
+                }
+            }
+        }
+    }
+
+    /// Pointer capture transition, applied to the window.
+    fn capture(&mut self, event: CaptureEvent) {
+        let Some(c) = &mut self.computer else {
+            return;
+        };
+        let effect = c.capture_event(event);
+        self.apply_capture_effect(effect);
+    }
+
+    fn apply_capture_effect(&mut self, effect: CaptureEffect) {
+        let now = Instant::now();
+        let (Some(c), Some(w)) = (&mut self.computer, &self.window) else {
+            return;
+        };
+        let window = w.window();
+        match effect {
+            CaptureEffect::None => {}
+            CaptureEffect::Grab => {
+                let locked = if !c.grab_allowed {
+                    None
+                } else if window.set_cursor_grab(CursorGrabMode::Locked).is_ok() {
+                    Some(true)
+                } else if window.set_cursor_grab(CursorGrabMode::Confined).is_ok() {
+                    Some(false)
+                } else {
+                    None
+                };
+                // Hidden in the fallback too: the machine draws its own pointer.
+                window.set_cursor_visible(false);
+                c.grab_result(locked);
+                tracing::info!("souris : {:?}", c.capture);
+                let msg = if c.capture == CaptureState::Fallback {
+                    text::MOUSE_FALLBACK.to_owned()
+                } else {
+                    text::mouse_captured(self.options.config.hotkeys.host_key)
+                };
+                self.overlay.osd.info(msg, now);
+            }
+            CaptureEffect::Ungrab => {
+                if let Err(e) = window.set_cursor_grab(CursorGrabMode::None) {
+                    tracing::warn!("libération de la souris : {e}");
+                }
+                window.set_cursor_visible(true);
+                self.overlay.osd.info(text::MOUSE_RELEASED, now);
+            }
+        }
+    }
+
+    /// Writes `game-options/<core>/<game>.toml` if something changed; an invalid file is never overwritten.
+    fn save_game_options(&mut self) {
+        if !std::mem::take(&mut self.game_options_dirty) {
+            return;
+        }
+        let loaded = &self.game_options;
+        match loaded.options.save(&self.game_options_path, loaded.locked) {
+            Ok(()) => tracing::info!(
+                "options du jeu enregistrées : {}",
+                self.game_options_path.display()
+            ),
+            Err(e) => {
+                tracing::warn!("options du jeu non enregistrées : {e}");
+                let msg = if loaded.locked {
+                    text::GAME_OPTIONS_LOCKED.to_owned()
+                } else {
+                    text::game_options_failed(&e)
+                };
+                self.overlay.osd.error(msg, Instant::now());
+            }
+        }
+    }
+
+    /// Disk menu content; `None` without a disk control interface.
+    fn refresh_disks(&mut self) {
+        let extensions: Vec<String> = self
+            .emulator
+            .system_info()
+            .valid_extensions
+            .iter()
+            .map(|e| e.to_ascii_lowercase())
+            .collect();
+        let can_reset = self.hosted && self.working_copy;
+        let content = self.content_files.clone();
+        self.disks_view = self.emulator.disks().map(|mut d| DisksView {
+            slots: d.slots(),
+            current: d.current(),
+            addable: addable_images(&content, &extensions),
+            can_reset,
+        });
+    }
+
+    fn computer_view(&self) -> Option<ComputerView> {
+        let c = self.computer.as_ref()?;
+        Some(ComputerView {
+            mode: c.mode,
+            auto_capture: c.auto_capture,
+            sensitivity: self.options.config.computer.mouse_sensitivity,
+            host_key: self.options.config.hotkeys.host_key,
+        })
+    }
+
+    fn insert_disk(&mut self, index: Option<u32>) {
+        let now = Instant::now();
+        let Some(mut disks) = self.emulator.disks() else {
+            self.overlay.osd.push(
+                text::NO_DISK_CONTROL,
+                OsdLevel::Warn,
+                Duration::from_secs(3),
+                now,
+            );
+            return;
+        };
+        let result = match index {
+            Some(i) => disks.insert(i).map(|()| i),
+            None => disks.insert_next(),
+        };
+        match result {
+            Ok(i) => {
+                let slots = disks.slots();
+                let label = slots
+                    .iter()
+                    .find(|s| s.index == i)
+                    .map_or(String::new(), |s| s.label.clone());
+                self.overlay
+                    .osd
+                    .info(text::disk_inserted(i, slots.len(), &label), now);
+                if self.game_options.options.media.last_disk != Some(i) {
+                    self.game_options.options.media.last_disk = Some(i);
+                    self.game_options_dirty = true;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("changement de disquette : {e}");
+                self.overlay.osd.error(text::disk_failed(&e), now);
+            }
+        }
+    }
+
+    fn toggle_keyboard_mode(&mut self) {
+        let Some(c) = &mut self.computer else {
+            return;
+        };
+        let mode = c.toggle_mode(&mut self.keyboard);
+        let (choice, msg) = match mode {
+            KeyboardMode::Keyboard => (KeyboardModeChoice::Keyboard, text::MODE_SWITCHED_KEYBOARD),
+            KeyboardMode::Joystick => (KeyboardModeChoice::Joystick, text::MODE_SWITCHED_JOYSTICK),
+        };
+        self.game_options.options.input.keyboard_mode = Some(choice);
+        self.game_options_dirty = true;
+        self.overlay.osd.info(msg, Instant::now());
+    }
+
+    fn toggle_virtual_keyboard(&mut self) {
+        if self.egui.is_none() {
+            return;
+        }
+        let Some(c) = &mut self.computer else {
+            return;
+        };
+        let open = !c.vkbd.is_open();
+        c.vkbd.set_open(open);
+        if open {
+            c.keyboard.release_all();
+            self.capture(CaptureEvent::MenuOpened);
+        }
+        self.request_redraw();
+    }
+
+    /// Hosted only: the library starts the game again (after deleting the working copies for `ResetDisks`).
+    fn restart_game(&mut self, event_loop: &ActiveEventLoop, reset_disks: bool) {
+        if !self.hosted {
+            return;
+        }
+        self.restart = Some(if reset_disks {
+            Restart::ResetDisks {
+                saves_core_dir: self.options.dirs.saves.join(&self.core_id),
+                game: self.emulator.game_name().to_owned(),
+            }
+        } else {
+            Restart::Plain
+        });
+        self.exit(event_loop);
+    }
+
+    fn warn_states_once(&mut self) {
+        if self.emulator.prepared_media().is_some()
+            && !std::mem::replace(&mut self.states_warned, true)
+        {
+            self.overlay.osd.push(
+                text::STATES_DISKS_WARNING,
+                OsdLevel::Warn,
+                Duration::from_secs(8),
+                Instant::now(),
+            );
+        }
     }
 
     /// Standalone: quits the program. Hosted: hands control back to the library.
@@ -389,16 +736,30 @@ impl App {
         if self.egui.is_none() {
             return;
         }
+        if screen == Screen::VirtualKeyboard {
+            if !self.computer.as_ref().is_some_and(|c| c.vkbd.is_open()) {
+                self.toggle_virtual_keyboard();
+            }
+            return;
+        }
         if !self.overlay.is_open() {
             // The game must not keep a key held, nor fast-forward, while the menu has the keyboard.
-            self.keyboard.release_all();
+            self.release_inputs();
+            self.capture(CaptureEvent::MenuOpened);
+            if let Some(c) = &mut self.computer {
+                c.vkbd.set_open(false);
+            }
             self.speed.fast_forward = false;
             self.flush_sram();
         }
         match screen {
-            Screen::Menu => self.refresh_slots(),
+            Screen::Menu => {
+                self.refresh_slots();
+                self.refresh_disks();
+            }
             Screen::CoreOptions => self.refresh_options(),
-            Screen::Keys => {}
+            Screen::Disks => self.refresh_disks(),
+            Screen::Keys | Screen::Computer | Screen::VirtualKeyboard => {}
         }
         self.overlay.open(screen);
         self.apply_speed();
@@ -408,6 +769,7 @@ impl App {
     fn close_overlay(&mut self) {
         self.overlay.close();
         self.save_config();
+        self.save_game_options();
         self.apply_speed();
         self.request_redraw();
     }
@@ -418,6 +780,7 @@ impl App {
         let after = self.overlay.screen();
         if before != after {
             self.save_config();
+            self.save_game_options();
         }
         match after {
             None => self.close_overlay(),
@@ -467,6 +830,7 @@ impl App {
     }
 
     fn save_state(&mut self) {
+        self.warn_states_once();
         let now = Instant::now();
         match self.emulator.save_state(self.slot) {
             Ok(path) => {
@@ -486,6 +850,7 @@ impl App {
     }
 
     fn load_state(&mut self) -> bool {
+        self.warn_states_once();
         let now = Instant::now();
         match self.emulator.load_state(self.slot) {
             Ok(()) => {
@@ -503,6 +868,28 @@ impl App {
         }
     }
 
+    /// Value an option has without this game's override: global setting, else frontend default, else core default.
+    fn value_without_game(&self, key: &str) -> Option<String> {
+        self.options
+            .config
+            .core_options
+            .get(&self.core_id)
+            .and_then(|m| m.get(key))
+            .cloned()
+            .or_else(|| {
+                self.frontend_options
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.clone())
+            })
+            .or_else(|| {
+                self.core_options
+                    .iter()
+                    .find(|o| o.key == key)
+                    .map(|o| o.default.clone())
+            })
+    }
+
     fn set_option(&mut self, key: &str, value: &str) {
         if let Err(e) = self.emulator.set_option(key, value) {
             tracing::warn!("option {key} refusée : {e}");
@@ -510,6 +897,21 @@ impl App {
                 .osd
                 .error(text::option_failed(&e), Instant::now());
             return;
+        }
+        if self.game_scope {
+            let base = self.value_without_game(key);
+            let overrides = &mut self.game_options.options.core_options;
+            if base.as_deref() == Some(value) {
+                overrides.remove(key);
+            } else {
+                overrides.insert(key.to_owned(), value.to_owned());
+            }
+            self.game_options_dirty = true;
+            return;
+        }
+        // « Tous les jeux »: this game follows the global value from now on.
+        if self.game_options.options.core_options.remove(key).is_some() {
+            self.game_options_dirty = true;
         }
         let default = self
             .core_options
@@ -557,6 +959,23 @@ impl App {
                     self.set_option(&key, &value);
                     self.refresh_options();
                 }
+                UiAction::DefaultOptions if self.game_scope => {
+                    let keys: Vec<String> = self
+                        .game_options
+                        .options
+                        .core_options
+                        .keys()
+                        .cloned()
+                        .collect();
+                    for k in keys {
+                        if let Some(v) = self.value_without_game(&k) {
+                            self.set_option(&k, &v);
+                        }
+                    }
+                    self.game_options.options.core_options.clear();
+                    self.game_options_dirty = true;
+                    self.refresh_options();
+                }
                 UiAction::DefaultOptions => {
                     let changes: Vec<(String, String)> = self
                         .core_options
@@ -573,11 +992,69 @@ impl App {
                     let key = profile.key(&self.profile).to_owned();
                     self.options
                         .config
-                        .set_keymap(&key, KeyMap::default_for(self.style));
+                        .set_keymap(&key, KeyMap::builtin_for(&key, self.style));
                     self.config_dirty = true;
                     self.rebuild_keyboard();
                     self.overlay.set_notice(text::KEYS_RESTORED);
                 }
+                UiAction::InsertDisk(i) => {
+                    self.insert_disk(Some(i));
+                    self.close_overlay();
+                }
+                UiAction::EjectDisk => {
+                    if let Some(mut d) = self.emulator.disks()
+                        && let Err(e) = d.eject()
+                    {
+                        self.overlay
+                            .osd
+                            .error(text::disk_failed(&e), Instant::now());
+                    }
+                    self.refresh_disks();
+                }
+                UiAction::AddDisk(path) => {
+                    let result = self.emulator.disks().map(|mut d| d.add(&path));
+                    match result {
+                        Some(Ok(_)) => {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.content_files.push(path);
+                            self.overlay.set_notice(text::disk_added(&name));
+                        }
+                        Some(Err(e)) => self.overlay.set_notice(text::disk_failed(&e)),
+                        None => self.overlay.set_notice(text::NO_DISK_CONTROL),
+                    }
+                    self.refresh_disks();
+                }
+                UiAction::ResetDisks => self.restart_game(event_loop, true),
+                UiAction::Restart => self.restart_game(event_loop, false),
+                UiAction::ToggleVirtualKeyboard => {
+                    self.close_overlay();
+                    self.toggle_virtual_keyboard();
+                }
+                UiAction::ToggleKeyboardMode => self.toggle_keyboard_mode(),
+                UiAction::SetAutoCapture(on) => {
+                    if let Some(c) = &mut self.computer {
+                        c.auto_capture = on;
+                        self.game_options.options.input.auto_capture = Some(on);
+                        self.game_options_dirty = true;
+                    }
+                }
+                UiAction::StepSensitivity(delta) => {
+                    let cfg = &mut self.options.config.computer;
+                    #[allow(clippy::cast_precision_loss)] // delta is -1..=1
+                    let next = (cfg.mouse_sensitivity + 0.1 * delta.clamp(-1, 1) as f32).clamp(
+                        crate::computer::input::MIN_SENSITIVITY,
+                        crate::computer::input::MAX_SENSITIVITY,
+                    );
+                    cfg.mouse_sensitivity = (next * 10.0).round() / 10.0;
+                    if let Some(c) = &mut self.computer {
+                        c.mouse.set_sensitivity(cfg.mouse_sensitivity);
+                    }
+                    self.config_dirty = true;
+                }
+                UiAction::SetGameScope(on) => self.game_scope = on,
                 UiAction::UnlockConfig => {
                     self.options.config.unlock();
                     self.config_dirty = true;
@@ -615,7 +1092,7 @@ impl App {
             HotkeyAction::TogglePause => {
                 self.speed.paused = !self.speed.paused;
                 if self.speed.paused {
-                    self.keyboard.release_all();
+                    self.release_inputs();
                     self.flush_sram();
                 }
                 let msg = if self.speed.paused {
@@ -657,13 +1134,27 @@ impl App {
                 }
             }
             HotkeyAction::ToggleStats => self.overlay.show_stats = !self.overlay.show_stats,
+            HotkeyAction::ToggleVirtualKeyboard => self.toggle_virtual_keyboard(),
+            HotkeyAction::ToggleMouseCapture => self.capture(CaptureEvent::Toggle),
+            HotkeyAction::ToggleKeyboardMode => self.toggle_keyboard_mode(),
+            HotkeyAction::NextDisk => self.insert_disk(None),
             HotkeyAction::FastForward => {}
         }
         self.request_redraw();
     }
 
     fn step(&mut self, event_loop: &ActiveEventLoop) {
-        let status = match self.emulator.run_frame(&mut self.keyboard, &mut self.audio) {
+        let result = match &mut self.computer {
+            Some(session) => {
+                let mut inputs = ComputerInputs {
+                    pad: &mut self.keyboard,
+                    session,
+                };
+                self.emulator.run_frame(&mut inputs, &mut self.audio)
+            }
+            None => self.emulator.run_frame(&mut self.keyboard, &mut self.audio),
+        };
+        let status = match result {
             Ok(s) => s,
             Err(e) => return self.fail(event_loop, e),
         };
@@ -722,6 +1213,9 @@ impl App {
             if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
                 egui.assume_focused(w.window());
             }
+            if screen == Screen::VirtualKeyboard && self.computer.is_none() {
+                tracing::warn!("clavier virtuel : système non ordinateur");
+            }
             self.open_screen(screen);
             self.finishing = Some(SCREEN_CAPTURE_PASSES);
         } else if self.options.dump_window.is_some() {
@@ -763,7 +1257,9 @@ impl App {
         let mut actions = Vec::new();
         let mut painted = false;
         let stats = self.overlay.show_stats.then(|| self.stats_view());
-        if self.overlay.visible()
+        let computer_view = self.computer_view();
+        let vkbd_open = self.computer.as_ref().is_some_and(|c| c.vkbd.is_open());
+        if (self.overlay.visible() || vkbd_open)
             && let (Some(egui), Some(window)) = (&mut self.egui, &self.window)
         {
             let data = UiData {
@@ -778,10 +1274,18 @@ impl App {
                 hosted: self.hosted,
                 stats,
                 now,
+                computer: computer_view.as_ref(),
+                disks: self.disks_view.as_ref(),
+                game_scope: self.game_scope,
+                game_overrides: &self.game_options.options.core_options,
             };
             let overlay = &mut self.overlay;
+            let mut vkbd = self.computer.as_mut().map(|c| &mut c.vkbd);
             let delay = egui.run(window.window(), |ctx| {
                 actions = ui::show(ctx, overlay, &data);
+                if let Some(v) = &mut vkbd {
+                    v.show(ctx);
+                }
             });
             painted = true;
             let mut next = self.overlay.osd.next_expiry();
@@ -819,6 +1323,66 @@ impl App {
             tracing::warn!("swap_buffers failed: {e}");
         }
     }
+}
+
+impl App {
+    /// Mouse events of a computer game (not over a menu or the virtual keyboard).
+    fn computer_pointer(&mut self, event: &WindowEvent) {
+        let uses_mouse = self.emulator.uses_mouse();
+        let Some(c) = &mut self.computer else {
+            return;
+        };
+        let effect = match event {
+            WindowEvent::MouseInput { state, button, .. } => match map_button(*button) {
+                Some(b) => c.on_button(b, *state == ElementState::Pressed, uses_mouse),
+                None => CaptureEffect::None,
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                c.on_cursor_moved(position.x, position.y);
+                CaptureEffect::None
+            }
+            WindowEvent::CursorLeft { .. } => {
+                c.mouse.cursor_left();
+                CaptureEffect::None
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (x, y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        (p.x / WHEEL_PIXELS_PER_NOTCH, p.y / WHEEL_PIXELS_PER_NOTCH)
+                    }
+                };
+                c.on_wheel(y, x);
+                CaptureEffect::None
+            }
+            _ => CaptureEffect::None,
+        };
+        self.apply_capture_effect(effect);
+    }
+}
+
+/// Images next to the game's files that the core accepts and that are not in the set yet (sorted, bounded).
+fn addable_images(content: &[PathBuf], extensions: &[String]) -> Vec<PathBuf> {
+    let Some(dir) = content.first().and_then(|f| f.parent()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && !content.contains(p))
+        .filter(|p| {
+            p.extension().is_some_and(|e| {
+                let e = e.to_string_lossy().to_ascii_lowercase();
+                e != "m3u" && extensions.contains(&e)
+            })
+        })
+        .collect();
+    out.sort();
+    out.truncate(MAX_ADDABLE);
+    out
 }
 
 impl ApplicationHandler for App {
@@ -868,6 +1432,9 @@ impl ApplicationHandler for App {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.ctrl = m.state().control_key();
             self.alt = m.state().alt_key();
+            if let Some(c) = &mut self.computer {
+                c.set_modifiers(m.state());
+            }
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = &event {
             let code = match key.physical_key {
@@ -875,6 +1442,14 @@ impl ApplicationHandler for App {
                 PhysicalKey::Unidentified(_) => None,
             };
             let pressed = key.state == ElementState::Pressed;
+            let host_key = self.options.config.hotkeys.host_key;
+            if self.overlay.is_open() && self.computer.is_some() && code == Some(host_key) {
+                // Host key alone closes the menu it opened (its press went to the state machine before).
+                if !pressed && self.overlay.capture().is_none() {
+                    self.close_overlay();
+                }
+                return;
+            }
             if self.overlay.is_open() {
                 if let Some(code) = code
                     && pressed
@@ -898,9 +1473,37 @@ impl ApplicationHandler for App {
                     egui.on_window_event(w.window(), &event);
                 }
                 self.request_redraw();
+            } else if let (Some(code), Some(c)) = (code, &mut self.computer) {
+                if c.vkbd.is_open() && code == KeyCode::Escape && pressed {
+                    c.vkbd.set_open(false);
+                    self.request_redraw();
+                    return;
+                }
+                let outcomes = c.on_key(
+                    code,
+                    pressed,
+                    key.repeat,
+                    key.text.as_deref(),
+                    &mut self.keyboard,
+                );
+                for outcome in outcomes {
+                    match outcome {
+                        KeyOutcome::Action(action, down) => self.hotkey(event_loop, action, down),
+                        KeyOutcome::ToUi => {
+                            if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
+                                egui.on_window_event(w.window(), &event);
+                            }
+                            self.request_redraw();
+                        }
+                    }
+                }
             } else if let Some(code) = code {
+                if code == host_key {
+                    self.host_held = pressed;
+                }
+                let ctrl = self.ctrl || self.host_held;
                 let ctrl_action =
-                    modifier_shortcut(self.ctrl, self.alt, self.modifier_bound, pressed, code);
+                    modifier_shortcut(ctrl, self.alt, self.modifier_bound, pressed, code);
                 if let Some(action) = ctrl_action {
                     if !key.repeat {
                         self.hotkey(event_loop, action, pressed);
@@ -923,12 +1526,17 @@ impl ApplicationHandler for App {
                     | WindowEvent::ScaleFactorChanged { .. }
                     | WindowEvent::Focused(_)
             );
-        if forward
-            && let (Some(egui), Some(w)) = (&mut self.egui, &self.window)
-            && egui.on_window_event(w.window(), &event)
-            && self.overlay.is_open()
-        {
-            w.window().request_redraw();
+        let vkbd_open = self.computer.as_ref().is_some_and(|c| c.vkbd.is_open());
+        let forward = forward || vkbd_open;
+        let mut over_ui = false;
+        if forward && let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
+            if egui.on_window_event(w.window(), &event) && (self.overlay.is_open() || vkbd_open) {
+                w.window().request_redraw();
+            }
+            over_ui = vkbd_open && egui.context().is_pointer_over_egui();
+        }
+        if !self.overlay.is_open() && !over_ui {
+            self.computer_pointer(&event);
         }
         match event {
             WindowEvent::CloseRequested => self.exit(event_loop),
@@ -945,7 +1553,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(false) => {
-                self.keyboard.release_all();
+                self.release_inputs();
+                self.capture(CaptureEvent::FocusLost);
                 // Not every backend sends ModifiersChanged on focus loss.
                 self.ctrl = false;
                 self.alt = false;
@@ -957,7 +1566,19 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+            && !self.overlay.is_open()
+            && let Some(c) = &mut self.computer
+        {
+            c.on_device_motion(dx, dy);
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(c) = &mut self.computer {
+            c.flush_keys();
+        }
         if self.pacer.is_none() || event_loop.exiting() || self.ended {
             return;
         }

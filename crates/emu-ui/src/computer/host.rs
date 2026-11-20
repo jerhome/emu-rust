@@ -1,16 +1,12 @@
-//! Host key state machine (ADR 0015 §4, design §2.3): pure, no window. The host key (Right Ctrl, Right Command on
-//! macOS) is never forwarded to the core. Alone it opens the menu; held, the next keys are chords.
+//! Host key state machine (ADR 0015 §4, design §2.3): pure, no window. The host key (Right Ctrl on every OS, user
+//! decision 2026-11-20; Right Command is the configurable fallback for Mac keyboards without it) is never forwarded to the core. Alone it opens the menu; held, the next keys are chords.
 
 use winit::keyboard::KeyCode;
 
-use crate::hotkeys::{HostAction, HotkeyAction};
+use crate::hotkeys::HotkeyAction;
 
-/// Default host key per OS.
-pub(crate) const DEFAULT_HOST_KEY: KeyCode = if cfg!(target_os = "macos") {
-    KeyCode::SuperRight
-} else {
-    KeyCode::ControlRight
-};
+/// Default host key, the same on every OS (macOS included).
+pub(crate) const DEFAULT_HOST_KEY: KeyCode = KeyCode::ControlRight;
 
 /// What to do with one key transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +16,9 @@ pub(crate) enum HostOutcome {
     /// Consumed (host key itself, unmapped chord, repeat): nothing reaches the core.
     Swallowed,
     /// Run once.
-    Action(HostAction),
+    Action(HotkeyAction),
     /// Held action (fast-forward): `true` on press, `false` on release.
-    ActionHeld(HostAction, bool),
+    ActionHeld(HotkeyAction, bool),
 }
 
 #[derive(Debug)]
@@ -31,7 +27,7 @@ pub(crate) struct HostKey {
     held: bool,
     used: bool,
     /// Keys pressed while the host key was held: their release is swallowed too, with the held action to end.
-    swallowed: Vec<(KeyCode, Option<HostAction>)>,
+    swallowed: Vec<(KeyCode, Option<HotkeyAction>)>,
 }
 
 impl HostKey {
@@ -44,6 +40,7 @@ impl HostKey {
         }
     }
 
+    #[cfg(test)]
     pub fn is_held(&self) -> bool {
         self.held
     }
@@ -61,7 +58,7 @@ impl HostKey {
                 return HostOutcome::PassThrough;
             }
             self.used = true;
-            let action = HostAction::from_key(code);
+            let action = HotkeyAction::from_host_key(code);
             self.swallowed.push((code, action.filter(|a| a.is_held())));
             return match action {
                 Some(a) if a.is_held() => HostOutcome::ActionHeld(a, true),
@@ -90,14 +87,14 @@ impl HostKey {
         self.held = false;
         self.used = false;
         if was_tap {
-            HostOutcome::Action(HostAction::Hotkey(HotkeyAction::Menu))
+            HostOutcome::Action(HotkeyAction::Menu)
         } else {
             HostOutcome::Swallowed
         }
     }
 
     /// Focus lost: back to idle. Returns the held actions to end (fast-forward); the caller also releases keys.
-    pub fn reset(&mut self) -> Vec<HostAction> {
+    pub fn reset(&mut self) -> Vec<HotkeyAction> {
         self.held = false;
         self.used = false;
         self.swallowed.drain(..).filter_map(|(_, a)| a).collect()
@@ -121,7 +118,7 @@ mod tests {
         assert!(h.is_held());
         assert_eq!(
             h.on_key(HOST, false, false),
-            HostOutcome::Action(HostAction::Hotkey(HotkeyAction::Menu))
+            HostOutcome::Action(HotkeyAction::Menu)
         );
         assert!(!h.is_held());
     }
@@ -132,7 +129,7 @@ mod tests {
         h.on_key(HOST, true, false);
         assert_eq!(
             h.on_key(KeyCode::KeyK, true, false),
-            HostOutcome::Action(HostAction::ToggleVirtualKeyboard)
+            HostOutcome::Action(HotkeyAction::ToggleVirtualKeyboard)
         );
         assert_eq!(
             h.on_key(KeyCode::KeyK, false, false),
@@ -191,7 +188,7 @@ mod tests {
 
     #[test]
     fn fast_forward_held_survives_host_release() {
-        let ff = HostAction::Hotkey(HotkeyAction::FastForward);
+        let ff = HotkeyAction::FastForward;
         let mut h = host();
         h.on_key(HOST, true, false);
         assert_eq!(
@@ -212,7 +209,7 @@ mod tests {
 
     #[test]
     fn focus_loss_resets() {
-        let ff = HostAction::Hotkey(HotkeyAction::FastForward);
+        let ff = HotkeyAction::FastForward;
         let mut h = host();
         h.on_key(HOST, true, false);
         h.on_key(KeyCode::Space, true, false);
@@ -232,10 +229,7 @@ mod tests {
         for pressed in [true, false, true, false] {
             assert_ne!(h.on_key(HOST, pressed, false), HostOutcome::PassThrough);
         }
-        assert_eq!(
-            DEFAULT_HOST_KEY == KeyCode::SuperRight,
-            cfg!(target_os = "macos")
-        );
+        assert_eq!(DEFAULT_HOST_KEY, KeyCode::ControlRight);
     }
 
     #[test]
@@ -244,7 +238,7 @@ mod tests {
         h.on_key(KeyCode::ControlLeft, true, false);
         assert_eq!(
             h.on_key(KeyCode::KeyM, true, false),
-            HostOutcome::Action(HostAction::ToggleMouseCapture)
+            HostOutcome::Action(HotkeyAction::ToggleMouseCapture)
         );
     }
 }

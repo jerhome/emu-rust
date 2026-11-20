@@ -1,7 +1,7 @@
 # ADR 0015 — Ordinateurs (version 2.0, Atari ST) : core, BIOS libre, clavier, souris, disquettes, options par jeu
 
 Statut : accepté (2026-11-20). Réponses de l'utilisateur (`docs/questions-ouvertes.md`) : touche hôte Ctrl droit
-(⌘ droit sur macOS) ; EmuTOS 192 Ko **français** ; mode d'entrée par défaut d'un jeu = **Clavier** (jeux surtout
+(partout, macOS compris ; ⌘ droit en repli réglable — décision du 2026-11-20) ; EmuTOS 192 Ko **français** ; mode d'entrée par défaut d'un jeu = **Clavier** (jeux surtout
 point-and-click : la souris est prioritaire) ; 2.0 d'abord, manette en parallèle. Autres questions de
 `docs/design/v2.0-atari-st.md` §9 : défauts recommandés. Précise ADR 0003 (entrées
 « ordinateur »), 0005 (BIOS libres), 0006 / 0011 (emplacements), 0013 (cores, BIOS), 0014 (catalogue, DAT).
@@ -105,7 +105,7 @@ Faits vérifiés le 2026-11-20 :
 
 - En mode console, rien ne change (Échap = menu, raccourcis Ctrl + lettre de la rc.2).
 - En mode ordinateur, Échap, Ctrl et les lettres appartiennent à la machine émulée. Les raccourcis passent par une
-  **touche hôte** (modèle VirtualBox) : **Ctrl droit** par défaut sous Windows et Linux, **⌘ droit** sous macOS
+  **touche hôte** (modèle VirtualBox) : **Ctrl droit** par défaut partout, macOS compris (décision utilisateur) ; **⌘ droit** en repli réglable
   (MacBook sans Ctrl droit) ; configurable (`[hotkeys] host_key`, valeurs conseillées `ControlRight`, `SuperRight`,
   `ContextMenu`, `AltRight` déconseillé : AltGr). La touche hôte n'est **jamais** transmise au core (l'ST n'a qu'un
   Control, tenu par Ctrl gauche).

@@ -12,6 +12,8 @@ path = "src/main.rs"
 [features]
 default = ["audio-cpal"]
 audio-cpal = ["emu-ui/audio-cpal"]
+# Not in `default` until T4 (needs libudev-dev on Linux builds, ADR 0016).
+gamepad = ["emu-ui/gamepad"]
 
 [dependencies]
 directories = { workspace = true }

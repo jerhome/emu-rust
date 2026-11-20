@@ -9,8 +9,10 @@ use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
+use crate::computer::host::DEFAULT_HOST_KEY;
+use crate::config_computer::ComputerConfig;
 use crate::config_library::{CoresConfig, CoversConfig, CredentialsConfig, LibraryConfig};
-use crate::keyboard::{KeyMap, PadStyle};
+use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 
 /// Profile used when a core has no profile of its own.
 pub const DEFAULT_PROFILE: &str = "default";
@@ -41,6 +43,8 @@ pub struct DataDirs {
     pub database: PathBuf,
     /// `cores/<os>-<arch>/` (ADR 0013); same folder as `emu_assets::cores::CoreDirs::under`.
     pub cores: PathBuf,
+    /// Per-game options `game-options/<core_id>/<game>.toml` (ADR 0015 §8).
+    pub game_options: PathBuf,
 }
 
 impl DataDirs {
@@ -60,6 +64,7 @@ impl DataDirs {
                 std::env::consts::OS,
                 std::env::consts::ARCH
             )),
+            game_options: root.join("game-options"),
         }
     }
 
@@ -83,6 +88,7 @@ impl DataDirs {
             &self.covers,
             &self.database,
             &self.cores,
+            &self.game_options,
         ] {
             std::fs::create_dir_all(dir)?;
         }
@@ -200,6 +206,13 @@ pub struct Hotkeys {
     pub fast_forward: KeyCode,
     pub fullscreen: KeyCode,
     pub stats: KeyCode,
+    /// Computer systems (ADR 0015 §4): alone = menu, held + key = shortcut; never sent to the core. Right Ctrl on
+    /// every OS; `SuperRight` (Right Command) for Mac keyboards without a Right Ctrl. Absent from 1.0 files.
+    #[serde(
+        default = "default_host_key",
+        skip_serializing_if = "is_default_host_key"
+    )]
+    pub host_key: KeyCode,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -217,9 +230,18 @@ impl Default for Hotkeys {
             fast_forward: KeyCode::Space,
             fullscreen: KeyCode::F11,
             stats: KeyCode::F3,
+            host_key: DEFAULT_HOST_KEY,
             extra: toml::Table::new(),
         }
     }
+}
+
+fn default_host_key() -> KeyCode {
+    DEFAULT_HOST_KEY
+}
+
+fn is_default_host_key(key: &KeyCode) -> bool {
+    *key == DEFAULT_HOST_KEY
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -243,6 +265,9 @@ pub struct Config {
     pub covers: CoversConfig,
     pub credentials: CredentialsConfig,
     pub cores: CoresConfig,
+    /// `[computer]` (ADR 0015): mouse, capture, keyboard mode, EmuTOS variant. Not written while default.
+    #[serde(skip_serializing_if = "ComputerConfig::is_default")]
+    pub computer: ComputerConfig,
     /// `core_id` → option key → value.
     pub core_options: BTreeMap<String, BTreeMap<String, String>>,
     /// Unknown top-level keys and tables, written back unchanged.
@@ -411,7 +436,7 @@ impl Config {
         let default_applies = matches!(
             style,
             PadStyle::MegaDrive | PadStyle::Snes | PadStyle::Generic
-        );
+        ) && !is_computer_profile(profile);
         self.input
             .keyboard
             .get(profile)
@@ -421,7 +446,7 @@ impl Config {
                     .flatten()
             })
             .cloned()
-            .unwrap_or_else(|| KeyMap::default_for(style))
+            .unwrap_or_else(|| KeyMap::builtin_for(profile, style))
     }
 
     pub fn set_keymap(&mut self, profile: &str, map: KeyMap) {
@@ -622,6 +647,38 @@ button = "a"
     }
 
     #[test]
+    fn config_1_0_is_read_unchanged_and_2_0_keys_round_trip() {
+        let text = "[video]\nscale = 4\n\n[hotkeys]\nmenu = \"Escape\"\n";
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.hotkeys.host_key, KeyCode::ControlRight);
+        assert!(c.computer.is_default());
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(
+            !out.contains("host_key") && !out.contains("[computer]"),
+            "{out}"
+        );
+        let text = "[hotkeys]\nhost_key = \"SuperRight\"\n\n[computer]\nmouse_sensitivity = 2.0\n\
+                    default_keyboard_mode = \"joystick\"\nemutos_variant = \"192de\"\nfutur = 1\n";
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.hotkeys.host_key, KeyCode::SuperRight);
+        assert_eq!(c.computer.mouse_sensitivity, 2.0);
+        assert_eq!(c.computer.emutos_variant.as_deref(), Some("192de"));
+        let again: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        // Computer cores never inherit the shared « default » profile; their built-in map is small.
+        let mut c = Config::default();
+        c.set_keymap(DEFAULT_PROFILE, KeyMap::snes_default());
+        assert_eq!(
+            c.keymap_for("hatari", PadStyle::Generic),
+            KeyMap::computer_default()
+        );
+        assert_eq!(
+            c.keymap_for("other", PadStyle::Generic),
+            KeyMap::snes_default()
+        );
+    }
+
+    #[test]
     fn missing_file_is_default() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -675,6 +732,7 @@ button = "a"
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("data");
         let dirs = DataDirs::under(&root);
+        assert_eq!(dirs.game_options, root.join("game-options"));
         assert_eq!(dirs.config_file, root.join("config.toml"));
         dirs.create_all().unwrap();
         for d in [&dirs.system, &dirs.saves, &dirs.states, &dirs.assets] {

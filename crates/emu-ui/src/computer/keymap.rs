@@ -1,6 +1,7 @@
 //! Positional winit `KeyCode` → libretro `RetroKey` (US layout names): the emulated machine's own keyboard layout
 //! (TOS) turns positions into characters, whatever the host layout is.
 
+#[cfg(test)]
 use std::collections::HashSet;
 
 use emu_runtime::{KeyModifiers, RetroKey};
@@ -226,10 +227,12 @@ impl AltGrFilter {
     }
 }
 
+#[cfg(test)]
 /// Keys currently reported as held to the core, to drop duplicates and release everything on focus loss.
 #[derive(Debug, Default)]
 pub(crate) struct HeldKeys(HashSet<KeyCode>);
 
+#[cfg(test)]
 impl HeldKeys {
     /// `true` when this changes the state (a repeat or a duplicate does not).
     pub fn update(&mut self, code: KeyCode, pressed: bool) -> bool {

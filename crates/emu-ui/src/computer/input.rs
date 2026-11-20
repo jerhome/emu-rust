@@ -108,15 +108,18 @@ impl ComputerKeyboard {
         }
     }
 
+    #[cfg(test)]
     pub fn is_held(&self, key: RetroKey) -> bool {
         self.held.contains(&key)
     }
 
+    #[cfg(test)]
     /// Events queued since the last poll (tests, virtual keyboard merge).
     pub fn pending_events(&self) -> &[KeyEvent] {
         &self.events
     }
 
+    #[cfg(test)]
     /// Key events from another source (virtual keyboard), appended in order.
     pub fn push_events(&mut self, events: impl IntoIterator<Item = KeyEvent>) {
         for e in events {

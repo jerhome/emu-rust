@@ -52,7 +52,13 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     diagnostics::check_core(&core)?;
     Ok(emu_ui::LaunchOptions {
         core,
-        rom: cli.rom,
+        content: if cli.roms.is_empty() {
+            emu_ui::GameContent::NoGame
+        } else {
+            emu_ui::GameContent::Files(cli.roms)
+        },
+        // Computer cores (hatari…) are recognised by the UI from their id.
+        computer: false,
         dirs,
         config,
         scale: cli.scale,

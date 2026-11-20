@@ -83,7 +83,7 @@ Résultats :
     via le frontend dépend du menu disque (à vérifier : prise en charge de `DiskControl` côté UI).
   - cmd 12 `SET_KEYBOARD_CALLBACK` : non géré. Les entrées clavier sont lues par `input_state(RETRO_DEVICE_KEYBOARD)` ;
     à vérifier si le frontend transmet bien les touches (un Atari ST est un ordinateur : clavier complet requis).
-  - cmd 0x1002D (45 | EXPERIMENTAL) `GET_HW_RENDER_INTERFACE` : sans conséquence (pas de hw_render).
+  - cmd 0x1002D (45 | EXPERIMENTAL) `GET_VFS_INTERFACE` (correction : pas GET_HW_RENDER_INTERFACE, cf. docs/essais-dosbox.md) : sans conséquence pour hatari.
   - Souris (`RETRO_DEVICE_MOUSE` / pointeur) : le bureau GEM exige la souris ; aucune trace d'erreur mais le profil de touches
     actuel est « joypad » (20 touches liées, profil `hatari` existant) ; **non testé** (pas de pilotage souris dans `ScriptedInput`).
   - Notes : `GET_VARIABLE`/options v2 fonctionnent ; `SET_SUPPORT_NO_GAME` est accepté (le core annonce `supports_no_game`),

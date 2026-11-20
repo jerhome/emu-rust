@@ -8,17 +8,20 @@ use std::path::PathBuf;
 use emu_ui::{LibraryScreen, MAX_SCALE, MIN_SCALE, Screen};
 
 pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibliothèque de jeux\n\
-                         \x20      emu-rust --core <ID|chemin> --rom <fichier> [--data-dir DIR] [--system-dir DIR]\n\
-                         \x20                [--save-dir DIR] [--scale N] [--no-audio] [--frames N]\n\
-                         \x20                [--dump-frame sortie.png] [--screen menu|keys|options]\n\
-                         \x20                [--dump-window sortie.png]\n\
+                         \x20      emu-rust --core <ID|chemin> [--rom <fichier> [--rom <disquette 2> ...] | --no-game]\n\
+                         \x20                [--data-dir DIR] [--system-dir DIR] [--save-dir DIR] [--scale N]\n\
+                         \x20                [--no-audio] [--frames N] [--dump-frame sortie.png]\n\
+                         \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--screen library|library-settings|cores|library-launch]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
-                         \x20      emu-rust [--data-dir DIR] --remove-core <ID> | --check-bios [ID]\n\
+                         \x20      emu-rust [--data-dir DIR] --remove-core <ID> | --check-bios [ID] | --list-bios\n\
+                         \x20      emu-rust [--data-dir DIR] --install-bios emutos[:VARIANTE] [--replace-user-bios]\n\
                          \x20      emu-rust --version | --help\n\
                          --core accepte l'identifiant d'un core installé (ex. gambatte) ou le chemin d'un fichier.\n\
+                         --rom répété : disquettes d'un même jeu, dans l'ordre ; sans --rom : démarrage sans\n\
+                         contenu (bureau d'un ordinateur, ex. --core hatari).\n\
                          Racine de données : --data-dir, sinon EMU_DATA_DIR, sinon le dossier standard.";
 
 /// `--core` value: a managed core id, or a path as in 0.1.
@@ -52,7 +55,8 @@ fn looks_like_core_id(text: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Cli {
     pub core: CoreSpec,
-    pub rom: PathBuf,
+    /// Disks of one game in order; empty = no content (`--no-game`, or `--core` alone).
+    pub roms: Vec<PathBuf>,
     pub data_dir: Option<PathBuf>,
     pub system_dir: Option<PathBuf>,
     pub save_dir: Option<PathBuf>,
@@ -84,6 +88,13 @@ pub enum CoresAction {
     Update,
     Remove(String),
     CheckBios(Option<String>),
+    ListBios,
+    /// `--install-bios id[:variant]`; `replace`: `--replace-user-bios` (backup then replace a user file).
+    InstallBios {
+        id: String,
+        variant: Option<String>,
+        replace: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,7 +126,9 @@ enum ScreenArg {
 
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, String> {
     let mut core = None;
-    let mut rom = None;
+    let mut roms: Vec<PathBuf> = Vec::new();
+    let mut no_game = false;
+    let mut replace_user_bios = false;
     let mut data_dir = None;
     let mut system_dir = None;
     let mut save_dir = None;
@@ -148,7 +161,28 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         };
         match name.as_str() {
             "--core" => core = Some(CoreSpec::parse(&value(&mut it)?)),
-            "--rom" => rom = Some(PathBuf::from(value(&mut it)?)),
+            "--rom" => roms.push(PathBuf::from(value(&mut it)?)),
+            "--no-game" => no_game = true,
+            "--list-bios" => actions.push(CoresAction::ListBios),
+            "--replace-user-bios" => replace_user_bios = true,
+            "--install-bios" => {
+                let spec = text(&mut it)?;
+                let (id, variant) = match spec.split_once(':') {
+                    Some((id, v)) => (id.to_owned(), Some(v.to_owned())),
+                    None => (spec, None),
+                };
+                let ok = |t: &str| looks_like_core_id(t);
+                if !ok(&id) || variant.as_deref().is_some_and(|v| !ok(v)) {
+                    return Err(
+                        "--install-bios attend emutos ou emutos:VARIANTE (ex. emutos:192fr)".into(),
+                    );
+                }
+                actions.push(CoresAction::InstallBios {
+                    id,
+                    variant,
+                    replace: false,
+                });
+            }
             "--data-dir" => data_dir = Some(PathBuf::from(value(&mut it)?)),
             "--dump-frame" => dump_frame = Some(PathBuf::from(value(&mut it)?)),
             "--dump-window" => dump_window = Some(PathBuf::from(value(&mut it)?)),
@@ -160,14 +194,19 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "menu" => ScreenArg::Game(Screen::Menu),
                     "keys" => ScreenArg::Game(Screen::Keys),
                     "options" => ScreenArg::Game(Screen::CoreOptions),
+                    "disks" => ScreenArg::Game(Screen::Disks),
+                    "computer" => ScreenArg::Game(Screen::Computer),
+                    "vkbd" => ScreenArg::Game(Screen::VirtualKeyboard),
                     "library" => ScreenArg::Library(LibraryScreen::Home),
                     "library-settings" => ScreenArg::Library(LibraryScreen::Settings),
                     "cores" => ScreenArg::Library(LibraryScreen::Cores),
                     "library-launch" => ScreenArg::Library(LibraryScreen::Launch),
                     _ => {
-                        return Err("--screen attend menu, keys, options, library, \
+                        return Err(
+                            "--screen attend menu, keys, options, disks, computer, vkbd, library, \
                                     library-settings, library-launch ou cores"
-                            .into());
+                                .into(),
+                        );
                     }
                 });
             }
@@ -210,13 +249,26 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         }
     }
 
+    if replace_user_bios {
+        match actions.last_mut() {
+            Some(CoresAction::InstallBios { replace, .. }) => *replace = true,
+            _ => return Err("--replace-user-bios s'utilise avec --install-bios".into()),
+        }
+    }
+    if no_game && !roms.is_empty() {
+        return Err("--no-game et --rom s'excluent".into());
+    }
+    if no_game && core.is_none() {
+        return Err("--no-game demande --core".into());
+    }
+    let rom = roms.first().cloned();
     if let Some(first) = actions.first() {
         if actions.len() > 1 {
             return Err("une seule commande de gestion des cores à la fois \
                         (--install-core peut être répété)"
                 .into());
         }
-        if core.is_some() || rom.is_some() || screen.is_some() {
+        if core.is_some() || rom.is_some() || no_game || screen.is_some() {
             return Err(
                 "les commandes de gestion des cores ne se combinent pas avec \
                         --core, --rom ni --screen"
@@ -255,7 +307,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             None => None,
             Some(ScreenArg::Library(s)) => Some(s),
             Some(ScreenArg::Game(_)) => {
-                return Err("--screen menu, keys et options demandent --core et --rom".into());
+                return Err(
+                    "--screen menu, keys, options, disks, computer et vkbd demandent --core".into(),
+                );
             }
         };
         return Ok(Command::Library(Box::new(LibraryCli {
@@ -281,7 +335,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     };
     Ok(Command::Run(Box::new(Cli {
         core: core.ok_or("--core est obligatoire")?,
-        rom: rom.ok_or("--rom est obligatoire")?,
+        roms,
         data_dir,
         system_dir,
         save_dir,
@@ -381,6 +435,53 @@ mod tests {
     }
 
     #[test]
+    fn several_disks_or_none() {
+        let Command::Run(o) = p(&["--core", "hatari", "--rom", "a.st", "--rom", "b.st"]).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(o.roms, vec![PathBuf::from("a.st"), PathBuf::from("b.st")]);
+        for args in [
+            &["--core", "hatari"][..],
+            &["--core", "hatari", "--no-game"],
+        ] {
+            let Command::Run(o) = p(args).unwrap() else {
+                panic!()
+            };
+            assert!(o.roms.is_empty());
+        }
+        let Command::Run(o) = p(&["--core", "hatari", "--screen", "vkbd"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(o.screen, Some(Screen::VirtualKeyboard));
+    }
+
+    #[test]
+    fn bios_commands() {
+        assert_eq!(cores(&["--list-bios"]), CoresAction::ListBios);
+        assert_eq!(
+            cores(&["--install-bios", "emutos"]),
+            CoresAction::InstallBios {
+                id: "emutos".into(),
+                variant: None,
+                replace: false
+            }
+        );
+        assert_eq!(
+            cores(&["--install-bios", "emutos:192fr", "--replace-user-bios"]),
+            CoresAction::InstallBios {
+                id: "emutos".into(),
+                variant: Some("192fr".into()),
+                replace: true
+            }
+        );
+        assert!(p(&["--replace-user-bios"]).is_err());
+        assert!(p(&["--install-bios", "../x"]).is_err());
+        assert!(p(&["--install-bios", "emutos:a/b"]).is_err());
+        assert!(p(&["--install-bios", "emutos", "--rom", "r"]).is_err());
+    }
+
+    #[test]
     fn no_audio() {
         let Command::Run(o) = p(&["--core", "c", "--rom", "r", "--no-audio"]).unwrap() else {
             panic!()
@@ -391,7 +492,8 @@ mod tests {
     #[test]
     fn errors() {
         assert!(p(&["--rom", "r"]).unwrap_err().contains("--core"));
-        assert!(p(&["--core", "c"]).unwrap_err().contains("--rom"));
+        assert!(p(&["--no-game"]).unwrap_err().contains("--core"));
+        assert!(p(&["--core", "c", "--rom", "r", "--no-game"]).is_err());
         assert!(p(&["--core"]).is_err());
         assert!(p(&["--core", "c", "--rom", "r", "--scale", "0"]).is_err());
         assert!(p(&["--core", "c", "--rom", "r", "--scale", "17"]).is_err());
