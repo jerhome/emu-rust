@@ -598,6 +598,9 @@ struct Stage<'a> {
     media_direct: &'a [String],
     /// `MediaRules::max_copy_bytes`: largest whole file copied.
     max_copy: u64,
+    /// Bytes written so far by this stage (copies and extractions); the sum is bounded by `max_copy` too, so a
+    /// zip of many large entries cannot fill the disk.
+    written: u64,
     limits: Limits,
     work_dir: PathBuf,
     temp_dir: Option<Arc<TempDir>>,
@@ -623,6 +626,7 @@ impl<'a> Stage<'a> {
             exts,
             media_direct: &[],
             max_copy: MAX_COPY_BYTES,
+            written: 0,
             limits,
             work_dir,
             temp_dir: None,
@@ -720,8 +724,13 @@ impl<'a> Stage<'a> {
                 // No image inside: a core reading zips gets the archive whole (step 3).
                 Ok(None) if accepts_ext(self.exts, "zip") => {}
                 Ok(None) => return Err(RuntimeError::NoContentInArchive(source.to_path_buf())),
+                // Invariant (2.0 behaviour kept): a zip refused by the inspection (too many entries, too large,
+                // corrupt) is still handed over whole when the core reads zips; the core does its own parsing.
                 Err(e) if accepts_ext(self.exts, "zip") => {
-                    tracing::warn!("{e}: handed over whole, the core reads zips");
+                    tracing::warn!(
+                        "zip {} not inspected ({e}): handed over whole, the core reads zips",
+                        source.display()
+                    );
                 }
                 Err(e) => return Err(e),
             }
@@ -736,16 +745,24 @@ impl<'a> Stage<'a> {
     fn copy_plain(&mut self, source: &Path) -> Result<PathBuf, RuntimeError> {
         let name = disk_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
         let size = fs::metadata(source).map_err(|e| io_error(source, e))?.len();
-        if size > self.max_copy {
-            return Err(copy_too_large(source, size, self.max_copy));
-        }
+        self.reserve(source, size)?;
         let dest = self.dest_path(&name, size)?;
         if !exists(&dest)? {
             copy_file(source, &dest, self.max_copy)?;
+            self.written += size;
             tracing::info!("working copy of {} created", source.display());
         }
         self.push(dest.clone())?;
         Ok(dest)
+    }
+
+    /// Refuses `size` more bytes when the set would exceed `max_copy` in total (same error as one oversized file).
+    fn reserve(&self, source: &Path, size: u64) -> Result<(), RuntimeError> {
+        let total = self.written.saturating_add(size);
+        if size > self.max_copy || total > self.max_copy {
+            return Err(copy_too_large(source, total, self.max_copy));
+        }
+        Ok(())
     }
 
     /// Copy (or extraction) of one planned image.
@@ -766,10 +783,17 @@ impl<'a> Stage<'a> {
     ) -> Result<PathBuf, RuntimeError> {
         let dest = self.dest_path(&disk_file_name(&entry.name), entry.declared)?;
         if self.policy == MediaPolicy::Direct || !exists(&dest)? {
+            self.reserve(zip, entry.declared)?;
             let mut failure = None;
+            let mut extracted = 0;
+            // An entry lying about its size is cut by the remaining budget, not only by `max_size`.
+            let bound = self
+                .limits
+                .max_size
+                .min(self.max_copy.saturating_sub(self.written));
             let written = write_atomic_with(&dest, FileMode::Default, |file| {
-                content::copy_entry(archive, zip, entry, self.limits.max_size, file, &dest)
-                    .map(drop)
+                content::copy_entry(archive, zip, entry, bound, file, &dest)
+                    .map(|n| extracted = n)
                     .map_err(|e| {
                         failure = Some(e);
                         io::Error::other("zip entry not extracted")
@@ -779,6 +803,7 @@ impl<'a> Stage<'a> {
                 return Err(e);
             }
             written.map_err(|e| io_error(&dest, e))?;
+            self.written += extracted;
             tracing::info!(entry = %entry.name, "disk image extracted from {}", zip.display());
         }
         self.push(dest.clone())?;
@@ -1143,7 +1168,8 @@ pub fn reset_working_copies(saves_core_dir: &Path, game: &str) -> Result<bool, R
 /// not be running that game.
 ///
 /// `patterns` are **file names**, never paths: `{game}` stands for `content_name` (the content name handed to
-/// the core), at most one `*` matches any run of characters. A pattern holding a path separator, `..`, or more
+/// the core), at most one `*` matches any run of characters other than `.` (so that the files of a game whose
+/// name extends this one, `X.saveY` for `X`, are never matched). A pattern holding a path separator, `..`, or more
 /// than one `*` is refused (`InvalidMediaSet`), nothing is deleted. Only regular files directly inside
 /// `saves_core_dir` are looked at (not recursive, links never followed).
 pub fn reset_core_game_files(
@@ -1252,6 +1278,9 @@ impl SaveGlob {
                 name.len() >= self.prefix.len() + suffix.len()
                     && name.starts_with(&self.prefix)
                     && name.ends_with(suffix.as_str())
+                    // The `*` never absorbs a `.`: `X.saveY.save1.adf` (game `X.saveY`) is not a file of
+                    // game `X` for `{game}.save*.adf`. Cores number their saves, they do not add dots.
+                    && !name[self.prefix.len()..name.len() - suffix.len()].contains('.')
             }
         }
     }
@@ -2112,6 +2141,73 @@ mod tests {
         assert!(!f.tmp.path().join("escape.st").exists());
         assert!(!work.join("link.st").exists());
         assert_eq!(sha(&[path]), before);
+    }
+
+    #[test]
+    fn set_total_is_bounded_by_max_copy_bytes() {
+        let f = Fixture::new();
+        let rules = MediaRules {
+            max_copy_bytes: 150,
+            ..MediaRules::new(MediaPolicy::WorkingCopy)
+        };
+        let zip = f.file(
+            "Two.zip",
+            &build_zip(&[(b"a.st", &[1u8; 100], None), (b"b.st", &[2u8; 100], None)]),
+        );
+        let err = prepare_media(&set("Two", vec![zip]), &rules, &exts(), &f.saves()).unwrap_err();
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)), "{err}");
+        let a = f.file("A.st", &[1u8; 100]);
+        let b = f.file("B.st", &[2u8; 100]);
+        let err = prepare_media(
+            &set("Plain", vec![a.clone(), b]),
+            &rules,
+            &exts(),
+            &f.saves(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)), "{err}");
+        // Within the total: accepted.
+        prepare_media(&set("One", vec![a]), &rules, &exts(), &f.saves()).unwrap();
+    }
+
+    /// Invariant: a zip the inspection refuses is still handed over whole when the core reads zips (2.0).
+    #[test]
+    fn uninspectable_zip_is_passed_whole_when_the_core_reads_zips() {
+        let f = Fixture::new();
+        let bad = f.file("Broken.zip", b"PK-not-really-a-zip");
+        let with_zip = strs(&["st", "zip"]);
+        let p = prepare_media(
+            &set("Broken", vec![bad.clone()]),
+            &MediaRules::new(MediaPolicy::WorkingCopy),
+            &with_zip,
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, f.saves().join("Broken.disks/Broken.zip"));
+        assert_eq!(fs::read(&p.content).unwrap(), fs::read(&bad).unwrap());
+        // Without `zip`, the same archive is refused.
+        assert!(
+            prepare_media(
+                &set("Broken2", vec![bad]),
+                &MediaRules::new(MediaPolicy::WorkingCopy),
+                &exts(),
+                &f.saves(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reset_does_not_reach_the_saves_of_a_longer_game_name() {
+        let f = Fixture::new();
+        let dir = f.saves();
+        for name in ["X.save1.adf", "X.saveY.save1.adf", "X.save.save1.adf"] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let removed = reset_core_game_files(&dir, "X", &strs(&["{game}.save*.adf"])).unwrap();
+        assert_eq!(removed, [dir.join("X.save1.adf")]);
+        let removed = reset_core_game_files(&dir, "X.saveY", &strs(&["{game}.save*.adf"])).unwrap();
+        assert_eq!(removed, [dir.join("X.saveY.save1.adf")]);
     }
 
     #[test]

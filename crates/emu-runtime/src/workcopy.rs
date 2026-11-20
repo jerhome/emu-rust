@@ -228,8 +228,13 @@ impl Plan {
                     }
                     Ok(None) if accepts_ext(exts, "zip") => {}
                     Ok(None) => return Err(RuntimeError::NoContentInArchive(path.clone())),
+                    // Invariant (2.0 behaviour kept): a zip refused by the inspection (too many entries, too
+                    // large, corrupt) is still copied whole when the core reads zips.
                     Err(e) if accepts_ext(exts, "zip") => {
-                        tracing::warn!("{e}: copied whole, the core reads zips");
+                        tracing::warn!(
+                            "zip {} not inspected ({e}): copied whole, the core reads zips",
+                            path.display()
+                        );
                     }
                     Err(e) => return Err(e),
                 }
