@@ -59,6 +59,12 @@ pub trait GamepadSource {
     fn poll_events(&mut self, out: &mut Vec<PadEvent>);
 }
 
+impl<S: GamepadSource + ?Sized> GamepadSource for Box<S> {
+    fn poll_events(&mut self, out: &mut Vec<PadEvent>) {
+        (**self).poll_events(out);
+    }
+}
+
 /// Deterministic source for tests: each `poll_events` call delivers the next queued batch (empty when exhausted).
 #[derive(Debug, Default, Clone)]
 pub struct ScriptedPadSource {

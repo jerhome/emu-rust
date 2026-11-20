@@ -85,7 +85,7 @@ Windows (SmartScreen) : « Informations complémentaires » > « Exécuter quand
   Le core doit être une DLL 64 bits (x86_64).
 Linux : dépendances (Debian/Ubuntu) :
     sudo apt install libasound2t64 libasound2-plugins libxkbcommon-x11-0 libgl1 libegl1 \
-      libwayland-client0 libxcursor1 libxrandr2 libxi6        (Ubuntu 22.04 : libasound2)
+      libwayland-client0 libxcursor1 libxrandr2 libxi6 libudev1        (Ubuntu 22.04 : libasound2)
   Son sous WSLg : ~/.asoundrc contenant
     pcm.!default pulse
     ctl.!default pulse

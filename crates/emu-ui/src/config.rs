@@ -11,6 +11,7 @@ use winit::keyboard::KeyCode;
 
 use crate::computer::host::DEFAULT_HOST_KEY;
 use crate::config_computer::ComputerConfig;
+use crate::config_gamepad::GamepadConfig;
 use crate::config_library::{CoresConfig, CoversConfig, CredentialsConfig, LibraryConfig};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 
@@ -249,6 +250,9 @@ fn is_default_host_key(key: &KeyCode) -> bool {
 pub struct InputConfig {
     /// `"default"` or a `core_id` → bindings.
     pub keyboard: BTreeMap<String, KeyMap>,
+    /// `[input.gamepad]` (ADR 0016). Absent from 1.0/2.0 files and not written while default.
+    #[serde(skip_serializing_if = "GamepadConfig::is_default")]
+    pub gamepad: GamepadConfig,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -676,6 +680,25 @@ button = "a"
             c.keymap_for("other", PadStyle::Generic),
             KeyMap::snes_default()
         );
+    }
+
+    #[test]
+    fn config_2_0_without_gamepad_round_trips_and_gamepad_section_persists() {
+        let text =
+            "[input.keyboard.default]\nbindings = []\n\n[computer]\nmouse_sensitivity = 2.0\n";
+        let c: Config = toml::from_str(text).unwrap();
+        assert!(c.input.gamepad.is_default());
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("gamepad"), "{out}");
+        let text = "[input.gamepad]\ndeadzone = 0.3\nfutur = 1\n\n\
+                    [input.gamepad.devices.\"abcd\"]\nport = 1\n";
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.input.gamepad.deadzone, 0.3);
+        assert_eq!(c.input.gamepad.devices["abcd"].port, Some(1));
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(out.contains("futur"), "{out}");
+        let again: Config = toml::from_str(&out).unwrap();
+        assert_eq!(again, c);
     }
 
     #[test]

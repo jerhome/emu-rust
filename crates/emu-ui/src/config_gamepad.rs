@@ -57,3 +57,45 @@ impl Default for GamepadConfig {
         }
     }
 }
+
+impl GamepadConfig {
+    /// Nothing to write: a 2.0 file (no `[input.gamepad]`) stays unchanged after a save.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_section_round_trips_and_keeps_unknown_keys() {
+        let text = r#"
+enabled = false
+deadzone = 0.15
+hotkey_button = "select"
+futur = "x"
+
+[bindings.genesis_plus_gx]
+south = "b"
+
+[devices."030000004c050000c405000000000000"]
+port = 1
+deadzone = 0.2
+autre = 3
+"#;
+        let c: GamepadConfig = toml::from_str(text).unwrap();
+        assert!(!c.enabled);
+        assert_eq!(c.hotkey_button, HotkeyButton::Select);
+        assert_eq!(c.trigger_threshold, 0.5);
+        assert_eq!(c.bindings["genesis_plus_gx"]["south"], "b");
+        let d = &c.devices["030000004c050000c405000000000000"];
+        assert_eq!((d.port, d.deadzone), (Some(1), Some(0.2)));
+        assert!(d.extra.contains_key("autre") && c.extra.contains_key("futur"));
+        let again: GamepadConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        assert!(!c.is_default());
+        assert!(GamepadConfig::default().is_default());
+    }
+}

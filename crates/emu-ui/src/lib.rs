@@ -25,11 +25,19 @@ pub use crate::config::{
 pub use crate::config_computer::{
     ComputerConfig, KeyboardModeChoice, emutos_variant_or_system, variant_for_locale,
 };
+pub use crate::config_gamepad::{GamepadConfig, GamepadDeviceConfig, HotkeyButton};
 pub use crate::config_library::{
     CoresConfig, CoversConfig, CredentialsConfig, IgdbConfig, LibraryConfig, ScreenScraperConfig,
 };
 pub use crate::content::{GameContent, content_spec, media_set_name};
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+#[cfg(feature = "gamepad")]
+pub use crate::gamepad::GilrsSource;
+pub use crate::gamepad::{
+    GamepadError, GamepadInput, GamepadNotice, GamepadSettings, GamepadSource, NavKey, PadAxis,
+    PadBackend, PadButton, PadEvent, PadEventKind, PadId, PadMap, ScriptedPadSource,
+    retropad_from_name, retropad_name,
+};
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
@@ -65,6 +73,8 @@ pub struct LaunchOptions {
     pub scale: Option<u32>,
     /// `false` (`--no-audio`): silent `AudioOutput::null()` without probing a device.
     pub audio: bool,
+    /// `false` (`--no-gamepad`): no pad backend is opened, whatever `[input.gamepad] enabled` says.
+    pub gamepad: bool,
     /// Quit cleanly after this many emulated frames (Xvfb captures, smoke tests).
     pub exit_after_frames: Option<u64>,
     /// On exit, write the last emulated frame as PNG.
@@ -108,6 +118,8 @@ pub struct LibraryOptions {
     pub config: Config,
     /// `false` (`--no-audio`): every launched game is silent.
     pub audio: bool,
+    /// `false` (`--no-gamepad`): games are played with the keyboard only.
+    pub gamepad: bool,
     /// Capture mode: open this screen, render a few egui frames, write `dump_window`, quit. No scan, no network.
     pub screen: Option<LibraryScreen>,
     pub dump_window: Option<PathBuf>,

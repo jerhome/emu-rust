@@ -23,6 +23,12 @@ services:
     profiles: ["wslg"]
     devices:
       - /dev/dxg
+      # Gamepads (ADR 0016): WSLg does not expose USB pads to WSL2 by default. Attach one with usbipd-win
+      # (Windows: `usbipd attach --wsl --busid <id>`), check that /dev/input/js* or event* exists in WSL,
+      # then uncomment the line below (compose fails if the path is missing, hence commented out).
+      # The container user (uid 1000) needs read access to /dev/input/event*: add `group_add: ["input"]`
+      # (use the numeric host gid of `input`: `getent group input`) or relax the device permissions.
+      # - /dev/input:/dev/input
     volumes:
       - emu-data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix
@@ -46,6 +52,9 @@ services:
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/run/pulse/native
     devices:
       - /dev/dri
+      # Gamepads on a Linux host (ADR 0016): uncomment, and give uid 1000 read access to /dev/input/event*
+      # (e.g. `group_add: ["<numeric gid of the host group input>"]`).
+      # - /dev/input:/dev/input
     environment:
       EMU_DATA_DIR: "/data"
       DISPLAY: "${DISPLAY:-:0}"

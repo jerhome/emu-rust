@@ -14,8 +14,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{WindowAttributes, WindowId};
 
 use super::{LaunchRequest, LibraryEvent, LibraryUi, Page, text};
-use crate::app::{App, Restart};
+use crate::app::{App, Restart, open_gamepad};
 use crate::egui_layer::EguiLayer;
+use crate::gamepad::PadBackend;
 use crate::{LaunchOptions, LibraryOptions, LibraryScreen, UiError};
 
 const WINDOW: (u32, u32) = (1280, 720);
@@ -37,6 +38,10 @@ struct Host {
     window: Option<GlWindow>,
     library: LibraryUi,
     audio: bool,
+    /// `--no-gamepad` absent. The backend is opened at the first launch and lent to each game.
+    gamepad_allowed: bool,
+    gamepad_opened: bool,
+    gamepad: Option<PadBackend>,
     screen: Option<LibraryScreen>,
     dump_window: Option<std::path::PathBuf>,
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
@@ -66,6 +71,9 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         window: None,
         library,
         audio: options.audio,
+        gamepad_allowed: options.gamepad,
+        gamepad_opened: false,
+        gamepad: None,
         screen: options.screen,
         dump_window: options.dump_window,
         proxy,
@@ -108,6 +116,7 @@ impl Host {
             config: self.library.config().clone(),
             scale: None,
             audio: self.audio,
+            gamepad: self.gamepad_allowed,
             exit_after_frames: launch_capture.then_some(LAUNCH_CAPTURE_FRAMES),
             dump_last_frame: None,
             screen: None,
@@ -129,6 +138,15 @@ impl Host {
                 for w in &request.warnings {
                     app.warn(w.clone());
                 }
+                if !self.gamepad_opened {
+                    self.gamepad_opened = true;
+                    let (pad, notice) = open_gamepad(self.gamepad_allowed, self.library.config());
+                    self.gamepad = pad;
+                    if let Some(notice) = notice {
+                        app.warn(notice.to_owned());
+                    }
+                }
+                app.set_gamepad(self.gamepad.take());
                 app.attach(event_loop, window, self.egui.take());
                 self.game = Some(Box::new(app));
                 self.current = Some(request);
@@ -152,6 +170,7 @@ impl Host {
         drop(game);
         self.window = back.window;
         self.egui = back.egui;
+        self.gamepad = back.gamepad;
         if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
             egui.assume_focused(w.window());
         }
