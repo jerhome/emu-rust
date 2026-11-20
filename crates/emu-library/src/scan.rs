@@ -408,7 +408,10 @@ fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
 
 /// Key used to match a `.m3u` entry with a scanned file: NTFS and APFS ignore case, so `DISK1.ST` names `disk1.st`.
 fn norm_key(key: &str) -> String {
-    if cfg!(any(windows, target_os = "macos")) {
+    if cfg!(windows) {
+        // `.m3u` entries joined to the folder may mix `/` and `\`: compare with one separator, case-insensitively.
+        key.replace('/', "\\").to_lowercase()
+    } else if cfg!(target_os = "macos") {
         key.to_lowercase()
     } else {
         key.to_owned()

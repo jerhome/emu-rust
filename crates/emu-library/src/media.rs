@@ -388,11 +388,15 @@ mod tests {
     #[test]
     fn m3u_parsing_matches_the_runtime_rules() {
         let dir = Path::new("/r/st");
-        let ok = parse_m3u(
-            "\u{feff}#EXTM3U\n\nA.st|Disk A\r\nsub\\B.st\n./C.st\n /abs/D.st \n|only label\n",
-            dir,
-        )
-        .unwrap();
+        // A rooted path without a drive (`/abs`) is not absolute on Windows and is refused there.
+        let abs = if cfg!(windows) {
+            "C:\\abs\\D.st"
+        } else {
+            "/abs/D.st"
+        };
+        let text =
+            format!("\u{feff}#EXTM3U\n\nA.st|Disk A\r\nsub\\B.st\n./C.st\n {abs} \n|only label\n");
+        let ok = parse_m3u(&text, dir).unwrap();
         if cfg!(windows) {
             assert_eq!(ok.len(), 4);
         } else {
