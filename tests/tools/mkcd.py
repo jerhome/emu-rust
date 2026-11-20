@@ -17,9 +17,10 @@ Sega CD sector-0 layout written (user data, offsets from the start of the 2048-b
   0x100 "SEGA MEGA DRIVE " (16)      Mega Drive style header (design v6.0 3.4: serial read at 0x180)
   0x110 copyright/date (16), 0x120 domestic title (48), 0x150 overseas title (48)
   0x180 "GM <serial>" (type + serial, e.g. "GM T-93175 -00"), 0x1F0 region field ("J", "U" or "E", then spaces)
-  0x20B region letter (J/U/E): the byte genesis_plus_gx inspects for CD region auto-detection.
+  0x20B region byte read by genesis_plus_gx for CD region auto-detection: 0x64 = E, 0xA1 = J, other = U
+  (0x7A written for U, as on real US discs).
 Sources: docs/design/v6.0-gba-32x-megacd.md 3.4 (probe at 0/0x10, serial at 0x180); the standard Mega Drive header
-layout (0x100/0x180/0x1F0); 0x20B is recalled from genesis_plus_gx (loadrom.c) and NOT verified here.
+layout (0x100/0x180/0x1F0); 0x20B values verified against the real genesis_plus_gx core (design v2.1-megacd-express).
 MODE1/2352 sectors: sync, BCD MSF header, 2048 data, EDC (CRC, poly 0xD8018001), 8 zero bytes, ECC left at zero
 (emulators do not check it).
 """
@@ -80,6 +81,9 @@ def _field(text: str, n: int) -> bytes:
     return text.encode("ascii", "replace")[:n].ljust(n, b" ")
 
 
+REGION_BYTE = {"E": 0x64, "J": 0xA1, "U": 0x7A}
+
+
 def megacd_sector0(region="U", title="EMU-RUST TEST DISC", serial="T-000000 -00") -> bytes:
     if region not in ("J", "U", "E"):
         raise ValueError("region must be J, U or E")
@@ -94,7 +98,7 @@ def megacd_sector0(region="U", title="EMU-RUST TEST DISC", serial="T-000000 -00"
     s[0x180:0x18E] = _field("GM " + serial, 14)
     s[0x1F0:0x200] = _field(region, 16)
     s[0x200:0x20B] = _field("FAKE", 11)
-    s[0x20B] = ord(region)
+    s[0x20B] = REGION_BYTE[region]
     s[0x20C:0x300] = _field("EMU-RUST FAKE CD, NO COMMERCIAL CONTENT", 0xF4)
     return bytes(s)
 

@@ -54,7 +54,7 @@ class MegaCd(unittest.TestCase):
         user = b[16:16 + 2048]
         self.assertEqual(user[0x180:0x18E], b"GM T-93175 -00")
         self.assertEqual(user[0x1F0:0x1F1], b"E")
-        self.assertEqual(user[0x20B], ord("E"))
+        self.assertEqual(user[0x20B], 0x64)
         self.assertEqual(user[0x100:0x110], b"SEGA MEGA DRIVE ")
         self.assertEqual(struct.unpack("<I", b[2064:2068])[0], mkcd.edc(b[:2064]))
         m, s, f = b[2352 + 12 : 2352 + 15]
@@ -63,7 +63,7 @@ class MegaCd(unittest.TestCase):
     def test_regions(self):
         for r in "JUE":
             s = mkcd.megacd_sector0(r)
-            self.assertEqual((s[0x1F0], s[0x20B]), (ord(r), ord(r)))
+            self.assertEqual((s[0x1F0], s[0x20B]), (ord(r), {"E": 0x64, "J": 0xA1, "U": 0x7A}[r]))
         with self.assertRaises(ValueError):
             mkcd.megacd_sector0("X")
 
