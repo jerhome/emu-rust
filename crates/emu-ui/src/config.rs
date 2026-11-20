@@ -405,11 +405,21 @@ impl Config {
     }
 
     /// Core profile, else `"default"`, else the built-in layout of the core's system.
+    /// The `"default"` profile is a Mega Drive/SNES-style map (A/B/C/X/Y/Z): it would break the
+    /// two-button systems (SMS/GG/GB/NES), so it only applies to the MegaDrive/Snes/Generic styles.
     pub fn keymap_for(&self, profile: &str, style: PadStyle) -> KeyMap {
+        let default_applies = matches!(
+            style,
+            PadStyle::MegaDrive | PadStyle::Snes | PadStyle::Generic
+        );
         self.input
             .keyboard
             .get(profile)
-            .or_else(|| self.input.keyboard.get(DEFAULT_PROFILE))
+            .or_else(|| {
+                default_applies
+                    .then(|| self.input.keyboard.get(DEFAULT_PROFILE))
+                    .flatten()
+            })
             .cloned()
             .unwrap_or_else(|| KeyMap::default_for(style))
     }
@@ -600,6 +610,15 @@ button = "a"
         cfg.set_keymap("x", c.clone());
         assert_eq!(cfg.keymap_for("x", PadStyle::Generic), c);
         assert_eq!(cfg.keymap_for("y", PadStyle::Generic), d);
+        // The default profile does not override the built-in layout of two-button systems.
+        assert_eq!(
+            cfg.keymap_for("gambatte", PadStyle::GameBoy),
+            KeyMap::default_for(PadStyle::GameBoy)
+        );
+        assert_eq!(
+            cfg.keymap_for("mesen", PadStyle::Nes),
+            KeyMap::default_for(PadStyle::Nes)
+        );
     }
 
     #[test]

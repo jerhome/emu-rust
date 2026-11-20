@@ -32,7 +32,8 @@ impl CoreSpec {
     /// An id has no separator and no dot (`gambatte`); anything else is a path.
     fn parse(value: &OsString) -> Self {
         let text = value.to_string_lossy();
-        if looks_like_core_id(&text) {
+        // 0.1 compatibility: an existing file (even extension-less) wins over a managed id.
+        if looks_like_core_id(&text) && !std::path::Path::new(value).is_file() {
             Self::Managed(text.into_owned())
         } else {
             Self::Path(PathBuf::from(value))
@@ -272,7 +273,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         Some(ScreenArg::Game(s)) => Some(s),
         Some(ScreenArg::Library(_)) => {
             return Err(
-                "--screen library, library-settings et cores s'utilisent sans --core ni --rom"
+                "--screen library, library-settings, cores et library-launch \
+                        s'utilisent sans --core ni --rom"
                     .into(),
             );
         }
@@ -427,6 +429,16 @@ mod tests {
         assert_eq!(core("./gambatte"), CoreSpec::Path("./gambatte".into()));
         assert!(matches!(core("a/b"), CoreSpec::Path(_)));
         assert!(matches!(core("g.so"), CoreSpec::Path(_)));
+        // An existing extension-less file is a path (0.1 behaviour).
+        let dir = std::env::temp_dir().join(format!("emu-cli-core-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("moncore");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            CoreSpec::parse(&file.clone().into_os_string()),
+            CoreSpec::Path(file)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

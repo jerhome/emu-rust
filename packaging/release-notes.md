@@ -9,36 +9,52 @@
 
 Vérifier : `sha256sum -c SHA256SUMS.txt --ignore-missing`. Aucun core, BIOS ni ROM n'est fourni.
 
-## Core et ROM de test
+## Premier lancement
 
-- ROM libre : [240p Test Suite 1.21 (Mega Drive, GPL-2.0)](https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download)
-  — le `.zip` se charge directement.
-- ROM libre : [240p Test Suite SNES 1.02 (Super Nintendo, GPL-2.0)](https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download) — avec le core `snes9x` ci-dessous.
-- Core `genesis_plus_gx` (buildbot libretro, à dézipper) :
-  [Linux](https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip) ·
-  [macOS Intel](https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/genesis_plus_gx_libretro.dylib.zip) ·
-  [Windows](https://buildbot.libretro.com/nightly/windows/x86_64/latest/genesis_plus_gx_libretro.dll.zip).
-  SNES : même chemin avec `snes9x_libretro.{so,dylib,dll}.zip`.
+1. Lancer `emu-rust` sans argument : la bibliothèque s'ouvre.
+2. Réglages : indiquer le dossier de vos ROMs (Docker : `/data/roms`), puis lancer le scan.
+3. Écran Cores (ou `emu-rust --install-core recommended`) : installer les cores recommandés (vérifiés, jamais de BIOS téléchargé).
+4. Jaquettes : désactivées par défaut ; à activer dans les Réglages si souhaité.
+
+## ROM de test libres (une par système)
+
+| Système | ROM | Licence |
+|---|---|---|
+| Mega Drive | [240p Test Suite 1.21](https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download) (`.zip`) | GPL-2.0 |
+| Super Nintendo | [240p Test Suite SNES 1.02](https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download) (`.zip`) | GPL-2.0 |
+| Game Boy | [gb240p.gb (240p Test Suite mini 0.23)](https://github.com/pinobatch/240p-test-mini/releases/download/v0.23/gb240p.gb) | GPL-2.0 |
+| NES | [240pee.nes (240p Test Suite mini 0.23)](https://github.com/pinobatch/240p-test-mini/releases/download/v0.23/240pee.nes) | GPL-2.0 |
+| Master System | [Sub Rescue 0.3](https://github.com/haroldo-ok/sub-rescue/releases/download/v0.3/sub_rescue-0.3.zip) (`.zip`) | MIT |
+| Game Gear | [Waternet 1.0](https://github.com/joyrider3774/waternet/releases/download/v1.0/Waternet.Sega.Game.Gear.zip) (`.zip`) | MIT |
+
+## Cores à la main (alternative)
+
+Buildbot libretro, à dézipper : `genesis_plus_gx` (Mega Drive, Master System, Game Gear)
+[Linux](https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip) ·
+[macOS Intel](https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/genesis_plus_gx_libretro.dylib.zip) ·
+[Windows](https://buildbot.libretro.com/nightly/windows/x86_64/latest/genesis_plus_gx_libretro.dll.zip).
+Autres : même chemin avec `snes9x_libretro`, `gambatte_libretro` (Game Boy / Color), `mesen_libretro` (NES) et l'extension `.so.zip`, `.dylib.zip` ou `.dll.zip`.
 
 ## Avant de tester
 
 | Plateforme | |
 |---|---|
-| Docker | `EMU_IMAGE=ghcr.io/jerhome/emu-rust:@VERSION@ docker compose -f docker/compose.yaml up --no-build emu-wslg` (noVNC : `emu-novnc`, sans son, <http://localhost:6080/vnc.html>) ; core + ROM copiés dans le volume (`docker/README.md`) |
+| Docker | `EMU_IMAGE=ghcr.io/jerhome/emu-rust:@VERSION@ docker compose -f docker/compose.yaml up --no-build emu-wslg` (noVNC : `emu-novnc`, sans son, <http://localhost:6080/vnc.html>) ; ROMs copiées dans `/data/roms` (`docker/README.md`) |
 | Linux (WSL2) | `tar xzf`, puis `sudo apt install libasound2t64 libasound2-plugins libxkbcommon-x11-0 libgl1 libegl1 libwayland-client0 libxcursor1 libxrandr2 libxi6` (22.04 : `libasound2`) ; son WSLg : `~/.asoundrc` = `pcm.!default pulse` / `ctl.!default pulse` |
-| macOS Intel | dézipper, `xattr -dr com.apple.quarantine emu-rust.app` (ou clic droit → Ouvrir, une fois), idem pour la `.dylib` ; `./emu-rust.app/Contents/MacOS/emu-rust --core … --rom …` |
-| Windows | dézipper ; PowerShell : `.\emu-rust.exe --core .\genesis_plus_gx_libretro.dll --rom .\240pSuite-GenesisMD-1.21.zip` ; SmartScreen : « Informations complémentaires → Exécuter quand même » |
+| macOS Intel | dézipper, `xattr -dr com.apple.quarantine emu-rust.app` (ou clic droit → Ouvrir, une fois) ; les cores installés par l'application ne sont pas en quarantaine |
+| Windows | dézipper ; `.\emu-rust.exe` ; SmartScreen : « Informations complémentaires → Exécuter quand même » |
 
 ## Checklist de test (chaque plateforme)
 
-- [ ] `emu-rust --version` affiche `@VERSION@`.
-- [ ] Lancement avec core + `240pSuite-GenesisMD-1.21.zip` : la fenêtre s'ouvre, pas d'erreur dans le terminal.
-- [ ] Image : menu net, mise à l'échelle entière ; « Color Bars » sans couleurs inversées ; redimensionnement, F11 plein écran (HiDPI : image pas au quart de la fenêtre).
-- [ ] Son : « Sound Test » audible, sans craquements ; Espace maintenu = avance rapide muette.
-- [ ] Clavier : flèches, Entrée = Start, Z / X / C = A / B / C.
-- [ ] Menu Échap : pause (son coupé), Reprendre, Touches (changer une touche, relancer : conservée), Quitter.
-- [ ] Savestate : F2 sauvegarde, changer d'écran, F4 recharge ; F6/F7 change d'emplacement ; message OSD.
-- [ ] SRAM (facultatif, jeu à pile) : sauvegarder en jeu, quitter, relancer → `saves/<core>/<jeu>.srm` relu.
-- [ ] Relancer : `config.toml` présent (Unix : mode `600`).
+- [ ] `emu-rust --version` affiche `@VERSION@` ; `emu-rust` sans argument ouvre la bibliothèque.
+- [ ] Réglages : dossier des ROMs choisi, scan terminé, les jeux apparaissent (noms identifiés par le DAT si présent).
+- [ ] Écran Cores : installation des cores recommandés réussie ; BIOS manquants signalés, non téléchargés.
+- [ ] Lancer une ROM de test pour chacun des 6 systèmes : fenêtre à la bonne taille, image nette, son sans craquements.
+- [ ] Clavier : flèches, X / Z, Entrée ; menu Échap (Reprendre, Touches, Quitter) ; profil adapté au système.
+- [ ] Savestate F2 / F4 (Game Gear : restauré sans image, défaut connu du core).
+- [ ] Retour du jeu vers la bibliothèque (Échap) ; favori, « récemment joués » mis à jour.
+- [ ] Mises à jour des cores : `--list-cores`, retour arrière possible.
+- [ ] (Facultatif) Jaquettes activées : elles s'affichent, la bibliothèque reste fluide ; hors ligne sans erreur bloquante.
+- [ ] `config.toml` présent (Unix : mode `600`).
 
-Limites connues : lancement en ligne de commande uniquement, pas de manette, binaires non signés.
+Limites connues : pas de manette, binaires non signés (voir le CHANGELOG).

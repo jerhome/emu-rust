@@ -1,7 +1,7 @@
 # emu-rust
 
-Frontend [libretro](https://www.libretro.com/) en Rust : Super Nintendo et Mega Drive d'abord, puis Atari ST, Amiga,
-PC DOS et consoles 32 bits. Usage personnel.
+Frontend [libretro](https://www.libretro.com/) en Rust : Mega Drive, Super Nintendo, Game Boy, NES, Master System et
+Game Gear (1.0), puis Atari ST, Amiga, PC DOS. Usage personnel.
 
 - Feuille de route : [docs/roadmap.md](docs/roadmap.md)
 - Décisions d'architecture : [docs/adr/](docs/adr/)
@@ -22,8 +22,8 @@ Détails (placer core et ROM, test du son) : [docker/README.md](docker/README.md
 Les paquets sont publiés sur les [releases GitHub](../../releases) : archive Linux `tar.gz`, `.app` macOS Intel,
 `zip` Windows et image Docker. Vérifiez les empreintes avec `SHA256SUMS`.
 
-- Les cores libretro (genesis_plus_gx, snes9x) ne sont pas inclus : les URL et la checklist de test figurent dans
-  les notes de la release ; les ROM de test (domaine public / homebrew) y sont indiquées.
+- Les cores libretro ne sont pas inclus : l'application les installe (écran Cores ou `--install-core recommended`).
+  Les URL manuelles, la checklist de test et les ROM de test (domaine public / homebrew) figurent dans les notes de la release.
 - Installation et premier lancement : [packaging/README.txt](packaging/README.txt).
 - Docker : [docker/README.md](docker/README.md).
 

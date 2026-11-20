@@ -98,11 +98,17 @@ impl FpsMeter {
 /// Window size in logical pixels: height = `base_height × scale`, width from the display aspect (like the
 /// renderer), so there are no black bars at the initial size.
 fn window_size(base_height: u32, aspect: f32, scale: u32) -> (u32, u32) {
+    // A core announcing an absurd aspect must not produce a gigantic window.
+    let aspect = if aspect.is_finite() {
+        aspect.clamp(0.25, 4.0)
+    } else {
+        1.0
+    };
     let height = base_height.max(1).saturating_mul(scale);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to the u32 range
     let width = (f64::from(height) * f64::from(aspect))
         .round()
-        .clamp(1.0, f64::from(u32::MAX)) as u32;
+        .clamp(1.0, 16384.0) as u32;
     (width, height)
 }
 
@@ -1001,5 +1007,8 @@ mod tests {
         // Mega Drive 320x224 at its own aspect: unchanged.
         assert_eq!(window_size(224, 320.0 / 224.0, 3), (960, 672));
         assert_eq!(window_size(0, 0.0, 1), (1, 1));
+        assert_eq!(window_size(240, 1000.0, 1), (960, 240));
+        assert_eq!(window_size(240, f32::NAN, 1), (240, 240));
+        assert!(window_size(240, 4.0, 16).0 <= 16384);
     }
 }

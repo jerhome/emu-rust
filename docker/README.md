@@ -5,12 +5,12 @@ Commandes à lancer depuis la racine du dépôt.
 
 ## Image publiée (GHCR)
 
-Chaque tag `v*` publie l'image runtime (`linux/amd64`) sur `ghcr.io/jerhome/emu-rust` : `:<version>` (ex. `0.1.0`),
-`:<majeur>.<mineur>` (`0.1`) et `:latest` (ADR 0012). `EMU_IMAGE` choisit l'image utilisée par `compose.yaml`
+Chaque tag `v*` publie l'image runtime (`linux/amd64`) sur `ghcr.io/jerhome/emu-rust` : `:<version>` (ex. `1.0.0`),
+`:<majeur>.<mineur>` (`1.0`) et `:latest` (ADR 0012). `EMU_IMAGE` choisit l'image utilisée par `compose.yaml`
 (défaut : `emu-rust:dev`, construite localement) :
 
 ```sh
-export EMU_IMAGE=ghcr.io/jerhome/emu-rust:0.1.0
+export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0
 docker compose -f docker/compose.yaml --profile wslg pull
 docker compose -f docker/compose.yaml run --rm --no-build emu-wslg --core /data/cores/genesis_plus_gx_libretro.so --rom /data/roms/240pSuite-GenesisMD-1.21.zip
 ```
@@ -21,7 +21,7 @@ locale construite porte le nom GHCR : préférer `--no-build`.
 Premier push : GHCR crée le paquet en **privé**. Une seule fois, sur GitHub : profil → *Packages* → `emu-rust` →
 *Package settings* → *Change visibility* → *Public* (sinon `docker login ghcr.io` avec un jeton `read:packages`).
 
-## 1.0 (à venir) : cores depuis l'application
+## Cores depuis l'application
 
 Sans argument, l'application ouvre la bibliothèque de jeux (l'entrypoint n'impose ni `--core` ni `--rom`). Les cores
 s'installent depuis l'écran Cores ou en ligne de commande, dans `/data/cores` (HTTPS : l'image contient
@@ -31,8 +31,8 @@ s'installent depuis l'écran Cores ou en ligne de commande, dans `/data/cores` (
 docker compose -f docker/compose.yaml run --rm --no-deps emu-wslg --install-core recommended
 ```
 
-Tant que la 1.0 n'est pas publiée, les liens manuels de `packaging/README.txt` et la copie dans le volume
-(ci-dessous) restent valables.
+Dossier des ROMs à indiquer dans les Réglages de la bibliothèque : `/data/roms`. Les liens manuels de
+`packaging/README.txt` et la copie dans le volume (ci-dessous) restent valables.
 
 ## Données dans `/data` (volume `emu-rust_emu-data`)
 
@@ -42,9 +42,9 @@ Tant que la 1.0 n'est pas publiée, les liens manuels de `packaging/README.txt` 
 /data/system/   BIOS et fichiers système des cores
 /data/saves/    SRAM : saves/<core_id>/<jeu>.srm (compatible RetroArch)
 /data/states/   savestates à emplacements, par core puis par jeu
-/data/assets/   covers et métadonnées téléchargées
-/data/covers/   jaquettes (1.0)    /data/database/   DAT No-Intro (1.0)
-/data/library.sqlite   base de la bibliothèque (1.0, créée par l'application)
+/data/assets/   réservé (non utilisé en 1.0 ; jaquettes dans covers/, DAT dans database/)
+/data/covers/   jaquettes    /data/database/   DAT No-Intro
+/data/library.sqlite   base de la bibliothèque (créée par l'application)
 /data/config.toml   configuration (touches, options) ; droits 0600, propriétaire `emu`
 ```
 
