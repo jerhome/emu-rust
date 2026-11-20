@@ -76,6 +76,32 @@ Souris : le bureau GEM l'exige. Elle est capturée au premier clic dans la fenê
 (menu) ou Hôte + M. Sous noVNC et WSLg la capture n'est pas disponible (pas de mouvement relatif) : la souris reste
 libre, utilisez le clavier virtuel et le joystick. Disquettes : menu Disquettes, ou Hôte + D pour passer à la suivante.
 
+## Mega CD (2.1)
+
+Core `genesis_plus_gx` (le même que la Mega Drive). Le BIOS n'est jamais fourni : déposez `bios_CD_E.bin`,
+`bios_CD_U.bin` ou `bios_CD_J.bin` (noms exacts) dans le volume, dossier `/data/system/`. Disques (`.cue` avec toutes
+ses pistes, ou `.chd`) dans `/data/roms/megacd/<jeu>/`. La sauvegarde du jeu est dans `/data/saves/`.
+
+```sh
+docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/bios:/in:ro" --entrypoint bash emu-wslg \
+  -c 'mkdir -p /data/system && cp /in/bios_CD_*.bin /data/system/'
+```
+
+## Manette (2.1)
+
+Le clavier fonctionne toujours. Pour une manette PS4 :
+
+- **WSLg ne transmet pas les manettes USB** à WSL2. Sous Windows, installer usbipd-win et attacher la manette :
+  `usbipd attach --wsl --busid <id>`. Vérifier ensuite dans WSL que `/dev/input/event*` existe (`ls /dev/input`).
+- Décommenter la ligne `- /dev/input:/dev/input` du service dans `docker/compose.yaml` (commentée, car compose
+  échoue si le chemin n'existe pas).
+- L'utilisateur `emu` (uid 1000) doit pouvoir lire `/dev/input/event*` : ajouter `group_add: ["<gid>"]` avec le gid
+  numérique du groupe `input` de l'hôte (`getent group input`).
+- Ajouter `GILRS_DISABLE_UDEV=1` dans `environment` : la base udev est absente du conteneur, sans cette variable
+  aucune manette n'est détectée (gilrs lit alors `/dev/input` directement).
+- `--no-gamepad` désactive la manette ; réglages dans la section `[input.gamepad]` de `/data/config.toml`.
+- Sous noVNC, pas de manette.
+
 ## Raccourcis (à venir, phase 2)
 
 Sauvegarder/charger un savestate, changer d'emplacement, avance rapide, menu et écran des touches : la liste exacte

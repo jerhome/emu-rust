@@ -444,7 +444,8 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        assert_eq!(prefs.systems().count(), 9);
+        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0).
+        assert_eq!(prefs.systems().count(), 10);
         assert_eq!(first("Commodore - Amiga"), "puae");
         assert_eq!(
             prefs.for_system("Commodore - Amiga")[1].to_string(),

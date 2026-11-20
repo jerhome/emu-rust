@@ -2,6 +2,42 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [2.1.0-rc.1] - 2026-11-21
+
+Pré-release de la 2.1 : **Mega CD**, **manette PS4** et arrêt propre.
+
+### Ajouté
+
+- Mega CD / Sega CD (core genesis_plus_gx, picodrive en alternative) : images `.cue`/`.bin`, `.chd` et `.iso` lues
+  sans copie (les fichiers du jeu ne sont jamais modifiés), pistes du `.cue` masquées dans la bibliothèque, région lue
+  dans l'en-tête du disque (étiquette du nom pour un `.chd`).
+- BIOS Mega CD par région (`bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin`) déposé à la main dans `system/` :
+  jamais téléchargé. Dialogue « BIOS manquant » (nom attendu, dossier, « Copier le chemin », « Réessayer »),
+  avertissement si la révision diffère de la référence.
+- Sauvegarde interne du Mega CD par jeu (`saves/<core>/<jeu>.brm`).
+- Manette PS4 (DualShock 4, USB et Bluetooth) via gilrs : mapping par système, navigation dans l'interface,
+  plusieurs manettes (joueur 1, 2…), branchement et débranchement à chaud.
+- Raccourcis PS + : R1 sauver l'état, L1 le charger, Options menu, R2 avance rapide ; Atari ST : R3 clavier virtuel,
+  L3 disquette suivante.
+- Section `[input.gamepad]` de `config.toml` (zone morte, seuil des gâchettes, surcharge de boutons par profil ou par
+  manette) ; option `--no-gamepad`. Une configuration 2.0 reste valable.
+- Docker : `libudev` dans l'image, montage de `/dev/input` et `GILRS_DISABLE_UDEV=1` documentés.
+
+### Modifié
+
+- Arrêt propre : Ctrl+C, SIGTERM, SIGHUP et ⌘Q (macOS) écrivent les sauvegardes avant de quitter, comme la fermeture
+  de la fenêtre.
+
+### Corrigé
+
+- Retentative d'ouverture d'une manette, réveil de la boucle toutes les 100 ms sans manette, nom de manette échappé
+  dans le journal.
+
+### Limites connues
+
+- Pas de jeu Mega CD à plusieurs disques, pas d'import de BIOS par bouton, pas d'identification automatique des
+  disques ; deux `.cue` de même nom partagent leur sauvegarde (identité de jeu à venir).
+
 ## [2.0.0-rc.2] - 2026-11-21
 
 Corrections issues de l'essai de la rc.1 (Windows) et de deux revues indépendantes.

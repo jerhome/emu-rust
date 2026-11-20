@@ -1,7 +1,7 @@
 # emu-rust
 
 Frontend [libretro](https://www.libretro.com/) en Rust : Mega Drive, Super Nintendo, Game Boy, NES, Master System et
-Game Gear (1.0), puis Atari ST, Amiga, PC DOS. Usage personnel.
+Game Gear (1.0), Atari ST (2.0), Mega CD (2.1), puis Amiga, PC DOS. Manette PS4 (2.1) et clavier. Usage personnel.
 
 - Feuille de route : [docs/roadmap.md](docs/roadmap.md)
 - Décisions d'architecture : [docs/adr/](docs/adr/)

@@ -410,11 +410,20 @@ mod tests {
         let prefs = CorePreferences::builtin();
         let all = recommended_missing(&prefs, &[]);
         let names: Vec<&str> = all.iter().map(CoreId::as_str).collect();
-        for expected in ["genesis_plus_gx", "snes9x", "gambatte", "mesen", "hatari"] {
+        // Mega CD (2.1) shares genesis_plus_gx with the Mega Drive; the Amiga (3.0) adds puae.
+        let expected = [
+            "genesis_plus_gx",
+            "snes9x",
+            "gambatte",
+            "mesen",
+            "hatari",
+            "puae",
+        ];
+        for expected in expected {
             assert!(names.contains(&expected), "{names:?}");
         }
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), expected.len());
         let some = recommended_missing(&prefs, &[managed("snes9x", 1, false)]);
-        assert_eq!(some.len(), 4);
+        assert_eq!(some.len(), expected.len() - 1);
     }
 }

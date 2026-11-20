@@ -299,7 +299,9 @@ fn secrets_are_never_prefilled_nor_drawn() {
     let raw = RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(1280.0, 720.0),
+            // Tall enough for the whole settings page: rows scrolled out of view are not drawn, and the page
+            // grows with the catalog (10 systems since Mega CD and the Amiga).
+            egui::vec2(1280.0, 2400.0),
         )),
         ..RawInput::default()
     };
