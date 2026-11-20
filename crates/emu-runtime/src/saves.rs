@@ -232,6 +232,22 @@ pub struct StateHeader {
     pub game: String,
     /// Seconds since the Unix epoch.
     pub created_unix: u64,
+    /// `game_fp=<size>:<crc32>` (2.1): fingerprint of the game's primary source at save time. `None`: 1.0 / 2.0
+    /// state, or no fingerprint known (the line is then not written).
+    pub game_fp: Option<String>,
+}
+
+/// Where a savestate comes from, relative to the running game (`Emulator::state_origin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateOrigin {
+    /// Same `game_fp`.
+    Same,
+    /// `game_fp` differs: another file of the same name (or the content changed). The UI asks before loading.
+    OtherContent,
+    /// No `game_fp` (1.0 / 2.0 state) and several registry entries share the base name. The UI asks.
+    Ambiguous,
+    /// No `game_fp`, no homonym.
+    Unknown,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -253,7 +269,7 @@ pub enum StateFileError {
 
 /// Little-endian container:
 /// `STATE_MAGIC` | `u32` version | `u32` header length | header (UTF-8 `key=value\n` lines: `core_id`,
-/// `core_version`, `game`, `created_unix`; unknown keys ignored) | `u64` payload length | payload |
+/// `core_version`, `game`, `created_unix`, optional `game_fp`; unknown keys ignored) | `u64` payload length | payload |
 /// `u64` FNV-1a 64 of the payload.
 pub fn encode_state(header: &StateHeader, payload: &[u8]) -> Vec<u8> {
     // Line breaks in a value would split it into bogus keys, and the length cap keeps the header under
@@ -264,14 +280,18 @@ pub fn encode_state(header: &StateHeader, payload: &[u8]) -> Vec<u8> {
             .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
             .collect()
     };
-    let text = format!(
+    let mut text = format!(
         "core_id={}\ncore_version={}\ngame={}\ncreated_unix={}\n",
         clean(&header.core_id),
         clean(&header.core_version),
         clean(&header.game),
         header.created_unix
     );
-    // At most 4 × MAX_VALUE_CHARS × 4 bytes + keys, well below `MAX_HEADER_LEN`.
+    // Appended last and only when known: a 2.0 reader ignores the unknown key, a 1.0 / 2.0 state stays byte-identical.
+    if let Some(fp) = &header.game_fp {
+        text.push_str(&format!("game_fp={}\n", clean(fp)));
+    }
+    // At most 5 × MAX_VALUE_CHARS × 4 bytes + keys, well below `MAX_HEADER_LEN`.
     let header_len = text.len() as u32;
     let mut out = Vec::with_capacity(8 + 4 + 4 + text.len() + 8 + payload.len() + 8);
     out.extend_from_slice(&STATE_MAGIC);
@@ -321,7 +341,8 @@ impl<'a> Cursor<'a> {
 
 fn parse_header(bytes: &[u8]) -> Result<StateHeader, StateFileError> {
     let text = std::str::from_utf8(bytes).map_err(|_| StateFileError::BadHeader)?;
-    let (mut core_id, mut core_version, mut game, mut created) = (None, None, None, None);
+    let (mut core_id, mut core_version, mut game, mut created, mut game_fp) =
+        (None, None, None, None, None);
     for line in text.split('\n').filter(|l| !l.is_empty()) {
         let (key, value) = line.split_once('=').ok_or(StateFileError::BadHeader)?;
         let slot = match key {
@@ -329,6 +350,7 @@ fn parse_header(bytes: &[u8]) -> Result<StateHeader, StateFileError> {
             "core_version" => &mut core_version,
             "game" => &mut game,
             "created_unix" => &mut created,
+            "game_fp" => &mut game_fp,
             _ => continue,
         };
         if slot.replace(value).is_some() {
@@ -345,6 +367,7 @@ fn parse_header(bytes: &[u8]) -> Result<StateHeader, StateFileError> {
         core_version: core_version.to_owned(),
         game: game.to_owned(),
         created_unix: created.parse().map_err(|_| StateFileError::BadHeader)?,
+        game_fp: game_fp.map(str::to_owned),
     })
 }
 
@@ -547,6 +570,7 @@ mod tests {
             core_version: "1.0 (abc)".into(),
             game: "Sonic = (World)".into(),
             created_unix: 1_763_500_000,
+            game_fp: None,
         }
     }
 
