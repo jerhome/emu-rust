@@ -1,8 +1,10 @@
 # ADR 0016 — Manette (DualShock 4) : bibliothèque, mapping, configuration
 
-Statut : accepté (2026-11-20) avec les défauts recommandés de `docs/design/phase6-manette.md` §6 ; ordre décidé
-par l'utilisateur : 2.0 d'abord, T1/T2 en parallèle, T3 après U2 de la 2.0. Précise ADR 0003 (« backend SDL3 candidat, à confirmer par une ADR dédiée »).
-Conception détaillée et découpage : `docs/design/phase6-manette.md`.
+Statut : accepté (2026-11-20) avec les défauts recommandés de `docs/design/phase6-manette.md` §6. **Version de
+livraison : 2.1** (décision de l'utilisateur du 2026-11-21 : T2 à T7 juste après la 2.0 ; T0 et T1 sont faits).
+**Amendée le 2026-11-21** (section « Amendement 2026-11-21 » en fin de document) : champ `analog = true` de
+`cores.toml`, raccourcis manette du mode ordinateur, colonne GBA du mapping. Précise ADR 0003 (« backend SDL3
+candidat, à confirmer par une ADR dédiée »). Conception détaillée et découpage : `docs/design/phase6-manette.md`.
 
 ## Contexte
 
@@ -55,7 +57,8 @@ https://crates.io/crates/sdl3-sys, https://crates.io/crates/sdl2, https://crates
    `RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE`, aujourd'hui refusé).
 4. **Architecture** (graphe de crates inchangé, pas de nouveau crate) :
    - `emu-runtime` : inchangé pour le numérique ; ajout optionnel des sticks analogiques à `PadState`
-     (`RETRO_DEVICE_ANALOG`), nécessaire seulement aux cores 3D (hors 1.x/2.0) : **différé**, voir design.
+     (`RETRO_DEVICE_ANALOG`), nécessaire seulement aux cores 3D (hors 1.x/2.0) : **différé**, voir design
+     (posé en 4.0 pour dosbox_pure : amendement du 2026-11-21, point 2).
    - `emu-ui` : module `gamepad/` : trait `GamepadSource` (événements normalisés, **injectable**), implémentation
      `GilrsSource` (seul code touchant gilrs), `GamepadInput: InputBackend` (état → `InputFrame`), table de mapping,
      gestion des ports et des raccourcis. L'API est entièrement sûre ; aucun `unsafe` (gilrs l'encapsule).
@@ -70,19 +73,19 @@ https://crates.io/crates/sdl3-sys, https://crates.io/crates/sdl2, https://crates
 
 RetroPad = disposition SNES : B bas, A droite, Y gauche, X haut.
 
-| DS4 | RetroPad | Mega Drive (genesis_plus_gx) | SMS / Game Gear | NES / Game Boy | SNES |
-|---|---|---|---|---|---|
-| Croix | B | B | 1 | B | B |
-| Rond | A | C | 2 | A | A |
-| Carré | Y | A | (rien) | (rien) | Y |
-| Triangle | X | Y | (rien) | (rien) | X |
-| L1 / R1 | L / R | X / Z | (rien) | (rien) | L / R |
-| L2 / R2 | L2 / R2 (seuil analogique 0,5) | (rien) | (rien) | (rien) | (rien) |
-| Share | Select | Mode | (rien) | Select | Select |
-| Options | Start | Start | Pause (SMS) / Start (GG) | Start | Start |
-| Croix directionnelle | D-pad | idem | idem | idem | idem |
-| Stick gauche | D-pad (seuil 0,5, hystérésis) | idem | idem | idem | idem |
-| L3 / R3, PS, pavé tactile | libres | — | — | — | — |
+| DS4 | RetroPad | Mega Drive (genesis_plus_gx) | SMS / Game Gear | NES / Game Boy | SNES | GBA (6.0, `PadStyle::Gba`) |
+|---|---|---|---|---|---|---|
+| Croix | B | B | 1 | B | B | B |
+| Rond | A | C | 2 | A | A | A |
+| Carré | Y | A | (rien) | (rien) | Y | (rien) |
+| Triangle | X | Y | (rien) | (rien) | X | (rien) |
+| L1 / R1 | L / R | X / Z | (rien) | (rien) | L / R | L / R |
+| L2 / R2 | L2 / R2 (seuil analogique 0,5) | (rien) | (rien) | (rien) | (rien) | (rien) |
+| Share | Select | Mode | (rien) | Select | Select | Select |
+| Options | Start | Start | Pause (SMS) / Start (GG) | Start | Start | Start |
+| Croix directionnelle | D-pad | idem | idem | idem | idem | idem |
+| Stick gauche | D-pad (seuil 0,5, hystérésis) — sauf core `analog = true` (amendement) | idem | idem | idem | idem | idem |
+| L3 / R3, PS, pavé tactile | libres (PS + L3 / R3 : raccourcis du mode ordinateur, amendement) | — | — | — | — | — |
 
 Les noms de boutons affichés dans l'UI suivent `PadStyle::button_name` (déjà par système). Le mapping par défaut est
 codé par `PadStyle` ; les profils se nomment comme le clavier (`PadStyle::profile_key`) pour que chaque système garde sa
@@ -188,6 +191,37 @@ deadzone = 0.15
 - L'ADR 0003 reste valable ; sa mention « SDL3 candidat » est remplacée par celle-ci (SDL3 = repli).
 - Hors périmètre actuel : vibration, gyro, tactile, LED, stick analogique pour cores 3D, manettes non DS4 hors
   mapping SDL automatique (elles fonctionnent si gilrs les mappe, sans garantie), souris/clavier émulés par manette.
+
+## Amendement 2026-11-21 — revue croisée des conceptions 3.0 à 6.0
+
+1. **Version** : la manette est livrée en **2.1** (T2 à T7). La 4.0 (tâche DG1, axes analogiques) et la 6.0 (mapping
+   GBA) en dépendent ; sans 2.1 livrée, ces tâches sont reportées sans bloquer leur version.
+2. **Axes analogiques : champ `analog = true` de `cores.toml`** (posé en 4.0 avec `PadState::set_analog`, ADR 0018
+   §7). La règle « stick gauche ⇒ D-pad, toujours » de cette ADR devient le **défaut** ; pour un core marqué
+   `analog = true` (dosbox_pure ; plus tard les cores 3D), la conversion stick ⇒ D-pad est **coupée** et les deux
+   sticks sont transmis au core par `RETRO_DEVICE_ANALOG` (la croix directionnelle reste le D-pad). **Zone morte
+   commune** : la même valeur `deadzone` (défaut 0,25, radiale, par manette si surchargée) s'applique dans les deux
+   cas ; en mode analogique la valeur est remise à l'échelle au-delà de la zone morte (pas de saut à 0,25) puis
+   convertie en `i16` ; le seuil 0,5 et l'hystérésis ne servent qu'à la conversion en D-pad. Les gâchettes restent
+   numériques (seuil 0,5). Pas de réglage par jeu en 4.0 (le core choisit lui-même numérique ou analogique dans ses
+   préréglages).
+3. **Raccourcis manette du mode ordinateur** : ADR 0015 §9 proposait « PS + R3 = clavier virtuel », le design de la
+   phase 6 laissait le clavier virtuel et la disquette suivante au clavier seul. **Décision : ADR 0015 l'emporte.**
+   PS + **R3** = clavier virtuel (`ToggleVirtualKeyboard`), PS + **L3** = disquette / CD suivant (`NextDisk`), liés
+   en 2.1 (tâche T3) ; clavier virtuel ouvert : croix directionnelle + Croix naviguent et tapent, le pad ne va plus
+   au core (design 2.0 §8). Raison : le clavier virtuel est justement le moyen d'atteindre les touches sans
+   clavier ; un joueur à la manette doit pouvoir l'ouvrir et changer de disquette sans reposer la manette.
+   `ToggleMouseCapture` et `ToggleKeyboardMode` restent au clavier (sans objet à la manette). Aucun conflit avec les
+   cores `analog = true` ni avec le menu interne de dosbox_pure (L3 seul) : tant que PS est tenu, rien ne va au
+   core.
+
+   | PS + | Action (systèmes `kind = "computer"`) |
+   |---|---|
+   | R3 | Clavier virtuel |
+   | L3 | Disquette / CD suivant |
+
+4. **GBA (6.0)** : colonne ajoutée au tableau de mapping ; `PadStyle::Gba` doit être traité dans
+   `crates/emu-ui/src/gamepad/mapping.rs` (tâche GU1 de la 6.0).
 
 ## Sources à revérifier avant implémentation
 

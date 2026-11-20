@@ -10,7 +10,7 @@ lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
 ## Contraintes non négociables
 
 - **Pas de cores maison** : l'émulation est faite par les cores libretro (ADR 0001).
-- **Aucun téléchargement de ROM ou de BIOS commercial.** Seulement : cores libretro, BIOS libres (EmuTOS, AROS),
+- **Aucun téléchargement de ROM ou de BIOS commercial.** Seulement : cores libretro, BIOS libres (EmuTOS ; AROS est intégré au core puae),
   covers/métadonnées, ROMs du domaine public ou homebrew, SoundFont libre GeneralUser GS (sur action, 4.0). L'utilisateur fournit le reste ; l'app vérifie les hashes (ADR 0005).
 - **`unsafe`** interdit sauf dans `emu-libretro` et `emu-runtime` ; chaque bloc `unsafe` a un commentaire `// SAFETY:`.
 - **Cibles** : image Docker (WSLg / X11 / Wayland / noVNC), puis Linux, Windows, macOS **Intel** (`x86_64-apple-darwin`,

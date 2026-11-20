@@ -98,4 +98,5 @@ qu'un autre jeu garde la valeur globale.
 - Une disquette **ajoutée en cours de jeu** (menu Disquettes → Ajouter) n'est pas mémorisée : la rajouter à la
   session suivante crée une nouvelle copie de travail (`02 X.st`, `03 X.st`…) qui repart de l'original ; ces copies
   ne sont pas nettoyées automatiquement (dossier `<données>/saves/hatari/<jeu>.disks/`). Corrigé en 2.1.
-- La manette PS4 n'est pas encore branchée (prévue après la 2.0).
+- La manette PS4 n'est pas encore branchée (prévue en 2.1).
+- Sous Windows, Alt+F4, Alt+Tab et Alt+Espace restent au système (non transmis à l'Atari).

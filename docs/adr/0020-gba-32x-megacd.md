@@ -1,11 +1,16 @@
 # ADR 0020 — Version 6.0 : Game Boy Advance, 32X et Mega CD (rendu logiciel)
 
-Statut : proposé (2026-11-20). Remplace l'intitulé de la phase 7 de la feuille de route (« 32 bits : PS1, Saturn, 3DO,
-GBA, 32X ; rendu matériel GL ») par décision de l'utilisateur du 2026-11-20 : **la 6.0 = GBA + 32X + Mega CD**,
-**PS1, Saturn et 3DO ne sont pas prévus**. Précise ADR 0005 (BIOS commerciaux), 0011 (sauvegardes), 0013 (choix des
-cores, BIOS), 0014 (DAT, jaquettes) ; réutilise ADR 0015 (médias multiples, interface disque) et 0017 (« Importer un
-BIOS… », `MediaRules`). Étude préalable : `docs/essais-gba-32x-megacd.md`. Conception : `docs/design/v6.0-gba-32x-megacd.md`.
-Graphe des crates inchangé.
+Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
+PlayStation + 3DO en rendu logiciel** ; Saturn, Dreamcast et rendu matériel plus tard ; revue croisée : corrections
+I2, I9, I13, M3, M4, M5, M6, M8). Remplace l'intitulé de la phase 7 de la feuille de route (« 32 bits : PS1, Saturn,
+3DO, GBA, 32X ; rendu matériel GL ») : **la 6.0 = GBA + 32X + Mega CD**. La mention initiale « PS1, Saturn et 3DO ne
+sont pas prévus » est **caduque** (`docs/questions-ouvertes.md`, décisions « 7.0 » et « Rendu matériel (futur) »).
+Précise ADR 0005 (BIOS commerciaux ; ROM intégrées aux cores : règle « Builtin »), 0011 (sauvegardes), 0013 (choix
+des cores, BIOS), 0014 (DAT, jaquettes) ; réutilise ADR 0015 (médias multiples, interface disque), ADR 0017
+(« Importer un BIOS… ») et les **règles communes du design 3.0** (`docs/design/v3.0-amiga.md` §3.2 `MediaRules` /
+`media_direct`, §3.5 : ordre d'évaluation des médias, contrôle de firmware unique par variante, `game_saves`,
+notices), ainsi que les règles CD de la bibliothèque posées en 4.0 (ADR 0018 §8). Étude préalable :
+`docs/essais-gba-32x-megacd.md`. Conception : `docs/design/v6.0-gba-32x-megacd.md`. Graphe des crates inchangé.
 
 ## Contexte
 
@@ -60,37 +65,55 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
   système. genesis_plus_gx ne gère pas la 32X.
 - genesis_plus_gx reste le core MD de la 1.0 et devient celui du Mega CD (plus précis pour le CD, choix de
   l'utilisateur). Un seul core installé couvre donc MD, SMS, GG et Mega CD.
-- Usage personnel uniquement : licences non commerciales compatibles (ADR 0001, roadmap), citées dans
-  `THIRD-PARTY-DATA.txt` comme pour la 1.0. Les cores ne sont jamais redistribués par le projet.
+- Usage personnel uniquement : licences non commerciales compatibles (ADR 0001, roadmap), citées dans le README de
+  release et l'écran Cores (`THIRD-PARTY-DATA.txt` ne décrit que les données embarquées : design 3.0 §3.5.7). Les
+  cores ne sont jamais redistribués par le projet.
 
 ### 2. BIOS
 
 - **Jamais téléchargés** (ADR 0005). Import par « Importer un BIOS… » (3.0), md5 vérifié, nom attendu par le core.
-- Nouvelle notion **BIOS requis par système** dans `cores.toml` (le `.info` de genesis_plus_gx les dit facultatifs,
-  à tort pour le CD) : `[cores.genesis_plus_gx.required_firmware."Sega - Mega-CD - Sega CD"]` = au moins un des trois
-  BIOS CD, avec préférence par région du jeu (`(Europe)` → E, `(USA)` → U, `(Japan)` → J, d'après le DAT ou le nom ;
-  sinon U, comme le core). Même règle pour picodrive.
-- **Contrôle avant lancement** : BIOS requis absent ou de mauvais hash ⇒ dialogue « BIOS Mega CD manquant :
-  bios_CD_U.bin (Sega CD, USA) » avec « Importer un BIOS… », « Lancer quand même » (règle d'ADR 0013 §8 : les
-  données peuvent être inexactes) et « Annuler ». Le refus d'un contenu par le core affiche en plus la dernière
-  erreur journalisée par le core pendant `retro_load_game`, à la place du conseil générique.
+- **BIOS requis du Mega CD = données du contrôle de firmware unique posé en 3.0** (design 3.0 §3.5.5) : la 6.0
+  n'ajoute **aucune API ni aucun état** côté `emu-assets`, seulement une table `required_firmware` par (core,
+  système) avec `variant = "region"` — `europe` → `bios_CD_E.bin`, `usa` → `bios_CD_U.bin`, `japan` →
+  `bios_CD_J.bin`, `default = "usa"` (comme le core), sans repli — pour genesis_plus_gx et picodrive (le `.info` de
+  genesis_plus_gx les dit facultatifs, à tort pour le CD). La région vient du jeu (`(Europe)`, `(USA)`, `(Japan)`
+  d'après le DAT ou le nom).
+- **Contrôle avant lancement** (le même que pour le Kickstart) : BIOS requis absent ou de mauvais hash ⇒ dialogue
+  « BIOS Mega CD manquant : bios_CD_U.bin (Sega CD, USA) » avec « Importer un BIOS… », « Lancer quand même » (règle
+  d'ADR 0013 §8 : les données peuvent être inexactes) et « Annuler ». Le refus d'un contenu par le core affiche en
+  plus la dernière erreur journalisée par le core pendant `retro_load_game`, à la place du conseil générique.
+- Rien de ceci n'est propre à Sega : la table par région, `DiscRegion` et `disc_serial` (§5) sont **génériques** et
+  resserviront tels quels en 7.0 (PlayStation : `scph5500.bin` / `scph5501.bin` / `scph5502.bin` par région ; 3DO).
 - `gba_bios.bin` : facultatif ; présent ⇒ `mgba_use_bios = ON` (défaut du core) ; aucun avertissement s'il manque.
-- 32X : rien.
+- 32X : rien à fournir.
+- **Statut des BIOS intégrés aux cores** (règle « Builtin » d'ADR 0005 amendée / ADR 0019 §2 : rien n'est extrait ni
+  redistribué par emu-rust) :
+  - **mgba** : BIOS HLE = réimplémentation fournie par le projet mGBA dans son source (MPL-2.0), pas une copie du
+    BIOS Nintendo — **à vérifier** (fichier source et licence à citer par GV1 ; l'étude d'essais constate seulement
+    « BIOS HLE intégré », `docs/essais-gba-32x-megacd.md`) ;
+  - **picodrive** : BIOS 32X (M / S / G) intégrés au binaire (symboles `p32x_bios_*`, étude d'essais) ; **origine et
+    licence non sourcées : à vérifier** par GV1 (réimplémentations libres du projet PicoDrive, ou code Sega ?). Dans
+    les deux hypothèses la règle « Builtin » couvre l'usage (comme les ROM de VICE, acceptées par l'utilisateur le
+    2026-11-21) ; si ce sont des réimplémentations libres, la notice le dira. État affiché : `Builtin` avec une
+    notice prudente tant que la vérification n'est pas faite (« BIOS 32X intégrés au core picodrive »).
 
 ### 3. Formats et médias
 
 - **GBA** : `.gba` (zip accepté, contenu en mémoire). **32X** : `.32x` ; `.bin` seulement si l'en-tête porte
   `SEGA 32X` à 0x100 ; zip extrait par le runtime comme pour tout core `need_fullpath` (mécanisme 1.0).
 - **Mega CD** : `.cue` (+ pistes `.bin` / `.wav` / `.ogg` référencées), `.chd`, `.iso`, `.m3u`. Les images CD sont
-  **transmises en place, jamais copiées ni extraites** (`MediaRules::direct_extensions` = `cue`, `chd`, `iso`) ;
+  **transmises en place, jamais copiées ni extraites** (`media_direct` = `cue`, `chd`, `iso` ; ordre d'évaluation du design 3.0 §3.5.1) ;
   **zip de CD refusé** avec un message (« décompressez, ou convertissez en CHD ») : 300-700 Mo dépassent
   `MAX_CONTENT_SIZE` et la copie n'apporterait rien (le core n'écrit pas dans les images).
-- Multi-CD : regroupement `(Disc N)` / `(CD N)` de la bibliothèque (2.0) ⇒ `MediaSet` + `.m3u` généré dans
-  `saves/<core_id>/` (chemins absolus vers les `.cue` / `.chd`) ; changement par le menu **Disquettes / CD**
+- Multi-CD : regroupement `(Disc N)` / `(CD N)` de la bibliothèque (4.0) ⇒ `MediaSet` + `.m3u` généré dans un
+  **dossier temporaire privé** (chemins absolus vers les `.cue` / `.chd`) : c'est le comportement du code en
+  politique `direct` (`dest_dir` / `write_playlist`, `crates/emu-runtime/src/media.rs`), **pas**
+  `saves/<core_id>/` ; rien n'est écrit à côté des sauvegardes. Changement par le menu **Disquettes / CD**
   (interface disque 2.0). Un `.m3u` de l'utilisateur est utilisé tel quel.
-- Bibliothèque : un `.cue` lu (borné à 64 Kio) **masque** les fichiers qu'il référence (pas de pistes `.bin` prises
-  pour des ROM MD) ; un `.m3u` masque ses `.cue` / `.chd`. Une piste `.bin` orpheline commençant par
-  `SEGADISCSYSTEM` est ignorée avec un avertissement.
+- Bibliothèque : le masquage des fichiers référencés par un `.cue`, celui des entrées d'un `.m3u` et l'absence de
+  hash des images CD sont **déjà en place depuis la 4.0** (ADR 0018 §8, indépendants du système). La 6.0 ajoute
+  seulement : une piste `.bin` orpheline commençant par `SEGADISCSYSTEM` est ignorée avec un avertissement, et les
+  règles `disc = true` du système `megacd`.
 
 ### 4. Sauvegardes
 
@@ -106,37 +129,55 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
 - GBA, 32X : CRC32 / SHA1 sur DAT No-Intro (inchangé, ADR 0014).
 - Mega CD : nouvelle source `DatSource::Redump` (`metadat/redump/`). `.cue` / `.iso` : taille de la piste 01
   comparée aux tailles du DAT, puis CRC32 **seulement si une taille correspond** (pas de hash de 500 Mo pour rien) ;
-  sinon numéro de série lu dans l'en-tête du disque (`SEGADISCSYSTEM`, champ série façon MD) ; `.chd` : nom de
-  fichier puis série (lecture du CHD reportée). Le DAT Redump est déjà distribué par libretro-database, même canal
-  et même mention que les DAT No-Intro (`THIRD-PARTY-DATA.txt`).
+  sinon numéro de série lu dans l'en-tête du disque (`disc_serial` : fonction **générique** à sondes par format —
+  Sega `SEGADISCSYSTEM` en 6.0, PlayStation `SYSTEM.CNF` en 7.0) ; `.chd` : nom de fichier puis série (lecture du CHD
+  reportée). Schéma de la bibliothèque : **v6** (`game.region`).
+- Le DAT Redump est distribué par libretro-database mais **sous un chemin que l'application ne télécharge pas
+  encore** : `emu-assets/src/dat.rs` ne connaît que `metadat/no-intro/` et `metadat/tosec/` (et `dat/` en 3.0). La
+  6.0 ajoute l'URL `…/libretro-database/master/metadat/redump/` (tâche GA1, revue réseau GV1). Téléchargé à
+  l'exécution, jamais embarqué : cité dans le README de release, pas dans `THIRD-PARTY-DATA.txt`.
 
 ### 6. Entrées
 
 - GBA : nouveau `PadStyle::Gba` (disposition SNES sans X/Y : A = K, B = J, L = O, R = L, flèches / ZQSD, Start,
   Select), profil `mgba` ; un `.gb` / `.gbc` lancé avec mgba garde le style Game Boy.
 - 32X et Mega CD : pad Mega Drive (profils `picodrive` et `genesis_plus_gx`, déjà là) ; 6 boutons par défaut.
-- Manette (ADR 0016) : L1 / R1 = L / R de la GBA ; rien d'analogique. La vibration (GET_RUMBLE_INTERFACE, quelques
-  jeux GBA) reste hors périmètre (amendement d'ADR 0016 si demandé).
+- Manette (ADR 0016, livrée en 2.1) : `PadStyle::Gba` a aussi un mapping manette (colonne GBA ajoutée à ADR 0016 ;
+  `crates/emu-ui/src/gamepad/mapping.rs`, tâche GU1) : Croix = B, Rond = A, L1 / R1 = L / R, Share = Select,
+  Options = Start ; rien d'analogique. La vibration (GET_RUMBLE_INTERFACE, quelques jeux GBA) reste hors périmètre
+  (amendement d'ADR 0016 si demandé).
 
-### 7. Hors périmètre
+### 7. Hors périmètre de la 6.0, et suite décidée
 
-PS1, Saturn, 3DO (décision de l'utilisateur) ; rendu matériel (`SET_HW_RENDER`, toujours refusé : aucun core de la
-6.0 n'en a besoin) ; Vulkan ; vibration ; Sega CD 32X (« CD 32X » : picodrive seulement, non testé) ; MSU-MD.
-Si un jour PS1 ou Saturn étaient demandés : nouvelle ADR ; pistes connues — pcsx_rearmed (logiciel, BIOS HLE) avant
-tout rendu matériel ; rendu matériel en **contexte GL unique** partagé avec egui (FBO du frontend, profil core
-3.3 / 4.1 sur macOS, compatibilité et GLES refusés ⇒ yabasanshiro exclu), Vulkan écarté (pas de pilote natif sous
-macOS Intel ni WSLg).
+- Hors 6.0 : rendu matériel (`SET_HW_RENDER`, toujours refusé : aucun core de la 6.0 n'en a besoin) ; vibration ;
+  Sega CD 32X (« CD 32X » : picodrive seulement, non testé) ; MSU-MD.
+- **Version 7.0 (décision de l'utilisateur du 2026-11-20) : PlayStation et 3DO en rendu logiciel.** Une ADR dédiée
+  sera écrite au lancement de la 7.0 (choix des cores : pcsx_rearmed en logiciel a démarré dans l'étude d'essais ;
+  core 3DO à étudier). Elle réutilise sans changement ce que pose la 6.0 : CD (`media_direct`, `.m3u`, masquage des
+  pistes), Redump, `disc_serial`, `DiscRegion`, BIOS requis par région (`scph5500` / `5501` / `5502`,
+  `panafz10.bin`), import de BIOS. C'est pourquoi ces éléments sont définis ici sans rien de propre à Sega.
+- **Plus tard, sans version fixée : Saturn, Dreamcast et rendu matériel.** Consigne de l'utilisateur pour le rendu
+  matériel : cibler **OpenGL, DirectX (contexte libretro D3D11 sous Windows) et Vulkan**. L'utilisateur ne pourra
+  pas essayer Vulkan (sa machine le supporte mal) : les **tests automatiques sous lavapipe valident les étapes
+  Vulkan** ; essai réel facultatif par un camarade (à lui rappeler). L'affirmation initiale « Vulkan écarté » est
+  retirée.
+- Pistes techniques notées pour l'ADR du rendu matériel (non décidées) : contexte GL unique partagé avec egui (FBO
+  du frontend, profil core 3.3 / 4.1 sur macOS ; les cores qui exigent un profil de compatibilité ou GLES, comme
+  yabasanshiro, demanderont un autre chemin) ; macOS Intel et WSLg n'ont pas de pilote Vulkan natif, d'où
+  l'importance de lavapipe pour les tests.
 
 ## Conséquences
 
-- Aucune nouvelle dépendance, aucun `unsafe` nouveau attendu, aucun nouveau téléchargement (cores du buildbot,
-  DAT et jaquettes par les canaux existants).
-- Nouvelles API (détail : design §3) : `emu_assets` — BIOS requis par système, préférence de région ;
-  `emu_library` — systèmes `gba`, `32x`, `megacd`, `DatSource::Redump`, masquage cue / m3u, identification CD ;
-  `emu_libretro` — dernière erreur du core jointe à `LoadGameFailed` ; `emu-ui` — `PadStyle::Gba`, contrôle BIOS
-  avant lancement.
+- Aucune nouvelle dépendance, aucun `unsafe` nouveau attendu. **Un téléchargement nouveau** : le DAT Redump
+  (`metadat/redump/`, même hôte `raw.githubusercontent.com` que les autres DAT, nouveau chemin dans
+  `emu-assets/src/dat.rs`) — code réseau à faire valider par `reviewer`. Cores et jaquettes : canaux existants.
+- Nouvelles API (détail : design §3) : `emu_assets` — URL du DAT Redump ; **données seulement** pour les BIOS requis
+  par région (contrôle et types posés en 3.0) ; `emu_library` — systèmes `gba`, `32x`, `megacd`,
+  `DatSource::Redump`, `DiscRegion`, `disc_serial`, `probe_bin`, `disc = true`, schéma v6 (`game.region`) ;
+  `emu_libretro` — dernière erreur du core jointe à `LoadGameFailed` ; `emu-ui` — `PadStyle::Gba` (clavier et
+  manette), région du jeu passée comme variante au contrôle de firmware.
 - **Tests automatiques limités** : GBA réel (hello.gba, sans BIOS) ; 32X et Mega CD seulement par le pipeline
   (bibliothèque, choix du core, BIOS manquant ⇒ message lisible). Le jeu réel 32X / Mega CD est vérifié par
   l'utilisateur (ses ROM et BIOS). Construire une ROM 32X libre (yatssd + marsdev) est une option ouverte (design §9).
 - Les fichiers `.brm` du Mega CD ne passent pas par le runtime : « réinitialiser les sauvegardes » d'un jeu doit
-  aussi viser `<jeu>.brm` (motifs par core, mécanisme `reset_core_game_files` de la 4.0).
+  aussi viser `<jeu>.brm` (motifs par core, mécanisme `game_saves` / `reset_core_game_files` de la 3.0).

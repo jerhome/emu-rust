@@ -117,9 +117,14 @@ Faits vérifiés le 2026-11-20 :
   pavé n'est requise.
 - **Bascule « joystick au clavier »** (Hôte + J, mémorisée par jeu, OSD à chaque bascule) :
   - *Clavier* : toutes les touches vont au clavier ST (bureau GEM, saisie, jeux au clavier) ;
-  - *Joystick* (défaut d'un jeu lancé depuis la bibliothèque) : les touches du profil `KeyMap` du système (gauche :
+  - *Joystick* (par Hôte + J ; **ce n'est pas le défaut** — voir ci-dessous) : les touches du profil `KeyMap` du système (gauche :
     ZQSD sur AZERTY = positions WASD ; tir J, tir 2 K) pilotent le joystick ST (RetroPad port 0) ; les autres touches
     vont toujours au clavier ST (Espace, F1… restent utilisables). Démarrage sans disquette (bureau) : *Clavier*.
+
+  **Mode par défaut d'un jeu lancé depuis la bibliothèque : *Clavier*** (décision de l'utilisateur, rappelée en tête
+  de cette ADR ; c'est ce que fait le code : `KeyboardModeChoice::default()`). La première rédaction de ce
+  paragraphe disait *Joystick* : corrigé le 2026-11-21. À partir de la 5.0, le défaut devient une donnée par système
+  (`default_input` de `systems.toml`, ADR 0019 §6 : Joystick pour le CPC et le C64, Clavier pour ST, Amiga et DOS).
   Avec une manette (ADR 0016), le joystick est sur la manette et le mode *Clavier* suffit : aucune dépendance.
 
 ### 5. Disquettes
@@ -178,7 +183,8 @@ Faits vérifiés le 2026-11-20 :
 - Aucun code de la 2.0 ne suppose l'absence ou la présence d'une manette : clavier, souris, clavier virtuel et manette
   sont des `InputBackend` combinés (OU / somme des déplacements). Les raccourcis manette (PS + bouton) déclenchent les
   mêmes `HotkeyAction` ; les nouvelles actions (clavier virtuel, capture, disquette suivante) sont ajoutées à
-  `HotkeyAction` pour qu'ADR 0016 puisse les lier (ex. PS + R3 = clavier virtuel). Souris émulée au stick : hors 2.0.
+  `HotkeyAction` pour qu'ADR 0016 puisse les lier : **PS + R3 = clavier virtuel, PS + L3 = disquette suivante**
+  (confirmé par l'amendement du 2026-11-21 d'ADR 0016, livré en 2.1). Souris émulée au stick : hors 2.0.
 
 ## Conséquences
 
@@ -193,5 +199,7 @@ Faits vérifiés le 2026-11-20 :
 - Les disquettes modifiées vivent dans `saves/` : les sauvegarder = sauvegarder `<data>`, comme la SRAM.
 - `hatari` est une « tech preview » : risque de régressions nightly, atténué par la version précédente conservée
   (ADR 0013) et l'alternative `hatarib`.
-- 3.0 Amiga : ajouter `aros` à `free_bios.toml` (puae a aussi un AROS intégré), la disposition `amiga.toml`, la
-  politique `media` de puae ; aucun changement d'architecture attendu.
+- 3.0 Amiga : la disposition `amiga.toml`, la politique `media` de puae ; aucun changement d'architecture attendu.
+  **Correction du 2026-11-21** : cette ligne annonçait « ajouter `aros` à `free_bios.toml` » ; c'est abandonné —
+  l'AROS utilisé est celui **intégré au core puae**, rien n'est téléchargé ni installé par emu-rust (ADR 0017 §2,
+  ADR 0005 amendée). `free_bios.toml` ne contient pas d'entrée `aros`.

@@ -1,16 +1,20 @@
 # ADR 0017 — Amiga (version 3.0) : core puae, AROS intégré, Kickstart importé, clavier Amiga, dossier des ROMs
 
-Statut : proposé (2026-11-20). Décisions utilisateur déjà prises (2026-11-20, `docs/questions-ouvertes.md`) : touche
-hôte **Ctrl droit partout** (macOS compris) ; **Amiga gauche / droite = Alt gauche / Alt droit** (évite la touche
-Windows ; les touches Alt de l'Amiga passent par le clavier virtuel) — prévalent sur le texte ci-dessous. Étude de faisabilité : `docs/essais-puae.md` (essais headless de puae et puae2021
-sous Xvfb, sans Kickstart). Réutilise ADR 0015 (infrastructure « ordinateur » de la 2.0) sans changement
-d'architecture ; précise ADR 0005 (AROS), 0013 (BIOS fournis par l'utilisateur), 0014 (DAT). Conception détaillée :
-`docs/design/v3.0-amiga.md`. Graphe des crates inchangé.
+Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (revue croisée des conceptions, corrections B1, B2,
+B3, I1, I5, I9, I10, M3, M7, M10). Décisions utilisateur (`docs/questions-ouvertes.md`, elles prévalent) : touche hôte
+**Ctrl droit partout** (macOS compris ; ⌘ droit seulement en repli réglable) ; **Amiga gauche / droite = Alt gauche /
+Alt droit (AltGr)** sur les trois OS, les touches Alt de l'Amiga passant par le clavier virtuel ; mode d'entrée par
+défaut **Clavier**. Étude de faisabilité : `docs/essais-puae.md` (essais headless de puae et puae2021 sous Xvfb, sans
+Kickstart). Réutilise ADR 0015 (infrastructure « ordinateur » de la 2.0) sans changement d'architecture ; précise
+ADR 0005 (AROS intégré au core : amendement du 2026-11-21), 0013 (BIOS fournis par l'utilisateur), 0014 (DAT, schéma
+de la bibliothèque). Conception détaillée : `docs/design/v3.0-amiga.md` — c'est elle qui définit `MediaRules`,
+l'ordre d'évaluation des médias, le contrôle de firmware unique et les mécanismes génériques réutilisés par les
+versions suivantes (§3.5 du design). Graphe des crates inchangé.
 
 ## Contexte
 
 La 3.0 ajoute le Commodore Amiga en réutilisant tout ce que la 2.0 pose pour l'Atari ST : clavier complet et touche
-hôte (Ctrl droit, ⌘ droit sur macOS), souris capturée, clavier virtuel egui, disquettes multiples et copies de
+hôte (Ctrl droit partout, macOS compris), souris capturée, clavier virtuel egui, disquettes multiples et copies de
 travail, options par jeu, BIOS libre / fourni avec vérification. L'utilisateur joue au clavier Razer 60 % AZERTY
 (Windows 11 et macOS Intel 12.7.6), surtout à des jeux **point-and-click à la souris** (mode *Clavier* par défaut,
 décision 2.0). Deux demandes de l'utilisateur sont rattachées à la 3.0 : un bouton **« Ouvrir le dossier des ROMs »**
@@ -110,27 +114,33 @@ Faits vérifiés le 2026-11-20 :
 - **AROS = celui intégré à puae.** Pas d'entrée `aros` dans `free_bios.toml` en 3.0 : il n'existe en amont qu'une
   nightly de 131 Mo qui disparaît en quelques jours, donc pas de version figée ni de SHA-256 épinglable (condition
   d'ADR 0015 §2), et l'AROS intégré, redistribué par le buildbot avec le core, couvre déjà le besoin « jouer sans
-  ROM propriétaire ». ADR 0005 (« AROS installé automatiquement ») est satisfait par le core. Le `FreeBiosManager`
+  ROM propriétaire ». ADR 0005 est amendée en ce sens (2026-11-21 : AROS = intégré à puae, règle « Builtin » ;
+  emu-rust ne télécharge ni n'installe aucun fichier AROS) ; la phrase d'ADR 0015 (Conséquences) « ajouter `aros` à
+  `free_bios.toml` » est caduque. Le `FreeBiosManager`
   reste prêt : une entrée `aros` s'ajoutera par simple fichier de données si une archive stable apparaît.
 - **Priorité Kickstart > AROS**, calculée par le frontend avant le lancement (pas de message d'erreur du core) :
   1. modèle effectif = option du jeu, sinon `puae_model` global, sinon résolution de `auto` (fonction pure
      `resolve_amiga_model` : disquette ⇒ `puae_model_fd` (défaut A500), `.hdf`/`.lha` ⇒ `puae_model_hd` (défaut A1200),
      puis tags du chemin, table du README du core) ;
-  2. Kickstart attendu pour ce modèle (table `kickstarts` de `cores.toml`, §Contexte) cherché dans `system/` sous le
-     nom puae, Amiga Forever ou TOSEC ; état `check_firmware` habituel (md5) ;
-  3. présent et valide ⇒ `puae_kickstart = "auto"` ; **absent** ⇒ `puae_kickstart = "aros"` passé au core et état
+  2. **contrôle de firmware unique** (design §3.5.5, posé en 3.0 pour tous les systèmes) : table
+     `required_firmware` de `cores.toml`, ici **par variante = modèle** (Kickstart attendu pour ce modèle, §Contexte),
+     cherché dans `system/` sous le nom puae, Amiga Forever ou TOSEC ; état `FirmwareState` habituel (md5) ;
+  3. présent et valide ⇒ `puae_kickstart = "auto"` ; **absent** ⇒ **repli déclaré** (`fallback` de la table) :
+     `puae_kickstart = "aros"` passé au core comme **défaut calculé** (design §3.5.4) et état
      **`FirmwareState::CoreFallback { label: "AROS (intégré au core)" }`** (jamais « manquant » ni bloquant, même
      pour les Kickstarts marqués non optionnels par le `.info`) ; le message du core « Kickstart ROM … not found! »
      ne peut alors plus apparaître (chemin `aros` sans recherche de fichier) ; s'il apparaît quand même (lancement
-     `--core` sans bibliothèque), l'OSD le remplace par « Kickstart absent : AROS intégré utilisé » ; hash différent ⇒ dialogue 1.0 (« lancer
-     quand même » / « utiliser AROS »).
+     `--core` sans bibliothèque), l'OSD le remplace par « Kickstart absent : AROS intégré utilisé » ; hash différent
+     ⇒ dialogue 1.0 (« lancer quand même » / « utiliser AROS »).
 - **Avertissement de compatibilité AROS**, une fois par jeu (mémorisé dans les options du jeu) : « Pas de Kickstart
   pour A500 : AROS est utilisé. Beaucoup de jeux Amiga ne fonctionnent pas sans Kickstart d'origine. [Importer un
   Kickstart…] [Continuer avec AROS] ». AROS est un remplaçant d'AmigaOS 3.1 : les démos et jeux qui frappent le
   matériel en direct marchent souvent, ceux qui dépendent de Kickstart 1.3 (bootblocks, trackloaders) souvent pas ;
   WHDLoad exige un vrai Kickstart (les copies auto de puae ne concernent que les fichiers présents dans `system/`).
-- Aucun Kickstart n'est téléchargé (ADR 0005) ; la vérification utilise uniquement les md5 du `.info` et de
-  `firmware.toml` (section Amiga ajoutée depuis `libretro-database/dat/System.dat`, même licence CC-BY-SA-4.0).
+- Aucun Kickstart n'est téléchargé (ADR 0005) ; la vérification utilise uniquement des md5 : ceux de
+  `firmware.toml` (section Amiga tirée de `libretro-database/dat/System.dat`, même licence CC-BY-SA-4.0 et même
+  attribution que l'existant) et, pour les fichiers absents de `System.dat`, ceux du `.info` du core installé, lus à
+  l'exécution et **jamais recopiés dans nos données** (format et attribution : design §3.5.6).
 
 ### 3. Import d'un BIOS (demande utilisateur, tous systèmes)
 
@@ -182,18 +192,25 @@ Faits vérifiés le 2026-11-20 :
 ### 6. Disquettes (DF0-DF3) et écritures
 
 - Politique `cores.toml` : `[cores.puae] media = "working_copy"`, **`media_direct = ["ipf", "lha"]`** (nouveau champ :
-  extensions jamais écrites par le core, transmises sans copie). Les fichiers de l'utilisateur ne sont jamais modifiés
+  extensions jamais écrites par le core, transmises sans copie ; **un seul nom partout** : clé `media_direct` de
+  `cores.toml`, `CorePreferences::media_direct`, champ `MediaRules::media_direct`). Les fichiers de l'utilisateur ne sont jamais modifiés
   (règle 2.0) ; les écritures (sauvegardes de jeu sur disquette) vivent dans `saves/puae/<jeu>.disks/`.
 - `#SAVEDISK:` : puae crée la disquette de sauvegarde dans **son** dossier `saves/` (`<m3u>.save<N>.adf`) : comme
-  le `.m3u` généré ou copié vit dans `<jeu>.disks/`, le nom est unique par jeu. « Réinitialiser les disquettes »
-  supprime aussi ces fichiers.
+  le `.m3u` généré ou copié porte le nom du jeu, le nom est unique par jeu. « Réinitialiser les disquettes »
+  supprime aussi ces fichiers par le mécanisme **générique** posé en 3.0 : motifs `game_saves` de `cores.toml`
+  (`["{game}.save*.adf"]`) appliqués par `reset_core_game_files` (design §3.5.3 ; réutilisé par dosbox_pure, cap32,
+  VICE, genesis_plus_gx).
 - **MultiDrive** (défaut du core) : jusqu'à 4 disquettes insérées en DF0-DF3 au démarrage ; l'interface libretro ne
   pilote que **DF0** (pas d'API par lecteur) : le menu Disquettes et Hôte + D changent DF0, comme en 2.0. Libellé de
   l'OSD : « DF0 : disquette 2/3 — … ». Un jeu qui refuse les lecteurs externes : option MultiDrive par jeu.
 - Zips : puae a `block_extract = 1` et sait les lire, mais il les décompresse dans `saves/puae/TEMP/` vidé à la
   sortie : **les écritures sur disquette seraient perdues**. Le frontend extrait donc lui-même les zips de disquettes
-  dans `<jeu>.disks/` (même code que la 2.0, qui ne dépend pas de `block_extract`) et passe au core des `.adf` / un
-  `.m3u` ; un zip sans image de disquette est transmis tel quel (le core le traite comme un dossier). Le chemin 1.0
+  dans `<jeu>.disks/` et passe au core des `.adf` / un `.m3u` ; un zip sans image de disquette est transmis tel quel
+  (le core le traite comme un dossier). **Ce n'est pas le code de la 2.0** : `prepare_media` n'extrait aujourd'hui un
+  zip que si le core **ne déclare pas** l'extension `zip` (`crates/emu-runtime/src/media.rs`, `add_source`), or puae
+  la déclare. La 3.0 remplace ce test par un **ordre d'évaluation unique**, écrit une seule fois dans le design
+  (§3.5.1) : (1) extension de `media_direct` ⇒ transmise en place ; (2) zip ⇒ inspecté, extrait s'il contient une image
+  acceptée ; (3) sinon politique du core. Les ADR 0018, 0019 et 0020 y renvoient. Le chemin 1.0
   (`ContentSpec::File`, zip transmis si `block_extract`) reste celui d'un `--rom` sans bibliothèque.
 - `set_initial_image` n'existe pas dans puae : `last_disk` est restauré par `Disks::insert` après le chargement
   (déjà le chemin 2.0).
@@ -210,18 +227,24 @@ Faits vérifiés le 2026-11-20 :
   | Help | `INSERT` ou `HELP` | Inser (Fn) ou clavier virtuel | clavier virtuel |
   | Del | `DELETE` | Suppr (Fn + ⌫ sur le Razer) | Fn + ⌫ |
   | Ctrl | `LCTRL` | Ctrl gauche | Ctrl |
-  | Alt gauche / droite | `LALT` / `RALT` | Alt / AltGr (le `ControlLeft` factice d'AltGr reste filtré) | Option gauche / — |
-  | `< >` (ISO) | `LESS` / `OEM_102` | touche `<` (`IntlBackslash`) | `IntlBackslash` |
+  | Alt gauche / droite de l'Amiga | `LALT` / `RALT` | **clavier virtuel seulement** (aucune touche physique par défaut) | **clavier virtuel seulement** |
+  | `< >` (ISO) | `LESS` (puae lit aussi `OEM_102`) | touche `<` (`IntlBackslash` ⇒ `LESS` par la table 2.0, inchangée) | `IntlBackslash` |
   | `#` (pavé ISO) | `HASH` | — (clavier virtuel ; LCtrl + `\` = touche de sortie WHDLoad, géré par le core) | idem |
   | F1–F10, pavé `( ) / *` | `F1…F10`, `HOME`/`END` = `(`/`)` | Fn + rangée chiffres, ou clavier virtuel | idem |
 
   Ces correspondances sont des **surcharges par disposition** (`emu-ui/data/keyboards/amiga.toml`, table `[remap]`
-  par OS) appliquées après la table positionnelle, modifiables dans `config.toml` (`[computer.remap.amiga]`). La
-  touche hôte n'est jamais transmise : Ctrl droit (→ Amiga droite chez puae) n'atteint pas le core.
-- **Windows** : la touche Windows seule ouvre le menu Démarrer au relâchement et Win + lettre déclenche des raccourcis
-  du système (Win + E, Win + L) qu'une application ne peut pas bloquer sans crochet clavier bas niveau (hors
-  périmètre) : Amiga gauche reste sur Windows gauche avec cette limite documentée, et elle est disponible dans le
-  clavier virtuel ; la combinaison « Ctrl + Amiga + Amiga » (reset) est remplacée par Hôte + R.
+  **unique, identique sur Windows, Linux et macOS** : `AltLeft = "LSUPER"`, `AltRight = "RSUPER"`) appliquées après
+  la table positionnelle, modifiables dans `config.toml` (`[computer.remap.amiga]`). `LALT` / `RALT` (les Alt de
+  l'Amiga) ne sont émis que par le **clavier virtuel**. La touche Windows / ⌘ n'est liée à rien. La touche hôte n'est
+  jamais transmise : Ctrl droit (→ Amiga droite chez puae) n'atteint pas le core.
+- **Alt côté hôte** : le `ControlLeft` factice qui précède AltGr sous Windows reste filtré (2.0). Les combinaisons
+  **Alt + F4, Alt + Tab et Alt + Espace restent à Windows** (elles n'arrivent pas, ou pas entièrement, à l'Amiga) :
+  signalé dans le guide d'essai ; les jeux n'utilisent pas Amiga + F4 / Tab / Espace, sinon clavier virtuel.
+  **Alt + Entrée** (plein écran 1.0) est **inactif en mode ordinateur** (vérifié dans `crates/emu-ui/src/app.rs` :
+  en mode ordinateur toutes les touches passent par le routeur de la touche hôte, le raccourci Alt + Entrée n'est
+  évalué qu'en mode console) : Alt + Entrée arrive à l'Amiga comme Amiga gauche + Return, le plein écran est
+  Hôte + F. Un test U3 fige ce comportement. Le reset clavier « Ctrl + Amiga + Amiga » reste physiquement possible
+  (Ctrl gauche + Alt gauche + Alt droit) ; Hôte + R est le reset documenté.
 - **Disposition** : l'Amiga démarre en clavier US (Kickstart et la plupart des jeux) ; une saisie AZERTY dans le
   Workbench demande la keymap `f` côté Amiga. Le clavier virtuel affiche donc par défaut les légendes `us`
   (option du jeu `keyboard_layout = "fr"` pour un Workbench configuré en français).
@@ -261,11 +284,16 @@ Faits vérifiés le 2026-11-20 :
 |---|---|---|
 | BIOS sans ROM propriétaire | EmuTOS téléchargé (`FreeBiosManager`) | AROS **intégré au core**, aucun téléchargement |
 | BIOS d'origine | `tos.img` déposé à la main | Kickstart **par modèle**, import guidé (§3), choix frontend `puae_kickstart` |
-| Nouvel état firmware | `Free` | `CoreFallback` |
-| Politique des médias | une par core | une par core **+ exceptions par extension** (`media_direct`) |
-| Zips | toujours extraits par le frontend | extraits s'ils contiennent des disquettes, sinon passés au core |
+| Nouvel état firmware | `Free` | `CoreFallback`, `Builtin` (posé en 3.0, données en 5.0) |
+| Contrôle avant lancement | `tos.img` présent ou EmuTOS proposé | **contrôle unique** `required_firmware` par variante (modèle), repli optionnel ; 6.0 / 7.0 : variante = région, données seulement |
+| Options | core < `cores.toml` < config < jeu | + couche **défauts calculés** entre `cores.toml` et la config |
+| Sauvegardes écrites par le core | — | motifs `game_saves` + `reset_core_game_files` (générique) |
+| Schéma de la bibliothèque | v3 | **v4** : `dat_info` / `dat_entry` à clé `(system, source)` (plusieurs DAT par système) |
+| Extensions partagées | — | `.m3u` = système de ses entrées ; `.ipf` = dossier, puis DAT, sinon non classé ; `folder_extensions` |
+| Politique des médias | une par core | une par core **+ exceptions par extension** (`media_direct`), ordre d'évaluation unique (design §3.5.1) |
+| Zips | extraits seulement si le core ne déclare pas `zip` | inspectés quel que soit le core : extraits s'ils contiennent des disquettes, sinon passés au core |
 | DAT | TOSEC | TOSEC (disquettes) **+ DAT WHDLoad** (`dat/`, `.lha`) |
-| Disposition clavier | positionnelle, langue de TOS | positionnelle **+ surcharges** (Amiga gauche / droite) ; Amiga en US |
+| Disposition clavier | positionnelle, langue de TOS | positionnelle **+ surcharges** `[remap]` (Alt gauche / droit = Amiga gauche / droite, même table sur les 3 OS) ; Amiga en US |
 | Lecteurs | DF0 (+ DF1 rarement) | DF0-DF3 remplis par MultiDrive ; seul DF0 est changeable |
 | Nouvelles dépendances | `sys-locale` | `opener`, `rfd` (UI uniquement) |
 
@@ -281,3 +309,8 @@ Faits vérifiés le 2026-11-20 :
 - Les copies de travail peuvent occuper de la place (HDF jusqu'à 2 Gio) : la bibliothèque standard ne donne pas l'espace libre (pas de crate ajouté pour cela) ; une copie interrompue (disque plein) est supprimée et signalée.
 - L'import de BIOS sert tous les systèmes (TOS, Kickstart, BIOS Game Boy…) et remplace le dépôt manuel dans
   `system/` sans le supprimer.
+- La 3.0 porte les mécanismes génériques dont dépendent les 4.0 à 7.0 (ordre d'évaluation des médias,
+  `folder_extensions`, `game_saves`, défauts calculés, contrôle de firmware par variante, `FirmwareState::Builtin`,
+  schéma v4) : les versions suivantes n'ajoutent que des données ou des sources de variante.
+- Migration de schéma v3 → v4 (sans perte : favoris, historique, jaquettes conservés ; les DAT sont ré-importés).
+- Sous Windows, Alt + F4 / Alt + Tab / Alt + Espace ne sont pas utilisables comme combinaisons Amiga.

@@ -1,8 +1,12 @@
 # ADR 0018 — PC-DOS (version 4.0) : core dosbox_pure, contenus, modifications séparées, MIDI, clavier PC
 
-Statut : proposé (2026-11-20). Réutilise ADR 0015 (infrastructure « ordinateur » de la 2.0) et ADR 0017 (3.0 :
-`MediaRules`, `DatSource::Libretro`, « Importer un BIOS… », bouton du dossier des ROMs) ; précise ADR 0005 (ressources
-libres téléchargées), 0013 (cores, BIOS), 0014 (DAT, jaquettes), 0016 (manette : axes analogiques). Étude préalable :
+Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (SoundFont GeneralUser GS **autorisée** ; mode
+d'entrée par défaut **Clavier** ; revue croisée : corrections I1, I4, I5, I6, I7, I8, I10, I13, M3). Réutilise ADR 0015
+(infrastructure « ordinateur » de la 2.0), ADR 0017 (3.0 : « Importer un BIOS… », bouton du dossier des ROMs,
+`DatSource::Libretro`) et les **règles communes du design 3.0** (`docs/design/v3.0-amiga.md` §3.2 `MediaRules`,
+§3.5 : ordre d'évaluation des médias, `folder_extensions`, `game_saves` / `reset_core_game_files`, défauts calculés,
+contrôle de firmware, notices) ; précise ADR 0005 (ressources libres téléchargées : amendement du 2026-11-21), 0013
+(cores, BIOS), 0014 (DAT, jaquettes), 0016 (manette : axes analogiques, amendement `analog = true`). Étude préalable :
 `docs/essais-dosbox.md` (essais headless des trois cores DOSBox avec l'appli 1.0.0). Conception détaillée :
 `docs/design/v4.0-dos.md`. Graphe des crates inchangé.
 
@@ -89,9 +93,11 @@ Faits vérifiés le 2026-11-20 :
   ne sont pas proposés (pas de zip ni de savestates, écrivent dans les dossiers ; SDL 1.2 pour svn) ; ils restent
   utilisables par `--core <chemin>`.
 - Propriétés par core (`cores.toml`, extension des tableaux 2.0 / 3.0) : `media = "working_copy"`,
-  `media_direct = ["zip", "dosz", "iso", "cue", "chd", "ins"]`, **`folders = "snapshot"`** (§2), **`vfs = true`**
-  (§5), **`featured_options`** (§4), `options = { dosbox_pure_midi = "disabled" }` (état explicite, §5) ; la
-  disposition clavier est un défaut calculé (§6).
+  `media_direct = ["zip", "dosz", "iso", "cue", "chd", "ins"]` (ordre d'évaluation du design 3.0 §3.5.1 : une
+  extension directe passe **avant** l'inspection des zips, donc un zip DOS n'est jamais extrait),
+  **`folders = "snapshot"`** (§2), **`vfs = true`** (§5), **`analog = true`** (§7), **`featured_options` par
+  système** (§4), **`layout_option`** (§6), `game_saves` (mécanisme 3.0), `options = { dosbox_pure_midi = "disabled" }`
+  (état explicite, §5).
 - Aucune contribution en amont rédigée par un LLM (politique du projet dosbox-pure) : un bogue du core est décrit à
   l'utilisateur, qui décide.
 
@@ -127,13 +133,17 @@ Faits vérifiés le 2026-11-20 :
   l'OSD rappelle : « Choisissez le programme · → : le lancer automatiquement la prochaine fois ». Le choix est mémorisé
   **par le core** dans `AUTOBOOT.DBP` du `.pure.zip` du jeu (donc par jeu, hors des fichiers de l'utilisateur).
 - Menu de la touche hôte : **« Changer de programme de démarrage »** = `retro_reset` avec Shift gauche signalé
-  enfoncé (API générique `Emulator::reset_with_keys`).
+  enfoncé (API générique `Emulator::reset_with_keys`). Elle **exige une API FFI nouvelle**, `Core::reset_with(handler)` :
+  aujourd'hui `Core::reset` appelle `retro_reset` sans gestionnaire installé, et les callbacks d'entrée répondent une
+  valeur neutre hors de `Core::run` (`with_handler`, `crates/emu-libretro/src/callbacks.rs`) — le core lirait donc
+  toujours « Shift relâché ».
 - Lancement d'un exécutable précis (`--rom JEU/START.EXE`, ou choix « Lancer un autre programme… » de la fiche du
   jeu, à la racine du dossier) : `instantané.zip#START.EXE`, mémorisé dans les options du jeu (`[dos] start`).
   Un exécutable hors de la racine ⇒ menu du core (limite du fragment).
 - **« Réinitialiser les modifications du jeu »** (menu, confirmation, partie arrêtée) : supprime
   `<saves>/dosbox_pure/<nom>.pure.zip` (sauvegardes du jeu, `SETUP`, choix d'exécutable, correspondances manette),
-  et la copie de travail le cas échéant.
+  et la copie de travail le cas échéant — par `game_saves` + `reset_core_game_files`, **posés en 3.0** (design 3.0
+  §3.5.3) : la 4.0 n'ajoute que les motifs de dosbox_pure.
 
 ### 3. Sauvegardes et savestates
 
@@ -144,12 +154,15 @@ Faits vérifiés le 2026-11-20 :
 
 ### 4. Options par jeu
 
-- Mécanisme 2.0 (`<data>/game-options/dosbox_pure/<jeu>.toml`, ordre core < cores.toml < config < jeu), plus une
-  section **« Réglages DOS »** en tête de « Options de ce jeu », tirée de `featured_options` : vitesse (cycles),
-  mémoire, type de CPU, carte graphique, carte son, MIDI, disposition du clavier, vitesse de la souris. Les autres
-  options restent dans la liste complète. Options marquées « restart required » ⇒ « Redémarrer » (2.0).
-- Défauts du core conservés (cycles `auto`, 16 Mo, SVGA, SB16, Voodoo logiciel). `featured_options` est une liste
-  générique de `cores.toml` (utilisable par puae ou hatari plus tard).
+- Mécanisme 2.0 (`<data>/game-options/dosbox_pure/<jeu>.toml`) avec l'ordre de la 3.0 : core < `cores.toml` <
+  défauts calculés < config < jeu (design 3.0 §3.5.4), plus une section **« Réglages DOS »** en tête de « Options de
+  ce jeu », tirée de `featured_options` : vitesse (cycles), mémoire, type de CPU, carte graphique, carte son, MIDI,
+  disposition du clavier, vitesse de la souris. Les autres options restent dans la liste complète. Options marquées
+  « restart required » ⇒ « Redémarrer » (2.0).
+- Défauts du core conservés (cycles `auto`, 16 Mo, SVGA, SB16, Voodoo logiciel). `featured_options` est une table
+  générique de `cores.toml` **par (core, système)** dès la 4.0 (`[cores.<id>.featured_options] "<système>" = […]`) :
+  un même core sert plusieurs systèmes aux réglages différents (genesis_plus_gx : Mega Drive, Master System, Game
+  Gear, Mega CD ; picodrive : 32X, Mega CD).
 
 ### 5. MIDI et dossier système
 
@@ -157,11 +170,17 @@ Faits vérifiés le 2026-11-20 :
   cores marqués `vfs = true`** ; les autres reçoivent `false` (choix 3.0 inchangé pour puae).
 - Défaut : pas de MIDI (`dosbox_pure_midi = disabled` ; `GET_MIDI_INTERFACE`, sortie MIDI vers l'hôte, n'est pas
   fourni), musique AdLib / Sound Blaster.
-- **SoundFont libre facultatif** : GeneralUser GS 2.0.3 dans le catalogue `free_bios.toml` (généralisé : `kind =
-  "soundfont"`, fichier brut sans archive, taille et SHA-256 épinglés, limite par entrée 64 Mio), installé en
-  `system/GeneralUser-GS.sf2` **sur action de l'utilisateur** (écran Cores, ligne « SoundFont » du core, ou
-  proposition dans « Réglages DOS » quand on choisit MIDI). Après installation : proposer « Utiliser pour tous les
-  jeux DOS » (`[core_options.dosbox_pure] dosbox_pure_midi = "GeneralUser-GS.sf2"`). Non empaqueté, non redistribué.
+- **SoundFont libre facultatif (autorisée par l'utilisateur le 2026-11-21, ADR 0005 amendée)** : GeneralUser GS
+  2.0.3 dans le catalogue `free_bios.toml` (généralisé : `kind = "soundfont"`, fichier brut sans archive, taille et
+  SHA-256 épinglés), installé en `system/GeneralUser-GS.sf2` **sur action de l'utilisateur** (écran Cores, ligne
+  « SoundFont » du core, ou proposition dans « Réglages DOS » quand on choisit MIDI). **Limite de taille propre aux
+  SoundFont** : le code livré borne une archive de BIOS à 16 Mio (`MAX_BIOS_ARCHIVE_BYTES`) et une image extraite à
+  **4 Mio** (`MAX_BIOS_IMAGE_BYTES`, `crates/emu-assets/src/bios.rs`), et refuse une variante sans nom d'entrée ; le
+  fichier fait 32 Mo. La 4.0 ajoute donc une limite **par type de ressource** (`soundfont` : 64 Mio, archive et
+  fichier installé ; `bios` : valeurs actuelles inchangées) et accepte `entry` vide pour le seul format `raw`. Après
+  installation : proposer « Utiliser pour tous les jeux DOS »
+  (`[core_options.dosbox_pure] dosbox_pure_midi = "GeneralUser-GS.sf2"`). Non empaqueté, non redistribué ; licence et
+  source citées dans le README de release et l'écran Cores (design 3.0 §3.5.7).
 - **MT-32 / CM-32L** : ROM commerciales fournies par l'utilisateur via **« Importer un BIOS… »** (3.0), reconnues
   par md5 (`firmware.toml`, section « DOS » tirée de `System.dat`), installées sous `MT32_CONTROL.ROM` /
   `MT32_PCM.ROM` / `CM32L_CONTROL.ROM` / `CM32L_PCM.ROM`. Autres versions (fichier inconnu) : import non vérifié de la
@@ -171,10 +190,17 @@ Faits vérifiés le 2026-11-20 :
 
 ### 6. Clavier PC sur clavier 60 %
 
-- Correspondance positionnelle de la 2.0 (touche physique ⇒ `RETROK_*` US) ; `IntlBackslash` (`<` / `>` de l'AZERTY)
-  ⇒ `RETROK_OEM_102`. **Disposition DOS** = option `dosbox_pure_keyboard_layout`, défaut calculé depuis la langue
-  du système (`fr` ⇒ `fr`, `de` ⇒ `gr`, `en-GB` ⇒ `uk`, …, repli `us`), réglable par jeu : un AZERTY tape ce qui est
-  gravé. AltGr transmis (`RALT`), Ctrl gauche transmis ; **Ctrl droit = touche hôte**, jamais transmis.
+- Correspondance positionnelle de la 2.0 (touche physique ⇒ `RETROK_*` US), **table globale inchangée** : elle
+  envoie `RETROK_LESS` pour `IntlBackslash` (`<` / `>` de l'AZERTY) parce que hatari ignore `RETROK_OEM_102`
+  (`crates/emu-ui/src/computer/keymap.rs`) ; la changer casserait la 2.0. Le PC obtient `RETROK_OEM_102` par la
+  surcharge **`[remap]` de `pc.toml`** (`IntlBackslash = "OEM_102"`, mécanisme 3.0), jamais par la table globale.
+- **Disposition DOS** = option `dosbox_pure_keyboard_layout`, **défaut calculé** (design 3.0 §3.5.4) déclaré en
+  données dès la 4.0 : `layout_option = { option = "dosbox_pure_keyboard_layout", map = { fr = "fr", de = "gr",
+  "en-GB" = "uk", … }, fallback = "us" }` ; réglable globalement (`[core_options.dosbox_pure]`) et par jeu comme
+  toute option : un AZERTY tape ce qui est gravé. Il n'y a **pas** de clé `[computer] dos_keyboard_layout`. AltGr
+  transmis (`RALT`), Alt gauche transmis (`LALT`), Ctrl gauche transmis ; **Ctrl droit = touche hôte**, jamais
+  transmis. Sous Windows, Alt + F4 / Alt + Tab / Alt + Espace restent au système (guide d'essai) ; Alt + Entrée
+  n'est pas un raccourci du frontend en mode ordinateur (il arrive à DOS : plein écran = Hôte + F).
 - F1-F12, flèches, Inser / Suppr / Début / Fin / Pg↑ / Pg↓ arrivent par la couche Fn du Razer (l'OS envoie les vrais
   codes) : rien à faire. Pour le reste et pour le confort :
   - **mode Joystick** de la 2.0 (Hôte + J) : ZQSD / J / K ⇒ RetroPad port 0 ⇒ préréglage du core (flèches, Ctrl,
@@ -187,9 +213,11 @@ Faits vérifiés le 2026-11-20 :
 
 - Souris relative de la 2.0 (capture, repli sans capture sous noVNC) ; `dosbox_pure_mouse_input` reste `true`
   (mouvement virtuel). Sensibilité : celle du frontend (2.0) ; `dosbox_pure_mouse_speed_factor` par jeu.
-- Manette (ADR 0016) : RetroPad port 0 comme partout ; **ajout des axes analogiques** (`RETRO_DEVICE_ANALOG`,
-  sticks gauche et droit) dans `PadState`, nécessaires aux joysticks DOS analogiques et à la souris au stick des
-  préréglages du core. Le choix du joystick DOS (Gravis, 2 boutons, ThrustMaster) se fait dans le « Controller
+- Manette (ADR 0016, livrée en **2.1**) : RetroPad port 0 comme partout ; **ajout des axes analogiques**
+  (`RETRO_DEVICE_ANALOG`, sticks gauche et droit) dans `PadState`, nécessaires aux joysticks DOS analogiques et à la
+  souris au stick des préréglages du core. ADR 0016 convertit toujours le stick gauche en D-pad : elle est **amendée**
+  (2026-11-21) par le champ `analog = true` de `cores.toml`, qui coupe cette conversion pour le core et transmet les
+  axes (zone morte commune). Le choix du joystick DOS (Gravis, 2 boutons, ThrustMaster) se fait dans le « Controller
   Mapper » du core (mémorisé dans `PADMAP.DBP` du `.pure.zip`). Sans manette, les directions numériques suffisent.
 - Le menu interne du core (L3) reste disponible ; le frontend ne lit pas `SET_CONTROLLER_INFO` en 4.0.
 
@@ -198,6 +226,11 @@ Faits vérifiés le 2026-11-20 :
 - ISO / CUE+BIN / CHD transmis tels quels (lecture seule, MSCDEX émulé par le core, pistes audio CUE / CHD).
   Plusieurs CD / disquettes : regroupement de la bibliothèque (2.0) étendu à `(Disc N)`, `(CD N)` ; changement par le
   menu **Disquettes / CD** (interface disque étendue, 2.0) et Hôte + D.
+- **Règles CD de la bibliothèque, posées en 4.0 et indépendantes du système** (elles ne sont pas attendues de la
+  6.0) : un `.cue` est lu (`cue_references`, borné à 64 Kio) et les fichiers qu'il référence sont **masqués** —
+  sinon le `jeu.bin` d'un CD DOS serait listé comme un jeu Mega Drive (`bin`) ; une image CD (`iso`, `chd`, `cue` et
+  ses pistes) n'est **jamais hashée** par le scan (identification par le nom ; la 6.0 ajoute la taille + CRC de la
+  piste 01 pour Redump).
 - Zip contenant des images : monté par le core, rien à faire. Jeu en deux parties (zip + ISO séparé) : `.m3u8` de
   l'utilisateur, ou l'ISO placé dans le zip (documenté).
 
@@ -207,8 +240,9 @@ Faits vérifiés le 2026-11-20 :
   IGDB 13 à vérifier. Nouveau champ **`folder_games = true`** : sous un dossier dont un composant vaut `dos`
   (règle des dossiers de la 1.0), un sous-dossier contenant au moins un `.exe` / `.com` / `.bat` à sa racine **est un
   jeu** (son contenu n'est plus parcouru). Exécutables isolés à la racine du dossier `dos` : ignorés et comptés
-  (« rangez chaque jeu dans un dossier ou un zip »). Extensions ambiguës (`iso`, `cue`, `chd`, `img`) : seulement
-  sous un dossier `dos`.
+  (« rangez chaque jeu dans un dossier ou un zip »). Extensions ambiguës (`iso`, `cue`, `chd`, `img`) :
+  seulement sous un dossier `dos`, par le champ **`folder_extensions` posé en 3.0** (design 3.0 §3.5.2). Schéma de la
+  bibliothèque : **v5** (`game.is_dir`).
 - **Identification par DAT `dat/DOS.dat`** (téléchargé à l'exécution, jamais redistribué) : CRC32 + taille des
   entrées d'un zip lus dans le **répertoire central** (aucune décompression), ou des exécutables / images de la
   racine d'un dossier (≤ 64 fichiers, ≤ 16 Mio chacun). Une entrée du DAT compte si CRC, taille **et** nom de fichier
@@ -226,22 +260,31 @@ Faits vérifiés le 2026-11-20 :
 | Écritures | copie de travail des images | `.pure.zip` du core ; instantané zip pour les dossiers ; copie de travail pour img / vhd |
 | Lancement | boot de la disquette | exécutable choisi (menu du core, mémorisé par le core) |
 | BIOS | EmuTOS téléchargé / Kickstart importé (AROS en repli) | aucun ; MT-32 importé facultatif ; SoundFont libre facultatif |
-| FFI | 12, 13, 57, 58 | + VFS v3 (opt-in par core) ; reset avec touches tenues |
-| Manette | numérique | + axes analogiques |
-| Bibliothèque | TOSEC / WHDLoad, groupes de disquettes | DAT `dat/DOS.dat` par fichier, jeux-dossiers |
+| FFI | 12, 13, 57, 58 | + VFS v3 (opt-in par core) ; `Core::reset_with(handler)` (reset avec touches tenues) |
+| Manette | numérique (stick ⇒ D-pad) | + axes analogiques pour les cores `analog = true` (ADR 0016 amendée) |
+| Bibliothèque | TOSEC / WHDLoad, groupes de disquettes ; schéma v4 | DAT `dat/DOS.dat` par fichier, jeux-dossiers, `.cue` masquant ses pistes, images CD non hashées ; schéma v5 |
+| Défauts calculés | repli de firmware (3.0) | + `layout_option` (langue ⇒ disposition) |
+| Réglages mis en avant | — | `featured_options` par (core, système) |
 
 ## Conséquences
 
-- Nouvelles API (détail : design §3) : `emu_libretro::CoreConfig::provide_vfs` ; `emu_runtime::{snapshot_folder,
-  snapshot_is_current, SnapshotLimits, ContentSpec::Folder}`, `Emulator::reset_with_keys`, `PadState` analogique ;
-  `emu_assets` : `FreeBiosKind`, archive `raw`, `CorePreferences::{folder_policy, provides_vfs, featured_options}` ;
-  `emu_library` : `SystemInfo::folder_games`, jeux-dossiers, identification DOS. Graphe inchangé, aucune nouvelle
-  dépendance (zip écrit avec le crate `zip` déjà présent).
+- Nouvelles API (détail : design §3) : `emu_libretro::CoreConfig::provide_vfs`, `Core::reset_with` ;
+  `emu_runtime::{snapshot_folder, snapshot_is_current, SnapshotLimits, ContentSpec::Folder}`,
+  `Emulator::reset_with_keys`, `PadState` analogique ; `emu_assets` : `FreeBiosKind`, archive `raw`, limite par type
+  de ressource, `CorePreferences::{folder_policy, provides_vfs, featured_options(core, système), layout_option,
+  analog}` ; `emu_library` : `SystemInfo::folder_games`, jeux-dossiers, identification DOS, `cue_references`.
+  Déjà posés en 3.0 et seulement alimentés en données : `game_saves` / `reset_core_game_files`, `folder_extensions`,
+  couche « défauts calculés ». Graphe inchangé, aucune nouvelle dépendance (zip écrit avec le crate `zip` déjà
+  présent).
+- `unsafe` nouveau aussi dans `Core::reset_with` (installation du gestionnaire autour de `retro_reset`, comme
+  `Core::run`).
 - `unsafe` nouveau : les 19 fonctions VFS `extern "C"` d'`emu-libretro` (revue `reviewer`).
 - Réseau nouveau : le SoundFont (32 Mo, hôte `raw.githubusercontent.com`, SHA-256 épinglé) et le DAT `DOS.dat`
   (canal DAT existant).
 - Disque : un instantané par jeu-dossier lancé (cache supprimable, bouton « Vider le cache DOS » dans les Réglages).
 - La version `dosbox_pure` est une « preview » nightly : régressions possibles, atténuées par la version précédente
   conservée (ADR 0013) et les empreintes de test.
-- Les mécanismes génériques posés ici (instantané de dossier, VFS opt-in, `featured_options`, axes analogiques,
-  reset avec touches) servent à d'autres cores (ScummVM, cores 3D de la phase 7).
+- Les mécanismes génériques posés ici (instantané de dossier, VFS opt-in, `featured_options` par système,
+  `layout_option`, axes analogiques, reset avec touches, règles CD de la bibliothèque) servent à d'autres cores
+  (cap32, genesis_plus_gx / Mega CD, PlayStation et 3DO en 7.0, ScummVM).
+- L'axe analogique (tâche DG1) dépend de la manette livrée en **2.1** ; sans elle, DG1 est reporté sans bloquer la 4.0.
