@@ -8,7 +8,7 @@ Feuille de route : `docs/roadmap.md`. Décisions d'architecture : `docs/adr/` (e
 
 - **Pas de cores maison** : l'émulation est faite par les cores libretro (ADR 0001).
 - **Aucun téléchargement de ROM ou de BIOS commercial.** Seulement : cores libretro, BIOS libres (EmuTOS, AROS),
-  covers/métadonnées, ROMs du domaine public ou homebrew. L'utilisateur fournit le reste ; l'app vérifie les hashes (ADR 0005).
+  covers/métadonnées, ROMs du domaine public ou homebrew, SoundFont libre GeneralUser GS (sur action, 4.0). L'utilisateur fournit le reste ; l'app vérifie les hashes (ADR 0005).
 - **`unsafe`** interdit sauf dans `emu-libretro` et `emu-runtime` ; chaque bloc `unsafe` a un commentaire `// SAFETY:`.
 - **Cibles** : image Docker (WSLg / X11 / Wayland / noVNC), puis Linux, Windows, macOS **Intel** (`x86_64-apple-darwin`,
   OpenGL ≤ 4.1). Code spécifique OS via `#[cfg(...)]`.

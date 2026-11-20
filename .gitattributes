@@ -1,0 +1,6 @@
+# LF everywhere: include_str! data, scripts run in Docker/Linux, fixtures parsed by tests.
+* text=auto eol=lf
+# Byte-exact fixtures: CRC/SHA1 pinned in tests/data/README.md and sample.dat.
+tests/data/** binary
+*.png binary
+*.zip binary

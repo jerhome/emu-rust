@@ -50,7 +50,7 @@ jobs:
 
       - name: Test
         # xvfb: some tests open an X display; the mock core is built with the system C compiler (ADR 0009).
-        run: xvfb-run -a cargo test --locked --workspace
+        run: xvfb-run -a cargo test --locked --workspace --no-fail-fast
 
       - name: Build without default features
         run: cargo build --locked --workspace --no-default-features
@@ -94,7 +94,7 @@ jobs:
 
       - name: Test
         # Mock-core tests are `cfg(target_os = "linux")` and compile out here until the helper supports .dylib.
-        run: cargo test --locked --workspace --target x86_64-apple-darwin
+        run: cargo test --locked --workspace --no-fail-fast --target x86_64-apple-darwin
 
       - name: Build without default features
         run: cargo build --locked --workspace --no-default-features --target x86_64-apple-darwin
@@ -138,7 +138,7 @@ jobs:
 
       - name: Test
         # Mock-core tests stay `cfg(unix)` until the helper can build a .dll (ADR 0012).
-        run: cargo test --locked --workspace --target x86_64-pc-windows-msvc
+        run: cargo test --locked --workspace --no-fail-fast --target x86_64-pc-windows-msvc
 
       - name: Build without default features
         run: cargo build --locked --workspace --no-default-features --target x86_64-pc-windows-msvc
