@@ -524,6 +524,31 @@ fn in_use_set_during_download_wins() {
 }
 
 #[test]
+fn install_rolls_back_when_the_manifest_cannot_be_written() {
+    let f = Fixture::new();
+    f.serve_good("2026-11-16", b"core v1");
+    let m = f.open();
+    refresh(&m).unwrap();
+    // A directory in place of manifest.toml: unreadable (so a new one is started) and impossible to replace.
+    let manifest = f.cores().join(MANIFEST_FILE);
+    let err = m
+        .install(
+            &id("gambatte"),
+            &mut |_| {
+                let _ = fs::remove_file(&manifest);
+                let _ = fs::create_dir(&manifest);
+            },
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+    assert!(!matches!(err, CoreError::InUse(_)), "{err}");
+    assert!(manifest.is_dir(), "the failure must come from the manifest");
+    assert!(!f.cores().join("gambatte_libretro.so").exists());
+    assert!(!f.cores().join("gambatte_libretro.so.prev").exists());
+    assert!(f.leftovers().is_empty());
+}
+
+#[test]
 fn concurrent_installs_are_busy() {
     let f = Fixture::new();
     f.serve_good("2026-11-16", b"core v1");

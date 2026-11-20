@@ -92,7 +92,7 @@ pub(crate) type DatTask = Task<(), Result<(String, u64), String>>;
 
 pub(crate) fn spawn_scan(db: PathBuf, roots: Vec<PathBuf>, notify: Notify) -> ScanTask {
     Task::spawn("scan", notify, move |cancel, progress| {
-        let (mut library, _) = Library::open(&db).map_err(|e| e.to_string())?;
+        let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         let options = ScanOptions {
             roots,
             ..ScanOptions::default()
@@ -129,7 +129,7 @@ pub(crate) fn spawn_dat_import(
         if system(&id).is_none() {
             return Err(text::dat_unknown_system(&id));
         }
-        let (mut library, _) = Library::open(&db).map_err(|e| e.to_string())?;
+        let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         let n = library
             .import_dat(&id, &dat, None)
             .map_err(|e| e.to_string())?;
@@ -171,7 +171,7 @@ pub(crate) fn spawn_dat_download(
 ) -> DatDownloadTask {
     Task::spawn("dat-download", notify, move |cancel, progress| {
         let client = HttpClient::new(http).map_err(|e| e.to_string())?;
-        let (mut library, _) = Library::open(&db).map_err(|e| e.to_string())?;
+        let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         Ok(download_dats(
             &mut library,
             &client,

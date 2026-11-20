@@ -6,17 +6,18 @@
 //! Network: only when `covers.download` is on (off by default, an explicit user setting) and never in `--screen`
 //! captures. `CoverChain::fetch` → `Ok(None)` is conclusive (recorded `Missing`); `Err` records nothing.
 //! The worker is never joined: a request in flight is bounded by [`COVER_TIMEOUT`] and the thread dies with the
-//! process when the library closes.
+//! process when the library closes. A shared `CancelToken` is set on close or when downloads are switched off.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
-use emu_assets::http::{HttpClient, HttpConfig};
+use emu_assets::http::{CancelToken, HttpClient, HttpConfig};
 use emu_assets::{
     AssetError, CoverCache, CoverChain, CoverQuery, CoverSource, CoverSourceKind, IgdbCredentials,
     IgdbSource, LibretroThumbnails, MAX_COVER_BYTES, ScreenScraperCredentials, ScreenScraperSource,
@@ -35,11 +36,14 @@ use crate::config_library::{CoversConfig, CredentialsConfig};
 pub(crate) const COVER_SIDE: u32 = 320;
 /// Textures kept on the GPU (~400 KiB each at most).
 pub(crate) const MAX_TEXTURES: usize = 256;
-/// Per HTTP request: the sources have no cancellation, so a silent network must not hold the worker for long.
-/// A cover may chain several requests (IGDB token + API + image, or fallback sources), so the worst case for one
-/// cover is a few times this value (~45 s); a global deadline would need cancellation in `CoverChain`.
-pub(crate) const COVER_TIMEOUT: Duration = Duration::from_secs(15);
+/// Total budget for one cover (whole chain, `CoverChain::fetch_with_deadline`).
+pub(crate) const COVER_BUDGET: Duration = Duration::from_secs(30);
+/// Per HTTP request: a request in flight is not interrupted, so the worst case for one cover is
+/// [`COVER_BUDGET`] plus one request (~40 s).
+pub(crate) const COVER_TIMEOUT: Duration = Duration::from_secs(10);
 const COVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+/// Token shared with the UI side; replaced by a fresh one when downloads are switched back on.
+pub(crate) type SharedCancel = Arc<Mutex<CancelToken>>;
 const DAY: i64 = 86_400;
 
 pub(crate) trait CoverProvider {
@@ -244,6 +248,7 @@ pub(crate) struct Worker {
     tried: HashSet<GameId>,
     tx: Sender<Reply>,
     notify: Notify,
+    cancel: SharedCancel,
     sent: Option<WorkerStatus>,
 }
 
@@ -255,6 +260,7 @@ impl Worker {
         factory: ChainFactory,
         tx: Sender<Reply>,
         notify: Notify,
+        cancel: SharedCancel,
     ) -> Self {
         let chain = factory(&settings);
         let mut w = Self {
@@ -270,6 +276,7 @@ impl Worker {
             tried: HashSet::new(),
             tx,
             notify,
+            cancel,
             sent: None,
         };
         w.refresh_back();
@@ -412,8 +419,9 @@ impl Worker {
             return None;
         }
         let query = cover_query(game)?;
+        let token = self.cancel.lock().map(|t| t.clone()).unwrap_or_default();
         let chain = self.chain.as_mut()?;
-        match chain.fetch(&query) {
+        match chain.fetch_with_deadline(&query, COVER_BUDGET, Some(&token)) {
             Ok(Some(found)) => {
                 let key = cover_key(game);
                 match self.cache.store(&game.system, &key, &found) {
@@ -439,6 +447,8 @@ impl Worker {
                 }
                 None
             }
+            // Closing or downloads switched off: nothing to record, nothing to suspend.
+            Err(AssetError::Cancelled) => None,
             Err(e) => {
                 // `AssetError` never carries a URL nor a credential.
                 tracing::debug!("jaquette indisponible pour l'instant : {e}");
@@ -579,6 +589,7 @@ pub(crate) struct Covers {
     settings: (CoversConfig, CredentialsConfig),
     capture: bool,
     alive: bool,
+    cancel: SharedCancel,
 }
 
 impl Covers {
@@ -614,17 +625,29 @@ impl Covers {
     ) -> Option<Self> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
+        let cancel: SharedCancel = Arc::default();
+        let worker_cancel = Arc::clone(&cancel);
         let spawned = thread::Builder::new()
             .name("emu-covers".into())
             .spawn(move || {
-                let db = match Library::open(&db_path) {
-                    Ok((db, _)) => db,
+                // Never creates nor quarantines the database: that is the UI thread's job.
+                let db = match Library::open_existing(&db_path) {
+                    Ok(db) => db,
                     Err(e) => {
                         tracing::warn!("jaquettes : bibliothèque indisponible : {e}");
                         return;
                     }
                 };
-                Worker::new(db, &covers_root, settings, factory, reply_tx, notify).run(&cmd_rx);
+                Worker::new(
+                    db,
+                    &covers_root,
+                    settings,
+                    factory,
+                    reply_tx,
+                    notify,
+                    worker_cancel,
+                )
+                .run(&cmd_rx);
             });
         // The handle is dropped on purpose: never joined (a download may still be running at exit).
         match spawned {
@@ -639,6 +662,7 @@ impl Covers {
                 settings: Default::default(),
                 capture: false,
                 alive: true,
+                cancel,
             }),
             Err(e) => {
                 tracing::error!("impossible de lancer la file des jaquettes : {e}");
@@ -683,6 +707,14 @@ impl Covers {
     #[cfg(test)]
     pub(crate) fn texture_count(&self) -> usize {
         self.textures
+    }
+}
+
+impl Drop for Covers {
+    fn drop(&mut self) {
+        if let Ok(token) = self.cancel.lock() {
+            token.cancel();
+        }
     }
 }
 
@@ -799,6 +831,13 @@ impl CoverProvider for Covers {
         // Absent cards may now be found.
         self.slots.retain(|_, s| !matches!(s, Slot::Absent));
         self.sent_visible.clear();
+        if let Ok(mut token) = self.cancel.lock() {
+            if !settings.download {
+                token.cancel();
+            } else if token.is_cancelled() {
+                *token = CancelToken::new();
+            }
+        }
         self.send(Command::Configure(settings));
     }
 

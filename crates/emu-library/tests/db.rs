@@ -284,3 +284,31 @@ fn two_connections_share_the_base() {
     writer.set_favorite(id, true).unwrap();
     assert!(reader.game(id).unwrap().unwrap().favorite);
 }
+
+#[test]
+fn open_existing_never_creates_nor_quarantines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("library.sqlite");
+    // Absent: nothing created.
+    let err = Library::open_existing(&db).unwrap_err();
+    assert!(
+        matches!(&err, LibraryError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert!(!db.exists());
+    // Healthy: works, and sees the data of the owner's connection.
+    let db = populated(tmp.path());
+    let (owner, _) = Library::open(&db).unwrap();
+    let worker = Library::open_existing(&db).unwrap();
+    assert_eq!(worker.games().unwrap().len(), 200);
+    drop((owner, worker));
+    // Corrupt: error, file byte for byte untouched, no quarantine, then `open` still recovers.
+    let junk = b"this is not a database at all, just some text\n";
+    fs::write(&db, junk).unwrap();
+    assert!(matches!(
+        Library::open_existing(&db),
+        Err(LibraryError::Database(_))
+    ));
+    assert_eq!(fs::read(&db).unwrap(), junk);
+    assert!(quarantined_files(tmp.path()).is_empty());
+    assert_recovered(&db);
+}

@@ -187,8 +187,8 @@ fn jpeg_budget_counts_every_component_at_max_sampling() {
     );
     // Partial MCUs are padded.
     assert_eq!(jpeg_budget(17, 9, 1, 2, 2), 2 * 4 * 128 + 2 * 16 * 2 * 80);
-    // Factors up to 15 (zune does not bound the vertical one): still about 2 bytes per pixel per component.
-    assert!(jpeg_budget(4096, 4096, 4, 8, 15) < 4 * 4096 * 4096 * 2 + 80 * 1024 * 1024);
+    // Factors up to 4 (zune refuses larger ones): still about 2 bytes per pixel per component.
+    assert!(jpeg_budget(4096, 4096, 4, 4, 4) < 4 * 4096 * 4096 * 2 + 80 * 1024 * 1024);
 }
 
 #[test]
@@ -299,8 +299,16 @@ fn smuggled_progressive_jpeg() -> Vec<u8> {
 #[test]
 fn smuggled_frames_are_refused() {
     let bytes = smuggled_progressive_jpeg();
-    assert!(decode_cover(&bytes, 512).is_err());
-    assert!(validate_cover(&bytes).is_err());
+    // Refused for its size (budget), not for some other defect of the file.
+    for result in [
+        decode_cover(&bytes, 512).map(drop),
+        validate_cover(&bytes).map(drop),
+    ] {
+        let Err(AssetError::InvalidImage(reason)) = result else {
+            panic!("the smuggled frame must be refused as an invalid image");
+        };
+        assert!(reason.contains("trop grand"), "{reason}");
+    }
 }
 
 #[test]

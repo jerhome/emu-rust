@@ -16,7 +16,7 @@ use reqwest::Url;
 use serde::Deserialize;
 
 use crate::dat::{PATH_SEGMENT, write_atomic};
-use crate::http::{HttpClient, Method, Request};
+use crate::http::{CancelToken, HttpClient, Method, Request};
 use crate::{AssetError, ImageFormat, MAX_COVER_BYTES, Secret, sniff_format};
 
 /// JSON answers (ScreenScraper `jeuInfos`, IGDB search, Twitch token).
@@ -736,9 +736,44 @@ impl CoverChain {
     /// `Ok(None)`: every active source answered "not found" (the caller records `CoverState::Missing`).
     /// `Err`: nothing conclusive (offline, quota, no source): nothing must be recorded.
     pub fn fetch(&mut self, query: &CoverQuery) -> Result<Option<CoverFound>, AssetError> {
+        self.fetch_bounded(query, None, None)
+    }
+
+    /// Same as [`Self::fetch`], bounded for the UI: nothing new is started once `budget` (counted from this
+    /// call, whole chain) has elapsed or `cancel` is set.
+    ///
+    /// - `cancel` set: `Err(Cancelled)`, nothing recorded.
+    /// - Budget spent before every source was asked: `Err(Network("délai dépassé"))`, never `Ok(None)` (the
+    ///   unasked sources might know the cover), and it does not count toward a source's 3-error shutdown.
+    ///
+    /// A request already in flight is not interrupted: the real worst case is `budget` plus one request
+    /// (`HttpConfig::timeout`), so lower that timeout (e.g. 10 s) to hold a ~30 s total.
+    pub fn fetch_with_deadline(
+        &mut self,
+        query: &CoverQuery,
+        budget: Duration,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Option<CoverFound>, AssetError> {
+        self.fetch_bounded(query, Some(Instant::now() + budget), cancel)
+    }
+
+    fn fetch_bounded(
+        &mut self,
+        query: &CoverQuery,
+        deadline: Option<Instant>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Option<CoverFound>, AssetError> {
         let mut consulted = false;
         let mut inconclusive: Option<AssetError> = None;
         for slot in &mut self.slots {
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                return Err(AssetError::Cancelled);
+            }
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Err(
+                    inconclusive.unwrap_or_else(|| AssetError::Network("délai dépassé".into()))
+                );
+            }
             let name = slot.source.kind().name();
             match slot.state {
                 SlotState::Off(Off::Refused) => continue,

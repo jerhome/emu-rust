@@ -97,6 +97,7 @@ fn rig(download: bool) -> Rig {
         factory,
         tx,
         Arc::new(|| {}),
+        Arc::default(),
     );
     Rig {
         _tmp: tmp,
@@ -300,6 +301,7 @@ fn ui_side() -> (Covers, Sender<Reply>, Receiver<Command>) {
         settings: Default::default(),
         capture: false,
         alive: true,
+        cancel: Arc::default(),
     };
     (covers, reply_tx, cmd_rx)
 }
@@ -393,4 +395,40 @@ fn status_lines() {
     drop(tx);
     covers.poll(&ctx);
     assert_eq!(covers.status().as_deref(), Some(text::COVERS_UNAVAILABLE));
+}
+
+#[test]
+fn cancelled_token_stops_fetching_and_records_nothing() {
+    let mut r = rig(true);
+    let id = r.worker.db.games().unwrap()[0].id;
+    r.answer(Ok(Some(found())));
+    r.worker.cancel.lock().unwrap().cancel();
+    assert!(absent(&r.show(id), id));
+    assert_eq!(r.state(id), None);
+    assert_eq!(r.calls.load(Ordering::SeqCst), 0);
+    assert!(!r.worker.status().offline);
+}
+
+#[test]
+fn worker_thread_stops_cleanly_without_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("absent.db");
+    let mut covers = Covers::spawn_with(
+        missing.clone(),
+        tmp.path().join("covers"),
+        settings(false),
+        Box::new(|_| None),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    for _ in 0..100 {
+        covers.send(Command::Refresh);
+        if !covers.alive {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!covers.alive);
+    assert!(!missing.exists());
+    assert!(covers.status().is_some());
 }

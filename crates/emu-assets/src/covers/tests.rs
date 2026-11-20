@@ -376,3 +376,48 @@ fn credentials_debug_says_only_set_or_not() {
     let text = format!("{igdb:?}");
     assert!(!text.contains("xyz"), "{text}");
 }
+
+/// Sleeps in `fetch`, to spend a budget.
+struct Slow(Duration);
+
+impl CoverSource for Slow {
+    fn kind(&self) -> CoverSourceKind {
+        CoverSourceKind::LibretroThumbnails
+    }
+    fn fetch(&mut self, _: &CoverQuery) -> Result<Option<CoverFound>, AssetError> {
+        std::thread::sleep(self.0);
+        Ok(None)
+    }
+}
+
+#[test]
+fn chain_deadline_stops_before_the_next_source() {
+    let (b, b_calls) = fake(CoverSourceKind::Igdb, vec![Ok(Some(found(PNG)))]);
+    let mut chain = CoverChain::new(vec![Box::new(Slow(Duration::from_millis(60))), b]);
+    let err = chain
+        .fetch_with_deadline(&query("x"), Duration::from_millis(20), None)
+        .unwrap_err();
+    assert!(matches!(err, AssetError::Network(_)), "{err}");
+    assert_eq!(*b_calls.lock().unwrap(), 0);
+    // Not a verdict: nothing is switched off, a normal fetch still works.
+    assert!(!chain.offline());
+    assert!(chain.fetch(&query("x")).unwrap().is_some());
+    // A generous budget behaves like `fetch`.
+    let (a, _) = fake(CoverSourceKind::Igdb, vec![Ok(Some(found(PNG)))]);
+    let mut chain = CoverChain::new(vec![a]);
+    let got = chain.fetch_with_deadline(&query("x"), Duration::from_secs(30), None);
+    assert!(got.unwrap().is_some());
+}
+
+#[test]
+fn chain_cancel_token_stops_the_fetch() {
+    let (a, a_calls) = fake(CoverSourceKind::Igdb, vec![Ok(Some(found(PNG)))]);
+    let mut chain = CoverChain::new(vec![a]);
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let err = chain
+        .fetch_with_deadline(&query("x"), Duration::from_secs(30), Some(&cancel))
+        .unwrap_err();
+    assert!(matches!(err, AssetError::Cancelled));
+    assert_eq!(*a_calls.lock().unwrap(), 0);
+}

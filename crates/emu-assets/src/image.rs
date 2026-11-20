@@ -132,7 +132,8 @@ fn decode(bytes: &[u8], format: ImageFormat, max_side: u32) -> Result<DynamicIma
 ///   `h_max × v_max`: whether they are needed depends on scans zune reads later, so it is not trusted.
 ///   Neither are the per-component factors (not exposed): their maxima are.
 /// - Per MCU row (`raw_coeff`, upsampling rows and scratch: mcu.rs, mcu_prog.rs, components.rs, worker.rs): per
-///   component at most 35 `i16` per padded column (`mcus_x × 8 × h_max`) and per `v_max`; counted as 40.
+///   component at most 27 `i16` per padded column (`mcus_x × 8 × h_max`) and per `v_max`, plus 8 of scratch
+///   shared by the components; counted as 40 per component (still an upper bound).
 ///
 /// Header values cannot change afterwards: zune refuses a second SOF. Consequence: 3-component images above
 /// about 2700 × 2700 (6 bytes of coefficients + 3 of RGB output per pixel) are refused, whatever their sampling

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
+use rusqlite::{
+    Connection, DropBehavior, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params,
+};
 
 use crate::{
     Dat, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport, SystemInfo,
@@ -176,6 +178,7 @@ pub(crate) fn to_i64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
+#[derive(Debug)]
 enum OpenError {
     /// "not a database", "malformed" or a failed `quick_check`: the file goes to quarantine.
     Corrupt,
@@ -288,7 +291,13 @@ fn migrate(conn: &mut Connection, from: u32) -> Result<(), OpenError> {
         if version <= from {
             continue;
         }
-        let tx = conn.transaction()?;
+        // Immediate: the write lock is taken before re-reading the version, so a concurrent migrator waits
+        // (busy timeout) and then finds the step already applied.
+        let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.set_drop_behavior(DropBehavior::Rollback);
+        if user_version(&tx)? >= version {
+            continue;
+        }
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
@@ -317,7 +326,9 @@ fn probe_version(path: &Path) -> Result<u32, OpenError> {
 }
 
 /// A newer schema is detected before any read-write connection: the file and its `-wal` stay byte-for-byte intact.
-fn try_open(path: &Path) -> Result<Library, OpenError> {
+///
+/// `create == false` never creates the file (no `SQLITE_OPEN_CREATE`): a base removed meanwhile is an error.
+fn try_open(path: &Path, create: bool) -> Result<Library, OpenError> {
     let version = probe_version(path)?;
     if version > SCHEMA_VERSION {
         return Err(OpenError::Other(LibraryError::NewerSchema {
@@ -325,7 +336,13 @@ fn try_open(path: &Path) -> Result<Library, OpenError> {
             supported: SCHEMA_VERSION,
         }));
     }
-    let mut conn = Connection::open(path)?;
+    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    if create {
+        flags |= OpenFlags::SQLITE_OPEN_CREATE;
+    }
+    let mut conn = Connection::open_with_flags(path, flags)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     // Another process may have migrated the file in between: the read-write connection decides.
     let version = user_version(&conn)?;
@@ -566,7 +583,7 @@ impl Library {
     /// Newer schema ⇒ `LibraryError::NewerSchema`, file untouched.
     pub fn open(path: &Path) -> Result<(Self, OpenOutcome), LibraryError> {
         let existed = fs::metadata(path).is_ok_and(|m| m.len() > 0);
-        match try_open(path) {
+        match try_open(path, true) {
             Ok(library) => Ok((
                 library,
                 if existed {
@@ -582,7 +599,7 @@ impl Library {
                     "library database was corrupt: moved to {}, starting with an empty one",
                     quarantined.display()
                 );
-                match try_open(path) {
+                match try_open(path, true) {
                     Ok(library) => Ok((library, OpenOutcome::Recovered { quarantined })),
                     Err(OpenError::Other(e)) => Err(e),
                     Err(OpenError::Corrupt) => Err(LibraryError::Database(
@@ -590,6 +607,30 @@ impl Library {
                     )),
                 }
             }
+        }
+    }
+
+    /// Opens a base that must already exist, for worker threads (scan, covers) that run while the UI thread
+    /// keeps its own connection: never creates the file and never quarantines it. Only [`Self::open`], called
+    /// once by the thread that owns recovery, may move a corrupt file aside; a second connection doing it
+    /// would rename the file under the first one.
+    ///
+    /// Missing or empty file: `LibraryError::Io` (`NotFound`). Corrupt file: `LibraryError::Database`, file
+    /// untouched. Newer schema: `NewerSchema`. Pending migrations are applied like in `open` (WAL: the
+    /// other connection keeps working).
+    pub fn open_existing(path: &Path) -> Result<Self, LibraryError> {
+        if !fs::metadata(path).is_ok_and(|m| m.len() > 0) {
+            return Err(LibraryError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            });
+        }
+        match try_open(path, false) {
+            Ok(library) => Ok(library),
+            Err(OpenError::Other(e)) => Err(e),
+            Err(OpenError::Corrupt) => Err(LibraryError::Database(
+                "base illisible (non modifiée : la récupération revient au fil principal)".into(),
+            )),
         }
     }
 
@@ -856,5 +897,32 @@ mod tests {
             .unwrap();
         let flags: Vec<bool> = pinned.iter().map(|(_, p)| *p).collect();
         assert_eq!(flags, [true, false, false, true], "{pinned:?}");
+    }
+
+    #[test]
+    fn try_open_without_create_leaves_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("gone.sqlite");
+        assert!(try_open(&db, false).is_err());
+        assert!(!db.exists());
+    }
+
+    #[test]
+    fn concurrent_migrations_are_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("v1.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let mut a = Connection::open(&db).unwrap();
+        let mut b = Connection::open(&db).unwrap();
+        a.busy_timeout(Duration::from_secs(5)).unwrap();
+        b.busy_timeout(Duration::from_secs(5)).unwrap();
+        // Both read version 1 before either migrates: the second must see the first one's work.
+        migrate(&mut a, 1).unwrap();
+        migrate(&mut b, 1).unwrap();
+        assert_eq!(user_version(&b).ok(), Some(SCHEMA_VERSION));
     }
 }
