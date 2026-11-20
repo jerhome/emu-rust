@@ -121,6 +121,7 @@ pub(super) fn show_stats(ctx: &Context, s: &StatsView) {
                     text::stats_frame(s.frame),
                     text::stats_audio(s.buffered_ms, s.target_ms),
                     text::stats_xruns(s.underruns, s.dropped_samples),
+                    text::stats_audio_status(s.audio_status, s.recoveries),
                 ] {
                     ui.label(RichText::new(line).monospace().color(Color32::WHITE));
                 }

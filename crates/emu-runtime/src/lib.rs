@@ -3,6 +3,8 @@
 
 mod audio;
 mod audio_out;
+#[cfg(any(feature = "audio-cpal", test))]
+mod audio_reopen;
 mod audio_ring;
 mod content;
 mod emulator;
@@ -22,9 +24,9 @@ pub use emu_libretro::{
 };
 
 pub use crate::audio::{AudioSink, CollectSink, NullSink, write_wav};
-pub use crate::audio_out::AudioOutput;
 #[cfg(feature = "audio-cpal")]
 pub use crate::audio_out::CpalSink;
+pub use crate::audio_out::{AudioOutput, AudioStatus};
 pub use crate::audio_ring::{
     AudioConfig, AudioError, AudioStats, OutputSample, RingReader, RingSink, audio_ring,
 };

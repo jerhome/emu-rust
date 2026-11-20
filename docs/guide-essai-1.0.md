@@ -1,7 +1,7 @@
 # Guide d'essai de la 1.0
 
-Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v1.0.0-rc.1`). Image Docker :
-`ghcr.io/jerhome/emu-rust:1.0.0-rc.1` (paquet à rendre public une fois : voir `docker/README.md`).
+Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v1.0.0-rc.2`). Image Docker :
+`ghcr.io/jerhome/emu-rust:1.0.0-rc.2` (paquet à rendre public une fois : voir `docker/README.md`).
 
 ## 1. Principe
 
@@ -29,7 +29,7 @@ recommandés (ou `--install-core recommended` en ligne de commande).
 - **Windows** (SmartScreen : « Informations complémentaires » → « Exécuter quand même ») : `.\emu-rust.exe`.
 - **Docker** : copier les ROMs dans `/data/roms` du volume (`docker/README.md`), puis
   ```bash
-  export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0-rc.1
+  export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0-rc.2
   docker compose -f docker/compose.yaml run --rm --no-build emu-wslg --install-core recommended
   docker compose -f docker/compose.yaml run --rm --no-build emu-wslg
   ```
@@ -39,21 +39,29 @@ Les données (config, base, cores, sauvegardes) sont dans le dossier de données
 
 ## 4. Touches
 
-Flèches = croix ; Entrée = Start ; Échap = menu.
+Directions : **W A S D** (touches physiques : Z Q S D sur un clavier AZERTY) ; les flèches marchent aussi.
+Entrée = Start ; Échap = menu. Boutons : rangée du bas J K L, rangée du haut U I O.
 
 | Touche | Mega Drive | SNES | Game Boy / NES | SMS / Game Gear |
 |---|---|---|---|---|
-| X | B | A (valider) | A (valider) | bouton 1 |
-| Z | A | B | B | bouton 2 |
+| J | A | B | B | bouton 1 |
+| K | B | A (valider) | A (valider) | bouton 2 |
+| L | C | R | — | — |
+| U | X | Y | — | — |
+| I | Y | X | — | — |
+| O | Z | L | — | — |
 | Entrée | Start | Start | Start | Pause (SMS) / Start (GG) |
 | Maj droite | Mode | Select | Select | — |
 
-Autres touches (C, A / S / D, Q / W) : `packaging/README.txt`. Raccourcis : P pause · H reset · F2 / F4 état ·
-F6 / F7 emplacement · Espace avance rapide · F11 plein écran · F3 statistiques.
+Raccourcis : P pause · F5 reset · F2 / F4 état · F6 / F7 emplacement · Espace avance rapide · F11 plein écran ·
+F3 statistiques. Sans touches F (portable où elles exigent Fn) : Ctrl+S / Ctrl+L état · Ctrl+, / Ctrl+. emplacement ·
+Ctrl+F ou Alt+Entrée plein écran · Ctrl+R reset · Ctrl+I statistiques. Clavier 60 % : aucune touche F ni flèche
+n'est nécessaire (Tab / Entrée / Échap dans les menus). Les touches déjà enregistrées dans `config.toml` restent prioritaires ; pour
+adopter la nouvelle disposition, supprimer la section `[input.keyboard.…]` concernée.
 
 ## 5. Checklist (par plateforme : Docker, Linux/WSL2, macOS, Windows)
 
-- [ ] `--version` = 1.0.0-rc.1 ; `emu-rust` sans argument ouvre la bibliothèque.
+- [ ] `--version` = 1.0.0-rc.2 ; `emu-rust` sans argument ouvre la bibliothèque.
 - [ ] Scan du dossier de ROMs : les 6 jeux apparaissent.
 - [ ] Écran Cores : installation des cores recommandés ; BIOS manquants signalés (jamais téléchargés).
 - [ ] Chaque système : le jeu se lance, fenêtre à la bonne taille, image nette (HiDPI / Retina), son propre.

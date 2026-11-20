@@ -2,6 +2,23 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [1.0.0-rc.2] - 2026-11-20
+
+Corrections issues du premier essai sous Windows (`docs/essais-1.0.md`).
+
+### Modifié
+
+- Disposition clavier par défaut sans flèches (claviers 60 %) : directions sur Z Q S D en AZERTY (W A S D en QWERTY),
+  les flèches restant actives ; boutons sur J K L / U I O selon le système.
+- Raccourcis utilisables sans touches F : Ctrl+S / Ctrl+L (état), Ctrl+, / Ctrl+. (emplacement), Ctrl+I (statistiques),
+  Ctrl+F ou Alt+Entrée (plein écran), Ctrl+R (reset). Reset déplacé de H vers F5.
+- Ctrl, Alt et la touche Windows ne peuvent plus être assignés à un bouton de jeu.
+
+### Corrigé
+
+- Le son reprend automatiquement après la perte du périphérique audio (session verrouillée, casque débranché,
+  changement de sortie) au lieu de rester coupé jusqu'au redémarrage ; état de la sortie audio dans les statistiques.
+
 ## [1.0.0-rc.1] - 2026-11-20
 
 Première version « complète » : petites consoles, bibliothèque de jeux, jaquettes et gestionnaire de cores.

@@ -48,6 +48,12 @@ pub(crate) struct App {
     emulator: Emulator,
     pacer: Option<Pacer>,
     keyboard: KeyboardInput,
+    /// The active keymap binds Ctrl/Alt/Super to a button: Ctrl/Alt shortcuts are disabled.
+    modifier_bound: bool,
+    /// Ctrl held (tracked from `ModifiersChanged`); enables the F-key-free shortcuts.
+    ctrl: bool,
+    /// Alt held (Alt+Enter = fullscreen).
+    alt: bool,
     options: LaunchOptions,
     audio: AudioOutput,
     error: Option<UiError>,
@@ -190,7 +196,10 @@ impl App {
             window: None,
             emulator,
             pacer: None,
+            modifier_bound: keymap.binds_modifier(),
             keyboard: KeyboardInput::new(keymap),
+            ctrl: false,
+            alt: false,
             options,
             audio,
             error: None,
@@ -221,10 +230,11 @@ impl App {
     fn log_audio_stats(&self) {
         let stats = self.audio.stats();
         tracing::info!(
-            "audio stats: underruns={} dropped_samples={} stream_failed={}",
+            "audio stats: underruns={} dropped_samples={} stream_failed={} recoveries={}",
             stats.underruns,
             stats.dropped_samples,
-            stats.stream_failed
+            stats.stream_failed,
+            stats.recoveries
         );
     }
 
@@ -418,8 +428,9 @@ impl App {
     }
 
     fn rebuild_keyboard(&mut self) {
-        self.keyboard =
-            KeyboardInput::new(self.options.config.keymap_for(&self.profile, self.style));
+        let map = self.options.config.keymap_for(&self.profile, self.style);
+        self.modifier_bound = map.binds_modifier();
+        self.keyboard = KeyboardInput::new(map);
     }
 
     fn finish_capture(&mut self, key: KeyCode) {
@@ -434,6 +445,7 @@ impl App {
             CaptureOutcome::Cancelled => text::KEYS_CANCELLED.to_owned(),
             CaptureOutcome::Cleared => text::KEYS_CLEARED.to_owned(),
             CaptureOutcome::Refused(action) => text::keys_refused(key, action),
+            CaptureOutcome::RefusedModifier => text::KEYS_REFUSED_MODIFIER.to_owned(),
             CaptureOutcome::Bound {
                 moved_from: Some(from),
             } => text::keys_moved(style, key, from, (port, button)),
@@ -738,6 +750,8 @@ impl App {
             target_ms: level.map(|l| l.target.as_millis()),
             underruns: s.underruns,
             dropped_samples: s.dropped_samples,
+            audio_status: self.audio.status(),
+            recoveries: s.recoveries,
         }
     }
 
@@ -851,6 +865,10 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let WindowEvent::ModifiersChanged(m) = &event {
+            self.ctrl = m.state().control_key();
+            self.alt = m.state().alt_key();
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = &event {
             let code = match key.physical_key {
                 PhysicalKey::Code(c) => Some(c),
@@ -881,7 +899,13 @@ impl ApplicationHandler for App {
                 }
                 self.request_redraw();
             } else if let Some(code) = code {
-                if let Some(action) = self.options.config.hotkeys.action_for(code) {
+                let ctrl_action =
+                    modifier_shortcut(self.ctrl, self.alt, self.modifier_bound, pressed, code);
+                if let Some(action) = ctrl_action {
+                    if !key.repeat {
+                        self.hotkey(event_loop, action, pressed);
+                    }
+                } else if let Some(action) = self.options.config.hotkeys.action_for(code) {
                     if !key.repeat {
                         self.hotkey(event_loop, action, pressed);
                     }
@@ -920,7 +944,12 @@ impl ApplicationHandler for App {
                     w.window().request_redraw();
                 }
             }
-            WindowEvent::Focused(false) => self.keyboard.release_all(),
+            WindowEvent::Focused(false) => {
+                self.keyboard.release_all();
+                // Not every backend sends ModifiersChanged on focus loss.
+                self.ctrl = false;
+                self.alt = false;
+            }
             WindowEvent::RedrawRequested if self.finishing.is_none() => {
                 self.render(event_loop, false);
             }
@@ -984,9 +1013,50 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Ctrl+key / Alt+Enter shortcut for a press, off while the keymap binds a modifier to a game button.
+fn modifier_shortcut(
+    ctrl: bool,
+    alt: bool,
+    modifier_bound: bool,
+    pressed: bool,
+    code: KeyCode,
+) -> Option<HotkeyAction> {
+    if modifier_bound || !pressed {
+        return None;
+    }
+    if ctrl {
+        HotkeyAction::from_ctrl_key(code)
+    } else if alt && code == KeyCode::Enter {
+        Some(HotkeyAction::ToggleFullscreen)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modifier_shortcuts_follow_keymap() {
+        assert_eq!(
+            modifier_shortcut(false, true, false, true, KeyCode::Enter),
+            Some(HotkeyAction::ToggleFullscreen)
+        );
+        assert!(modifier_shortcut(true, false, false, true, KeyCode::KeyL).is_some());
+        assert_eq!(
+            modifier_shortcut(true, false, true, true, KeyCode::KeyL),
+            None
+        );
+        assert_eq!(
+            modifier_shortcut(false, true, true, true, KeyCode::Enter),
+            None
+        );
+        assert_eq!(
+            modifier_shortcut(true, false, false, false, KeyCode::KeyL),
+            None
+        );
+    }
 
     #[test]
     fn initial_scale_fits_menu_and_is_bounded() {

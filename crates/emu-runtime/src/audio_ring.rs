@@ -31,7 +31,8 @@ impl Default for AudioConfig {
     }
 }
 
-/// Counters since creation (relaxed atomics; for logs and tests only).
+/// Counters since creation (relaxed atomics; for logs and tests only). For `CpalSink` / `AudioOutput` they
+/// span every stream opened since startup, reopenings included.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AudioStats {
@@ -39,8 +40,12 @@ pub struct AudioStats {
     pub underruns: u64,
     /// Interleaved samples discarded because the ring was full.
     pub dropped_samples: u64,
-    /// `true` once the failure notifier fired (device lost); the sink then discards samples.
+    /// `true` once the failure notifier fired (device lost); the sink then discards samples. For `CpalSink` /
+    /// `AudioOutput`: `true` while the device is lost, back to `false` once it has been reopened.
     pub stream_failed: bool,
+    /// Successful reopenings of the device after a stream failure (`CpalSink` / `AudioOutput`; 0 for a bare
+    /// `RingSink`).
+    pub recoveries: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -120,6 +125,7 @@ impl Shared {
             underruns: self.underruns.load(Ordering::Relaxed),
             dropped_samples: self.dropped_samples.load(Ordering::Relaxed),
             stream_failed: self.stream_failed.load(Ordering::Relaxed),
+            recoveries: 0,
         }
     }
 }
@@ -253,12 +259,12 @@ impl RingSink {
 }
 
 impl AudioSink for RingSink {
-    /// After `stream_failed`: one `warn!`, then samples are discarded.
+    /// After `stream_failed`: one `warn!`, then samples are discarded (`CpalSink` reopens the device instead).
     fn push_samples(&mut self, interleaved_stereo: &[i16]) {
         if self.shared.stream_failed.load(Ordering::Relaxed) {
             if !self.failure_reported {
                 self.failure_reported = true;
-                warn!("audio stream failed, audio disabled until restart");
+                warn!("audio stream failed, samples discarded");
             }
             return;
         }

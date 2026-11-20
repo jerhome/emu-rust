@@ -52,28 +52,28 @@ fn capture_outcomes() {
     );
     assert_eq!(map, KeyMap::genesis_default());
     assert_eq!(
-        apply_capture(&mut map, &hk, KeyCode::KeyW, 0, JoypadButton::Up),
+        apply_capture(&mut map, &hk, KeyCode::KeyQ, 0, JoypadButton::Up),
         CaptureOutcome::Bound { moved_from: None }
     );
-    assert_eq!(map.keys_for(0, JoypadButton::Up), vec![KeyCode::KeyW]);
-    // KeyZ is MD A (libretro Y): moving it to Start is a conflict, Y loses it.
+    assert_eq!(map.keys_for(0, JoypadButton::Up), vec![KeyCode::KeyQ]);
+    // KeyJ is MD A (libretro Y): moving it to Start is a conflict, Y loses it.
     assert_eq!(
-        apply_capture(&mut map, &hk, KeyCode::KeyZ, 0, JoypadButton::Start),
+        apply_capture(&mut map, &hk, KeyCode::KeyJ, 0, JoypadButton::Start),
         CaptureOutcome::Bound {
             moved_from: Some((0, JoypadButton::Y))
         }
     );
     assert!(map.keys_for(0, JoypadButton::Y).is_empty());
-    assert_eq!(map.keys_for(0, JoypadButton::Start), vec![KeyCode::KeyZ]);
+    assert_eq!(map.keys_for(0, JoypadButton::Start), vec![KeyCode::KeyJ]);
     assert_eq!(
         apply_capture(&mut map, &hk, KeyCode::Backspace, 0, JoypadButton::Start),
         CaptureOutcome::Cleared
     );
     assert!(map.keys_for(0, JoypadButton::Start).is_empty());
     // Re-binding the same key to the same button is not a conflict.
-    apply_capture(&mut map, &hk, KeyCode::KeyQ, 1, JoypadButton::A);
+    apply_capture(&mut map, &hk, KeyCode::KeyT, 1, JoypadButton::A);
     assert_eq!(
-        apply_capture(&mut map, &hk, KeyCode::KeyQ, 1, JoypadButton::A),
+        apply_capture(&mut map, &hk, KeyCode::KeyT, 1, JoypadButton::A),
         CaptureOutcome::Bound { moved_from: None }
     );
 }
@@ -322,4 +322,26 @@ fn locked_config_needs_confirmation_to_unlock() {
     assert!(o.confirm_unlock);
     let actions = f.keys(&mut o, 0, &[Key::Tab, Key::Enter]);
     assert!(actions.contains(&UiAction::UnlockConfig), "{actions:?}");
+}
+
+#[test]
+fn capture_refuses_modifiers() {
+    let hk = Hotkeys::default();
+    let mut map = KeyMap::genesis_default();
+    for key in [
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::AltLeft,
+        KeyCode::AltRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ] {
+        assert_eq!(
+            apply_capture(&mut map, &hk, key, 0, JoypadButton::A),
+            CaptureOutcome::RefusedModifier
+        );
+    }
+    assert!(!map.binds_modifier());
+    map.bind(KeyCode::AltLeft, 0, JoypadButton::A);
+    assert!(map.binds_modifier());
 }

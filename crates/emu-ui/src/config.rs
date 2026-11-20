@@ -209,7 +209,7 @@ impl Default for Hotkeys {
         Self {
             menu: KeyCode::Escape,
             pause: KeyCode::KeyP,
-            reset: KeyCode::KeyH,
+            reset: KeyCode::F5,
             save_state: KeyCode::F2,
             load_state: KeyCode::F4,
             prev_slot: KeyCode::F6,

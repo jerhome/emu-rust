@@ -14,14 +14,14 @@ pub(crate) mod text;
 use std::time::Instant;
 
 use egui::{Align2, Color32, Context, EventFilter, Id, Key, LayerId, Order, Response, Ui};
-use emu_runtime::{CoreOption, CoreOptionCategory, JoypadButton};
+use emu_runtime::{AudioStatus, CoreOption, CoreOptionCategory, JoypadButton};
 use winit::keyboard::KeyCode;
 
 pub use self::osd::{Osd, OsdLevel};
 use crate::Screen;
 use crate::config::{Config, DEFAULT_PROFILE, Hotkeys};
 use crate::hotkeys::HotkeyAction;
-use crate::keyboard::{KeyMap, PadStyle};
+use crate::keyboard::{KeyMap, PadStyle, is_modifier_key};
 
 /// Which `[input.keyboard.<profile>]` the key screen edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub enum CaptureOutcome {
     Cleared,
     /// The key is a frontend shortcut: shortcuts win over the game, so it cannot be bound.
     Refused(HotkeyAction),
+    /// Ctrl / Alt / Super are reserved for the Ctrl+key and Alt+Enter shortcuts.
+    RefusedModifier,
     /// The button now has exactly this key. `moved_from`: the key was bound elsewhere (conflict resolved by
     /// moving it).
     Bound {
@@ -88,6 +90,9 @@ pub fn apply_capture(
             map.unbind(k);
         }
         return CaptureOutcome::Cleared;
+    }
+    if is_modifier_key(key) {
+        return CaptureOutcome::RefusedModifier;
     }
     if let Some(action) = hotkeys.action_for(key) {
         return CaptureOutcome::Refused(action);
@@ -174,6 +179,8 @@ pub struct StatsView {
     pub target_ms: Option<u128>,
     pub underruns: u64,
     pub dropped_samples: u64,
+    pub audio_status: AudioStatus,
+    pub recoveries: u64,
 }
 
 /// Read-only data for one egui pass.

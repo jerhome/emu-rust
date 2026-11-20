@@ -19,6 +19,22 @@ pub enum HotkeyAction {
     ToggleStats,
 }
 
+impl HotkeyAction {
+    /// Fixed Ctrl+key alternatives for laptops where F-keys need Fn (physical keys, any layout).
+    pub fn from_ctrl_key(key: KeyCode) -> Option<Self> {
+        match key {
+            KeyCode::KeyS => Some(Self::SaveState),
+            KeyCode::KeyL => Some(Self::LoadState),
+            KeyCode::Comma => Some(Self::PrevSlot),
+            KeyCode::Period => Some(Self::NextSlot),
+            KeyCode::KeyF => Some(Self::ToggleFullscreen),
+            KeyCode::KeyR => Some(Self::Reset),
+            KeyCode::KeyI => Some(Self::ToggleStats),
+            _ => None,
+        }
+    }
+}
+
 impl Hotkeys {
     pub fn action_for(&self, key: KeyCode) -> Option<HotkeyAction> {
         use HotkeyAction as A;
@@ -91,6 +107,21 @@ mod tests {
         );
         assert_eq!(h.action_for(KeyCode::F2), Some(HotkeyAction::SaveState));
         assert_eq!(h.action_for(KeyCode::KeyZ), None);
+        assert_eq!(h.action_for(KeyCode::KeyH), None);
+        assert_eq!(h.action_for(KeyCode::F5), Some(HotkeyAction::Reset));
+    }
+
+    #[test]
+    fn ctrl_alternatives() {
+        assert_eq!(
+            HotkeyAction::from_ctrl_key(KeyCode::KeyS),
+            Some(HotkeyAction::SaveState)
+        );
+        assert_eq!(
+            HotkeyAction::from_ctrl_key(KeyCode::KeyI),
+            Some(HotkeyAction::ToggleStats)
+        );
+        assert_eq!(HotkeyAction::from_ctrl_key(KeyCode::KeyW), None);
     }
 
     #[test]

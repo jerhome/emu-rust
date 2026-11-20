@@ -249,6 +249,19 @@ pub struct KeyMap {
     bindings: Vec<(KeyCode, usize, JoypadButton)>,
 }
 
+/// Keys reserved for the Ctrl / Alt shortcuts (never bindable to a game button).
+pub fn is_modifier_key(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::ControlLeft
+            | KeyCode::ControlRight
+            | KeyCode::AltLeft
+            | KeyCode::AltRight
+            | KeyCode::SuperLeft
+            | KeyCode::SuperRight
+    )
+}
+
 impl KeyMap {
     pub fn new(bindings: Vec<(KeyCode, usize, JoypadButton)>) -> Self {
         Self { bindings }
@@ -265,94 +278,94 @@ impl KeyMap {
         }
     }
 
+    /// D-pad on the left hand (physical W/A/S/D, i.e. Z/Q/S/D on AZERTY) plus the arrows, Enter =
+    /// Start, Right Shift = Select/Mode. Laptops often lack arrows or force Fn combinations.
+    fn left_hand_base(select: bool) -> Vec<(KeyCode, usize, JoypadButton)> {
+        use JoypadButton as B;
+        use KeyCode as K;
+        let mut v = vec![
+            (K::KeyW, 0, B::Up),
+            (K::KeyS, 0, B::Down),
+            (K::KeyA, 0, B::Left),
+            (K::KeyD, 0, B::Right),
+            (K::ArrowUp, 0, B::Up),
+            (K::ArrowDown, 0, B::Down),
+            (K::ArrowLeft, 0, B::Left),
+            (K::ArrowRight, 0, B::Right),
+            (K::Enter, 0, B::Start),
+        ];
+        if select {
+            v.push((K::ShiftRight, 0, B::Select));
+        }
+        v
+    }
+
+    fn with_faces(select: bool, faces: &[(KeyCode, JoypadButton)]) -> Self {
+        let mut v = Self::left_hand_base(select);
+        v.extend(faces.iter().map(|(k, b)| (*k, 0, *b)));
+        Self::new(v)
+    }
+
     /// Port 0, genesis_plus_gx layout. The core maps libretro buttons onto the Mega Drive pad
-    /// as Y -> A, B -> B, A -> C, Start -> Start (verified headless on the 240p Test Suite:
-    /// libretro Y confirms a menu entry, libretro B goes back, libretro A does nothing there).
+    /// as Y -> A, B -> B, A -> C, Start -> Start (verified headless on the 240p Test Suite).
     /// 6-button pad (not enabled by default in the core): L -> X, X -> Y, R -> Z, Select -> Mode.
     ///
-    /// Keys: arrows = D-pad, Enter = Start, Right Shift = Mode, Z/X/C = MD A/B/C (so Z confirms),
-    /// A/S/D = MD X/Y/Z.
+    /// Keys: WASD (+ arrows) = D-pad; bottom row J/K/L = MD A/B/C; top row U/I/O = MD X/Y/Z;
+    /// Enter = Start, Right Shift = Mode.
     pub fn genesis_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
-        Self::new(vec![
-            (K::ArrowUp, 0, B::Up),
-            (K::ArrowDown, 0, B::Down),
-            (K::ArrowLeft, 0, B::Left),
-            (K::ArrowRight, 0, B::Right),
-            (K::Enter, 0, B::Start),
-            (K::ShiftRight, 0, B::Select),
-            (K::KeyZ, 0, B::Y),
-            (K::KeyX, 0, B::B),
-            (K::KeyC, 0, B::A),
-            (K::KeyA, 0, B::L),
-            (K::KeyS, 0, B::X),
-            (K::KeyD, 0, B::R),
-        ])
+        Self::with_faces(
+            true,
+            &[
+                (K::KeyJ, B::Y),
+                (K::KeyK, B::B),
+                (K::KeyL, B::A),
+                (K::KeyU, B::L),
+                (K::KeyI, B::X),
+                (K::KeyO, B::R),
+            ],
+        )
     }
 
     /// Port 0, Master System / Game Gear (genesis_plus_gx). Libretro B = button 1 (confirms in
-    /// the Game Gear menus, verified headless), A = button 2. To match the SNES, X (confirm) is
-    /// button 1 and Z is button 2. Enter = Start (Game Gear) or the console's Pause (Master
-    /// System; the Pause mapping is the core's INPUT_START, not verified). No Select key.
+    /// the Game Gear menus, verified headless), A = button 2: J = 1, K = 2. Enter = Start (Game
+    /// Gear) or the console's Pause (Master System; the core's INPUT_START, not verified).
     pub fn sega_8bit_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
-        Self::new(vec![
-            (K::ArrowUp, 0, B::Up),
-            (K::ArrowDown, 0, B::Down),
-            (K::ArrowLeft, 0, B::Left),
-            (K::ArrowRight, 0, B::Right),
-            (K::Enter, 0, B::Start),
-            (K::KeyX, 0, B::B),
-            (K::KeyZ, 0, B::A),
-        ])
+        Self::with_faces(false, &[(K::KeyJ, B::B), (K::KeyK, B::A)])
     }
 
-    /// Port 0, Game Boy / NES: libretro A and B are the real A and B, on the SNES keys
-    /// (X = A confirms, Z = B). Enter = Start, Right Shift = Select.
+    /// Port 0, Game Boy / NES: libretro A and B are the real A and B, laid out like the SNES
+    /// pad's right hand (J = B, K = A). Enter = Start, Right Shift = Select.
     pub fn nintendo_8bit_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
-        Self::new(vec![
-            (K::ArrowUp, 0, B::Up),
-            (K::ArrowDown, 0, B::Down),
-            (K::ArrowLeft, 0, B::Left),
-            (K::ArrowRight, 0, B::Right),
-            (K::Enter, 0, B::Start),
-            (K::ShiftRight, 0, B::Select),
-            (K::KeyX, 0, B::A),
-            (K::KeyZ, 0, B::B),
-        ])
+        Self::with_faces(true, &[(K::KeyJ, B::B), (K::KeyK, B::A)])
     }
 
     /// Port 0, SNES layout (snes9x, bsnes, mesen-s: libretro buttons are the SNES buttons).
-    /// The face keys follow the physical pad on the QWERTY home rows: bottom row Z = B, X = A
-    /// (A confirms, as on Nintendo games, and sits under the right hand like Z on Mega Drive);
-    /// upper row A = Y, S = X; shoulders Q = L, W = R.
-    ///
-    /// Keys: arrows = D-pad, Enter = Start, Right Shift = Select.
+    /// Right hand, physical pad shape: bottom row J = B, K = A (right of B), upper row U = Y,
+    /// I = X; shoulders O = L, L = R.
     pub fn snes_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
-        Self::new(vec![
-            (K::ArrowUp, 0, B::Up),
-            (K::ArrowDown, 0, B::Down),
-            (K::ArrowLeft, 0, B::Left),
-            (K::ArrowRight, 0, B::Right),
-            (K::Enter, 0, B::Start),
-            (K::ShiftRight, 0, B::Select),
-            (K::KeyZ, 0, B::B),
-            (K::KeyX, 0, B::A),
-            (K::KeyA, 0, B::Y),
-            (K::KeyS, 0, B::X),
-            (K::KeyQ, 0, B::L),
-            (K::KeyW, 0, B::R),
-        ])
+        Self::with_faces(
+            true,
+            &[
+                (K::KeyJ, B::B),
+                (K::KeyK, B::A),
+                (K::KeyU, B::Y),
+                (K::KeyI, B::X),
+                (K::KeyO, B::L),
+                (K::KeyL, B::R),
+            ],
+        )
     }
 
-    /// Port 0, plain RetroPad for unknown cores: the SNES layout (RetroPad is SNES-shaped) plus
-    /// E/R = L2/R2 and F/G = L3/R3 for PlayStation-like cores.
+    /// Port 0, plain RetroPad for unknown cores: the SNES layout plus E/R = L2/R2 and
+    /// F/G = L3/R3 for PlayStation-like cores.
     pub fn generic_default() -> Self {
         use JoypadButton as B;
         use KeyCode as K;
@@ -362,6 +375,12 @@ impl KeyMap {
         map.bind(K::KeyF, 0, B::L3);
         map.bind(K::KeyG, 0, B::R3);
         map
+    }
+
+    /// True if a Ctrl / Alt / Super key is bound to a game button (old profiles): Ctrl/Alt shortcuts must then
+    /// stay off, or they would fire alongside the game button.
+    pub fn binds_modifier(&self) -> bool {
+        self.bindings.iter().any(|(k, _, _)| is_modifier_key(*k))
     }
 
     pub fn bindings(&self) -> &[(KeyCode, usize, JoypadButton)] {
@@ -545,15 +564,18 @@ mod tests {
             assert_eq!(s.button_name(B::A), "A");
             assert_eq!(s.button_name(B::B), "B");
             assert_eq!(s.button_name(B::Select), "Select");
-            // Confirm key is X, as on the SNES.
             assert_eq!(
                 KeyMap::default_for(s).keys_for(0, B::A),
-                vec![KeyCode::KeyX]
+                vec![KeyCode::KeyK]
+            );
+            assert_eq!(
+                KeyMap::default_for(s).keys_for(0, B::B),
+                vec![KeyCode::KeyJ]
             );
         }
         assert_eq!(
             KeyMap::default_for(PadStyle::GameGear).keys_for(0, B::B),
-            vec![KeyCode::KeyX]
+            vec![KeyCode::KeyJ]
         );
     }
 
@@ -584,12 +606,13 @@ mod tests {
     fn snes_default_layout() {
         use JoypadButton as B;
         let m = KeyMap::snes_default();
-        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyX]);
-        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyZ]);
-        assert_eq!(m.keys_for(0, B::Y), vec![KeyCode::KeyA]);
-        assert_eq!(m.keys_for(0, B::X), vec![KeyCode::KeyS]);
-        assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyQ]);
-        assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyW]);
+        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyK]);
+        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyJ]);
+        assert_eq!(m.keys_for(0, B::Y), vec![KeyCode::KeyU]);
+        assert_eq!(m.keys_for(0, B::X), vec![KeyCode::KeyI]);
+        assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyO]);
+        assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyL]);
+        assert_eq!(m.keys_for(0, B::Up), vec![KeyCode::KeyW, KeyCode::ArrowUp]);
         // Every button shown on the key screen has a key, and no key is bound twice.
         for style in ALL_STYLES {
             let m = KeyMap::default_for(style);
@@ -604,6 +627,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn default_layouts_do_not_clash_with_hotkeys() {
+        let hk = crate::config::Hotkeys::default();
+        for style in ALL_STYLES {
+            for (key, _, _) in KeyMap::default_for(style).bindings() {
+                assert_eq!(hk.action_for(*key), None, "{style:?} {key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn default_layouts_are_left_hand_plus_arrows() {
+        use JoypadButton as B;
+        for style in ALL_STYLES {
+            let m = KeyMap::default_for(style);
+            assert!(m.keys_for(0, B::Up).contains(&KeyCode::KeyW));
+            assert!(m.keys_for(0, B::Left).contains(&KeyCode::KeyA));
+            assert!(m.keys_for(0, B::Left).contains(&KeyCode::ArrowLeft));
+            assert_eq!(m.keys_for(0, B::Start), vec![KeyCode::Enter]);
+        }
+        let md = KeyMap::genesis_default();
+        assert_eq!(md.keys_for(0, B::Y), vec![KeyCode::KeyJ]); // MD A
+        assert_eq!(md.keys_for(0, B::R), vec![KeyCode::KeyO]); // MD Z
+    }
 
     #[test]
     fn default_map_has_no_duplicate_keys() {
@@ -623,9 +671,9 @@ mod tests {
             frame.pads[0].bits()
         };
         // MD A, B, C = libretro Y, B, A in genesis_plus_gx.
-        assert_eq!(press(KeyCode::KeyZ), 1 << JoypadButton::Y as u32);
-        assert_eq!(press(KeyCode::KeyX), 1 << JoypadButton::B as u32);
-        assert_eq!(press(KeyCode::KeyC), 1 << JoypadButton::A as u32);
+        assert_eq!(press(KeyCode::KeyJ), 1 << JoypadButton::Y as u32);
+        assert_eq!(press(KeyCode::KeyK), 1 << JoypadButton::B as u32);
+        assert_eq!(press(KeyCode::KeyL), 1 << JoypadButton::A as u32);
         assert_eq!(press(KeyCode::Enter), 1 << JoypadButton::Start as u32);
     }
 
@@ -634,6 +682,7 @@ mod tests {
         let mut kb = KeyboardInput::new(KeyMap::genesis_default());
         assert!(kb.handle_key(KeyCode::ArrowUp, true));
         assert!(!kb.handle_key(KeyCode::KeyQ, true));
+        assert!(kb.handle_key(KeyCode::KeyW, true));
         let mut frame = InputFrame::default();
         kb.poll(0, &mut frame);
         assert!(frame.pads[0].is_pressed(JoypadButton::Up));
@@ -644,9 +693,9 @@ mod tests {
     #[test]
     fn release_and_release_all() {
         let mut kb = KeyboardInput::new(KeyMap::genesis_default());
-        kb.handle_key(KeyCode::KeyZ, true);
-        kb.handle_key(KeyCode::KeyX, true);
-        kb.handle_key(KeyCode::KeyZ, false);
+        kb.handle_key(KeyCode::KeyJ, true);
+        kb.handle_key(KeyCode::KeyK, true);
+        kb.handle_key(KeyCode::KeyJ, false);
         let mut frame = InputFrame::default();
         kb.poll(0, &mut frame);
         assert!(!frame.pads[0].is_pressed(JoypadButton::Y));
@@ -660,11 +709,11 @@ mod tests {
     #[test]
     fn bind_replaces_key_and_unbind_removes() {
         let mut map = KeyMap::genesis_default();
-        map.bind(KeyCode::KeyZ, 1, JoypadButton::Start);
+        map.bind(KeyCode::KeyJ, 1, JoypadButton::Start);
         assert!(map.keys_for(0, JoypadButton::Y).is_empty());
-        assert_eq!(map.keys_for(1, JoypadButton::Start), vec![KeyCode::KeyZ]);
-        assert!(map.unbind(KeyCode::KeyZ));
-        assert!(!map.unbind(KeyCode::KeyZ));
+        assert_eq!(map.keys_for(1, JoypadButton::Start), vec![KeyCode::KeyJ]);
+        assert!(map.unbind(KeyCode::KeyJ));
+        assert!(!map.unbind(KeyCode::KeyJ));
     }
 
     #[test]

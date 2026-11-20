@@ -47,14 +47,18 @@ Données (config.toml, saves/, states/) : --data-dir DIR, sinon EMU_DATA_DIR, si
 
 3. Touches par défaut (modifiables : menu Échap > Touches)
 ----------------------------------------------------------
-  Flèches = croix directionnelle    Entrée = Start    Maj droite = Mode (Mega Drive) / Select (SNES)
-  Mega Drive (genesis_plus_gx, picodrive) : Z / X / C = A / B / C    A / S / D = X / Y / Z (manette 6 boutons)
-  Super Nintendo (snes9x, bsnes, mesen-s) : X = A (valider)    Z = B    S = X    A = Y    Q = L    W = R
-  Master System / Game Gear : X = bouton 1    Z = bouton 2    Entrée = Pause (SMS) / Start (GG)
-  Game Boy / NES : X = A    Z = B    Entrée = Start    Maj droite = Select
+  Directions main gauche : W A S D (touches physiques : Z Q S D sur un clavier AZERTY) ; les flèches marchent aussi.
+  Boutons main droite : rangée du bas J K L, rangée du haut U I O.   Entrée = Start    Maj droite = Mode (Mega Drive) / Select
+  Mega Drive (genesis_plus_gx, picodrive) : J / K / L = A / B / C    U / I / O = X / Y / Z (manette 6 boutons)
+  Super Nintendo (snes9x, bsnes, mesen-s) : K = A (valider)    J = B    I = X    U = Y    O = L    L = R
+  Master System / Game Gear : J = bouton 1    K = bouton 2    Entrée = Pause (SMS) / Start (GG)
+  Game Boy / NES : K = A    J = B    Entrée = Start    Maj droite = Select
   Autre core : disposition SNES + E / R = L2 / R2    F / G = L3 / R3
-  Échap = menu (pause)    Espace maintenu = avance rapide    P = pause    H = reset
+  Échap = menu (pause)    Espace maintenu = avance rapide    P = pause    F5 = reset
   F2 / F4 = sauvegarder / charger l'état    F6 / F7 = emplacement -/+    F11 = plein écran    F3 = stats
+  Sans touches F (portable où elles exigent Fn) : Ctrl+S / Ctrl+L = sauvegarder / charger l'état    Ctrl+, / Ctrl+. =
+  emplacement -/+    Ctrl+F ou Alt+Entrée = plein écran    Ctrl+R = reset    Ctrl+I = stats
+  Les touches enregistrées dans config.toml restent prioritaires sur ces dispositions.
 
 4. Avertissements système (binaires non signés)
 -----------------------------------------------

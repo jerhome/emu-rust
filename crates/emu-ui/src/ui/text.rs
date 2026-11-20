@@ -1,6 +1,6 @@
 //! Every user-facing string of the egui layer, in one place for a future translation.
 
-use emu_runtime::JoypadButton;
+use emu_runtime::{AudioStatus, JoypadButton};
 
 use crate::keyboard::PadStyle;
 use winit::keyboard::KeyCode;
@@ -139,6 +139,18 @@ pub fn keys_refused(key: KeyCode, action: HotkeyAction) -> String {
         key_label(key),
         hotkey_label(action)
     )
+}
+
+pub const KEYS_REFUSED_MODIFIER: &str = "Ctrl, Alt et Maj/Super gauche-droite sont réservées aux raccourcis : choisir une autre touche.";
+
+pub fn stats_audio_status(status: AudioStatus, recoveries: u64) -> String {
+    let label = match status {
+        AudioStatus::Playing => "Lecture",
+        AudioStatus::Recovering => "Reprise en cours",
+        AudioStatus::Disabled => "Désactivé",
+        _ => "Inconnu",
+    };
+    format!("Sortie audio : {label} · reprises : {recoveries}")
 }
 
 pub fn stats_fps(fps: f64) -> String {
