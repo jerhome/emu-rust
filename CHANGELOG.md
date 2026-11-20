@@ -2,6 +2,16 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [1.0.0] - 2026-11-20
+
+Première version stable. Contenu identique à la 1.0.0-rc.2, validé par l'utilisateur (`docs/essais-1.0.md`) :
+Windows (SNES, Mega Drive, NES, Master System, Game Boy, Game Gear) et macOS Intel 12.7.6 (Mega Drive).
+
+### Modifié
+
+- Release : builds, licences et image Docker en parallèle ; image poussée seulement si les 3 archives sont prêtes ;
+  label OCI de licence « MIT OR Apache-2.0 ».
+
 ## [1.0.0-rc.2] - 2026-11-20
 
 Corrections issues du premier essai sous Windows (`docs/essais-1.0.md`).

@@ -1,7 +1,7 @@
 # Guide d'essai de la 1.0
 
-Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v1.0.0-rc.2`). Image Docker :
-`ghcr.io/jerhome/emu-rust:1.0.0-rc.2` (paquet à rendre public une fois : voir `docker/README.md`).
+Builds : https://github.com/jerhome/emu-rust/releases (release `v1.0.0`). Image Docker :
+`ghcr.io/jerhome/emu-rust:1.0.0` (paquet à rendre public une fois : voir `docker/README.md`).
 
 ## 1. Principe
 
@@ -29,7 +29,7 @@ recommandés (ou `--install-core recommended` en ligne de commande).
 - **Windows** (SmartScreen : « Informations complémentaires » → « Exécuter quand même ») : `.\emu-rust.exe`.
 - **Docker** : copier les ROMs dans `/data/roms` du volume (`docker/README.md`), puis
   ```bash
-  export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0-rc.2
+  export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0
   docker compose -f docker/compose.yaml run --rm --no-build emu-wslg --install-core recommended
   docker compose -f docker/compose.yaml run --rm --no-build emu-wslg
   ```
@@ -61,7 +61,7 @@ adopter la nouvelle disposition, supprimer la section `[input.keyboard.…]` con
 
 ## 5. Checklist (par plateforme : Docker, Linux/WSL2, macOS, Windows)
 
-- [ ] `--version` = 1.0.0-rc.2 ; `emu-rust` sans argument ouvre la bibliothèque.
+- [ ] `--version` = 1.0.0 ; `emu-rust` sans argument ouvre la bibliothèque.
 - [ ] Scan du dossier de ROMs : les 6 jeux apparaissent.
 - [ ] Écran Cores : installation des cores recommandés ; BIOS manquants signalés (jamais téléchargés).
 - [ ] Chaque système : le jeu se lance, fenêtre à la bonne taille, image nette (HiDPI / Retina), son propre.

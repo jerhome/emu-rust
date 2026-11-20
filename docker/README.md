@@ -10,7 +10,7 @@ Chaque tag `v*` publie l'image runtime (`linux/amd64`) sur `ghcr.io/jerhome/emu-
 (défaut : `emu-rust:dev`, construite localement) :
 
 ```sh
-export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0-rc.2
+export EMU_IMAGE=ghcr.io/jerhome/emu-rust:1.0.0
 docker compose -f docker/compose.yaml --profile wslg pull
 docker compose -f docker/compose.yaml run --rm --no-build emu-wslg --core /data/cores/genesis_plus_gx_libretro.so --rom /data/roms/240pSuite-GenesisMD-1.21.zip
 ```
