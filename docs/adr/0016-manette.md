@@ -1,7 +1,7 @@
 # ADR 0016 — Manette (DualShock 4) : bibliothèque, mapping, configuration
 
-Statut : proposé (2026-11-20), à accepter après réponse de l'utilisateur aux questions de
-`docs/design/phase6-manette.md`. Précise ADR 0003 (« backend SDL3 candidat, à confirmer par une ADR dédiée »).
+Statut : accepté (2026-11-20) avec les défauts recommandés de `docs/design/phase6-manette.md` §6 ; ordre décidé
+par l'utilisateur : 2.0 d'abord, T1/T2 en parallèle, T3 après U2 de la 2.0. Précise ADR 0003 (« backend SDL3 candidat, à confirmer par une ADR dédiée »).
 Conception détaillée et découpage : `docs/design/phase6-manette.md`.
 
 ## Contexte

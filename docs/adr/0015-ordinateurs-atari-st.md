@@ -1,7 +1,9 @@
 # ADR 0015 — Ordinateurs (version 2.0, Atari ST) : core, BIOS libre, clavier, souris, disquettes, options par jeu
 
-Statut : proposé (2026-11-20), à accepter après réponse de l'utilisateur aux questions de
-`docs/design/v2.0-atari-st.md` §9 (les défauts ci-dessous s'appliquent sans attendre). Précise ADR 0003 (entrées
+Statut : accepté (2026-11-20). Réponses de l'utilisateur (`docs/questions-ouvertes.md`) : touche hôte Ctrl droit
+(⌘ droit sur macOS) ; EmuTOS 192 Ko **français** ; mode d'entrée par défaut d'un jeu = **Clavier** (jeux surtout
+point-and-click : la souris est prioritaire) ; 2.0 d'abord, manette en parallèle. Autres questions de
+`docs/design/v2.0-atari-st.md` §9 : défauts recommandés. Précise ADR 0003 (entrées
 « ordinateur »), 0005 (BIOS libres), 0006 / 0011 (emplacements), 0013 (cores, BIOS), 0014 (catalogue, DAT).
 Points de contact avec la manette : ADR 0016. Étude préalable : `docs/essais-hatari.md`.
 
