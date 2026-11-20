@@ -39,7 +39,7 @@ pub enum ContentSpec {
     /// Ordered disk set: [`prepare_media`] runs after the core is loaded (it needs the extensions the binary
     /// really accepts, which may differ from its `.info`), then `PreparedMedia::content` is loaded; the other
     /// images are reachable through [`Disks`]. The game name (saves, states) is `MediaSet::name`.
-    Media { set: MediaSet, policy: MediaPolicy },
+    Media { set: MediaSet, rules: MediaRules },
     /// `retro_load_game(NULL)` (GEM desktop); needs `SET_SUPPORT_NO_GAME`. Game name [`NO_GAME_NAME`].
     NoGame,
 }
@@ -69,6 +69,35 @@ pub enum MediaPolicy {
     /// The core writes into disk images in place (hatari): copy them once into
     /// `<saves>/<core_id>/<game>.disks/` and only ever hand the copies to the core.
     WorkingCopy,
+}
+
+/// Largest file copied into a working-copy folder (Amiga `.hdf`); see [`MediaRules::max_copy_bytes`].
+pub const MAX_COPY_BYTES: u64 = 2 << 30;
+
+/// How the sources of a [`MediaSet`] reach the core (ADR 0017 §6, `docs/design/v3.0-amiga.md` §3.5.1). Each
+/// source is evaluated in this order: (1) extension listed in `media_direct`: handed over in place (absolute
+/// path), never copied nor extracted, even a zip; (2) otherwise a `.zip` is inspected whatever extensions the
+/// core declares, and extracted when it holds at least one image the core accepts; (3) otherwise `policy`
+/// applies (a zip without any accepted image is passed whole when the core declares `zip`, refused if not).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRules {
+    /// Default policy of the core (`media` of `emu-assets/data/cores.toml`).
+    pub policy: MediaPolicy,
+    /// Lower-case extensions without the dot (`media_direct` of `cores.toml`; puae: `ipf`, `lha`).
+    pub media_direct: Vec<String>,
+    /// A source larger than this is refused (`InvalidMediaSet`) instead of being copied.
+    pub max_copy_bytes: u64,
+}
+
+impl MediaRules {
+    /// No direct extension, [`MAX_COPY_BYTES`].
+    pub fn new(policy: MediaPolicy) -> Self {
+        Self {
+            policy,
+            media_direct: Vec::new(),
+            max_copy_bytes: MAX_COPY_BYTES,
+        }
+    }
 }
 
 /// Result of [`prepare_media`].
@@ -153,13 +182,15 @@ fn work_dir_candidate(saves_core_dir: &Path, game: &str, n: u32) -> PathBuf {
 /// uses names relative to its own folder (`WorkingCopy`) or absolute paths (`Direct`, private temp directory).
 pub fn prepare_media(
     set: &MediaSet,
-    policy: MediaPolicy,
+    rules: &MediaRules,
     accepted_extensions: &[String],
     saves_core_dir: &Path,
 ) -> Result<PreparedMedia, RuntimeError> {
+    // TODO(R3, design v3.0 §3.5.1): honour `media_direct` and `max_copy_bytes`, inspect zips whatever the core
+    // declares, keep only white-listed `#` lines of a user `.m3u`. Until then: 2.0 behaviour of `rules.policy`.
     prepare_media_with(
         set,
-        policy,
+        rules.policy,
         accepted_extensions,
         saves_core_dir,
         Limits::DEFAULT,
@@ -836,6 +867,23 @@ pub fn reset_working_copies(saves_core_dir: &Path, game: &str) -> Result<bool, R
     remove_work_dir(&work_dir_for(saves_core_dir, game))
 }
 
+/// Deletes the save files a core wrote next to its saves for one game (`game_saves` of `cores.toml`, design
+/// v3.0 §3.5.3; puae: `{game}.save*.adf` created for `#SAVEDISK:`), and returns the deleted paths. The core must
+/// not be running that game.
+///
+/// `patterns` are **file names**, never paths: `{game}` stands for `content_name` (the content name handed to
+/// the core), at most one `*` matches any run of characters. A pattern holding a path separator, `..`, or more
+/// than one `*` is refused (`InvalidMediaSet`), nothing is deleted. Only regular files directly inside
+/// `saves_core_dir` are looked at (not recursive, links never followed).
+pub fn reset_core_game_files(
+    saves_core_dir: &Path,
+    content_name: &str,
+    patterns: &[String],
+) -> Result<Vec<PathBuf>, RuntimeError> {
+    let _ = (saves_core_dir, content_name, patterns);
+    todo!("R3: design v3.0 §3.5.3")
+}
+
 /// Deletes one working-copy folder, normally [`PreparedMedia::work_dir`] of the game (the core must not be
 /// running it). Refused unless `work_dir` is a `*.disks` entry directly inside `saves_core_dir`. Returns `false`
 /// when there was nothing to delete.
@@ -1196,7 +1244,7 @@ mod tests {
             set: &MediaSet,
             policy: MediaPolicy,
         ) -> Result<PreparedMedia, RuntimeError> {
-            prepare_media(set, policy, &exts(), &self.saves())
+            prepare_media(set, &MediaRules::new(policy), &exts(), &self.saves())
         }
         /// Every file under the temp root except `roms/`, relative.
         fn written(&self) -> Vec<String> {
@@ -1396,7 +1444,7 @@ mod tests {
         let exts = vec!["st".to_owned(), "zip".to_owned()];
         let p = prepare_media(
             &set("Game", vec![zip.clone()]),
-            MediaPolicy::Direct,
+            &MediaRules::new(MediaPolicy::Direct),
             &exts,
             &f.saves(),
         )

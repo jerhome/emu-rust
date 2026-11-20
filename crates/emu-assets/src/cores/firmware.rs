@@ -10,6 +10,7 @@ use md5::{Digest, Md5};
 use serde::Deserialize;
 
 use super::info::{is_safe_relative_path, parse_md5};
+use super::select::RequiredFirmware;
 use super::{CoreInfo, FirmwareSpec};
 
 const BUILTIN: &str = include_str!("../../data/firmware.toml");
@@ -40,6 +41,17 @@ pub enum FirmwareState {
         label: String,
     },
     Unreadable(String),
+    /// [`check_required`] only: the wanted file is absent but the core declares a fallback
+    /// (`required_firmware.fallback` of `data/cores.toml`; puae: built-in AROS). Neither "missing" nor
+    /// blocking; `label` is the `builtin_firmware` label of the core.
+    CoreFallback {
+        label: String,
+    },
+    /// [`check_required`] only: the core has `builtin_firmware` and no `required_firmware` table for the
+    /// system (ROMs compiled into the core: cap32, VICE). Nothing is expected in the system directory.
+    Builtin {
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +99,64 @@ impl KnownFirmware {
     pub fn md5_for(&self, path: &str) -> &[[u8; 16]] {
         self.by_path.get(path).map_or(&[], Vec::as_slice)
     }
+
+    /// Expected size of `path`, when `data/firmware.toml` gives one (table form
+    /// `"name" = { md5 = "…" | ["…", …], size = 262144 }`, design v3.0 §3.5.6). Only a quick reject at import and
+    /// a display hint: the md5 stays the sole verification.
+    pub fn size_for(&self, path: &str) -> Option<u64> {
+        let _ = path;
+        todo!("A3: design v3.0 §3.5.6")
+    }
+
+    /// Every known relative path, sorted (import catalogue).
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.by_path.keys().map(String::as_str)
+    }
+}
+
+/// Result of the single pre-launch firmware check ([`check_required`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirmwareCheck {
+    /// File wanted for the variant (relative to the system directory); `None` when nothing is expected
+    /// (`Builtin`).
+    pub wanted: Option<String>,
+    /// `Ok` / `Free` / `Unverified` / `Builtin`: launch. `CoreFallback`: launch, the UI warns once per game.
+    /// `Missing` (no fallback declared) / `WrongHash` / `Unreadable`: the UI asks.
+    pub state: FirmwareState,
+    /// Other files of the same table present in the system directory (« bios_CD_E.bin présent, mais ce jeu
+    /// est USA »), sorted, without `wanted`.
+    pub others_present: Vec<String>,
+}
+
+/// The single firmware check before a launch (design v3.0 §3.5.5), also used by `--check-bios`.
+///
+/// `variant` is the value the table is keyed by (`RequiredFirmware::variant`: resolved model for the Amiga,
+/// disc region for Mega CD / PlayStation); `None` or a variant absent from `req.files` selects `req.default`.
+/// The wanted file is looked up in `system_dir` and hashed like [`check_firmware`] does (md5 from `known`;
+/// md5 that only exist in a core's `.info` are not known here: such a file is `Unverified`). `fallback_label`
+/// is `CorePreferences::builtin_firmware(core).label` when `req.fallback` is set: a missing file is then
+/// `CoreFallback { label }`, otherwise `Missing`. Nothing is written, nothing is downloaded.
+pub fn check_required(
+    system_dir: &Path,
+    req: &RequiredFirmware,
+    variant: Option<&str>,
+    known: &KnownFirmware,
+    fallback_label: Option<&str>,
+) -> Result<FirmwareCheck, FirmwareError> {
+    let _ = (system_dir, req, variant, known, fallback_label);
+    todo!("A3: design v3.0 §3.5.5")
+}
+
+/// Errors of [`check_required`]: data problems only (a missing or wrong file is a [`FirmwareState`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum FirmwareError {
+    /// `req.default` is not a key of `req.files` (hand-built table; the embedded one is checked by a test).
+    #[error("table de firmware invalide : variante par défaut inconnue ({0})")]
+    UnknownDefault(String),
+    /// A file name of the table is not a safe relative path.
+    #[error("table de firmware invalide : chemin refusé ({0})")]
+    UnsafePath(String),
 }
 
 /// One status per `info.firmware` entry, same order. A spec's own md5 (from `notes`) and `known` are both

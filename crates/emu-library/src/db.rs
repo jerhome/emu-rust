@@ -11,11 +11,13 @@ use rusqlite::{
 };
 
 use crate::{
-    Dat, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport, SystemInfo,
+    Dat, DatSource, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport, SystemInfo,
     normalize_title, systems_for_extension,
 };
 
 /// `PRAGMA user_version` written by this code.
+// TODO(B3): 4 with the v3 → v4 migration (`dat_info` / `dat_entry` keyed by `(system, source)`, design v3.0
+// §3.4). Bumped together with the migration, never before: `MIGRATIONS.len()` is checked at compile time.
 pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,6 +78,8 @@ pub struct CoverRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatInfo {
     pub system: String,
+    /// Schema v4: a system may have one DAT per source.
+    pub source: DatSource,
     pub name: String,
     pub version: Option<String>,
     pub entries: u64,
@@ -742,7 +746,41 @@ impl Library {
         Ok(count)
     }
 
+    /// Schema v4: replaces the entries of the couple `(system, source)` only, then re-identifies the games of
+    /// `system` against all its DATs in `SystemInfo::dats` order. `LibraryError::UnknownSystem` when `source`
+    /// is not declared for the system. [`Library::import_dat`] is this with the first declared source.
+    pub fn import_dat_source(
+        &mut self,
+        system: &str,
+        source: DatSource,
+        dat: &Dat,
+        etag: Option<&str>,
+    ) -> Result<u64, LibraryError> {
+        let _ = (system, source, dat, etag);
+        todo!("B3: design v3.0 §3.4")
+    }
+
+    /// DAT of one source of a system.
+    pub fn dat_info_for(
+        &self,
+        system: &str,
+        source: DatSource,
+    ) -> Result<Option<DatInfo>, LibraryError> {
+        let _ = (system, source);
+        todo!("B3: design v3.0 §3.4")
+    }
+
+    /// Imported DATs of a system, in `SystemInfo::dats` order.
+    pub fn dat_infos(&self, system: &str) -> Result<Vec<DatInfo>, LibraryError> {
+        let _ = system;
+        todo!("B3: design v3.0 §3.4")
+    }
+
+    /// DAT of the **first declared source** of the system (2.0 callers; `dat_info_for` for the others).
     pub fn dat_info(&self, system: &str) -> Result<Option<DatInfo>, LibraryError> {
+        let source = crate::system(system)
+            .and_then(|s| s.dats.first().copied())
+            .unwrap_or_default();
         self.conn
             .query_row(
                 "SELECT system, name, version, entries, imported_unix, etag FROM dat_info WHERE system = ?1",
@@ -750,6 +788,7 @@ impl Library {
                 |r| {
                     Ok(DatInfo {
                         system: r.get(0)?,
+                        source,
                         name: r.get(1)?,
                         version: r.get(2)?,
                         entries: u64::try_from(r.get::<_, i64>(3)?).unwrap_or(0),

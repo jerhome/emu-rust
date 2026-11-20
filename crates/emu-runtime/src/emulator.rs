@@ -173,7 +173,9 @@ impl Emulator {
                 content_dir = content.temp_dir;
                 Some(content.source)
             }
-            ContentSpec::Media { set, policy } => {
+            ContentSpec::Media { set, rules } => {
+                // TODO(R3): pass `rules` down (media_direct, max_copy_bytes); 2.0 behaviour until then.
+                let policy = rules.policy;
                 let exts = &core.system_info().valid_extensions;
                 let media = prepare_media_with(&set, policy, exts, &core_save_dir, limits)?;
                 let source = GameSource::Path(media.content.clone());

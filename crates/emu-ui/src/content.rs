@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use emu_assets::cores::{CoreId, CoreMediaPolicy, CorePreferences};
-use emu_runtime::{ContentSpec, MediaPolicy, MediaSet};
+use emu_runtime::{ContentSpec, MediaPolicy, MediaRules, MediaSet};
 
 /// What to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +88,8 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         }
         _ => MediaPolicy::Direct,
     };
+    // TODO(U4, design v3.0 §3.2): fill `media_direct` from `CorePreferences::media_direct`.
+    let rules = MediaRules::new(policy);
     if files.len() == 1 && is_m3u(&files[0]) {
         return ContentSpec::Media {
             set: MediaSet {
@@ -95,7 +97,7 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
                 images: Vec::new(),
                 playlist: Some(files[0].clone()),
             },
-            policy,
+            rules,
         };
     }
     if files.len() == 1 && policy == MediaPolicy::Direct {
@@ -107,7 +109,7 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
             images: files.clone(),
             playlist: None,
         },
-        policy,
+        rules,
     }
 }
 
@@ -132,8 +134,8 @@ mod tests {
     fn hatari_always_gets_working_copies() {
         let prefs = CorePreferences::builtin();
         match content_spec("hatari", &files(&["/g/Nova.st"]), &prefs) {
-            ContentSpec::Media { set, policy } => {
-                assert_eq!(policy, MediaPolicy::WorkingCopy);
+            ContentSpec::Media { set, rules } => {
+                assert_eq!(rules.policy, MediaPolicy::WorkingCopy);
                 assert_eq!(set.name, "Nova");
                 assert_eq!(set.images, vec![PathBuf::from("/g/Nova.st")]);
             }
@@ -146,7 +148,9 @@ mod tests {
         let prefs = CorePreferences::builtin();
         for name in ["hatari-old", "../x"] {
             match content_spec(name, &files(&["/g/Nova.st"]), &prefs) {
-                ContentSpec::Media { policy, .. } => assert_eq!(policy, MediaPolicy::WorkingCopy),
+                ContentSpec::Media { rules, .. } => {
+                    assert_eq!(rules.policy, MediaPolicy::WorkingCopy)
+                }
                 other => panic!("{other:?}"),
             }
         }
@@ -159,13 +163,13 @@ mod tests {
             ContentSpec::File(PathBuf::from("/g/a.md"))
         );
         match content_spec("hatari-old", &files(&["/g/x.m3u"]), &prefs) {
-            ContentSpec::Media { policy, .. } => assert_eq!(policy, MediaPolicy::WorkingCopy),
+            ContentSpec::Media { rules, .. } => assert_eq!(rules.policy, MediaPolicy::WorkingCopy),
             other => panic!("{other:?}"),
         }
         for f in ["a.ide", "a.vhd", "a.gem", "a.hdf", "a.unknown"] {
             match content_spec("hatari-old", &files(&[f]), &prefs) {
-                ContentSpec::Media { policy, .. } => {
-                    assert_eq!(policy, MediaPolicy::WorkingCopy, "{f}");
+                ContentSpec::Media { rules, .. } => {
+                    assert_eq!(rules.policy, MediaPolicy::WorkingCopy, "{f}");
                 }
                 other => panic!("{other:?}"),
             }
@@ -202,8 +206,8 @@ mod tests {
             "/g/Game (1990)(Pub)(Disk 2 of 2).st",
         ]);
         match content_spec("hatarib", &set, &prefs) {
-            ContentSpec::Media { set, policy } => {
-                assert_eq!(policy, MediaPolicy::Direct);
+            ContentSpec::Media { set, rules } => {
+                assert_eq!(rules.policy, MediaPolicy::Direct);
                 assert_eq!(set.name, "Game (1990)(Pub)");
                 assert_eq!(set.images.len(), 2);
             }

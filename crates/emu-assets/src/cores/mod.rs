@@ -12,7 +12,8 @@ mod select;
 
 pub use archive::{ArchiveError, ExtractLimits, extract_core, read_info_bundle};
 pub use firmware::{
-    FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE, check_firmware,
+    FirmwareCheck, FirmwareError, FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE,
+    check_firmware, check_required,
 };
 pub use id::CoreId;
 pub use index::{BuildDate, MAX_INDEX_ENTRIES, RemoteCore, parse_index_extended};
@@ -23,4 +24,7 @@ pub use manager::{
     Origin, RemoteCatalog,
 };
 pub use platform::Platform;
-pub use select::{CoreChoice, CoreMediaPolicy, CorePreferences, choose_core};
+pub use select::{
+    BuiltinFirmware, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
+    FirmwareVariant, RequiredFirmware, choose_core,
+};

@@ -56,11 +56,20 @@ pub struct ScanReport {
     pub removed: u64,
     /// Empty files (0 byte) and archives holding only empty entries: not listed, nothing to launch.
     pub ignored_empty: u64,
+    /// Files of a shared extension (`.ipf`, `.m3u`…) that no rule attributes to a system (design v3.0 §3.5.2):
+    /// not listed as games, reported with the advice to move them under `roms/<id>/`. Their paths are in
+    /// `unclassified_paths`.
+    pub unclassified: u64,
+    /// At most `MAX_UNCLASSIFIED_PATHS` of them, in scan order.
+    pub unclassified_paths: Vec<PathBuf>,
     /// Roots that did not exist: their games are kept (unmounted drive), not removed.
     pub missing_roots: Vec<PathBuf>,
     /// Unreadable files and archives (path + French message), the scan goes on.
     pub errors: Vec<(PathBuf, String)>,
 }
+
+/// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).
+pub const MAX_UNCLASSIFIED_PATHS: usize = 200;
 
 /// Archives listing more entries are refused before the central directory is parsed (same bound as emu-runtime).
 const MAX_ARCHIVE_ENTRIES: u64 = 4096;

@@ -14,6 +14,11 @@ pub const DAT_BASE_URL: &str =
 /// TOSEC DAT files (`Atari - ST`: floppy images `.st` / `.stx` / `.ipf` / `.dim`).
 pub const DAT_TOSEC_BASE_URL: &str =
     "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/tosec/";
+/// Top-level `dat/` folder of libretro-database (`Commodore - Amiga.dat`: WHDLoad `.lha`, crc + sha1, no md5;
+/// `emu_library::DatSource::Libretro`). Same file name as the TOSEC DAT of the system: callers keep one local
+/// folder per source.
+pub const DAT_LIBRETRO_BASE_URL: &str =
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/dat/";
 /// Same bound as `emu_library::MAX_DAT_SIZE` (the crates do not depend on each other).
 pub const MAX_DAT_BYTES: u64 = 64 * 1024 * 1024;
 

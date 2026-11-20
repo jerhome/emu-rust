@@ -29,6 +29,9 @@ pub enum RuntimeError {
     /// A media set is empty or has more than `MAX_MEDIA_IMAGES` images.
     #[error("invalid disk set: {0}")]
     InvalidMediaSet(String),
+    /// A working copy could not be completed for lack of space; the partial copy has been removed.
+    #[error("disk full while writing {path}")]
+    DiskFull { path: PathBuf },
     /// The running core registered no disk control interface.
     #[error("the core does not support disk swapping")]
     NoDiskControl,

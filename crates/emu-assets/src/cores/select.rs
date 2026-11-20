@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::{CoreId, CoreInfo};
+use super::{CoreId, CoreInfo, Platform};
 
 const BUILTIN: &str = include_str!("../../data/cores.toml");
 
@@ -134,10 +134,91 @@ impl CorePreferences {
             .map_or_else(Vec::new, |p| p.options.clone())
     }
 
+    /// `media_direct` of `data/cores.toml`: lower-case extensions never copied nor extracted for this core
+    /// (puae: `ipf`, `lha`; design v3.0 §3.5.1). Empty for cores without the key. Same name everywhere:
+    /// `cores.toml` key, this accessor, `emu_runtime::MediaRules::media_direct`.
+    pub fn media_direct(&self, core: &CoreId) -> Vec<String> {
+        let _ = core;
+        todo!("A3: design v3.0 §3.3")
+    }
+
+    /// `game_saves` of `data/cores.toml`: file-name patterns of the save files the core writes in its saves
+    /// directory (`{game}.save*.adf`), for `emu_runtime::reset_core_game_files` (design v3.0 §3.5.3).
+    /// Patterns holding a separator, `..` or more than one `*` are refused when the file is parsed.
+    pub fn game_save_patterns(&self, core: &CoreId) -> Vec<String> {
+        let _ = core;
+        todo!("A3: design v3.0 §3.5.3")
+    }
+
+    /// `[cores.<core>.required_firmware."<system>"]` of `data/cores.toml` (`system` = libretro database name),
+    /// input of [`super::check_required`]. `None`: no table (use `builtin_firmware`, else the 1.0 `.info` check).
+    pub fn required_firmware(&self, core: &CoreId, system: &str) -> Option<&RequiredFirmware> {
+        let _ = (core, system);
+        todo!("A3: design v3.0 §3.5.5")
+    }
+
+    /// `builtin_firmware` of `data/cores.toml`: ROMs compiled into the core (AROS in puae; cap32, VICE in 5.0).
+    pub fn builtin_firmware(&self, core: &CoreId) -> Option<BuiltinFirmware> {
+        let _ = core;
+        todo!("A3: design v3.0 §3.3")
+    }
+
+    /// `recommended_on` of `data/cores.toml` (`["macos"]` for puae2021; values `linux`, `windows`, `macos`):
+    /// the core selector of the Cores screen then shows « recommandé sur Mac » next to this alternative, on
+    /// every OS. Never changes the default order (user decision of 2026-11-21: puae stays first everywhere).
+    pub fn recommended_on(&self, core: &CoreId) -> Vec<Platform> {
+        let _ = core;
+        todo!("A3: design v3.0 §3.3")
+    }
+
     /// Systems known to the preferences (for "install recommended cores").
     pub fn systems(&self) -> impl Iterator<Item = (&str, &[CoreId])> {
         self.systems.iter().map(|(s, c)| (s.as_str(), c.as_slice()))
     }
+}
+
+/// Where the UI takes the variant passed to [`super::check_required`] from (`variant` of a
+/// `required_firmware` table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirmwareVariant {
+    /// Resolved machine model (Amiga: option `puae_model` after `auto` resolution).
+    Model,
+    /// Region of the game / disc (Mega CD in 6.0, PlayStation in 7.0).
+    Region,
+}
+
+/// Core option that switches to the ROM built into the core when the wanted file is absent
+/// (`("puae_kickstart", "aros")`): applied by the UI as a computed default, never written (design v3.0 §3.5.4).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirmwareFallback {
+    pub option: String,
+    pub value: String,
+}
+
+/// One `[cores.<core>.required_firmware."<system>"]` table (design v3.0 §3.5.5). Data only: later versions
+/// add tables, not code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiredFirmware {
+    /// libretro database name (`"Commodore - Amiga"`).
+    pub system: String,
+    pub variant: FirmwareVariant,
+    /// Variant → file name relative to the system directory (`A500` → `kick34005.A500`).
+    pub files: BTreeMap<String, String>,
+    /// Key of `files` used when the variant is unknown.
+    pub default: String,
+    /// Requires `builtin_firmware` on the same core (checked when the file is parsed).
+    pub fallback: Option<FirmwareFallback>,
+}
+
+/// ROMs compiled into a core: nothing to provide, nothing downloaded. `notice` is the attribution shown in
+/// the Cores screen and the release README (design v3.0 §3.5.7); never part of `THIRD-PARTY-DATA.txt`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltinFirmware {
+    pub label: String,
+    pub notice: String,
 }
 
 /// libretro option keys are plain identifiers (`hatari_vkbd`).

@@ -24,22 +24,42 @@ pub enum SystemKind {
     Computer,
 }
 
-/// Where the identification DAT of a system lives in libretro-database (`metadat/<dir>/<database>.dat`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Where an identification DAT of a system lives in libretro-database (`<repo_dir>/<database>.dat`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum DatSource {
     /// `metadat/no-intro/`.
     #[default]
     NoIntro,
     /// `metadat/tosec/`.
     Tosec,
+    /// Top-level `dat/` (WHDLoad `.lha` sets of `Commodore - Amiga.dat`: crc + sha1, no md5).
+    Libretro,
 }
 
 impl DatSource {
-    /// Folder under `metadat/`.
-    pub fn folder(self) -> &'static str {
+    /// Stable name: value of `dat` in `systems.toml`, of the `source` column (schema v4), and local folder
+    /// of the downloaded file (`<database dir>/<id>/<database>.dat`; two sources of one system share the
+    /// file name).
+    pub fn id(self) -> &'static str {
         match self {
             DatSource::NoIntro => "no-intro",
             DatSource::Tosec => "tosec",
+            DatSource::Libretro => "libretro",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [DatSource::NoIntro, DatSource::Tosec, DatSource::Libretro]
+            .into_iter()
+            .find(|s| s.id() == id)
+    }
+
+    /// Folder of the DAT in the libretro-database repository.
+    pub fn repo_dir(self) -> &'static str {
+        match self {
+            DatSource::NoIntro => "metadat/no-intro",
+            DatSource::Tosec => "metadat/tosec",
+            DatSource::Libretro => "dat",
         }
     }
 }
@@ -58,7 +78,12 @@ pub struct SystemInfo {
     pub screenscraper: Option<u32>,
     pub igdb: Option<u32>,
     pub kind: SystemKind,
-    pub dat: DatSource,
+    /// DAT sources in identification order (first match wins); `systems.toml` `dat`: one name or a list,
+    /// default `["no-intro"]`. Never empty.
+    pub dats: Vec<DatSource>,
+    /// Subset of `extensions` kept for this system only under a folder named after its `id` (design v3.0
+    /// §3.5.2; `systems.toml` `folder_extensions`, default empty).
+    pub folder_extensions: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -153,10 +178,13 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 RawKind::Console => SystemKind::Console,
                 RawKind::Computer => SystemKind::Computer,
             },
-            dat: match s.dat {
+            // TODO(B3): `dat` as a string or a list (`libretro` included), `folder_extensions` parsed and
+            // checked against `extensions`.
+            dats: vec![match s.dat {
                 RawDat::NoIntro => DatSource::NoIntro,
                 RawDat::Tosec => DatSource::Tosec,
-            },
+            }],
+            folder_extensions: Vec::new(),
         });
     }
     Ok(out)
@@ -221,12 +249,22 @@ mod tests {
     #[test]
     fn atari_st_is_a_tosec_computer_and_the_others_are_unchanged() {
         let st = system("atarist").unwrap();
-        assert_eq!((st.kind, st.dat), (SystemKind::Computer, DatSource::Tosec));
+        assert_eq!(
+            (st.kind, st.dats.as_slice()),
+            (SystemKind::Computer, &[DatSource::Tosec][..])
+        );
         assert_eq!(st.database, "Atari - ST");
         assert_eq!(st.extensions, ["st", "msa", "dim", "stx", "ipf", "m3u"]);
-        assert_eq!(st.dat.folder(), "tosec");
+        assert_eq!(
+            (st.dats[0].id(), st.dats[0].repo_dir()),
+            ("tosec", "metadat/tosec")
+        );
+        assert_eq!(DatSource::from_id("libretro"), Some(DatSource::Libretro));
         for s in systems().iter().filter(|s| s.id != "atarist") {
-            assert_eq!((s.kind, s.dat), (SystemKind::Console, DatSource::NoIntro));
+            assert_eq!(
+                (s.kind, s.dats.as_slice()),
+                (SystemKind::Console, &[DatSource::NoIntro][..])
+            );
         }
         assert!(
             systems_for_extension("m3u")

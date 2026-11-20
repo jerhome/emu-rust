@@ -224,11 +224,8 @@ impl App {
         let spec = content_spec(&core_id, &options.content, &prefs);
         let no_game = spec == ContentSpec::NoGame;
         let working_copy = matches!(
-            spec,
-            ContentSpec::Media {
-                policy: MediaPolicy::WorkingCopy,
-                ..
-            }
+            &spec,
+            ContentSpec::Media { rules, .. } if rules.policy == MediaPolicy::WorkingCopy
         );
         let game_options_path =
             game_options_path(&options.dirs.game_options, &core_id, &game_key(&spec));

@@ -20,7 +20,8 @@ pub use crate::covers::{
     ScreenScraperCredentials, ScreenScraperSource, thumbnail_file_name,
 };
 pub use crate::dat::{
-    DAT_BASE_URL, DAT_TOSEC_BASE_URL, DatDownload, MAX_DAT_BYTES, dat_url, download_dat,
+    DAT_BASE_URL, DAT_LIBRETRO_BASE_URL, DAT_TOSEC_BASE_URL, DatDownload, MAX_DAT_BYTES, dat_url,
+    download_dat,
 };
 pub use crate::error::AssetError;
 pub use crate::image::{

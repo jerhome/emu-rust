@@ -15,6 +15,13 @@
 //! - manifest then image are written atomically (temporary file + rename); a crash in between leaves a state
 //!   (`Missing` / `Modified`); `Modified` is protected like a user file, so repairing it follows the `ReplacePolicy`.
 
+mod import;
+
+pub use import::{
+    ExpectedFirmware, FirmwareCatalogue, Identification, ImportOutcome, MAX_FIRMWARE_BYTES,
+    TargetState, identify_firmware, import_firmware, target_state,
+};
+
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -409,6 +416,16 @@ pub enum BiosError {
     /// A `FreeBios` built by hand (fields are public) that does not pass the catalogue checks.
     #[error("catalogue de BIOS invalide : {0}")]
     InvalidCatalogue(String),
+    /// Import: the source is larger than `MAX_FIRMWARE_BYTES` (size in bytes).
+    #[error("fichier trop volumineux pour un BIOS ({0} octets)")]
+    TooLarge(u64),
+    /// Import: the target name is empty, absolute, holds `..`, `\`, a drive prefix, or a `/` not declared by a
+    /// `.info`.
+    #[error("nom de BIOS refusé : {0}")]
+    InvalidTargetName(String),
+    /// Import with `ReplacePolicy::Refuse`: another file already has this name; nothing was written.
+    #[error("un autre fichier existe déjà sous ce nom : {0}")]
+    TargetExists(String),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

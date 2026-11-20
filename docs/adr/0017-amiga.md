@@ -1,7 +1,10 @@
 # ADR 0017 — Amiga (version 3.0) : core puae, AROS intégré, Kickstart importé, clavier Amiga, dossier des ROMs
 
-Statut : proposé — décisions utilisateur du 2026-11-21 intégrées (revue croisée des conceptions, corrections B1, B2,
-B3, I1, I5, I9, I10, M3, M7, M10). Décisions utilisateur (`docs/questions-ouvertes.md`, elles prévalent) : touche hôte
+Statut : **accepté** (2026-11-21) — re-validée contre le code de la 2.0.0-rc.2, contrat posé dans le code (tâche X0 ;
+écarts et précisions : design §10). Décisions utilisateur du 2026-11-21 intégrées (revue croisée des conceptions,
+corrections B1, B2, B3, I1, I5, I9, I10, M3, M7, M10 ; **core `puae` par défaut sur tous les OS, `puae2021`
+sélectionnable en un clic et signalé « recommandé sur Mac »** ; **Kickstart absent ⇒ AROS intégré + avertissement
+unique par jeu**). Décisions utilisateur (`docs/questions-ouvertes.md`, elles prévalent) : touche hôte
 **Ctrl droit partout** (macOS compris ; ⌘ droit seulement en repli réglable) ; **Amiga gauche / droite = Alt gauche /
 Alt droit (AltGr)** sur les trois OS, les touches Alt de l'Amiga passant par le clavier virtuel ; mode d'entrée par
 défaut **Clavier**. Étude de faisabilité : `docs/essais-puae.md` (essais headless de puae et puae2021 sous Xvfb, sans
@@ -97,9 +100,12 @@ Faits vérifiés le 2026-11-20 :
 
 ### 1. Core
 
-- Système `Commodore - Amiga` dans `emu-assets/data/cores.toml` : **`puae`** recommandé, **`puae2021`** en
-  alternative (GPL-2.0 tous deux). puae suit WinUAE 5.3.1 (précision, AGA, WHDLoad 20.1 récent) ; puae2021 est le
-  repli si le Mac Intel de l'utilisateur est trop lent. `fsuae` écarté (Linux seulement).
+- Système `Commodore - Amiga` dans `emu-assets/data/cores.toml` : **`puae`** par défaut **sur tous les OS**,
+  **`puae2021`** en alternative (GPL-2.0 tous deux). puae suit WinUAE 5.3.1 (précision, AGA, WHDLoad 20.1 récent) ;
+  puae2021 est plus léger. **Décision utilisateur du 2026-11-21** : pas de bascule automatique selon l'OS ; l'écran
+  Cores offre un sélecteur « Core utilisé » par système (il écrit `[cores.preferred]`) et y signale puae2021 comme
+  **« recommandé sur Mac »** (donnée `recommended_on = ["macos"]`, mécanisme générique réutilisé en 7.0). `fsuae`
+  écarté (Linux seulement).
 - Défauts frontend (`[cores.puae] options`, même liste pour puae2021) : `puae_mapper_select = "---"` (le clavier
   virtuel est celui du frontend, ADR 0015 §7), `puae_mapper_mouse_toggle = "---"` (Ctrl droit est la touche hôte ;
   si l'utilisateur en change, Ctrl droit doit atteindre l'Amiga comme Amiga droite, pas basculer le pad),

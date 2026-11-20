@@ -12,8 +12,8 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use emu_runtime::{
-    CollectSink, ContentSpec, Emulator, EmulatorOptions, InputBackend, MediaPolicy, MediaSet,
-    MouseButton, NullInput, RetroKey, ScriptedInput,
+    CollectSink, ContentSpec, Emulator, EmulatorOptions, InputBackend, MediaPolicy, MediaRules,
+    MediaSet, MouseButton, NullInput, RetroKey, ScriptedInput,
 };
 
 /// One libretro core per process (ADR 0008): tests must not overlap.
@@ -88,7 +88,7 @@ fn single(name: &str, image: &Path) -> ContentSpec {
             images: vec![image.to_path_buf()],
             playlist: None,
         },
-        policy: MediaPolicy::WorkingCopy,
+        rules: MediaRules::new(MediaPolicy::WorkingCopy),
     }
 }
 
@@ -399,7 +399,7 @@ fn two_floppies_generated_playlist_and_swap() {
             images: vec![a.clone(), b.clone()],
             playlist: None,
         },
-        policy: MediaPolicy::WorkingCopy,
+        rules: MediaRules::new(MediaPolicy::WorkingCopy),
     };
     let mut emu = load(spec, &dir.join("data"));
     let prepared = emu.prepared_media().expect("prepared media").clone();

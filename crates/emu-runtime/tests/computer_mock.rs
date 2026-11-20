@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use emu_runtime::{
     CollectSink, ContentSpec, DiskControlKind, Emulator, EmulatorOptions, InputBackend,
-    MediaPolicy, MediaSet, MouseButton, NO_GAME_NAME, NullInput, RetroKey, RuntimeError,
-    ScriptedInput, reset_working_copies,
+    MediaPolicy, MediaRules, MediaSet, MouseButton, NO_GAME_NAME, NullInput, RetroKey,
+    RuntimeError, ScriptedInput, reset_working_copies,
 };
 
 const VARS: [&str; 5] = [
@@ -175,7 +175,7 @@ fn disks_working_copy(lib: &Path) {
     };
     let spec = ContentSpec::Media {
         set,
-        policy: MediaPolicy::WorkingCopy,
+        rules: MediaRules::new(MediaPolicy::WorkingCopy),
     };
     let mut emu = Emulator::load_content(lib, spec, env.options()).unwrap();
     assert_eq!(emu.game_name(), "Game");
@@ -249,7 +249,7 @@ fn disks_basic_direct(lib: &Path) {
             images: vec![d1.clone()],
             playlist: None,
         },
-        policy: MediaPolicy::Direct,
+        rules: MediaRules::new(MediaPolicy::Direct),
     };
     let mut emu = Emulator::load_content(lib, spec, env.options()).unwrap();
     assert_eq!(emu.prepared_media().unwrap().content, d1);

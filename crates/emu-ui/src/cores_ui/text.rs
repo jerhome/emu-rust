@@ -106,6 +106,10 @@ pub fn firmware_state(state: &FirmwareState) -> String {
         FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
         FirmwareState::Free { label } => format!("BIOS libre installé ({label})"),
         FirmwareState::Unreadable(e) => format!("illisible : {e}"),
+        // TODO(U4): wording of the 3.0 states (only produced by `check_required`).
+        FirmwareState::CoreFallback { label } | FirmwareState::Builtin { label } => {
+            format!("intégré au core ({label})")
+        }
     }
 }
 
