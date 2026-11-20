@@ -18,7 +18,7 @@ gamepad = ["emu-ui/gamepad"]
 
 [dependencies]
 # SIGINT / SIGTERM / SIGHUP (and console events on Windows) end the game cleanly: saves written.
-ctrlc = { version = "3.4", features = ["termination"] }
+ctrlc = { version = "3.5", features = ["termination"] }
 directories = { workspace = true }
 emu-ui = { workspace = true }
 tracing = { workspace = true }

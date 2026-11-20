@@ -116,15 +116,14 @@ fn file_line_name(line: &str) -> Option<&str> {
     }
 }
 
-/// A plain file name of the cue's folder: no separator, no drive, not `.`/`..`, no control character.
+/// A plain file name of the cue's folder: no separator, no drive or NTFS stream (`:`), not `.`/`..`, no control
+/// character.
 fn is_plain_name(name: &str) -> bool {
-    let b = name.as_bytes();
     !name.is_empty()
         && name != "."
         && name != ".."
-        && !name.contains(['/', '\\'])
+        && !name.contains(['/', '\\', ':'])
         && !name.chars().any(char::is_control)
-        && !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
         && !Path::new(name).has_root()
         && !Path::new(name).is_absolute()
 }
@@ -338,7 +337,7 @@ mod tests {
     fn cue_unsafe_names_are_ignored() {
         let text = "FILE \"../up.bin\" BINARY\nFILE \"..\" BINARY\nFILE \"/etc/passwd\" BINARY\n\
                     FILE \"sub/a.bin\" BINARY\nFILE \"sub\\a.bin\" BINARY\nFILE \"C:a.bin\" BINARY\n\
-                    FILE \"C:\\a.bin\" BINARY\nFILE \"\" BINARY\nFILE \"a\x01.bin\" BINARY\nFILE \"ok..bin\" BINARY\n";
+                    FILE \"C:\\a.bin\" BINARY\nFILE \"\" BINARY\nFILE \"a\x01.bin\" BINARY\nFILE \"a.bin:flux\" BINARY\nFILE \"ok..bin\" BINARY\n";
         assert_eq!(parse_cue(text), ["ok..bin"]);
     }
 
