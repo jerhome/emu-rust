@@ -100,3 +100,14 @@ Les compteurs sont remis à zéro par `retro_init` (pas par `retro_reset`). Les 
 (variantes 16 bits : gris quantifié). Les variables sont lues dans l'environnement du processus : les tests qui les
 positionnent doivent le faire avant `Core::load` et ne pas tourner en parallèle d'autres tests du même binaire qui
 chargent le mock (`std::env::set_var` global ; sérialiser, ou un binaire de test dédié).
+
+## library/
+
+`library/library-2.0.sqlite` — a real `library.sqlite` (schema v3, `user_version = 3`) written by the **2.0.0-rc.2** code
+(tag `v2.0.0-rc.2`, crate `emu-library`), not by hand: `library/gen20.rs.txt` is the example that produced it (copy it as
+`crates/emu-library/examples/gen20.rs` in a checkout of the tag, run `cargo run -p emu-library --example gen20 -- <dir>`).
+Afterwards the absolute ROM paths were rewritten to `/r/…` (files do not exist) and the file converted to a single file
+(`journal_mode=delete`, `VACUUM`). Content: 7 games (ST: `Saga (Disk 1 of 2)` with 2 disks, `Solo (1990)(Pub)` identified;
+Mega Drive: `Delta`, `Gamma` identified, `Unlisted` unknown; SNES: `Alpha`, `Beta` identified), favorites on 1 and 4,
+history on 1 (2 plays) and 6, a cached cover (game 1) and a missing one (game 2), one DAT per system (`snes`, `megadrive`, `atarist`).
+Used by `crates/emu-library/tests/migration_v4.rs`.

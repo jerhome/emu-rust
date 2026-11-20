@@ -1,0 +1,5 @@
+# puae with an empty system directory (built-in AROS), generated or free disks, no input; core sha256 b2df568c5e0125740680a1fe0a1752659bd400a0d37837908bcd1ab64e44a1a7
+amiga-test-kit frame=900 fingerprint=564303d9bdf30c87
+aros-no-game frame=1000 fingerprint=bfd6b11c3c38e373
+boot-adf frame=900 fingerprint=0b3796f05d1fd757
+two-disks-df0-first frame=900 fingerprint=05422050dc48808f

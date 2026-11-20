@@ -1,0 +1,57 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+
+use emu_library::*;
+
+fn rom(dir: &Path, name: &str, data: &[u8]) -> (PathBuf, u32) {
+    fs::create_dir_all(dir).unwrap();
+    let p = dir.join(name);
+    fs::write(&p, data).unwrap();
+    (p, crc32fast::hash(data))
+}
+
+fn main() {
+    let out = PathBuf::from(std::env::args().nth(1).unwrap());
+    let roms = out.join("roms");
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(&out).unwrap();
+    let mut snes_dat = Vec::new();
+    let mut st_dat = Vec::new();
+    let mut md_dat = Vec::new();
+    for (i, n) in ["Alpha (USA).sfc", "Beta (Europe).sfc"].iter().enumerate() {
+        let data = vec![0x10 + i as u8; 1024 + i];
+        let (_, crc) = rom(&roms.join("snes"), n, &data);
+        snes_dat.push(DatEntry { game: n.trim_end_matches(".sfc").into(), rom_name: (*n).into(), size: data.len() as u64, crc32: crc, sha1: None });
+    }
+    for (i, n) in ["Gamma (World).md", "Delta (World).md", "Unlisted.md"].iter().enumerate() {
+        let data = vec![0x20 + i as u8; 2048 + i];
+        let (_, crc) = rom(&roms.join("megadrive"), n, &data);
+        if i < 2 {
+            md_dat.push(DatEntry { game: n.trim_end_matches(".md").into(), rom_name: (*n).into(), size: data.len() as u64, crc32: crc, sha1: None });
+        }
+    }
+    for (i, n) in ["Saga (Disk 1 of 2).st", "Saga (Disk 2 of 2).st", "Solo (1990)(Pub).st"].iter().enumerate() {
+        let data = vec![0x30 + i as u8; 4096 + i];
+        let (_, crc) = rom(&roms.join("atarist"), n, &data);
+        if i == 2 {
+            st_dat.push(DatEntry { game: "Solo (1990)(Pub)".into(), rom_name: (*n).into(), size: data.len() as u64, crc32: crc, sha1: None });
+        }
+    }
+    let (mut lib, _) = Library::open(&out.join("library.sqlite")).unwrap();
+    lib.scan(&ScanOptions { roots: vec![roms.clone()], ..Default::default() }, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    lib.import_dat("snes", &Dat { name: "Nintendo - Super Nintendo Entertainment System".into(), version: Some("20251101".into()), entries: snes_dat }, Some("\"snes-etag\"")).unwrap();
+    lib.import_dat("megadrive", &Dat { name: "Sega - Mega Drive - Genesis".into(), version: Some("20251102".into()), entries: md_dat }, None).unwrap();
+    lib.import_dat("atarist", &Dat { name: "Atari ST - Games - [ST]".into(), version: Some("2025-10-01".into()), entries: st_dat }, Some("\"tosec-st\"")).unwrap();
+    let games = lib.games().unwrap();
+    for g in &games { println!("{} {} {} {:?} fav={} played={:?}x{} media={}", g.id.0, g.system, g.path.display(), g.identification, g.favorite, g.last_played_unix, g.play_count, g.media.len()); }
+    lib.set_favorite(games[0].id, true).unwrap();
+    lib.set_favorite(games[3].id, true).unwrap();
+    lib.record_played(games[0].id, 1_700_000_000).unwrap();
+    lib.record_played(games[0].id, 1_700_000_100).unwrap();
+    lib.record_played(games[5].id, 1_700_000_500).unwrap();
+    lib.set_cover(games[0].id, CoverKind::Boxart, &CoverState::Cached { path: "snes/boxart/Alpha (USA).png".into(), source: "libretro".into() }).unwrap();
+    lib.set_cover(games[1].id, CoverKind::Boxart, &CoverState::Missing { checked_unix: 1_700_000_900 }).unwrap();
+    println!("---");
+    for g in lib.games().unwrap() { println!("{} {} {} {:?} fav={} played={:?}x{} media={}", g.id.0, g.system, g.path.display(), g.identification, g.favorite, g.last_played_unix, g.play_count, g.media.len()); }
+}
