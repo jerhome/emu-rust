@@ -73,6 +73,7 @@ fn emulator() -> Emulator {
         state_dir: data.join("states"),
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
+        restore_added_disks: false,
     };
     fs::create_dir_all(&options.system_dir).unwrap();
     fs::create_dir_all(&options.save_dir).unwrap();
@@ -320,6 +321,7 @@ fn load_in(data: &Path, rom: &Path) -> Emulator {
         state_dir: data.join("states"),
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
+        restore_added_disks: false,
     };
     Emulator::load(&core_path(), rom, options).expect("load core and content")
 }

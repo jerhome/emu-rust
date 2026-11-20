@@ -383,6 +383,7 @@ impl App {
                 state_dir: options.dirs.states.clone(),
                 assets_dir: options.dirs.assets.clone(),
                 core_variables,
+                restore_added_disks: true,
             },
         )?;
         let audio = if options.audio && options.config.audio.enabled {

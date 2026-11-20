@@ -116,6 +116,7 @@ fn emu_options(data: &Path, variables: Vec<(String, String)>) -> EmulatorOptions
         state_dir: data.join("states"),
         assets_dir: data.join("assets"),
         core_variables: variables,
+        restore_added_disks: false,
     }
 }
 

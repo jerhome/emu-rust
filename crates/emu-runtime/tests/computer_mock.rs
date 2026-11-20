@@ -60,6 +60,7 @@ impl Env {
             state_dir: data.join("states"),
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
+            restore_added_disks: false,
         }
     }
 

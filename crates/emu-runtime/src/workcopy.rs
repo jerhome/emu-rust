@@ -25,8 +25,9 @@ use crate::saves::{FileMode, read_bounded, write_atomic_with};
 pub(crate) const MANIFEST_NAME: &str = ".emu-rust-disks";
 const HEADER: &[u8] = b"emu-rust working copies 1";
 const MAX_MANIFEST_BYTES: usize = 256 * 1024;
-/// Set entries (≤ 32) + disks added from the menu (trimmed to 32); anything longer was not written by us.
-const MAX_MANIFEST_ENTRIES: usize = 4 * MAX_MEDIA_IMAGES;
+/// Set entries (≤ 32) + disks added from the menu (the core's list holds at most 32 images, so this bound is never
+/// reached in practice); anything longer was not written by us.
+pub(crate) const MAX_MANIFEST_ENTRIES: usize = 4 * MAX_MEDIA_IMAGES;
 
 /// Why a copy is in the folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,35 @@ impl ManifestEntry {
             mtime: source.mtime,
             crc,
         })
+    }
+
+    /// « Reprendre » (2.1): an orphan copy becomes an added disk without a recorded source. Such an entry never
+    /// matches a source (`Source::matches`), so it is only reached through the disk menu.
+    pub fn adopted(copy: String, size: u64) -> Self {
+        Self {
+            origin: Origin::Added,
+            copy,
+            entry: None,
+            path: Vec::new(),
+            size,
+            mtime: None,
+            crc: 0,
+        }
+    }
+
+    /// Recorded source path; `None` for an adopted orphan.
+    pub fn source_path(&self) -> Option<PathBuf> {
+        (!self.path.is_empty()).then(|| path_from_key(&self.path))
+    }
+
+    /// Size and CRC32 of the recorded source (rule 3 of the game identity, `identity.rs`).
+    pub fn source_size_crc(&self) -> (u64, u32) {
+        (self.size, self.crc)
+    }
+
+    /// Raw path key of the recorded source (empty for an adopted orphan).
+    pub fn source_key(&self) -> &[u8] {
+        &self.path
     }
 
     /// Records the current path / mtime of a source found identical, so the next launch takes the fast path.
@@ -141,7 +171,8 @@ impl Source {
 
     /// Same content as the source recorded in `entry` (see the module docs for when the file is read).
     fn matches(&mut self, entry: &ManifestEntry) -> Result<bool, RuntimeError> {
-        if entry.size != self.size {
+        // An adopted orphan has no source: never reused for one, whatever its CRC field says.
+        if entry.size != self.size || entry.path.is_empty() {
             return Ok(false);
         }
         if entry.path == self.key && entry.mtime.is_some() && entry.mtime == self.mtime {
@@ -151,15 +182,28 @@ impl Source {
     }
 }
 
+/// Bytes of a (canonical) path as recorded in manifests: exact on Unix, UTF-8 (lossy) elsewhere.
 #[cfg(unix)]
-fn path_key(path: &Path) -> Vec<u8> {
+pub(crate) fn path_key(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes().to_vec()
 }
 
 #[cfg(not(unix))]
-fn path_key(path: &Path) -> Vec<u8> {
+pub(crate) fn path_key(path: &Path) -> Vec<u8> {
     path.to_string_lossy().as_bytes().to_vec()
+}
+
+/// Inverse of [`path_key`].
+#[cfg(unix)]
+pub(crate) fn path_from_key(key: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(key))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn path_from_key(key: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(key).into_owned())
 }
 
 /// One image to stage: a whole source file, or one entry of a zip source.
@@ -437,7 +481,7 @@ pub(crate) fn encode(entries: &[ManifestEntry]) -> Vec<u8> {
     out
 }
 
-fn escape(bytes: &[u8], out: &mut Vec<u8>) {
+pub(crate) fn escape(bytes: &[u8], out: &mut Vec<u8>) {
     for &b in bytes {
         if b < 0x20 || b == 0x7f || b == b'%' {
             out.extend_from_slice(format!("%{b:02X}").as_bytes());
@@ -447,7 +491,7 @@ fn escape(bytes: &[u8], out: &mut Vec<u8>) {
     }
 }
 
-fn unescape(field: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn unescape(field: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(field.len());
     let mut i = 0;
     while i < field.len() {
@@ -572,5 +616,21 @@ mod tests {
         ] {
             assert_eq!(decode(bad.as_bytes(), any_name), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn adopted_entries_have_no_source_and_never_match_one() {
+        let adopted = ManifestEntry::adopted("02 X.st".into(), 4);
+        assert_eq!(adopted.source_path(), None);
+        let bytes = encode(std::slice::from_ref(&adopted));
+        assert_eq!(decode(&bytes, any_name), Some(vec![adopted.clone()]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("x.st");
+        fs::write(&path, b"abcd").unwrap();
+        let mut source = Source::open(&path, 1024).unwrap();
+        // Same size, and a CRC field that happens to match: still not this source's copy.
+        let mut forged = adopted;
+        forged.crc = source.crc().unwrap();
+        assert!(!source.matches(&forged).unwrap());
     }
 }

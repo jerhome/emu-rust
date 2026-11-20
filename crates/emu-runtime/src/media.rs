@@ -407,8 +407,8 @@ fn prepare_working_copies(
             }
         }
     }
-    // Disks added from the menu stay available to later sessions.
-    // Only the newest ones: the manifest reader refuses more than it expects.
+    // Disks added from the menu stay available to later sessions (the newest within the manifest's bound, which
+    // the core's 32-image list keeps out of reach).
     let kept: Vec<&ManifestEntry> = chosen
         .entries
         .iter()
@@ -416,7 +416,8 @@ fn prepare_working_copies(
         .filter(|&(j, e)| !consumed[j] && chosen.present[j] && e.origin == Origin::Added)
         .map(|(_, e)| e)
         .collect();
-    let skip = kept.len().saturating_sub(MAX_ADDED_REMEMBERED);
+    let room = workcopy::MAX_MANIFEST_ENTRIES.saturating_sub(recorded.len());
+    let skip = kept.len().saturating_sub(room);
     recorded.extend(kept.into_iter().skip(skip).cloned());
     let content = match stage.images.as_slice() {
         [only] => only.clone(),
@@ -440,7 +441,7 @@ fn copy_name(copy: &Path) -> String {
 }
 
 /// A name `disk_file_name` could have produced (manifests are read back from disk).
-fn is_disk_file_name(name: &str) -> bool {
+pub(crate) fn is_disk_file_name(name: &str) -> bool {
     disk_file_name(name) == name
 }
 
@@ -1004,14 +1005,26 @@ impl Disks<'_> {
     /// the game's working-copy folder ([`PreparedMedia::work_dir`], else `<saves>/<core_id>/<game>.disks/`): the
     /// copy made the last time the same source was added is reused (with its progress), otherwise a new copy is
     /// made under a free name (never merged with a file of another source); a zip the core cannot read
-    /// gives its first accepted entry. The addition lasts for the session (the generated playlist is unchanged).
+    /// gives its first accepted entry. The generated playlist is unchanged; a working copy is recorded in the
+    /// folder's manifest and re-added at the next sessions (`EmulatorOptions::restore_added_disks`). At most
+    /// [`MAX_MEDIA_IMAGES`] images: beyond, the addition is refused (nothing is forgotten to make room).
     pub fn add(&mut self, image: &Path) -> Result<u32, RuntimeError> {
         let num = self.control()?.num_images();
         if num as usize >= MAX_MEDIA_IMAGES {
-            return Err(too_many());
+            return Err(list_full());
         }
         let path = self.emulator.stage_added_image(image)?;
+        self.append(&path)
+    }
+
+    /// Appends `path` to the core's list (`add_image` + `replace_image`, tray state kept, not inserted) and to the
+    /// prepared list; returns its index. Shared by [`Self::add`] and the restoration of added disks.
+    pub(crate) fn append(&mut self, path: &Path) -> Result<u32, RuntimeError> {
         let mut control = self.control()?;
+        let num = control.num_images();
+        if num as usize >= MAX_MEDIA_IMAGES {
+            return Err(list_full());
+        }
         let was_ejected = control.is_ejected();
         if !was_ejected {
             control.set_ejected(true)?;
@@ -1020,7 +1033,7 @@ impl Disks<'_> {
             .add_image()
             .map_err(RuntimeError::from)
             .and_then(|()| {
-                control.replace_image(num, Some(&path)).map_err(|e| {
+                control.replace_image(num, Some(path)).map_err(|e| {
                     // Drop the empty slot left by `add_image`.
                     let _ = control.replace_image(num, None);
                     RuntimeError::from(e)
@@ -1034,11 +1047,19 @@ impl Disks<'_> {
         added?;
         reinserted?;
         if let Some(prepared) = self.emulator.prepared.as_mut() {
-            prepared.images.push(path.clone());
+            prepared.images.push(path.to_path_buf());
         }
         tracing::info!(index = num, "disk {} added", path.display());
         Ok(num)
     }
+}
+
+/// The core's list is full: the player must remove an added disk first (the UI says « retirez une disquette
+/// ajoutée »).
+pub(crate) fn list_full() -> RuntimeError {
+    RuntimeError::InvalidMediaSet(format!(
+        "at most {MAX_MEDIA_IMAGES} disk images: remove an added disk first"
+    ))
 }
 
 impl Emulator {
@@ -1084,9 +1105,6 @@ impl Emulator {
     }
 }
 
-/// Most disks added from the menu remembered per folder (the oldest are forgotten; their copies stay on disk).
-const MAX_ADDED_REMEMBERED: usize = MAX_MEDIA_IMAGES;
-
 /// Working copy of a disk added from the menu, in `work_dir`. The folder's manifest remembers which source each
 /// added copy comes from, so adding the same source again (in a later session) gives back the same copy and its
 /// progress; a copy already handed to the core this session (`known`) is never given twice. Anything else gets
@@ -1110,6 +1128,12 @@ fn stage_added_copy(
             )));
         }
     };
+    if manifest
+        .as_ref()
+        .is_some_and(|m| m.len() >= workcopy::MAX_MANIFEST_ENTRIES)
+    {
+        return Err(list_full());
+    }
     let mut plan = Plan::new(&[image.to_path_buf()], exts, limits, 1)?;
     if let Some(entries) = manifest.as_mut() {
         let present = workcopy::present(work_dir, entries)?;
@@ -1142,13 +1166,6 @@ fn stage_added_copy(
             name,
             &mut plan.sources[0],
         )?);
-        let added = entries.iter().filter(|e| e.origin == Origin::Added).count();
-        let mut forget = added.saturating_sub(MAX_ADDED_REMEMBERED);
-        entries.retain(|e| {
-            let drop = forget > 0 && e.origin == Origin::Added;
-            forget -= usize::from(drop);
-            !drop
-        });
         workcopy::write(work_dir, &entries)?;
     }
     Ok(path)
@@ -1665,7 +1682,7 @@ mod tests {
     }
 
     #[test]
-    fn remembered_added_disks_are_trimmed_so_the_manifest_stays_readable() {
+    fn remembered_added_disks_are_never_forgotten() {
         let f = Fixture::new();
         let src = f.file("G/Disk 1.st", b"mine");
         let p = f
@@ -1691,8 +1708,28 @@ mod tests {
             .iter()
             .filter(|e| e.origin == Origin::Added)
             .collect();
-        assert_eq!(added.len(), MAX_ADDED_REMEMBERED);
+        assert_eq!(
+            added.len(),
+            100,
+            "nothing forgotten within the manifest's bound"
+        );
+        assert_eq!(added.first().unwrap().copy, "add000.st");
         assert_eq!(added.last().unwrap().copy, "add099.st");
+        // A manifest at its bound refuses one more added disk rather than dropping one.
+        let extra = f.file("More/Extra.st", b"more");
+        let mut text = fs::read_to_string(&manifest).unwrap();
+        for i in 100..workcopy::MAX_MANIFEST_ENTRIES - 1 {
+            fs::write(dir.join(format!("add{i:03}.st")), b"x").unwrap();
+            text.push_str(&format!(
+                "added\tadd{i:03}.st\t\t1\t-\t00000001\t/nowhere{i}\n"
+            ));
+        }
+        fs::write(&manifest, &text).unwrap();
+        assert!(matches!(
+            stage_added_copy(&dir, &extra, &exts(), Limits::DEFAULT, &[]),
+            Err(RuntimeError::InvalidMediaSet(_))
+        ));
+        assert_eq!(fs::read_to_string(&manifest).unwrap(), text);
     }
 
     #[test]

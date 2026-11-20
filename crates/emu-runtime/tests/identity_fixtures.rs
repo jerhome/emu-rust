@@ -4,7 +4,7 @@
 #![allow(unsafe_code)]
 //! 2.1 « no loss » fixtures (`docs/design/v2.1-identite-disques.md` §2.2, §5): realistic 1.0 / 2.0 / rc.1 save
 //! trees from `tests/tools/mksaves.py` replayed through `resolve_game_identity` + `load_content_as` on the mock
-//! core. Ignored until I1 / I2 replace the `todo!()` of the contract.
+//! core.
 //!
 //! One `Emulator` per process at a time and the `MOCK_*` variables are process-global: tests take `SERIAL`.
 
@@ -75,6 +75,7 @@ impl Fixture {
             state_dir: data.join("states"),
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
+            restore_added_disks: true,
         }
     }
 
@@ -166,7 +167,6 @@ fn data_only(snap: BTreeMap<PathBuf, (usize, u32)>) -> BTreeMap<PathBuf, (usize,
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs I1/I2"]
 fn no_existing_file_is_renamed_moved_or_deleted() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     for profile in ["1.0", "2.0", "rc1"] {
@@ -190,7 +190,6 @@ fn no_existing_file_is_renamed_moved_or_deleted() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs I1/I2"]
 fn non_homonym_adopts_its_files_as_they_are() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fx = Fixture::new("adopt", "1.0");
@@ -231,7 +230,6 @@ fn non_homonym_adopts_its_files_as_they_are() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs I1/I2"]
 fn homonyms_are_separated_and_the_second_inherits_the_sram() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fx = Fixture::new("homonyms", "1.0");
@@ -247,7 +245,8 @@ fn homonyms_are_separated_and_the_second_inherits_the_sram() {
     assert_eq!(
         second.notice,
         Some(IdentityNotice::Homonym {
-            first: fx.rom("a/Twin.bin"),
+            // Recorded canonical, like the manifest's sources (`output_dir` contains `..`).
+            first: fs::canonicalize(fx.rom("a/Twin.bin")).unwrap(),
             sram_copied: true,
             legacy_states: true,
         })
@@ -284,7 +283,6 @@ fn homonyms_are_separated_and_the_second_inherits_the_sram() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs I1/I2"]
 fn a_state_of_another_content_is_flagged() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fx = Fixture::new("other-content", "1.0");
@@ -330,7 +328,6 @@ fn a_state_of_another_content_is_flagged() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs I1/I2"]
 fn orphans_are_listed_and_only_removed_on_request() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fx = Fixture::new("orphans", "rc1");
@@ -342,7 +339,10 @@ fn orphans_are_listed_and_only_removed_on_request() {
     let added = emu.disks().expect("disk control").added();
     assert_eq!(added.len(), 1, "{added:?}");
     assert_eq!(added[0].copy, work.join("Extra.st"));
-    assert_eq!(added[0].source, Some(fx.rom("extra/Extra.st")));
+    assert_eq!(
+        added[0].source,
+        Some(fs::canonicalize(fx.rom("extra/Extra.st")).unwrap())
+    );
     drop(emu);
 
     let orphans = orphan_copies(&fx.saves(), &work).unwrap();
