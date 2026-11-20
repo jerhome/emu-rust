@@ -135,12 +135,16 @@ impl LibraryUi {
             if !self.has_dat && !self.games.is_empty() {
                 super::weak(ui, text::NO_DAT);
             }
-            super::weak(
-                ui,
-                self.covers
-                    .status()
-                    .unwrap_or_else(|| text::COVERS_PENDING.to_owned()),
-            );
+            if !self.config.covers.download && !self.capture {
+                ui.horizontal(|ui| {
+                    super::weak(ui, text::COVERS_DISABLED);
+                    if ui.small_button(text::COVERS_ENABLE).clicked() {
+                        self.enable_cover_downloads();
+                    }
+                });
+            } else if let Some(status) = self.covers.status() {
+                super::weak(ui, status);
+            }
             super::weak(ui, text::HOME_HINT);
         });
 
@@ -336,9 +340,10 @@ fn paint_card(
     let radius = CornerRadius::same(6);
     match texture {
         Some(t) => {
+            painter.rect_filled(cover, radius, Color32::from_gray(24));
             painter.image(
                 t.id(),
-                cover,
+                fit_rect(cover, t.size_vec2()),
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -367,7 +372,7 @@ fn paint_card(
         );
     }
     let mut job = egui::text::LayoutJob::simple(
-        game.title.clone(),
+        text::game_title(&game.title),
         FontId::proportional(13.0),
         ui.visuals().text_color(),
         rect.width(),
@@ -388,4 +393,13 @@ fn paint_card(
         };
         painter.rect_stroke(rect.expand(2.0), radius, stroke, StrokeKind::Outside);
     }
+}
+
+/// Largest rectangle of `size`'s aspect ratio centred in `frame`.
+pub(super) fn fit_rect(frame: Rect, size: Vec2) -> Rect {
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return frame;
+    }
+    let scale = (frame.width() / size.x).min(frame.height() / size.y);
+    Rect::from_center_size(frame.center(), size * scale)
 }

@@ -13,7 +13,7 @@ use crate::config_library::{IgdbConfig, ScreenScraperConfig};
 
 const KNOWN_SOURCES: [&str; 3] = ["libretro", "screenscraper", "igdb"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum SecretField {
     SsDevPassword,
     SsPassword,
@@ -32,6 +32,32 @@ pub(super) struct State {
     pub(super) secret_buf: String,
     focus_secret: bool,
     dirty: bool,
+    /// File system and database reads, refreshed when the page opens and after each action (not per frame).
+    root_exists: Vec<bool>,
+    /// `(system name, « n entrées, importé le … »)`, `None` = no DAT.
+    dat_rows: Vec<(String, Option<String>)>,
+    /// Last context the page was drawn with: lets `leave_settings` wipe the secret field's egui state.
+    ctx: Option<egui::Context>,
+}
+
+const SECRET_FIELDS: [SecretField; 3] = [
+    SecretField::SsDevPassword,
+    SecretField::SsPassword,
+    SecretField::IgdbSecret,
+];
+
+pub(super) fn secret_edit_id(field: SecretField) -> egui::Id {
+    egui::Id::unique(("library-secret-edit", field))
+}
+
+/// egui keeps a `TextEditState` per field (cursor and undo history, i.e. copies of the typed text): dropped as
+/// soon as the input is validated or cancelled.
+pub(super) fn forget_secret_edits(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        for field in SECRET_FIELDS {
+            d.remove::<egui::text_edit::TextEditState>(secret_edit_id(field));
+        }
+    });
 }
 
 /// Every known source, in configured order, with its enabled flag (unknown names dropped).
@@ -90,16 +116,51 @@ impl LibraryUi {
         }
     }
 
-    fn leave_settings(&mut self) {
+    fn end_secret_edit(&mut self) {
         self.settings.secret_buf.clear();
         self.settings.editing = None;
+        if let Some(ctx) = &self.settings.ctx {
+            forget_secret_edits(ctx);
+        }
+    }
+
+    pub(super) fn leave_settings(&mut self) {
+        self.end_secret_edit();
         if std::mem::take(&mut self.settings.dirty) {
             self.save_config();
         }
+        self.covers.configure(&self.config);
+    }
+
+    /// Re-reads what the page shows from disk and the database.
+    pub(super) fn refresh_settings_cache(&mut self) {
+        self.settings.root_exists = self
+            .config
+            .library
+            .roots
+            .iter()
+            .map(|r| r.is_dir())
+            .collect();
+        self.settings.dat_rows = match &self.db {
+            Some(db) => systems()
+                .iter()
+                .map(|s| {
+                    let info = db.dat_info(&s.id).ok().flatten().map(|info| {
+                        let date = crate::ui::text::format_unix_utc(
+                            u64::try_from(info.imported_unix).unwrap_or(0),
+                        );
+                        text::dat_info(info.entries, &date)
+                    });
+                    (s.name.clone(), info)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
     }
 
     pub(super) fn settings_page(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.settings.ctx = Some(ctx.clone());
         let escape = self.dialog.is_none() && ui.input(|i| i.key_pressed(Key::Escape));
         egui::Panel::bottom("settings-status").show(ui, |ui| {
             self.status_line(ui);
@@ -146,8 +207,7 @@ impl LibraryUi {
         });
         if escape {
             if self.settings.editing.is_some() {
-                self.settings.editing = None;
-                self.settings.secret_buf.clear();
+                self.end_secret_edit();
             } else {
                 self.leave_settings();
                 self.set_page(Page::Home);
@@ -166,7 +226,7 @@ impl LibraryUi {
         for (i, root) in self.config.library.roots.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(root.display().to_string()).monospace());
-                if !root.is_dir() {
+                if !self.settings.root_exists.get(i).copied().unwrap_or(true) {
                     ui.colored_label(super::WARNING, text::ROOT_MISSING);
                 }
                 if ui.button(text::ROOT_REMOVE).clicked() {
@@ -177,6 +237,7 @@ impl LibraryUi {
         if let Some(i) = remove {
             self.config.library.roots.remove(i);
             self.settings.dirty = true;
+            self.refresh_settings_cache();
         }
         ui.horizontal(|ui| {
             let edit = ui.add(
@@ -200,6 +261,7 @@ impl LibraryUi {
                 } else {
                     self.config.library.roots.push(path);
                     self.settings.dirty = true;
+                    self.refresh_settings_cache();
                 }
                 self.settings.new_root.clear();
             }
@@ -226,16 +288,13 @@ impl LibraryUi {
 
     fn dat_section(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         ui.label(RichText::new(text::DAT_TITLE).strong());
-        if let Some(db) = &self.db {
+        if !self.settings.dat_rows.is_empty() {
             egui::Grid::new("dat-info").num_columns(2).show(ui, |ui| {
-                for s in systems() {
-                    ui.label(&s.name);
-                    match db.dat_info(&s.id).ok().flatten() {
+                for (name, info) in &self.settings.dat_rows {
+                    ui.label(name);
+                    match info {
                         Some(info) => {
-                            let date = crate::ui::text::format_unix_utc(
-                                u64::try_from(info.imported_unix).unwrap_or(0),
-                            );
-                            ui.label(text::dat_info(info.entries, &date));
+                            ui.label(info);
                         }
                         None => weak(ui, text::DAT_NONE),
                     }
@@ -284,9 +343,20 @@ impl LibraryUi {
             if self.dat.is_some() {
                 ui.spinner();
             }
-            // Download needs `emu_assets::download_dat` (task L2).
-            ui.add_enabled(false, Button::new(text::DAT_DOWNLOAD));
+            if ui
+                .add_enabled(
+                    self.dat_download.is_none() && self.db.is_some() && !self.capture,
+                    Button::new(text::DAT_DOWNLOAD),
+                )
+                .clicked()
+            {
+                self.start_dat_download(ctx);
+            }
+            if self.dat_download.is_some() {
+                ui.spinner();
+            }
         });
+        weak(ui, text::DAT_DOWNLOAD_NOTE);
     }
 
     fn covers_section(&mut self, ui: &mut Ui) {
@@ -328,6 +398,13 @@ impl LibraryUi {
         if changed {
             self.config.covers.sources = sources_from_rows(&rows);
             self.settings.dirty = true;
+        }
+        if ui
+            .add_enabled(!self.capture, Button::new(text::COVERS_RETRY))
+            .clicked()
+        {
+            self.covers.retry_missing();
+            self.set_status(text::COVERS_RETRY_DONE.to_owned(), Level::Info);
         }
     }
 
@@ -392,6 +469,7 @@ impl LibraryUi {
             if editing {
                 let edit = ui.add(
                     TextEdit::singleline(&mut self.settings.secret_buf)
+                        .id(secret_edit_id(field))
                         .password(true)
                         .desired_width(220.0),
                 );
@@ -425,13 +503,10 @@ impl LibraryUi {
             Some(true) => {
                 let value = std::mem::take(&mut self.settings.secret_buf);
                 *self.secret_mut(field) = Secret::new(value);
-                self.settings.editing = None;
+                self.end_secret_edit();
                 self.settings.dirty = true;
             }
-            Some(false) => {
-                self.settings.secret_buf.clear();
-                self.settings.editing = None;
-            }
+            Some(false) => self.end_secret_edit(),
             None => {}
         }
     }

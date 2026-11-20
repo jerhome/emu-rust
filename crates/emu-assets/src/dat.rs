@@ -41,12 +41,16 @@ pub enum DatDownload {
 
 /// Conditional GET (`If-None-Match`), atomic write of `dest` (parent created), bounded by [`MAX_DAT_BYTES`].
 /// The body is held in memory (≤ 64 MiB, a few MiB in practice) before the write. Blocking: worker thread only.
+///
+/// `etag` must be the one returned when `dest` was written: callers pass it only if `dest` still exists. As a
+/// safeguard it is ignored when `dest` is missing (a 304 would otherwise leave the caller without a file).
 pub fn download_dat(
     client: &HttpClient,
     url: &str,
     dest: &Path,
     etag: Option<&str>,
 ) -> Result<DatDownload, AssetError> {
+    let etag = etag.filter(|_| dest.is_file());
     let mut headers = Vec::new();
     if let Some(etag) = etag.filter(|e| !e.is_empty()) {
         headers.push(("If-None-Match", etag.to_owned()));

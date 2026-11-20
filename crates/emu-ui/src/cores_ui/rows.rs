@@ -119,7 +119,10 @@ pub(crate) fn rows(
         .into_iter()
         .filter_map(|id| {
             let info = infos.get(id);
-            let name = info.map_or_else(|| id.as_str().to_owned(), |i| i.display_name.clone());
+            let name = info.map_or_else(
+                || id.as_str().to_owned(),
+                |i| crate::ui::text::sanitize_core_text(&i.display_name),
+            );
             if !needle.is_empty()
                 && !name.to_lowercase().contains(&needle)
                 && !id.as_str().to_lowercase().contains(&needle)

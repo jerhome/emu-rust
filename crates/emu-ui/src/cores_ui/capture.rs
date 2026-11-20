@@ -1,6 +1,6 @@
 //! Stand-alone window for the cores screen (`--screen cores`): no emulator, no network unless the user clicks.
 //! With `dump_window` it renders a few passes, writes the PNG and quits (Xvfb captures); without, it is an
-//! interactive window closed by « Retour » or the window button. The full library window is task U4.
+//! interactive window closed by « Retour » or the window button.
 
 use std::time::{Duration, Instant};
 

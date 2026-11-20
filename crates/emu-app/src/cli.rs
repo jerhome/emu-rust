@@ -88,6 +88,8 @@ pub enum CoresAction {
 #[derive(Debug, PartialEq, Eq)]
 pub struct CoresCli {
     pub data_dir: Option<PathBuf>,
+    /// Used by `--check-bios` (and by the manager for BIOS paths).
+    pub system_dir: Option<PathBuf>,
     pub action: CoresAction,
 }
 
@@ -220,8 +222,26 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     .into(),
             );
         }
+        let ignored: Vec<&str> = [
+            (save_dir.is_some(), "--save-dir"),
+            (!audio, "--no-audio"),
+            (scale.is_some(), "--scale"),
+            (frames.is_some(), "--frames"),
+            (dump_frame.is_some(), "--dump-frame"),
+            (dump_window.is_some(), "--dump-window"),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect();
+        if !ignored.is_empty() {
+            return Err(format!(
+                "sans effet avec une commande de gestion des cores : {}",
+                ignored.join(", ")
+            ));
+        }
         return Ok(Command::Cores(Box::new(CoresCli {
             data_dir,
+            system_dir,
             action: first.clone(),
         })));
     }
@@ -483,5 +503,27 @@ mod tests {
         assert!(p(&["--list-cores", "--update-cores"]).is_err());
         assert!(p(&["--list-cores", "--core", "c", "--rom", "r"]).is_err());
         assert!(p(&["--list-cores", "--screen", "cores"]).is_err());
+        for extra in [
+            &["--save-dir", "s"][..],
+            &["--no-audio"],
+            &["--scale", "2"],
+            &["--dump-window", "w.png"],
+            &["--frames", "3"],
+            &["--dump-frame", "f.png"],
+        ] {
+            let mut args = vec!["--check-bios"];
+            args.extend_from_slice(extra);
+            let e = p(&args).unwrap_err();
+            assert!(e.contains(extra[0]), "{e}");
+        }
+    }
+
+    #[test]
+    fn cores_command_keeps_system_dir() {
+        let Command::Cores(c) = p(&["--system-dir", "bios", "--check-bios"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(c.system_dir, Some(PathBuf::from("bios")));
+        assert_eq!(c.action, CoresAction::CheckBios(None));
     }
 }

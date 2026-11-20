@@ -324,6 +324,45 @@ fn screenscraper_errors_without_secrets() {
 }
 
 #[test]
+fn screenscraper_media_errors_do_not_disable_the_source() {
+    let s = Server::start();
+    s.mount(Mock::given(path("/api2/jeuInfos.php")).respond_with(
+        ResponseTemplate::new(200).set_body_string(s.json("screenscraper/jeuInfos.json")),
+    ));
+    s.mount(
+        Mock::given(path("/ss/media/box-2D-wor.png")).respond_with(
+            ResponseTemplate::new(403).set_body_string(format!("echo {DEV_PASSWORD}")),
+        ),
+    );
+    let mut chain = CoverChain::new(vec![Box::new(ss(&s))]);
+    // Absent (conclusive), and the source stays active for the next game.
+    assert_eq!(chain.fetch(&query("a")).unwrap(), None);
+    assert_eq!(chain.fetch(&query("b")).unwrap(), None);
+    assert_eq!(s.hits("/api2/jeuInfos.php"), 2);
+    assert_eq!(s.hits("/ss/media/box-2D-wor.png"), 2);
+    assert_no_secret("");
+}
+
+#[test]
+fn screenscraper_429_is_a_short_pause() {
+    let s = Server::start();
+    s.mount(Mock::given(path("/api2/jeuInfos.php")).respond_with(ResponseTemplate::new(429)));
+    match ss(&s).fetch(&query("x")) {
+        Err(AssetError::Quota {
+            retry_after: Some(delay),
+        }) => assert!(delay <= Duration::from_secs(60), "{delay:?}"),
+        other => panic!("{other:?}"),
+    }
+    // 430 (daily quota) still cuts the source for the session.
+    let s = Server::start();
+    s.mount(Mock::given(path("/api2/jeuInfos.php")).respond_with(ResponseTemplate::new(430)));
+    assert!(matches!(
+        ss(&s).fetch(&query("x")),
+        Err(AssetError::Quota { retry_after: None })
+    ));
+}
+
+#[test]
 fn screenscraper_incomplete_credentials_are_refused_locally() {
     let s = Server::start();
     let mut creds = ss_credentials();
@@ -522,6 +561,14 @@ fn dat_download_etag_and_not_modified() {
     );
     assert_eq!(std::fs::read(&dest).unwrap(), b"local");
     assert_no_temp(dest.parent().unwrap());
+
+    // ETag of a file that no longer exists: ignored, the DAT is downloaded again.
+    std::fs::remove_file(&dest).unwrap();
+    assert!(matches!(
+        download_dat(&client(), &url, &dest, Some("\"v1\"")).unwrap(),
+        DatDownload::Updated { .. }
+    ));
+    assert_eq!(std::fs::read(&dest).unwrap(), sample);
 }
 
 #[test]

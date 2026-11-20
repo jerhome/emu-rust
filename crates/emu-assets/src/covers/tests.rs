@@ -258,3 +258,121 @@ fn chain_edge_cases() {
         Err(AssetError::Cancelled)
     ));
 }
+
+#[test]
+fn cache_counts_rewrites_once_and_skips_temporaries_and_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CoverCache::with_limit(dir.path(), PNG.len() as u64 * 3);
+    for _ in 0..10 {
+        cache.store("gb", "same", &found(PNG)).unwrap();
+    }
+    assert_eq!(*cache.used.lock().unwrap(), Some(PNG.len() as u64));
+    let boxart = dir.path().join("gb").join(BOXART);
+    std::fs::write(boxart.join(".same.png.tmp-abc"), vec![0; 1000]).unwrap();
+    assert_eq!(cache.files().len(), 1);
+    #[cfg(unix)]
+    {
+        // A link to a file or a directory outside the cache is neither counted nor pruned.
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.png");
+        std::fs::write(&victim, vec![0; 10_000]).unwrap();
+        std::os::unix::fs::symlink(&victim, boxart.join("link.png")).unwrap();
+        std::fs::create_dir_all(outside.path().join(BOXART)).unwrap();
+        std::fs::write(outside.path().join(BOXART).join("x.png"), vec![0; 10_000]).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        assert_eq!(cache.files().len(), 1);
+        let fresh = CoverCache::with_limit(dir.path(), PNG.len() as u64 * 3);
+        for i in 0..5 {
+            fresh.store("gb", &format!("k{i}"), &found(PNG)).unwrap();
+        }
+        assert!(victim.exists());
+        assert!(outside.path().join(BOXART).join("x.png").exists());
+    }
+}
+
+#[test]
+fn prune_removes_stale_temporaries_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CoverCache::with_limit(dir.path(), PNG.len() as u64 * 3);
+    cache.store("gb", "first", &found(PNG)).unwrap();
+    let boxart = dir.path().join("gb").join(BOXART);
+    let stale = boxart.join(".old.png.tmp-abc");
+    let fresh = boxart.join(".new.png.tmp-def");
+    std::fs::write(&stale, b"x").unwrap();
+    std::fs::write(&fresh, b"x").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(2 * 3600))
+        .unwrap();
+    // Past the limit: pruning runs.
+    for i in 0..4 {
+        cache.store("gb", &format!("k{i}"), &found(PNG)).unwrap();
+    }
+    assert!(!stale.exists());
+    assert!(fresh.exists());
+}
+
+fn url(s: &str) -> Url {
+    Url::parse(s).unwrap()
+}
+
+#[test]
+fn screenscraper_media_hosts() {
+    let api = url(ScreenScraperSource::BASE_URL);
+    for ok in [
+        "https://api.screenscraper.fr/api2/mediaJeu.php?x=1",
+        "https://neoclone.screenscraper.fr/api2/mediaJeu.php",
+        "https://NEOCLONE.screenscraper.fr/m.png",
+    ] {
+        assert!(media_allowed(&api, &url(ok)), "{ok}");
+    }
+    for refused in [
+        "http://neoclone.screenscraper.fr/m.png",
+        "http://api.screenscraper.fr/m.png",
+        "https://screenscraper.fr.evil.example/m.png",
+        "https://xscreenscraper.fr/m.png",
+        "https://evil.example/m.png",
+        "ftp://api.screenscraper.fr/m.png",
+    ] {
+        assert!(!media_allowed(&api, &url(refused)), "{refused}");
+    }
+    // No public suffix list: `co.uk`-like parents grant no sibling.
+    assert!(!media_allowed(
+        &url("https://x.co.uk/"),
+        &url("https://y.co.uk/m.png")
+    ));
+    assert!(!media_allowed(
+        &url("https://a.com.au/"),
+        &url("https://b.com.au/m.png")
+    ));
+    assert!(media_allowed(
+        &url("https://api.foo.co.uk/"),
+        &url("https://img.foo.co.uk/m.png")
+    ));
+    // IP bases: same host only; http only on the same host and port as an http base (loopback tests).
+    let local = url("http://127.0.0.1:8080/api2/");
+    assert!(media_allowed(&local, &url("http://127.0.0.1:8080/m.png")));
+    assert!(!media_allowed(&local, &url("http://127.0.0.1:9090/m.png")));
+    assert!(!media_allowed(&local, &url("http://127.0.0.2:8080/m.png")));
+}
+
+#[test]
+fn credentials_debug_says_only_set_or_not() {
+    let ss = ScreenScraperCredentials {
+        dev_id: "devid-xyz".into(),
+        dev_password: Secret::new("devpass-xyz"),
+        user: String::new(),
+        password: Secret::new("pass-xyz"),
+    };
+    let text = format!("{ss:?} {ss:#?}");
+    assert!(!text.contains("xyz"), "{text}");
+    assert!(text.contains("non défini") && text.contains("défini"));
+    let igdb = IgdbCredentials {
+        client_id: "id-xyz".into(),
+        client_secret: Secret::new("secret-xyz"),
+    };
+    let text = format!("{igdb:?}");
+    assert!(!text.contains("xyz"), "{text}");
+}

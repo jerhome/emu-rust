@@ -20,9 +20,9 @@ use emu_library::{
     Game, GameFilter, GameId, Library, OpenOutcome, ScanProgress, SortOrder, filter_games, systems,
 };
 
-use self::covers::{CoverProvider, Placeholder};
+use self::covers::{CoverProvider, Covers, Placeholder};
 pub(crate) use self::host::run;
-use self::worker::{DatTask, Notify, ScanTask};
+use self::worker::{DatDownloadTask, DatProgress, DatTask, Notify, ScanTask};
 use crate::config::{Config, DataDirs};
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
 
@@ -67,6 +67,7 @@ enum Dialog {
     Install {
         core: CoreId,
         game: String,
+        game_id: GameId,
     },
     Firmware {
         request: LaunchRequest,
@@ -74,8 +75,11 @@ enum Dialog {
     },
     Reinstall {
         core: CoreId,
+        game_id: GameId,
     },
     Message(String),
+    /// First scan without any DAT: offer the download (ADR 0014 design §1).
+    OfferDat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,11 +122,21 @@ pub(crate) struct LibraryUi {
     scan_progress: Option<ScanProgress>,
     scan_on_open: bool,
     dat: Option<DatTask>,
+    dat_download: Option<DatDownloadTask>,
+    dat_progress: Option<DatProgress>,
+    /// DAT download offered once per session.
+    dat_offered: bool,
+    /// libretro-database `metadat/no-intro/` (tests: a local server).
+    dat_base_url: String,
     status: Option<(String, Level)>,
     dialog: Option<Dialog>,
     focus_dialog: bool,
     cores: CoresUi,
+    /// Game whose launch asked for this core install: relaunched when the install succeeds.
+    awaiting_core: Option<(CoreId, GameId)>,
     covers: Box<dyn CoverProvider>,
+    /// The cover worker is spawned on the first frame (it needs the egui context to wake the loop).
+    covers_started: bool,
     settings: settings::State,
     events: Vec<LibraryEvent>,
 }
@@ -175,11 +189,17 @@ impl LibraryUi {
             scan_progress: None,
             scan_on_open,
             dat: None,
+            dat_download: None,
+            dat_progress: None,
+            dat_offered: false,
+            dat_base_url: emu_assets::DAT_BASE_URL.to_owned(),
             status: None,
             dialog: None,
             focus_dialog: false,
             cores,
+            awaiting_core: None,
             covers: Box::new(Placeholder),
+            covers_started: false,
             settings: settings::State::default(),
             events: Vec::new(),
         };
@@ -198,6 +218,9 @@ impl LibraryUi {
     pub(crate) fn set_page(&mut self, page: Page) {
         self.page = page;
         self.settings.focus_first = page == Page::Settings;
+        if page == Page::Settings {
+            self.refresh_settings_cache();
+        }
         if page == Page::Home {
             self.focus = Some(Focus::Grid);
         }
@@ -283,8 +306,39 @@ impl LibraryUi {
         ));
     }
 
+    fn start_covers(&mut self, ctx: &egui::Context) {
+        if std::mem::replace(&mut self.covers_started, true) || self.db.is_none() {
+            return;
+        }
+        if let Some(c) = Covers::spawn(
+            self.dirs.library_db.clone(),
+            self.dirs.covers.clone(),
+            &self.config,
+            self.capture,
+            notify(ctx),
+        ) {
+            self.covers = Box::new(c);
+        }
+    }
+
+    /// « Mettre à jour la base (DAT) » : every catalog system, conditional GET, then import.
+    fn start_dat_download(&mut self, ctx: &egui::Context) {
+        if self.capture || self.dat_download.is_some() || self.db.is_none() {
+            return;
+        }
+        self.dat_progress = None;
+        self.dat_download = Some(worker::spawn_dat_download(
+            self.dirs.library_db.clone(),
+            self.dirs.database.clone(),
+            self.dat_base_url.clone(),
+            emu_assets::http::HttpConfig::default(),
+            notify(ctx),
+        ));
+    }
+
     /// Drains worker events once per frame.
     fn poll_workers(&mut self) {
+        let mut offer_dat = false;
         if let Some(task) = &mut self.scan {
             let (progress, done) = task.poll();
             if let Some(p) = progress.into_iter().last() {
@@ -300,12 +354,23 @@ impl LibraryUi {
                             tracing::info!("scan : {} : {e}", path.display());
                         }
                         self.set_status(text::scan_done(&report), Level::Info);
+                        offer_dat = true;
                     }
                     Some(Err(e)) if cancelled => self.set_status(e, Level::Info),
                     Some(Err(e)) => self.set_status(text::scan_failed(&e), Level::Error),
                     None => self.set_status(text::scan_failed("tâche interrompue"), Level::Error),
                 }
                 self.reload_games();
+                self.covers.refresh();
+                if offer_dat
+                    && !self.has_dat
+                    && !self.games.is_empty()
+                    && !self.capture
+                    && self.dialog.is_none()
+                    && !std::mem::replace(&mut self.dat_offered, true)
+                {
+                    self.open_dialog(Dialog::OfferDat);
+                }
             }
         }
         if let Some(task) = &mut self.dat {
@@ -323,6 +388,42 @@ impl LibraryUi {
                     None => self.set_status(text::dat_failed("tâche interrompue"), Level::Error),
                 }
                 self.reload_games();
+                self.covers.retry_missing();
+                self.refresh_settings_cache();
+            }
+        }
+        if let Some(task) = &mut self.dat_download {
+            let (progress, done) = task.poll();
+            if let Some(p) = progress.into_iter().last() {
+                self.dat_progress = Some(p);
+            }
+            if let Some(result) = done {
+                self.dat_download = None;
+                self.dat_progress = None;
+                match result {
+                    Some(Ok(summary)) => {
+                        let level = if summary.failed.is_empty() {
+                            Level::Info
+                        } else {
+                            Level::Warn
+                        };
+                        let msg = text::dat_download_done(
+                            summary.updated.len(),
+                            summary.unchanged,
+                            &summary.failed,
+                            summary.offline,
+                        );
+                        self.set_status(msg, level);
+                        if !summary.updated.is_empty() {
+                            // Titles changed: covers recorded missing under the old names may now be found.
+                            self.covers.retry_missing();
+                        }
+                    }
+                    Some(Err(e)) => self.set_status(text::dat_failed(&e), Level::Error),
+                    None => self.set_status(text::dat_failed("tâche interrompue"), Level::Error),
+                }
+                self.reload_games();
+                self.refresh_settings_cache();
             }
         }
     }
@@ -351,6 +452,10 @@ impl LibraryUi {
         let Some(game) = self.selected_game().cloned() else {
             return;
         };
+        self.launch_game(game);
+    }
+
+    fn launch_game(&mut self, game: Game) {
         let Some(manager) = self.cores.manager().cloned() else {
             self.open_dialog(Dialog::Message(text::NO_MANAGER.to_owned()));
             return;
@@ -381,6 +486,7 @@ impl LibraryUi {
             LaunchCheck::NeedsInstall(core) => self.open_dialog(Dialog::Install {
                 core,
                 game: game.title.clone(),
+                game_id: game.id,
             }),
             LaunchCheck::FirmwareMissing { id, path, missing } => {
                 let missing = firmware_names(&missing);
@@ -390,13 +496,39 @@ impl LibraryUi {
                 });
             }
             LaunchCheck::Failed(emu_assets::cores::CoreError::Tampered { id, .. }) => {
-                self.open_dialog(Dialog::Reinstall { core: id });
+                self.open_dialog(Dialog::Reinstall {
+                    core: id,
+                    game_id: game.id,
+                });
             }
             other => {
                 let msg = other
                     .blocking_message()
                     .unwrap_or_else(|| text::LAUNCH_FAILED_TITLE.to_owned());
                 self.open_dialog(Dialog::Message(text::game_failed(&game.title, &msg)));
+            }
+        }
+    }
+
+    /// An install requested by a launch dialog finished: relaunch that game (success) or forget it.
+    fn relaunch_after_install(&mut self) {
+        for (core, ok) in self.cores.take_completed() {
+            let Some((wanted, game_id)) = self.awaiting_core.clone() else {
+                continue;
+            };
+            if wanted != core {
+                continue;
+            }
+            self.awaiting_core = None;
+            if !ok || self.dialog.is_some() {
+                continue;
+            }
+            if let Some(game) = self.games.iter().find(|g| g.id == game_id).cloned() {
+                if self.page == Page::Settings {
+                    self.leave_settings();
+                }
+                self.set_page(Page::Home);
+                self.launch_game(game);
             }
         }
     }
@@ -408,7 +540,10 @@ impl LibraryUi {
 
     /// The host started the game: history updated, the core screen shows it in use.
     pub(crate) fn game_started(&mut self, request: &LaunchRequest) {
-        if let Some(db) = &mut self.db
+        // Another game is running: a pending install must not relaunch the previous one over it.
+        self.awaiting_core = None;
+        if !self.capture
+            && let Some(db) = &mut self.db
             && let Err(e) = db.record_played(request.game, now_unix())
         {
             tracing::warn!("historique non enregistré : {e}");
@@ -430,6 +565,16 @@ impl LibraryUi {
         }
         self.reload_games();
         self.set_page(Page::Home);
+    }
+
+    /// Explicit user choice from the home bar: saved, then the worker starts downloading.
+    fn enable_cover_downloads(&mut self) {
+        if self.capture {
+            return;
+        }
+        self.config.covers.download = true;
+        self.save_config();
+        self.covers.configure(&self.config);
     }
 
     fn toggle_favorite(&mut self) {
@@ -457,11 +602,19 @@ impl LibraryUi {
         if std::mem::take(&mut self.scan_on_open) {
             self.start_scan(&ctx);
         }
+        self.start_covers(&ctx);
+        self.covers.poll(&ctx);
         self.poll_workers();
+        if self.page != Page::Cores {
+            // The install keeps running behind the other pages; its result is still needed.
+            self.cores.poll(&ctx);
+        }
+        self.relaunch_after_install();
         match self.page {
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
             Page::Cores => {
+                self.cores.set_modal_open(self.dialog.is_some());
                 egui::CentralPanel::default().show(ui, |ui| {
                     if self.cores.show(ui) == Some(CoresEvent::Back) {
                         self.set_page(Page::Home);
@@ -476,6 +629,14 @@ impl LibraryUi {
     fn status_line(&self, ui: &mut Ui) {
         if let Some(b) = &self.db_banner {
             ui.colored_label(WARNING, b);
+        }
+        if let Some(p) = &self.dat_progress {
+            ui.label(text::dat_downloading(&p.system, p.done, p.total));
+        } else if self.dat_download.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(text::DAT_DOWNLOAD);
+            });
         }
         if let Some(p) = &self.scan_progress {
             ui.label(text::scan_running(p.files_seen, p.hashed));
@@ -501,8 +662,9 @@ impl LibraryUi {
         };
         enum Choice {
             Close,
-            Install(CoreId),
+            Install(CoreId, GameId),
             Launch,
+            DownloadDat,
         }
         let mut choice = None;
         let escape = ctx.input(|i| i.key_pressed(Key::Escape));
@@ -511,7 +673,7 @@ impl LibraryUi {
         egui::Modal::new(egui::Id::unique("library-dialog")).show(ctx, |ui| {
             ui.set_max_width(520.0);
             let (title, body) = match dialog {
-                Dialog::Install { core, game } => {
+                Dialog::Install { core, game, .. } => {
                     let name = manager
                         .as_ref()
                         .and_then(|m| m.info(core))
@@ -529,37 +691,45 @@ impl LibraryUi {
                         text::FIRMWARE_NOTE
                     ),
                 ),
-                Dialog::Reinstall { core } => {
+                Dialog::Reinstall { core, .. } => {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
+                Dialog::OfferDat => (text::DAT_OFFER_TITLE, text::DAT_OFFER.to_owned()),
             };
             ui.heading(title);
             ui.label(body);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let first = match dialog {
-                    Dialog::Install { core, .. } => {
+                    Dialog::Install { core, game_id, .. } => {
                         let r = ui.button(text::LAUNCH_INSTALL);
                         if r.clicked() {
-                            choice = Some(Choice::Install(core.clone()));
+                            choice = Some(Choice::Install(core.clone(), *game_id));
                         }
                         Some(r)
                     }
-                    Dialog::Reinstall { core } => {
+                    Dialog::Reinstall { core, game_id } => {
                         let r = ui.button(text::LAUNCH_REINSTALL);
                         if r.clicked() {
-                            choice = Some(Choice::Install(core.clone()));
+                            choice = Some(Choice::Install(core.clone(), *game_id));
+                        }
+                        Some(r)
+                    }
+                    Dialog::OfferDat => {
+                        let r = ui.button(text::DAT_OFFER_YES);
+                        if r.clicked() {
+                            choice = Some(Choice::DownloadDat);
                         }
                         Some(r)
                     }
                     Dialog::Firmware { .. } | Dialog::Message(_) => None,
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
-                let cancel_label = if matches!(dialog, Dialog::Message(_)) {
-                    text::OK
-                } else {
-                    text::LAUNCH_CANCEL
+                let cancel_label = match dialog {
+                    Dialog::Message(_) => text::OK,
+                    Dialog::OfferDat => text::DAT_OFFER_LATER,
+                    _ => text::LAUNCH_CANCEL,
                 };
                 let cancel = ui.button(cancel_label);
                 if cancel.clicked() {
@@ -584,10 +754,12 @@ impl LibraryUi {
         let dialog = self.dialog.take();
         self.focus = Some(Focus::Grid);
         match (choice, dialog) {
-            (Choice::Install(core), _) => {
+            (Choice::Install(core, game), _) => {
+                self.awaiting_core = Some((core.clone(), game));
                 self.cores.request_install(core, ctx);
                 self.set_page(Page::Cores);
             }
+            (Choice::DownloadDat, _) => self.start_dat_download(ctx),
             (Choice::Launch, Some(Dialog::Firmware { request, .. })) => {
                 self.events.push(LibraryEvent::Launch(request));
             }
@@ -599,6 +771,11 @@ impl LibraryUi {
             }
             _ => {}
         }
+    }
+
+    /// Covers on screen still being read (captures wait for them).
+    pub(crate) fn covers_busy(&self) -> bool {
+        self.covers.busy()
     }
 
     pub(crate) fn wants_launch_capture(&mut self) {

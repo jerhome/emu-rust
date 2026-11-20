@@ -30,6 +30,10 @@ tracing = { workspace = true }
 zip = { workspace = true }
 # Wipes `Secret` buffers on drop.
 zeroize = "1"
+# The JPEG decoder `image` runs, queried directly for its header pass (image.rs). Pinned: the memory budget is
+# derived from this exact version's allocations; zune-core is used through its `zune_jpeg::zune_core` re-export.
+# MIT OR Apache-2.0 OR Zlib.
+zune-jpeg = "=0.5.15"
 
 [target.'cfg(unix)'.dependencies]
 # ENOLCK only (lock unsupported on some network file systems).

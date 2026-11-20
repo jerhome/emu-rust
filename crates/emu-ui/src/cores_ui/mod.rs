@@ -8,7 +8,7 @@ mod launch;
 mod rows;
 pub(crate) mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,6 +28,7 @@ use self::rows::{Checks, CoreRow, CoreState, RowFilter, Scope, recommended_missi
 use crate::Config;
 use crate::config::DataDirs;
 use crate::config_library::CoresConfig;
+use crate::ui::text::sanitize_core_text;
 
 /// Core zips are large: the default 60 s of cover downloads is too short.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -92,6 +93,19 @@ struct Running {
     progress: Option<Progress>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpKind {
+    Remove,
+    Rollback,
+    Pin(bool),
+}
+
+/// A manager call that may wait for the cross-process folder lock: always run in a job.
+struct Op {
+    kind: OpKind,
+    job: Job<Result<(), CoreError>>,
+}
+
 enum RowAction {
     Install(CoreId),
     AskRemove(CoreId),
@@ -115,11 +129,20 @@ pub(crate) struct CoresUi {
     refresh_progress: Option<Progress>,
     refresh_error: Option<String>,
     installs: BTreeMap<CoreId, Running>,
+    ops: BTreeMap<CoreId, Op>,
+    /// Cores whose rollback found an altered file: the row offers « Réinstaller ».
+    offer_reinstall: BTreeSet<CoreId>,
+    /// Installs finished since the last [`CoresUi::take_completed`] (`true` = success).
+    completed: Vec<(CoreId, bool)>,
     /// Installs waiting for the first catalog.
     queued: Vec<CoreId>,
     errors: BTreeMap<CoreId, String>,
     confirm_remove: Option<CoreId>,
     detail: Option<CoreId>,
+    /// Firmware of the core shown in `detail`, computed once when it opens (MD5 of BIOS files: not per frame).
+    detail_firmware: Vec<FirmwareStatus>,
+    /// A dialog of the host is open over this screen: Échap belongs to it.
+    modal_open: bool,
     in_use: Option<CoreId>,
     focus_first: bool,
     focus_confirm: bool,
@@ -157,10 +180,15 @@ impl CoresUi {
             refresh_progress: None,
             refresh_error: None,
             installs: BTreeMap::new(),
+            ops: BTreeMap::new(),
+            offer_reinstall: BTreeSet::new(),
+            completed: Vec::new(),
             queued: Vec::new(),
             errors: BTreeMap::new(),
             confirm_remove: None,
             detail: None,
+            detail_firmware: Vec::new(),
+            modal_open: false,
             in_use: None,
             focus_first: true,
             focus_confirm: false,
@@ -170,6 +198,16 @@ impl CoresUi {
     /// The core being played (its actions are disabled), `None` back in the library.
     pub(crate) fn set_in_use(&mut self, id: Option<CoreId>) {
         self.in_use = id;
+    }
+
+    /// Installs that finished (or failed) since the last call, for the library launch flow.
+    pub(crate) fn take_completed(&mut self) -> Vec<(CoreId, bool)> {
+        std::mem::take(&mut self.completed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_completed(&mut self, id: CoreId, ok: bool) {
+        self.completed.push((id, ok));
     }
 
     pub(crate) fn manager(&self) -> Option<&Arc<CoreManager>> {
@@ -220,6 +258,7 @@ impl CoresUi {
             return;
         }
         self.errors.remove(&id);
+        self.offer_reinstall.remove(&id);
         let target = id.clone();
         let job = Job::spawn(
             &format!("core-{id}"),
@@ -235,8 +274,31 @@ impl CoresUi {
         );
     }
 
-    /// Drains job events; returns whether anything finished (snapshot to rebuild).
-    fn poll(&mut self, ctx: &egui::Context) {
+    fn start_op(&mut self, id: CoreId, kind: OpKind, ctx: &egui::Context) {
+        let Some(manager) = self.manager.clone() else {
+            return;
+        };
+        if self.ops.contains_key(&id) || self.installs.contains_key(&id) {
+            return;
+        }
+        self.errors.remove(&id);
+        self.offer_reinstall.remove(&id);
+        let target = id.clone();
+        let job = Job::spawn(
+            &format!("core-op-{id}"),
+            Self::notify(ctx),
+            move |_progress, _cancel| match kind {
+                OpKind::Remove => manager.remove(&target),
+                OpKind::Rollback => manager.rollback(&target).map(|_| ()),
+                OpKind::Pin(p) => manager.set_pinned(&target, p),
+            },
+        );
+        self.ops.insert(id, Op { kind, job });
+    }
+
+    /// Drains job events of the refresh, installs and manager operations (also called while another page is
+    /// shown, so that an install started from the library finishes and is reported).
+    pub(crate) fn poll(&mut self, ctx: &egui::Context) {
         let mut refreshed = None;
         if let Some(job) = &mut self.refresh {
             for ev in job.poll() {
@@ -281,10 +343,61 @@ impl CoresUi {
         for (id, result) in done {
             self.installs.remove(&id);
             self.dirty = true;
+            self.completed.push((id.clone(), result.is_ok()));
             if let Err(e) = result {
                 self.errors.insert(id, text::error(&e));
             }
         }
+        let mut finished: Vec<(CoreId, OpKind, Result<(), CoreError>)> = Vec::new();
+        for (id, op) in &mut self.ops {
+            for ev in op.job.poll() {
+                if let JobEvent::Done(r) = ev {
+                    finished.push((id.clone(), op.kind, r));
+                }
+            }
+            if op.job.is_finished() && !finished.iter().any(|(d, ..)| d == id) {
+                finished.push((
+                    id.clone(),
+                    op.kind,
+                    Err(CoreError::Manifest("tâche interrompue".to_owned())),
+                ));
+            }
+        }
+        for (id, kind, result) in finished {
+            self.ops.remove(&id);
+            self.dirty = true;
+            match result {
+                Ok(()) => {}
+                Err(CoreError::Tampered { .. }) if kind == OpKind::Rollback => {
+                    self.errors
+                        .insert(id.clone(), text::ROLLBACK_TAMPERED.to_owned());
+                    self.offer_reinstall.insert(id);
+                }
+                Err(e) => {
+                    self.errors.insert(id, text::error(&e));
+                }
+            }
+        }
+    }
+
+    /// From the snapshot (installed cores); otherwise computed once (cores not installed).
+    fn firmware_for(&self, id: &CoreId) -> Vec<FirmwareStatus> {
+        if let Some(f) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.checks.firmware.get(id))
+        {
+            return f.clone();
+        }
+        self.manager
+            .as_ref()
+            .map(|m| m.firmware_status(id))
+            .unwrap_or_default()
+    }
+
+    /// Set by the host each frame: while its dialog is open, Échap does not leave this screen.
+    pub(crate) fn set_modal_open(&mut self, open: bool) {
+        self.modal_open = open;
     }
 
     fn rebuild_snapshot(&mut self) {
@@ -310,15 +423,12 @@ impl CoresUi {
             checks,
         });
         self.dirty = false;
+        if let Some(id) = self.detail.clone() {
+            self.detail_firmware = self.firmware_for(&id);
+        }
     }
 
     fn apply(&mut self, action: RowAction, ctx: &egui::Context) {
-        let Some(manager) = self.manager.clone() else {
-            return;
-        };
-        let fail = |this: &mut Self, id: &CoreId, e: &CoreError| {
-            this.errors.insert(id.clone(), text::error(e));
-        };
         match action {
             RowAction::Install(id) => self.start_install(id, ctx),
             RowAction::AskRemove(id) => {
@@ -328,26 +438,12 @@ impl CoresUi {
             RowAction::CancelRemove => self.confirm_remove = None,
             RowAction::Remove(id) => {
                 self.confirm_remove = None;
-                self.errors.remove(&id);
-                if let Err(e) = manager.remove(&id) {
-                    fail(self, &id, &e);
-                }
-                self.dirty = true;
+                self.start_op(id, OpKind::Remove, ctx);
             }
-            RowAction::Rollback(id) => {
-                self.errors.remove(&id);
-                if let Err(e) = manager.rollback(&id) {
-                    fail(self, &id, &e);
-                }
-                self.dirty = true;
-            }
-            RowAction::Pin(id, pinned) => {
-                if let Err(e) = manager.set_pinned(&id, pinned) {
-                    fail(self, &id, &e);
-                }
-                self.dirty = true;
-            }
+            RowAction::Rollback(id) => self.start_op(id, OpKind::Rollback, ctx),
+            RowAction::Pin(id, pinned) => self.start_op(id, OpKind::Pin(pinned), ctx),
             RowAction::Details(id) => {
+                self.detail_firmware = self.firmware_for(&id);
                 self.detail = Some(id);
                 self.focus_first = true;
             }
@@ -367,7 +463,7 @@ impl CoresUi {
             self.rebuild_snapshot();
         }
         let mut event = None;
-        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = !self.modal_open && ui.input(|i| i.key_pressed(egui::Key::Escape));
 
         ui.horizontal(|ui| {
             ui.heading(text::TITLE);
@@ -594,6 +690,14 @@ impl CoresUi {
             if let Some(e) = self.errors.get(&row.id) {
                 ui.colored_label(ERROR, e);
             }
+            let op = self.ops.get(&row.id).map(|o| o.kind);
+            if op.is_none()
+                && running.is_none()
+                && self.offer_reinstall.contains(&row.id)
+                && ui.button(text::REINSTALL).clicked()
+            {
+                actions.push(RowAction::Install(row.id.clone()));
+            }
             if let Some(progress) = running {
                 ui.horizontal(|ui| {
                     match progress {
@@ -619,6 +723,15 @@ impl CoresUi {
                     if ui.button(text::CANCEL).clicked() {
                         actions.push(RowAction::CancelInstall(row.id.clone()));
                     }
+                });
+            } else if let Some(kind) = op {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(text::op_running(match kind {
+                        OpKind::Remove => text::OP_REMOVING,
+                        OpKind::Rollback => text::OP_ROLLING_BACK,
+                        OpKind::Pin(_) => text::OP_PINNING,
+                    }));
                 });
             } else if self.confirm_remove.as_ref() == Some(&row.id) {
                 ui.horizontal(|ui| {
@@ -685,9 +798,10 @@ impl CoresUi {
             return;
         };
         let info = manager.info(id);
-        let name = info
-            .as_ref()
-            .map_or_else(|| id.as_str().to_owned(), |i| i.display_name.clone());
+        let name = info.as_ref().map_or_else(
+            || id.as_str().to_owned(),
+            |i| sanitize_core_text(&i.display_name),
+        );
         let close = ui.button(text::DETAIL_CLOSE);
         if std::mem::take(&mut self.focus_first) {
             close.request_focus();
@@ -701,7 +815,7 @@ impl CoresUi {
             return;
         };
         if let Some(d) = &info.description {
-            ui.label(d);
+            ui.label(sanitize_core_text(d));
         }
         if !info.extensions.is_empty() {
             ui.label(format!(
@@ -712,11 +826,11 @@ impl CoresUi {
         }
         ui.separator();
         ui.label(RichText::new(text::DETAIL_FIRMWARE).strong());
-        let statuses: Vec<FirmwareStatus> = manager.firmware_status(id);
+        let statuses = &self.detail_firmware;
         if statuses.is_empty() {
             ui.label(text::DETAIL_NO_FIRMWARE);
         }
-        for f in &statuses {
+        for f in statuses {
             let kind = if f.spec.optional {
                 text::FIRMWARE_OPTIONAL
             } else {
@@ -729,11 +843,14 @@ impl CoresUi {
                 _ => ERROR,
             };
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(&f.spec.path).monospace());
+                ui.label(RichText::new(sanitize_core_text(&f.spec.path)).monospace());
                 ui.label(
-                    RichText::new(format!("({kind}) {}", f.spec.description))
-                        .small()
-                        .weak(),
+                    RichText::new(format!(
+                        "({kind}) {}",
+                        sanitize_core_text(&f.spec.description)
+                    ))
+                    .small()
+                    .weak(),
                 );
                 ui.colored_label(color, text::firmware_state(&f.state));
             });

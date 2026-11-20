@@ -93,7 +93,7 @@ fn main() -> ExitCode {
             println!("{}", cli::version_line());
             ExitCode::SUCCESS
         }
-        Ok(cli::Command::Cores(c)) => match prepare(c.data_dir, None, None)
+        Ok(cli::Command::Cores(c)) => match prepare(c.data_dir, c.system_dir, None)
             .and_then(|(dirs, config)| cores_cli::run(&c.action, &dirs, &config))
         {
             Ok(true) => ExitCode::SUCCESS,

@@ -4,6 +4,19 @@ use std::path::Path;
 
 use emu_library::ScanReport;
 
+/// Untrusted text (game titles and names from DAT files, `.info` contents): bounded, no control characters.
+fn clean(s: &str) -> String {
+    crate::ui::text::sanitize_core_text(s)
+}
+
+fn clean_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|s| clean(s))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub const SEARCH_HINT: &str = "Rechercher (/ ou Ctrl+F)";
 pub const ALL_SYSTEMS: &str = "Tous";
 pub const VIEW_ALL: &str = "Tous les jeux";
@@ -23,10 +36,24 @@ pub const HOME_HINT: &str = "Flèches : choisir un jeu · Entrée : jouer · F :
 pub const EMPTY_LIBRARY: &str = "Aucun jeu dans la bibliothèque.";
 pub const NO_MATCH: &str = "Aucun jeu ne correspond aux filtres.";
 pub const NO_DAT: &str = "Aucune base de jeux (DAT) importée : les jeux portent le nom de leur fichier. \
-                          Réglages › Importer un DAT.";
+                          Réglages › Mettre à jour la base (DAT).";
 pub const DB_UNAVAILABLE: &str = "Bibliothèque indisponible : les jeux ne peuvent pas être listés.";
-pub const COVERS_PENDING: &str =
-    "Jaquettes : pas encore disponibles dans cette version (emplacement par défaut).";
+pub const COVERS_DISABLED: &str =
+    "Jaquettes : téléchargement désactivé (seules les jaquettes déjà en cache s'affichent).";
+pub const COVERS_ENABLE: &str = "Activer le téléchargement des jaquettes";
+pub const COVERS_OFFLINE: &str =
+    "Jaquettes : hors ligne (cache seulement). Réglages › Rechercher à nouveau pour réessayer.";
+pub const COVERS_NO_SOURCE: &str =
+    "Jaquettes : aucune source utilisable (sources désactivées ou identifiants refusés).";
+pub const COVERS_UNAVAILABLE: &str = "Jaquettes : indisponibles (file de téléchargement arrêtée).";
+pub const COVERS_RETRY: &str = "Rechercher à nouveau les jaquettes absentes";
+pub const COVERS_RETRY_DONE: &str = "Les jaquettes absentes vont être recherchées à nouveau.";
+pub const DAT_OFFER_TITLE: &str = "Base de jeux";
+pub const DAT_OFFER: &str = "Aucune base d'identification (DAT No-Intro) n'est installée : les jeux portent \
+                             le nom de leur fichier et les jaquettes sont plus rarement trouvées. Télécharger les \
+                             DAT depuis libretro-database (quelques Mio, une fois) ?";
+pub const DAT_OFFER_YES: &str = "Télécharger";
+pub const DAT_OFFER_LATER: &str = "Plus tard";
 
 pub const LAUNCH_INSTALL_TITLE: &str = "Core manquant";
 pub const LAUNCH_INSTALL: &str = "Installer";
@@ -61,7 +88,9 @@ pub const DAT_PATH_HINT: &str = "Chemin d'un fichier .dat (clrmamepro)";
 pub const DAT_IMPORT: &str = "Importer le DAT";
 pub const DAT_SYSTEM: &str = "Système";
 pub const DAT_AUTO: &str = "détection automatique";
-pub const DAT_DOWNLOAD: &str = "Télécharger les DAT (bientôt)";
+pub const DAT_DOWNLOAD: &str = "Mettre à jour la base (DAT)";
+pub const DAT_DOWNLOAD_NOTE: &str =
+    "Télécharge les DAT No-Intro de libretro-database (seulement s'ils ont changé).";
 pub const COVERS_TITLE: &str = "Jaquettes";
 pub const COVERS_DOWNLOAD: &str = "Télécharger les jaquettes";
 pub const SOURCE_UP: &str = "Monter";
@@ -141,14 +170,17 @@ pub fn db_error(e: &str) -> String {
 }
 
 pub fn dat_imported(system: &str, n: u64) -> String {
+    let system = clean(system);
     format!("DAT importé pour {system} : {n} entrées.")
 }
 
 pub fn dat_failed(e: &str) -> String {
+    let e = clean(e);
     format!("Import du DAT impossible : {e}")
 }
 
 pub fn dat_unknown_system(name: &str) -> String {
+    let name = clean(name);
     format!("Système du DAT « {name} » non reconnu : choisissez-le avant d'importer.")
 }
 
@@ -157,6 +189,7 @@ pub fn dat_info(entries: u64, date: &str) -> String {
 }
 
 pub fn install_question(core: &str, game: &str) -> String {
+    let (core, game) = (clean(core), clean(game));
     format!(
         "Aucun core installé ne lance « {game} ». Installer le core recommandé « {core} » ? \
          L'écran Cores affiche la progression ; relancez le jeu ensuite."
@@ -165,16 +198,18 @@ pub fn install_question(core: &str, game: &str) -> String {
 
 pub fn firmware_question(game: &str, files: &[String]) -> String {
     format!(
-        "« {game} » demande des BIOS absents ou différents : {}. Le jeu peut ne pas démarrer.",
-        files.join(", ")
+        "« {} » demande des BIOS absents ou différents : {}. Le jeu peut ne pas démarrer.",
+        clean(game),
+        clean_list(files)
     )
 }
 
 pub fn firmware_warning(files: &[String]) -> String {
-    format!("BIOS facultatifs absents : {}", files.join(", "))
+    format!("BIOS facultatifs absents : {}", clean_list(files))
 }
 
 pub fn tampered(core: &str) -> String {
+    let core = clean(core);
     format!(
         "Le core « {core} » a été modifié depuis son installation : il n'est pas chargé. \
          Le réinstaller ?"
@@ -182,7 +217,7 @@ pub fn tampered(core: &str) -> String {
 }
 
 pub fn game_failed(game: &str, e: &str) -> String {
-    format!("« {game} » : {e}")
+    format!("« {} » : {}", clean(game), clean(e))
 }
 
 pub fn root_duplicate(path: &str) -> String {
@@ -198,4 +233,37 @@ pub fn empty_hint(roms: &Path) -> String {
         "Copiez vos ROMs dans {} (ou ajoutez un dossier dans les Réglages), puis lancez un scan.",
         roms.display()
     )
+}
+
+pub fn covers_queued(n: usize) -> String {
+    format!("Jaquettes : {n} à télécharger…")
+}
+
+pub fn dat_downloading(system: &str, done: usize, total: usize) -> String {
+    format!("Base de jeux : {} ({}/{total})…", clean(system), done + 1)
+}
+
+pub fn dat_download_done(
+    updated: usize,
+    unchanged: usize,
+    failed: &[(String, String)],
+    offline: bool,
+) -> String {
+    let mut s = format!("Base de jeux : {updated} DAT mis à jour, {unchanged} inchangés");
+    if !failed.is_empty() {
+        let names: Vec<String> = failed
+            .iter()
+            .map(|(n, e)| format!("{} ({})", clean(n), clean(e)))
+            .collect();
+        s.push_str(&format!(" · échecs : {}", names.join(", ")));
+    }
+    if offline {
+        s.push_str(" · réseau indisponible, téléchargement interrompu");
+    }
+    s
+}
+
+/// Card and list title of a game (DAT names are untrusted).
+pub fn game_title(title: &str) -> String {
+    clean(title)
 }

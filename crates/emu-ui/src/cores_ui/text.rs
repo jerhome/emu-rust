@@ -33,6 +33,10 @@ pub const CONFIRM_REMOVE_YES: &str = "Oui, supprimer";
 pub const CONFIRM_REMOVE_NO: &str = "Non";
 pub const IN_USE: &str = "en cours d'utilisation";
 pub const MANUAL: &str = "manuel";
+pub const OP_REMOVING: &str = "Suppression";
+pub const OP_ROLLING_BACK: &str = "Retour à la version précédente";
+pub const OP_PINNING: &str = "Mise à jour de l'épinglage";
+pub const ROLLBACK_TAMPERED: &str = "Retour impossible : le fichier du core ne correspond plus à son enregistrement (modifié ou installation interrompue). Réinstaller le core.";
 pub const RECOMMENDED: &str = "recommandé";
 
 pub const STATE_UP_TO_DATE: &str = "à jour";
@@ -133,6 +137,10 @@ pub fn error(e: &CoreError) -> String {
     }
 }
 
+pub fn op_running(what: &str) -> String {
+    format!("{what} en cours…")
+}
+
 pub fn queued_waiting(n: usize) -> String {
     format!("{n} installation(s) en attente du catalogue")
 }
@@ -140,12 +148,4 @@ pub fn queued_waiting(n: usize) -> String {
 /// Launch-time messages (library → core).
 pub fn no_core_for_system() -> &'static str {
     "Aucun core connu pour ce système."
-}
-
-#[allow(dead_code)] // used by the library launch dialog (task U4)
-pub fn install_prompt(name: &str, license: Option<&str>) -> String {
-    match license {
-        Some(l) => format!("Installer {name} (licence : {l}) ?"),
-        None => format!("Installer {name} ?"),
-    }
 }

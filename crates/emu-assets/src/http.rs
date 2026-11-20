@@ -66,6 +66,8 @@ pub enum Method {
 }
 
 /// Header values may be secrets: they are never logged (`Debug` shows header names only, and the body size).
+/// Wiping them after the call is best effort: the HTTP/TLS stack (`reqwest`, `hyper`, `rustls`) keeps copies it
+/// frees without wiping.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Request<'a> {
     pub method: Method,

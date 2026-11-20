@@ -30,7 +30,7 @@ impl Default for LibraryConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoversConfig {
-    /// Downloads allowed at all (off ⇒ cache only).
+    /// Downloads allowed at all (off ⇒ cache only). Off by default: no request without an explicit user choice.
     pub download: bool,
     /// `CoverSourceKind::name`s in fallback order; unknown names ignored with a warning.
     pub sources: Vec<String>,
@@ -43,7 +43,7 @@ pub struct CoversConfig {
 impl Default for CoversConfig {
     fn default() -> Self {
         Self {
-            download: true,
+            download: false,
             sources: vec!["libretro".into(), "screenscraper".into(), "igdb".into()],
             retry_days: 30,
             extra: toml::Table::new(),
@@ -164,7 +164,7 @@ gb = "sameboy"
     fn defaults_without_sections() {
         let cfg: Config = toml::from_str("").unwrap();
         assert!(cfg.library.scan_on_start);
-        assert!(cfg.covers.download);
+        assert!(!cfg.covers.download);
         assert_eq!(cfg.covers.sources.len(), 3);
         assert!(cfg.credentials.screenscraper.is_none());
         assert_eq!(cfg.cores, CoresConfig::default());

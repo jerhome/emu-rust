@@ -239,6 +239,13 @@ pub fn format_unix_utc(secs: u64) -> String {
 
 const MAX_CORE_TEXT: usize = 512;
 
+/// Unicode category Cf (bidi controls, zero-width, BOM...): they can reorder or hide displayed text.
+fn is_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 /// Text supplied by a core: cut to ~512 bytes (on a char boundary), control characters other than `\n` replaced.
 pub fn sanitize_core_text(s: &str) -> String {
     let mut end = s.len().min(MAX_CORE_TEXT);
@@ -248,7 +255,7 @@ pub fn sanitize_core_text(s: &str) -> String {
     s[..end]
         .chars()
         .map(|c| {
-            if c.is_control() && c != '\n' {
+            if (c.is_control() && c != '\n') || is_format_char(c) {
                 '\u{FFFD}'
             } else {
                 c
@@ -260,6 +267,13 @@ pub fn sanitize_core_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_text_drops_format_characters() {
+        let out = sanitize_core_text("a\u{202E}b\u{200B}c\u{FEFF}d\u{2066}e\u{061C}");
+        assert!(out.chars().all(|c| !is_format_char(c)));
+        assert_eq!(out.chars().filter(|c| *c == '\u{FFFD}').count(), 5);
+    }
 
     #[test]
     fn core_text_is_bounded_and_clean() {

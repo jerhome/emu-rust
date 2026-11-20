@@ -719,6 +719,7 @@ dependencies = [
  "wiremock",
  "zeroize",
  "zip",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -778,9 +779,11 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
  "tracing",
  "winit",
+ "wiremock",
 ]
 
 [[package]]

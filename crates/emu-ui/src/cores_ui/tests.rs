@@ -230,3 +230,135 @@ fn request_install_without_catalog_queues_and_checks_first() {
     assert!(cores.refresh_error.is_some());
     assert!(cores.installs.is_empty());
 }
+
+/// Runs frames until no manager operation is in flight.
+fn settle(ctx: &egui::Context, cores: &mut CoresUi) {
+    for _ in 0..200 {
+        let _ = pass(ctx, cores);
+        if cores.ops.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("operation never finished");
+}
+
+#[test]
+fn remove_and_pin_run_in_jobs() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let mut cores = ui_for(&dirs);
+    let ctx = egui::Context::default();
+    cores.apply(RowAction::Remove(id("handmade")), &ctx);
+    assert!(
+        cores.ops.contains_key(&id("handmade")),
+        "job started, not run inline"
+    );
+    // Showing the screen with the operation in flight renders its state.
+    let _ = pass(&ctx, &mut cores);
+    settle(&ctx, &mut cores);
+    assert!(
+        !cores
+            .manager()
+            .unwrap()
+            .installed()
+            .iter()
+            .any(|c| c.id.as_str() == "handmade")
+    );
+    assert!(cores.errors.is_empty());
+    // A held core refuses the operation: the French message is kept on the row.
+    cores.manager().unwrap().set_in_use(Some(id("gambatte")));
+    cores.apply(RowAction::Remove(id("gambatte")), &ctx);
+    settle(&ctx, &mut cores);
+    assert!(cores.errors[&id("gambatte")].contains("utilisation"));
+}
+
+#[test]
+fn rollback_of_altered_core_offers_reinstall() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let platform = Platform::current().unwrap();
+    fs::write(
+        dirs.cores.join(format!(
+            "gambatte_libretro.{}.prev",
+            platform.library_extension()
+        )),
+        b"old",
+    )
+    .unwrap();
+    let mut cores = ui_for(&dirs);
+    let ctx = egui::Context::default();
+    cores.apply(RowAction::Rollback(id("gambatte")), &ctx);
+    settle(&ctx, &mut cores);
+    assert!(cores.offer_reinstall.contains(&id("gambatte")));
+    assert!(cores.errors[&id("gambatte")].contains("Réinstaller"));
+    // The row renders with the button; starting an install clears the offer.
+    let _ = pass(&ctx, &mut cores);
+    cores.apply(RowAction::Install(id("gambatte")), &ctx);
+    assert!(cores.offer_reinstall.is_empty());
+    for run in cores.installs.values() {
+        run.job.cancel();
+    }
+}
+
+#[test]
+fn details_use_the_snapshot_firmware_not_a_per_frame_hash() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let mut cores = ui_for(&dirs);
+    let ctx = egui::Context::default();
+    let _ = pass(&ctx, &mut cores);
+    cores.apply(RowAction::Details(id("handmade")), &ctx);
+    let before: Vec<String> = cores
+        .detail_firmware
+        .iter()
+        .map(|f| format!("{}:{:?}", f.spec.path, f.state))
+        .collect();
+    assert_eq!(before.len(), 2);
+    assert!(before[0].contains("Missing"), "{before:?}");
+    // The BIOS appears on disk: frames do not hash it again (refreshed with the snapshot only).
+    fs::write(dirs.system.join("req.bin"), b"bios").unwrap();
+    for _ in 0..3 {
+        let _ = pass(&ctx, &mut cores);
+    }
+    let after: Vec<String> = cores
+        .detail_firmware
+        .iter()
+        .map(|f| format!("{}:{:?}", f.spec.path, f.state))
+        .collect();
+    assert_eq!(before, after);
+    cores.dirty = true;
+    let _ = pass(&ctx, &mut cores);
+    assert!(!format!("{:?}", cores.detail_firmware[0].state).contains("Missing"));
+}
+
+#[test]
+fn escape_belongs_to_the_host_dialog() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let mut cores = ui_for(&dirs);
+    let ctx = egui::Context::default();
+    let esc = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..egui::RawInput::default()
+    };
+    cores.set_modal_open(true);
+    let mut event = None;
+    let mut out = ctx.run_ui(esc.clone(), |root| event = cores.show(root));
+    out.textures_delta.clear();
+    assert_eq!(event, None);
+    cores.set_modal_open(false);
+    let mut out = ctx.run_ui(esc, |root| event = cores.show(root));
+    out.textures_delta.clear();
+    assert_eq!(event, Some(CoresEvent::Back));
+}

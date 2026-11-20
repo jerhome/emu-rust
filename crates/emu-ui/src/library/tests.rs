@@ -329,3 +329,228 @@ fn unreadable_database_does_not_panic() {
     });
     out.textures_delta.clear();
 }
+
+#[test]
+fn finished_install_relaunches_the_waiting_game() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    h.frame(Vec::new());
+    let game = h.ui.selected_game().unwrap().clone();
+    // Another core finishing does not launch anything.
+    h.ui.awaiting_core = Some((CoreId::new("other").unwrap(), game.id));
+    h.ui.cores
+        .push_completed(CoreId::new("mgba").unwrap(), true);
+    h.ui.relaunch_after_install();
+    assert!(h.ui.awaiting_core.is_some());
+    // A failed install forgets the game.
+    h.ui.cores
+        .push_completed(CoreId::new("other").unwrap(), false);
+    h.ui.relaunch_after_install();
+    assert!(h.ui.awaiting_core.is_none());
+    // Success: the launch flow runs again (here no core is installed: the install dialog comes back).
+    h.ui.awaiting_core = Some((CoreId::new("other").unwrap(), game.id));
+    h.ui.cores
+        .push_completed(CoreId::new("other").unwrap(), true);
+    h.ui.relaunch_after_install();
+    assert!(h.ui.awaiting_core.is_none());
+    assert_eq!(h.ui.page, Page::Home);
+    assert!(h.ui.dialog.is_some());
+}
+
+#[test]
+fn dat_download_imports_then_uses_etag_only_when_the_file_exists() {
+    use std::time::Duration;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = rt.block_on(MockServer::start());
+    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    let gb = "/Nintendo%20-%20Game%20Boy.dat";
+    rt.block_on(
+        Mock::given(method("GET"))
+            .and(path(gb))
+            .and(header("If-None-Match", "\"v1\""))
+            .respond_with(ResponseTemplate::new(304))
+            .with_priority(1)
+            .mount(&server),
+    );
+    rt.block_on(
+        Mock::given(method("GET"))
+            .and(path(gb))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"v1\"")
+                    .set_body_bytes(dat),
+            )
+            .with_priority(2)
+            .mount(&server),
+    );
+    rt.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .with_priority(3)
+            .mount(&server),
+    );
+    let client = emu_assets::http::HttpClient::new(emu_assets::http::HttpConfig {
+        allow_loopback_http: true,
+        timeout: Duration::from_secs(10),
+        ..emu_assets::http::HttpConfig::default()
+    })
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = Library::open_in_memory().unwrap();
+    let catalog: Vec<_> = systems()
+        .iter()
+        .filter(|s| s.id == "gb" || s.id == "nes")
+        .cloned()
+        .collect();
+    let base = format!("{}/", server.uri());
+    let run = |db: &mut Library| {
+        let mut seen = Vec::new();
+        let summary = worker::download_dats(
+            db,
+            &client,
+            &base,
+            tmp.path(),
+            &catalog,
+            &AtomicBool::new(false),
+            &mut |p| seen.push(p),
+        );
+        assert_eq!(seen.len(), 2);
+        summary
+    };
+    let first = run(&mut db);
+    assert_eq!(first.updated.len(), 1, "{first:?}");
+    assert_eq!(first.failed.len(), 1, "404 for the NES DAT: {first:?}");
+    assert!(!first.offline);
+    let info = db.dat_info("gb").unwrap().unwrap();
+    assert_eq!(info.etag.as_deref(), Some("\"v1\""));
+    let file = tmp.path().join("Nintendo - Game Boy.dat");
+    assert!(file.is_file());
+    // Same ETag, file present: 304, nothing re-imported.
+    let second = run(&mut db);
+    assert_eq!(second.unchanged, 1, "{second:?}");
+    // File deleted: the ETag is not sent, the DAT is downloaded again.
+    std::fs::remove_file(&file).unwrap();
+    let third = run(&mut db);
+    assert_eq!(third.updated.len(), 1, "{third:?}");
+    assert!(file.is_file());
+}
+
+#[test]
+fn first_scan_without_dat_offers_the_download_once() {
+    let mut h = harness(false);
+    h.ui.config.library.roots = vec![repo_root().join("tests/data/roms")];
+    h.frame(Vec::new());
+    assert!(!h.ui.has_dat);
+    h.ui.start_scan(&h.ctx.clone());
+    for _ in 0..500 {
+        h.frame(Vec::new());
+        if h.ui.scan.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(matches!(h.ui.dialog, Some(Dialog::OfferDat)));
+    // « Plus tard » (Échap): not offered again this session.
+    h.key(Key::Escape);
+    assert!(h.ui.dialog.is_none());
+    h.ui.start_scan(&h.ctx.clone());
+    for _ in 0..500 {
+        h.frame(Vec::new());
+        if h.ui.scan.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(h.ui.dialog.is_none());
+}
+
+#[test]
+fn covers_are_off_by_default_and_never_on_in_captures() {
+    let mut h = harness(true);
+    assert!(!h.ui.config.covers.download);
+    h.ui.enable_cover_downloads();
+    assert!(!h.ui.config.covers.download, "capture: nothing changed");
+    let mut h = harness(false);
+    h.frame(Vec::new());
+    h.ui.enable_cover_downloads();
+    assert!(h.ui.config.covers.download);
+}
+
+#[test]
+fn untrusted_titles_are_sanitized_in_messages() {
+    let evil = format!("Jeu\u{1b}[2J\u{7}{}", "x".repeat(4000));
+    for msg in [
+        text::game_failed(&evil, &evil),
+        text::install_question(&evil, &evil),
+        text::firmware_question(&evil, std::slice::from_ref(&evil)),
+        text::dat_imported(&evil, 1),
+        text::dat_unknown_system(&evil),
+        text::tampered(&evil),
+        text::game_title(&evil),
+        text::dat_download_done(0, 0, &[(evil.clone(), evil.clone())], false),
+    ] {
+        assert!(!msg.contains('\u{1b}') && !msg.contains('\u{7}'), "{msg}");
+        assert!(msg.len() < 2 * 512 + 400, "{}", msg.len());
+    }
+}
+
+#[test]
+fn captures_never_record_history() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    let g = h.ui.selected_game().unwrap().clone();
+    let request = LaunchRequest {
+        game: g.id,
+        title: g.title.clone(),
+        core: CoreId::new("gambatte").unwrap(),
+        core_path: "/x".into(),
+        rom: g.path.clone(),
+        warnings: Vec::new(),
+    };
+    h.ui.game_started(&request);
+    let played = h.ui.db.as_ref().unwrap().game(g.id).unwrap().unwrap();
+    assert_eq!(played.last_played_unix, None);
+    assert_eq!(played.play_count, 0);
+}
+
+#[test]
+fn secret_input_state_is_wiped_after_validation() {
+    let mut h = harness(true);
+    h.ui.set_page(Page::Settings);
+    h.frame(Vec::new());
+    let id = settings::secret_edit_id(SecretField::IgdbSecret);
+    h.ctx.data_mut(|d| {
+        d.insert_persisted(id, egui::text_edit::TextEditState::default());
+    });
+    h.ui.settings.editing = Some(SecretField::IgdbSecret);
+    h.ui.settings.secret_buf = "hunter2".into();
+    h.key(Key::Escape);
+    assert!(h.ui.settings.editing.is_none());
+    assert!(h.ui.settings.secret_buf.is_empty());
+    assert!(egui::text_edit::TextEditState::load(&h.ctx, id).is_none());
+}
+
+#[test]
+fn starting_a_game_forgets_the_waiting_install() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    let game = h.ui.selected_game().unwrap().clone();
+    h.ui.awaiting_core = Some((CoreId::new("other").unwrap(), game.id));
+    let request = LaunchRequest {
+        game: game.id,
+        title: game.title.clone(),
+        core: CoreId::new("mgba").unwrap(),
+        core_path: PathBuf::new(),
+        rom: PathBuf::new(),
+        warnings: Vec::new(),
+    };
+    h.ui.game_started(&request);
+    assert!(h.ui.awaiting_core.is_none());
+}

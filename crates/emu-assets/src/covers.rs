@@ -4,9 +4,12 @@
 //! Credentials never reach a log line or an error: ScreenScraper puts them in query strings (its media URLs too),
 //! so no URL built or received here is ever logged; `AssetError` carries no URL by construction.
 
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
+
+use zeroize::{Zeroize, Zeroizing};
 
 use percent_encoding::utf8_percent_encode;
 use reqwest::Url;
@@ -14,12 +17,14 @@ use serde::Deserialize;
 
 use crate::dat::{PATH_SEGMENT, write_atomic};
 use crate::http::{HttpClient, Method, Request};
-use crate::{AssetError, ImageFormat, MAX_COVER_BYTES, MAX_COVER_SIDE, Secret, sniff_format};
+use crate::{AssetError, ImageFormat, MAX_COVER_BYTES, Secret, sniff_format};
 
 /// JSON answers (ScreenScraper `jeuInfos`, IGDB search, Twitch token).
 const MAX_JSON_BYTES: u64 = 4 * 1024 * 1024;
 /// Longest `Retry-After` honoured; a longer one suspends the source for that long only.
 const MAX_SUSPEND: Duration = Duration::from_secs(3600);
+/// ScreenScraper 429 ("too many threads for this account") without `Retry-After`: a short pause, not a cut.
+const SS_THREADS_PAUSE: Duration = Duration::from_secs(5);
 /// Consecutive transient errors after which a source is suspended for the session (ADR 0014: offline detection).
 const MAX_NETWORK_ERRORS: u32 = 3;
 
@@ -87,7 +92,7 @@ pub fn thumbnail_file_name(title: &str) -> String {
     name
 }
 
-/// GET of an image, then validation (signature + full decode). `404` = absent.
+/// GET of an image, then validation (signature, limits, decode without downscaling). `404` = absent.
 fn fetch_image(
     client: &HttpClient,
     url: &str,
@@ -106,9 +111,7 @@ fn fetch_image(
         404 | 410 => return Ok(None),
         status => return Err(status_error(status, response.retry_after)),
     }
-    let format = sniff_format(&response.body)
-        .ok_or_else(|| AssetError::InvalidImage("format non pris en charge".into()))?;
-    crate::decode_cover(&response.body, MAX_COVER_SIDE)?;
+    let format = crate::image::validate_cover(&response.body)?;
     Ok(Some(CoverFound {
         source,
         format,
@@ -178,7 +181,7 @@ impl CoverSource for LibretroThumbnails {
 // ---------------------------------------------------------------------------------------------------------------
 // ScreenScraper
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ScreenScraperCredentials {
     pub dev_id: String,
     pub dev_password: Secret,
@@ -194,6 +197,22 @@ impl ScreenScraperCredentials {
             || self.user.is_empty()
             || self.password.is_empty())
     }
+}
+
+/// Only says whether each field is set (the user name and developer id are personal too).
+impl std::fmt::Debug for ScreenScraperCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScreenScraperCredentials")
+            .field("dev_id", &set(self.dev_id.is_empty()))
+            .field("dev_password", &set(self.dev_password.is_empty()))
+            .field("user", &set(self.user.is_empty()))
+            .field("password", &set(self.password.is_empty()))
+            .finish()
+    }
+}
+
+fn set(empty: bool) -> &'static str {
+    if empty { "non défini" } else { "défini" }
 }
 
 /// API v2 `jeuInfos.php` by CRC32 / SHA1 / size / name and system id; one request at a time, stops for the
@@ -274,23 +293,57 @@ impl ScreenScraperSource {
         Ok(url)
     }
 
-    /// Media URLs come from the JSON: only the API host or a sibling host of the same domain is fetched.
-    fn media_allowed(&self, media: &Url) -> bool {
-        let Ok(base) = Url::parse(&self.base_url) else {
-            return false;
-        };
-        let (Some(base_host), Some(host)) = (base.host_str(), media.host_str()) else {
-            return false;
-        };
-        if host == base_host {
-            return true;
+    /// Fetches the chosen media. Its URL comes from the JSON, so a refusal or a 4xx there means "this entry
+    /// has no usable cover", never "the source is unusable": only quotas stop the source.
+    fn fetch_media(&self, media_url: &Url) -> Result<Option<CoverFound>, AssetError> {
+        match fetch_image(&self.client, media_url.as_str(), Vec::new(), self.kind()) {
+            Err(AssetError::Http { status: 430 | 431 }) => {
+                Err(AssetError::Quota { retry_after: None })
+            }
+            Err(AssetError::Quota { retry_after }) => Err(AssetError::Quota {
+                retry_after: Some(retry_after.unwrap_or(SS_THREADS_PAUSE)),
+            }),
+            Err(e @ (AssetError::UrlRefused | AssetError::Unauthorized)) => {
+                tracing::debug!("ScreenScraper : média refusé ({e}), considéré absent");
+                Ok(None)
+            }
+            Err(AssetError::Http { status }) if (400..500).contains(&status) => {
+                tracing::debug!("ScreenScraper : média en HTTP {status}, considéré absent");
+                Ok(None)
+            }
+            other => other,
         }
-        if base_host.parse::<std::net::IpAddr>().is_ok() || base_host.starts_with('[') {
-            return false;
-        }
-        let labels: Vec<&str> = base_host.split('.').collect();
-        labels.len() >= 3 && host.ends_with(&format!(".{}", labels[1..].join(".")))
     }
+}
+
+/// Media URLs come from the JSON: HTTPS only, on the API host or a sibling host of the same registrable domain
+/// (`api.screenscraper.fr` → `*.screenscraper.fr`). Without a public suffix list, a parent domain made of a short
+/// label under a two-letter TLD (`co.uk`, `com.au`) is taken as a public suffix and grants no sibling.
+/// Plain `http` is accepted only on the API host itself when the API is `http` (loopback tests).
+fn media_allowed(base: &Url, media: &Url) -> bool {
+    let (Some(base_host), Some(host)) = (base.host_str(), media.host_str()) else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    let base_host = base_host.to_ascii_lowercase();
+    if media.scheme() != "https" {
+        return media.scheme() == base.scheme()
+            && host == base_host
+            && media.port_or_known_default() == base.port_or_known_default();
+    }
+    if host == base_host {
+        return true;
+    }
+    if base_host.parse::<std::net::IpAddr>().is_ok() || base_host.starts_with('[') {
+        return false;
+    }
+    let labels: Vec<&str> = base_host.split('.').collect();
+    if labels.len() < 3 || labels.iter().any(|l| l.is_empty()) {
+        return false;
+    }
+    let parent = &labels[1..];
+    let looks_public = parent.len() == 2 && parent[0].len() <= 3 && parent[1].len() == 2;
+    !looks_public && host.ends_with(&format!(".{}", parent.join(".")))
 }
 
 impl CoverSource for ScreenScraperSource {
@@ -318,8 +371,14 @@ impl CoverSource for ScreenScraperSource {
             404 => return Ok(None),
             // 401: API closed to non-members; 403: wrong developer credentials; 426: software refused.
             401 | 403 | 426 => return Err(AssetError::Unauthorized),
-            // 423: API closed; 429: too many threads; 430: daily quota; 431: unrecognised-ROM quota.
-            423 | 429 | 430 | 431 => return Err(AssetError::Quota { retry_after: None }),
+            // 429: too many threads for the account, gone in a few seconds.
+            429 => {
+                return Err(AssetError::Quota {
+                    retry_after: Some(response.retry_after.unwrap_or(SS_THREADS_PAUSE)),
+                });
+            }
+            // 423: API closed; 430: daily quota; 431: unrecognised-ROM quota.
+            423 | 430 | 431 => return Err(AssetError::Quota { retry_after: None }),
             status => return Err(AssetError::Http { status }),
         }
         // serde_json messages may quote the body: not kept.
@@ -345,26 +404,31 @@ impl CoverSource for ScreenScraperSource {
         };
         let media_url = Url::parse(&media.url)
             .map_err(|_| AssetError::InvalidResponse("URL de média invalide".into()))?;
-        if !self.media_allowed(&media_url) {
+        let allowed = Url::parse(&self.base_url).is_ok_and(|base| media_allowed(&base, &media_url));
+        if !allowed {
             tracing::warn!("ScreenScraper : média sur un hôte inattendu, ignoré");
             return Ok(None);
         }
-        match fetch_image(&self.client, media_url.as_str(), Vec::new(), self.kind()) {
-            Err(AssetError::Http { status: 430 | 431 }) => {
-                Err(AssetError::Quota { retry_after: None })
-            }
-            other => other,
-        }
+        self.fetch_media(&media_url)
     }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // IGDB
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IgdbCredentials {
     pub client_id: String,
     pub client_secret: Secret,
+}
+
+impl std::fmt::Debug for IgdbCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IgdbCredentials")
+            .field("client_id", &set(self.client_id.is_empty()))
+            .field("client_secret", &set(self.client_secret.is_empty()))
+            .finish()
+    }
 }
 
 impl IgdbCredentials {
@@ -455,44 +519,73 @@ impl IgdbSource {
         Ok(response)
     }
 
-    fn token(&mut self) -> Result<String, AssetError> {
+    /// Sends a request carrying secrets (headers, body), then wipes its buffers. Best effort only: `reqwest`,
+    /// `hyper` and `rustls` copy headers and body into their own buffers (header maps, write buffers, TLS records
+    /// before encryption) and free them without wiping, so plaintext copies may linger in freed heap memory until
+    /// reused. Same for the response body (IGDB access token) before it is moved into a `Secret`.
+    fn send_secret(
+        &mut self,
+        mut request: Request<'_>,
+    ) -> Result<crate::http::Response, AssetError> {
+        let result = self.send(&request);
+        for (_, value) in &mut request.headers {
+            value.zeroize();
+        }
+        if let Some(body) = &mut request.body {
+            body.zeroize();
+        }
+        result
+    }
+
+    fn token(&mut self) -> Result<Zeroizing<String>, AssetError> {
         if let Some((token, expires)) = &self.token
             && Instant::now() < *expires
         {
-            return Ok(token.expose().to_owned());
+            return Ok(Zeroizing::new(token.expose().to_owned()));
         }
         self.token = None;
         // Form body, not query string: the secret stays out of the URL.
-        let body = format!(
+        // Sized up front (percent-encoding at most triples a byte): `write!` never reallocates, so no copy of
+        // the secret is left behind in a freed, unwiped buffer.
+        let client_id = &self.credentials.client_id;
+        let secret = self.credentials.client_secret.expose();
+        let mut body = Zeroizing::new(String::with_capacity(
+            64 + 3 * (client_id.len() + secret.len()),
+        ));
+        let _ = write!(
+            body,
             "client_id={}&client_secret={}&grant_type=client_credentials",
-            utf8_percent_encode(&self.credentials.client_id, PATH_SEGMENT),
-            utf8_percent_encode(self.credentials.client_secret.expose(), PATH_SEGMENT)
+            utf8_percent_encode(client_id, PATH_SEGMENT),
+            utf8_percent_encode(secret, PATH_SEGMENT)
         );
         let token_url = self.token_url.clone();
-        let response = self.send(&Request {
+        let response = self.send_secret(Request {
             method: Method::Post,
             url: &token_url,
             headers: vec![(
                 "Content-Type",
                 "application/x-www-form-urlencoded".to_owned(),
             )],
-            body: Some(body.into_bytes()),
+            body: Some(body.as_bytes().to_vec()),
             max_bytes: MAX_JSON_BYTES,
         })?;
-        match response.status {
+        let status = response.status;
+        let response_body = Zeroizing::new(response.body);
+        match status {
             200 => {}
             400 | 401 | 403 => return Err(AssetError::Unauthorized),
             status => return Err(AssetError::Http { status }),
         }
-        let parsed: TwitchToken = serde_json::from_slice(&response.body)
+        let parsed: TwitchToken = serde_json::from_slice(&response_body)
             .map_err(|_| AssetError::InvalidResponse("jeton Twitch illisible".into()))?;
-        if parsed.access_token.is_empty() {
+        let expires_in = parsed.expires_in;
+        // Moved, not copied, into the `Secret`, which wipes it on drop.
+        let token = Secret::new(parsed.access_token);
+        if token.is_empty() {
             return Err(AssetError::InvalidResponse("jeton Twitch vide".into()));
         }
-        let lifetime =
-            Duration::from_secs(parsed.expires_in.unwrap_or(3600)).saturating_sub(TOKEN_MARGIN);
-        let token = Secret::new(parsed.access_token);
-        let exposed = token.expose().to_owned();
+        let lifetime = Duration::from_secs(expires_in.unwrap_or(3600)).saturating_sub(TOKEN_MARGIN);
+        let exposed = Zeroizing::new(token.expose().to_owned());
         self.token = Some((token, Instant::now() + lifetime));
         Ok(exposed)
     }
@@ -505,12 +598,13 @@ impl IgdbSource {
         let mut renewed = false;
         loop {
             let token = self.token()?;
-            let response = self.send(&Request {
+            let client_id = self.credentials.client_id.clone();
+            let response = self.send_secret(Request {
                 method: Method::Post,
                 url: &url,
                 headers: vec![
-                    ("Client-ID", self.credentials.client_id.clone()),
-                    ("Authorization", format!("Bearer {token}")),
+                    ("Client-ID", client_id),
+                    ("Authorization", format!("Bearer {}", token.as_str())),
                     ("Content-Type", "text/plain".to_owned()),
                 ],
                 body: Some(body.clone().into_bytes()),
@@ -618,7 +712,7 @@ struct Slot {
 /// Sources in user order. A source failing with `Unauthorized` / `Quota`, or 3 `Network` errors in a row, is
 /// skipped until `reset`; when every source is skipped for network reasons, `offline()` is true.
 ///
-/// `Quota` with a `Retry-After` (IGDB) only suspends the source for that long. Unusable content (invalid image or
+/// `Quota` with a delay (IGDB `Retry-After`, ScreenScraper 429) only suspends the source for that long. Unusable content (invalid image or
 /// JSON, oversized body, other 4xx) counts as "not found" for that source, so a broken entry is not retried at
 /// every pass; a source whose credentials were refused does not prevent a conclusive `Ok(None)`.
 pub struct CoverChain {
@@ -779,6 +873,7 @@ impl PartialEq for CoverCache {
 impl Eq for CoverCache {}
 
 const BOXART: &str = "boxart";
+const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
 
 fn safe_component(s: &str) -> bool {
     !s.is_empty()
@@ -823,14 +918,20 @@ impl CoverCache {
         }
         let file = format!("{key}.{}", found.format.extension());
         let dest = dir.join(&file);
+        // A rewritten file replaces its previous size instead of adding to it.
+        let mut removed = regular_file_size(&dest);
         write_atomic(&dest, &found.bytes)?;
         // Same key, other format: stale.
         for other in [ImageFormat::Png, ImageFormat::Jpeg] {
             if other != found.format {
-                let _ = std::fs::remove_file(dir.join(format!("{key}.{}", other.extension())));
+                let stale = dir.join(format!("{key}.{}", other.extension()));
+                let size = regular_file_size(&stale);
+                if size > 0 && std::fs::remove_file(&stale).is_ok() {
+                    removed += size;
+                }
             }
         }
-        self.account(found.bytes.len() as u64, &dest);
+        self.account(found.bytes.len() as u64, removed, &dest);
         Ok(relative.join(file))
     }
 
@@ -847,10 +948,10 @@ impl CoverCache {
         (components > 0).then(|| self.root.join(relative))
     }
 
-    fn account(&self, added: u64, keep: &Path) {
+    fn account(&self, added: u64, removed: u64, keep: &Path) {
         let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
         let total = match *used {
-            Some(total) => total.saturating_add(added),
+            Some(total) => total.saturating_sub(removed).saturating_add(added),
             None => self.files().iter().map(|f| f.1).sum(),
         };
         *used = Some(if total > self.max_bytes {
@@ -860,32 +961,66 @@ impl CoverCache {
         });
     }
 
-    /// `(mtime, size, path)` of every regular file under `<root>/*/boxart/`.
+    /// `(mtime, size, path)` of every regular file under `<root>/*/boxart/`. Symbolic links are never followed
+    /// (neither directories nor files: pruning must not delete outside the cache), and in-flight temporaries of
+    /// `write_atomic` (`.<name>.tmp-*`) are skipped.
     fn files(&self) -> Vec<(SystemTime, u64, PathBuf)> {
+        self.walk().0
+    }
+
+    /// [`Self::files`], plus the `write_atomic` temporaries as `(mtime, path)`.
+    #[allow(clippy::type_complexity)]
+    fn walk(&self) -> (Vec<(SystemTime, u64, PathBuf)>, Vec<(SystemTime, PathBuf)>) {
         let mut files = Vec::new();
+        let mut temporaries = Vec::new();
         let Ok(systems) = std::fs::read_dir(&self.root) else {
-            return files;
+            return (files, temporaries);
         };
         for system in systems.filter_map(Result::ok) {
-            let Ok(entries) = std::fs::read_dir(system.path().join(BOXART)) else {
+            // `DirEntry::file_type` does not follow symbolic links.
+            if !system.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let boxart = system.path().join(BOXART);
+            if !std::fs::symlink_metadata(&boxart).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&boxart) else {
                 continue;
             };
             for entry in entries.filter_map(Result::ok) {
-                // `DirEntry::metadata` does not follow symbolic links.
-                if let Ok(meta) = entry.metadata()
-                    && meta.is_file()
-                {
-                    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                if is_temporary(&entry.file_name()) {
+                    temporaries.push((mtime, entry.path()));
+                } else {
                     files.push((mtime, meta.len(), entry.path()));
                 }
             }
         }
-        files
+        (files, temporaries)
     }
 
-    /// Deletes the oldest files down to 90 % of the limit; returns the new total.
+    /// Deletes the oldest files down to 90 % of the limit; returns the new total. Temporaries older than
+    /// [`STALE_TEMPORARY`] (left by a crash between write and rename) are deleted too; younger ones may still
+    /// be in flight in another thread or process.
     fn prune(&self, keep: &Path) -> u64 {
-        let mut files = self.files();
+        let (mut files, temporaries) = self.walk();
+        let now = SystemTime::now();
+        for (mtime, path) in temporaries {
+            if now
+                .duration_since(mtime)
+                .is_ok_and(|age| age > STALE_TEMPORARY)
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                tracing::warn!("cache de jaquettes : {} : {e}", path.display());
+            }
+        }
         let mut total: u64 = files.iter().map(|f| f.1).sum();
         let target = self.max_bytes / 10 * 9;
         files.sort();
@@ -905,8 +1040,21 @@ impl CoverCache {
     }
 }
 
+/// Size of `path` if it is a regular file (not followed when a symbolic link), else 0.
+fn regular_file_size(path: &Path) -> u64 {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map_or(0, |m| m.len())
+}
+
+/// `write_atomic` temporaries: `.<file name>.tmp-<random>`.
+fn is_temporary(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|n| n.starts_with('.') && n.contains(".tmp-"))
+}
+
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
     bytes.iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
         s

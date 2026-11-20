@@ -23,6 +23,8 @@ const WINDOW: (u32, u32) = (1280, 720);
 const CAPTURE_PASSES: u32 = 4;
 /// Frames emulated before the window is captured in `--screen library-launch`.
 const LAUNCH_CAPTURE_FRAMES: u64 = 90;
+/// A `--screen` capture waits this long at most for cached covers to be decoded.
+const CAPTURE_COVER_WAIT: Duration = Duration::from_secs(5);
 
 /// Wakes the event loop from another thread.
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +42,7 @@ struct Host {
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
     passes_left: u32,
     launch_tried: bool,
+    started: Instant,
     repaint_at: Option<Instant>,
     error: Option<UiError>,
 }
@@ -66,6 +69,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         proxy,
         passes_left: CAPTURE_PASSES,
         launch_tried: false,
+        started: Instant::now(),
         repaint_at: None,
         error: None,
     };
@@ -117,6 +121,8 @@ impl Host {
         match App::build(options, true) {
             Ok(mut app) => {
                 let Some(window) = self.window.take() else {
+                    // Request dropped: its core was marked in use by `prepare_launch`.
+                    self.library.game_over(None, None);
                     return;
                 };
                 self.library.game_started(&request);
@@ -181,7 +187,11 @@ impl Host {
             }
             egui.paint(window);
             if self.dump_window.is_some() && self.screen.is_some() && self.game.is_none() {
-                self.passes_left = self.passes_left.saturating_sub(1);
+                let waiting_covers =
+                    self.library.covers_busy() && self.started.elapsed() < CAPTURE_COVER_WAIT;
+                if !waiting_covers {
+                    self.passes_left = self.passes_left.saturating_sub(1);
+                }
                 if self.passes_left == 0
                     && let Some(path) = &self.dump_window
                 {
@@ -202,7 +212,11 @@ impl Host {
                 LibraryEvent::Launch(request) => {
                     if self.game.is_none() && !event_loop.exiting() {
                         self.start_game(event_loop, request);
+                    } else if self.game.is_none() {
+                        // Exiting: the request is dropped, release its core.
+                        self.library.game_over(None, None);
                     }
+                    // A game already running keeps its core marked in use (one slot in the manager).
                 }
             }
         }
