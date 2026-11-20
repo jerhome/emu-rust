@@ -474,7 +474,7 @@ fn outdated_cached_index_is_renewed_after_a_crc_mismatch() {
         fs::read(cores_dir(data.path()).join("gambatte_libretro.so")).unwrap(),
         new
     );
-    assert_eq!(requests_to(&bot, GAMBATTE_ZIP), 2);
+    assert_eq!(requests_to(&bot, GAMBATTE_ZIP), 1);
     assert!(tmp_leftovers(data.path()).is_empty());
 }
 

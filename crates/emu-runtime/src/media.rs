@@ -246,38 +246,101 @@ fn choose_work_dir(
     game: &str,
     plan: &mut Plan,
 ) -> Result<ChosenDir, RuntimeError> {
-    let mut free = None;
+    let mut free: Option<u32> = None;
     let mut changed = None;
+    // Folders whose manifest does not obviously belong to this set: checked (possibly hashing sources) only
+    // after the quick matches, so a game kept in `(n).disks` does not cost a full CRC at each launch.
+    let mut deferred: Vec<(PathBuf, Vec<ManifestEntry>, Vec<bool>)> = Vec::new();
+    let found = |dir: PathBuf, entries, present, assignment| ChosenDir {
+        dir,
+        legacy: false,
+        entries,
+        present,
+        assignment,
+        notice: None,
+    };
+    // Tries one manifest folder: `Some` when it holds this set's copies.
+    let try_folder = |dir: PathBuf,
+                      entries: Vec<ManifestEntry>,
+                      present: Vec<bool>,
+                      plan: &mut Plan,
+                      changed: &mut Option<PathBuf>|
+     -> Result<Option<ChosenDir>, RuntimeError> {
+        match workcopy::assign(&entries, &present, plan)? {
+            Some(assignment) => Ok(Some(found(dir, entries, present, assignment))),
+            None => {
+                if changed.is_none() && plan.shares_path(&entries, &present) {
+                    *changed = Some(dir);
+                }
+                Ok(None)
+            }
+        }
+    };
+    let mut legacy = None;
     for n in 1..=MAX_WORK_DIRS {
         let dir = work_dir_candidate(saves_core_dir, game, n);
-        let chosen = |legacy, entries, present, assignment| ChosenDir {
-            dir: dir.clone(),
-            legacy,
-            entries,
-            present,
-            assignment,
-            notice: None,
-        };
         match workcopy::inspect(&dir, is_disk_file_name)? {
             DirState::Absent => {
-                free.get_or_insert((n, dir.clone()));
+                free.get_or_insert(n);
             }
             DirState::NotDir | DirState::Unreadable => {}
-            DirState::Legacy => return Ok(chosen(true, Vec::new(), Vec::new(), Vec::new())),
+            DirState::Legacy => {
+                legacy = Some(dir);
+                break;
+            }
             DirState::Manifest(entries) => {
-                let present = workcopy::present(&dir, &entries)?;
-                match workcopy::assign(&entries, &present, plan)? {
-                    Some(assignment) => return Ok(chosen(false, entries, present, assignment)),
-                    None => {
-                        if changed.is_none() && plan.shares_path(&entries, &present) {
-                            changed = Some(dir.clone());
-                        }
+                let mut present = workcopy::present(&dir, &entries)?;
+                // A copy named like a file we generate in the folder is ignored, never handed to the core.
+                let playlist = format!("{game}.m3u").to_lowercase();
+                for (p, e) in present.iter_mut().zip(&entries) {
+                    *p &= e.copy.to_lowercase() != playlist;
+                }
+                if plan.quick_match(&entries, &present) {
+                    if let Some(c) = try_folder(dir, entries, present, plan, &mut changed)? {
+                        return Ok(c);
                     }
+                } else {
+                    deferred.push((dir, entries, present));
                 }
             }
         }
     }
-    let Some((n, dir)) = free else {
+    for (dir, entries, present) in deferred {
+        if let Some(c) = try_folder(dir, entries, present, plan, &mut changed)? {
+            return Ok(c);
+        }
+    }
+    if let Some(dir) = legacy {
+        return Ok(ChosenDir {
+            dir,
+            legacy: true,
+            entries: Vec::new(),
+            present: Vec::new(),
+            assignment: Vec::new(),
+            notice: None,
+        });
+    }
+    let Some(first_free) = free else {
+        return Err(RuntimeError::InvalidMediaSet(format!(
+            "{MAX_WORK_DIRS} working-copy folders already exist for `{game}`"
+        )));
+    };
+    // Exclusive creation: another instance (a homonymous game) that took the folder since the scan is skipped.
+    // Two instances of the very same game starting together can still share a folder (not guarded).
+    fs::create_dir_all(saves_core_dir).map_err(|e| io_error(saves_core_dir, e))?;
+    let mut created = None;
+    for n in first_free..=MAX_WORK_DIRS {
+        let dir = work_dir_candidate(saves_core_dir, game, n);
+        match fs::create_dir(&dir) {
+            Ok(()) => {
+                created = Some((n, dir));
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_error(&dir, e)),
+        }
+    }
+    let Some((n, dir)) = created else {
         return Err(RuntimeError::InvalidMediaSet(format!(
             "{MAX_WORK_DIRS} working-copy folders already exist for `{game}`"
         )));
@@ -345,11 +408,16 @@ fn prepare_working_copies(
         }
     }
     // Disks added from the menu stay available to later sessions.
-    for (j, entry) in chosen.entries.iter().enumerate() {
-        if !consumed[j] && chosen.present[j] && entry.origin == Origin::Added {
-            recorded.push(entry.clone());
-        }
-    }
+    // Only the newest ones: the manifest reader refuses more than it expects.
+    let kept: Vec<&ManifestEntry> = chosen
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|&(j, e)| !consumed[j] && chosen.present[j] && e.origin == Origin::Added)
+        .map(|(_, e)| e)
+        .collect();
+    let skip = kept.len().saturating_sub(MAX_ADDED_REMEMBERED);
+    recorded.extend(kept.into_iter().skip(skip).cloned());
     let content = match stage.images.as_slice() {
         [only] => only.clone(),
         _ => stage.write_playlist(game)?,
@@ -457,7 +525,9 @@ impl<'a> Stage<'a> {
 
     /// Unique destination for `name`; a clash (two `Disk 1.st` from different folders) gets a numeric prefix
     /// derived from the position, so the same set maps to the same files at every launch.
-    fn dest_path(&mut self, name: &str) -> Result<PathBuf, RuntimeError> {
+    ///
+    /// An existing file is adopted only when its size is `size` (a legacy folder may hold another game's disk).
+    fn dest_path(&mut self, name: &str, size: u64) -> Result<PathBuf, RuntimeError> {
         let dir = self.dest_dir()?;
         let mut candidate = name.to_owned();
         let mut n = self.images.len() + 1;
@@ -467,7 +537,7 @@ impl<'a> Stage<'a> {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => true,
                     Err(e) => return Err(io_error(&dir.join(&candidate), e)),
                     // An existing copy is adopted (never during a session, never a link or a folder).
-                    Ok(meta) => meta.is_file() && !self.fresh,
+                    Ok(meta) => meta.is_file() && !self.fresh && meta.len() == size,
                 };
             if free {
                 self.used.insert(candidate.to_lowercase());
@@ -504,7 +574,8 @@ impl<'a> Stage<'a> {
     /// Working copy of a whole file; an existing regular file at the chosen name is adopted (`!fresh` only).
     fn copy_plain(&mut self, source: &Path) -> Result<PathBuf, RuntimeError> {
         let name = disk_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
-        let dest = self.dest_path(&name)?;
+        let size = fs::metadata(source).map_err(|e| io_error(source, e))?.len();
+        let dest = self.dest_path(&name, size)?;
         if !exists(&dest)? {
             copy_file(source, &dest, self.limits.max_size)?;
             tracing::info!("working copy of {} created", source.display());
@@ -529,7 +600,7 @@ impl<'a> Stage<'a> {
         zip: &Path,
         entry: &ArchiveEntry,
     ) -> Result<PathBuf, RuntimeError> {
-        let dest = self.dest_path(&disk_file_name(&entry.name))?;
+        let dest = self.dest_path(&disk_file_name(&entry.name), entry.declared)?;
         if self.policy == MediaPolicy::Direct || !exists(&dest)? {
             let mut failure = None;
             let written = write_atomic_with(&dest, FileMode::Default, |file| {
@@ -684,7 +755,7 @@ fn copy_file(source: &Path, dest: &Path, max: u64) -> Result<(), RuntimeError> {
 
 /// Entries of a user `.m3u` (≤ 64 KiB, ≤ [`MAX_MEDIA_IMAGES`] entries): blank lines and `#` lines skipped, a
 /// `|label` suffix dropped, paths absolute or relative to the playlist's folder; `..`, and drive or root prefixes
-/// on a relative path, are refused. Backslashes are separators on every platform (playlists made on Windows).
+/// on a relative path, are refused, as are non-UTF-8 files and control characters inside an entry. Backslashes are separators on every platform (playlists made on Windows).
 pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeError> {
     let bytes = read_bounded(playlist, MAX_PLAYLIST_BYTES).map_err(|e| io_error(playlist, e))?;
     if bytes.len() > MAX_PLAYLIST_BYTES {
@@ -694,7 +765,9 @@ pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeErr
         )));
     }
     let base = playlist.parent().unwrap_or(Path::new(""));
-    let text = String::from_utf8_lossy(&bytes);
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        RuntimeError::InvalidMediaSet(format!("{} is not UTF-8", playlist.display()))
+    })?;
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim_start_matches('\u{feff}').trim();
@@ -704,6 +777,12 @@ pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeErr
         let entry = line.split('|').next().unwrap_or("").trim();
         if entry.is_empty() {
             continue;
+        }
+        if entry.chars().any(char::is_control) {
+            return Err(RuntimeError::InvalidMediaSet(format!(
+                "{}: an entry contains a control character",
+                playlist.display()
+            )));
         }
         let entry = playlist_entry_path(entry);
         let refuse = |why: &str| {
@@ -1559,6 +1638,111 @@ mod tests {
     }
 
     #[test]
+    fn legacy_folder_copy_of_another_size_is_not_adopted() {
+        let f = Fixture::new();
+        let src = f.file("G/Disk 1.st", b"mine");
+        let dir = f.saves().join("G.disks");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Disk 1.st"), b"someone else's disk").unwrap();
+        let p = f
+            .prepare(&set("G", vec![src.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(
+            fs::read(dir.join("Disk 1.st")).unwrap(),
+            b"someone else's disk"
+        );
+        assert_ne!(p.images[0], dir.join("Disk 1.st"));
+        assert_eq!(fs::read(&p.images[0]).unwrap(), b"mine");
+        // Same size: adopted as before.
+        let dir2 = f.saves().join("H.disks");
+        fs::create_dir_all(&dir2).unwrap();
+        fs::write(dir2.join("Disk 1.st"), b"prog").unwrap();
+        let q = f
+            .prepare(&set("H", vec![src]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(q.images[0], dir2.join("Disk 1.st"));
+        assert_eq!(fs::read(&q.images[0]).unwrap(), b"prog");
+    }
+
+    #[test]
+    fn remembered_added_disks_are_trimmed_so_the_manifest_stays_readable() {
+        let f = Fixture::new();
+        let src = f.file("G/Disk 1.st", b"mine");
+        let p = f
+            .prepare(&set("G", vec![src.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        let dir = p.work_dir.unwrap();
+        let manifest = dir.join(MANIFEST_NAME);
+        let mut text = fs::read_to_string(&manifest).unwrap();
+        for i in 0..100 {
+            fs::write(dir.join(format!("add{i:03}.st")), b"x").unwrap();
+            text.push_str(&format!(
+                "added\tadd{i:03}.st\t\t1\t-\t00000001\t/nowhere{i}\n"
+            ));
+        }
+        fs::write(&manifest, text).unwrap();
+        f.prepare(&set("G", vec![src]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        let DirState::Manifest(entries) = workcopy::inspect(&dir, is_disk_file_name).unwrap()
+        else {
+            panic!("manifest unreadable after rewrite");
+        };
+        let added: Vec<_> = entries
+            .iter()
+            .filter(|e| e.origin == Origin::Added)
+            .collect();
+        assert_eq!(added.len(), MAX_ADDED_REMEMBERED);
+        assert_eq!(added.last().unwrap().copy, "add099.st");
+    }
+
+    #[test]
+    fn quick_match_recognises_the_own_folder_without_hashing() {
+        let f = Fixture::new();
+        let one = f.file("A/d.st", b"one");
+        let two = f.file("B/d.st", b"two");
+        let first = f
+            .prepare(&set("d", vec![one.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        let second = f
+            .prepare(&set("d", vec![two.clone()]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        let state = |p: &PreparedMedia| {
+            let dir = p.work_dir.clone().unwrap();
+            let DirState::Manifest(e) = workcopy::inspect(&dir, is_disk_file_name).unwrap() else {
+                panic!()
+            };
+            let present = workcopy::present(&dir, &e).unwrap();
+            (e, present)
+        };
+        let (e1, p1) = state(&first);
+        let (e2, p2) = state(&second);
+        let plan = Plan::new(&[two], &exts(), Limits::DEFAULT, MAX_MEDIA_IMAGES).unwrap();
+        assert!(plan.quick_match(&e2, &p2));
+        assert!(!plan.quick_match(&e1, &p1));
+    }
+
+    #[test]
+    fn playlist_refuses_control_characters_and_non_utf8() {
+        let f = Fixture::new();
+        f.file("a.st", b"a");
+        for bytes in [
+            &b"a\x01.st\n"[..],
+            b"a\x1b[2J.st\n",
+            b"a\x7f.st\n",
+            b"a.st\xff\n",
+            b"\xff\xfe#x\na.st\n",
+        ] {
+            let m3u = f.file("List.m3u", bytes);
+            assert!(
+                matches!(parse_playlist(&m3u), Err(RuntimeError::InvalidMediaSet(_))),
+                "{bytes:?}"
+            );
+        }
+        let ok = f.file("Ok.m3u", b"\xef\xbb\xbf# c\r\na.st|label\r\n");
+        assert_eq!(parse_playlist(&ok).unwrap().len(), 1);
+    }
+
+    #[test]
     fn homonymous_games_get_their_own_copies() {
         let f = Fixture::new();
         let one = f.file("Jeu1/disk1.st", b"jeu1");
@@ -1689,7 +1873,7 @@ mod tests {
         let d = f.file("Old/Game.st", b"original");
         let work = f.saves().join("Game.disks");
         fs::create_dir_all(&work).unwrap();
-        fs::write(work.join("Game.st"), b"old progress").unwrap();
+        fs::write(work.join("Game.st"), b"progress").unwrap();
         let p = f
             .prepare(&set("Game", vec![d.clone()]), MediaPolicy::WorkingCopy)
             .unwrap();
@@ -1697,7 +1881,7 @@ mod tests {
             (p.work_dir.as_deref(), p.notice.clone()),
             (Some(work.as_path()), None)
         );
-        assert_eq!(fs::read(&p.content).unwrap(), b"old progress");
+        assert_eq!(fs::read(&p.content).unwrap(), b"progress");
         assert!(work.join(MANIFEST_NAME).is_file());
         // Recorded for this source: another game with the same name no longer gets it.
         let other = f.file("Other/Game.st", b"other");
@@ -1706,7 +1890,7 @@ mod tests {
             .unwrap();
         assert_eq!(q.notice, Some(WorkDirNotice::SameName));
         assert_eq!(fs::read(&q.content).unwrap(), b"other");
-        assert_eq!(fs::read(&p.content).unwrap(), b"old progress");
+        assert_eq!(fs::read(&p.content).unwrap(), b"progress");
     }
 
     #[test]

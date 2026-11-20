@@ -217,6 +217,10 @@ pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
 /// skipped, a `|label` suffix dropped, paths absolute or relative to `dir`. `..`, control characters and drive or
 /// root prefixes on a relative path are refused. Backslashes are separators on every platform but Windows.
 ///
+/// Common strict rule (library and runtime): the file must be UTF-8 (a leading BOM is tolerated; the caller
+/// rejects other bytes before this function), and an entry may contain no control character (TAB included);
+/// only leading and trailing whitespace around an entry is trimmed.
+///
 /// Must stay aligned with `parse_playlist` in `emu-runtime/src/media.rs` (the crates cannot depend on each
 /// other): a playlist the core accepts must not be flagged here, or the game would be hidden by the scan.
 pub(crate) fn parse_m3u(text: &str, dir: &Path) -> Result<Vec<PathBuf>, String> {

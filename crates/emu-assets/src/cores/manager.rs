@@ -565,7 +565,6 @@ impl CoreManager {
             if crc32 == remote.crc32 {
                 break (data, crc32);
             }
-            drop(data);
             // The index may predate the zip: one refresh, then the download is verified against the fresh index.
             // Never accept a file that disagrees with an index fetched after the download.
             let previous = remote.clone();
@@ -578,6 +577,11 @@ impl CoreManager {
             }
             refreshed = true;
             remote = self.remote_core(id)?;
+            if crc32 == remote.crc32 {
+                // Stale index, recent zip: the download already matches the fresh index.
+                break (data, crc32);
+            }
+            drop(data);
             if remote.crc32 == previous.crc32 {
                 return Err(CoreError::CrcMismatch {
                     id: id.clone(),

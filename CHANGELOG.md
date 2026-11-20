@@ -2,6 +2,24 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [2.0.0-rc.2] - 2026-11-21
+
+Corrections issues de l'essai de la rc.1 (Windows) et de deux revues indépendantes.
+
+### Corrigé
+
+- Installation d'un core : un catalogue en cache plus vieux que le build nightly provoquait « CRC32 x au lieu de y ».
+  Le catalogue de plus de 12 h est rafraîchi avant l'installation, et un écart de CRC déclenche un rafraîchissement
+  puis, si besoin, un seul retéléchargement ; un fichier non conforme n'est jamais installé.
+- Copies de travail des disquettes : chaque dossier retient l'identité de ses disquettes sources (taille + CRC32).
+  Deux jeux homonymes (`disk1.st`) ou une image source remplacée obtiennent des copies séparées (`<jeu> (2).disks`),
+  l'ancienne progression n'est jamais écrasée ; « Réinitialiser les disquettes » vise le dossier de la session ;
+  les disquettes ajoutées par le menu sont retrouvées d'une session à l'autre.
+- Un core inconnu (`--core`) ne travaille directement sur les fichiers que pour un contenu 100 % console.
+- `.m3u` lus avec les mêmes règles par la bibliothèque et au lancement ; casse ignorée sous Windows et macOS.
+- Touches tapées pendant la pause ignorées ; noms réservés Windows (CON, NUL…) dans les options par jeu ;
+  lecture plus sûre des valeurs renvoyées par le core.
+
 ## [2.0.0-rc.1] - 2026-11-20
 
 Première pré-release de la 2.0 : **Atari ST** et l'infrastructure « ordinateur » (ADR 0015).

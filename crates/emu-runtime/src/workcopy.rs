@@ -251,6 +251,22 @@ impl Plan {
         self.sources[item.src].matches(entry)
     }
 
+    /// A present set entry of the folder was recorded for a source that has not changed since (same path, size
+    /// and mtime): the folder is almost certainly this set's, and checking it costs no file read.
+    pub fn quick_match(&self, entries: &[ManifestEntry], present: &[bool]) -> bool {
+        entries.iter().zip(present).any(|(e, &p)| {
+            p && e.origin == Origin::Set
+                && e.mtime.is_some()
+                && self.items.iter().any(|it| {
+                    let s = &self.sources[it.src];
+                    e.entry.as_deref() == it.entry.as_ref().map(|a| a.name.as_str())
+                        && e.path == s.key
+                        && e.size == s.size
+                        && e.mtime == s.mtime
+                })
+        })
+    }
+
     /// One of the sources is at the path recorded by a set entry of the folder.
     pub fn shares_path(&self, entries: &[ManifestEntry], present: &[bool]) -> bool {
         entries.iter().zip(present).any(|(e, &p)| {
@@ -468,7 +484,15 @@ pub(crate) fn decode(bytes: &[u8], is_copy_name: fn(&str) -> bool) -> Option<Vec
             _ => return None,
         };
         let copy = String::from_utf8(unescape(copy)?).ok()?;
-        if !is_copy_name(&copy) || copy == MANIFEST_NAME {
+        // The generated playlist is `<game>.m3u`: no copy may take an `.m3u` name, nor repeat a name (case-insensitive
+        // filesystems would make both entries the same file).
+        if !is_copy_name(&copy)
+            || copy == MANIFEST_NAME
+            || has_ext(Path::new(&copy), "m3u")
+            || out
+                .iter()
+                .any(|e: &ManifestEntry| e.copy.eq_ignore_ascii_case(&copy))
+        {
             return None;
         }
         let entry = String::from_utf8(unescape(entry)?).ok()?;
@@ -543,6 +567,8 @@ mod tests {
             "emu-rust working copies 1\nset\ta.st\t\t1\t-\t1\t/a\n",
             "emu-rust working copies 1\nset\ta%2\t\t1\t-\t00000001\t/a\n",
             "emu-rust working copies 1\nset\ta.st\t\t1\t-\t00000001\t/a",
+            "emu-rust working copies 1\nset\ta.st\t\t1\t-\t00000001\t/a\nset\tA.ST\t\t1\t-\t00000001\t/b\n",
+            "emu-rust working copies 1\nset\tGame.M3U\t\t1\t-\t00000001\t/a\n",
         ] {
             assert_eq!(decode(bad.as_bytes(), any_name), None, "{bad:?}");
         }
