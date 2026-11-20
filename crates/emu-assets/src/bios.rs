@@ -892,7 +892,8 @@ mod tests {
 
     #[test]
     fn catalogue_validation() {
-        let base = BUILTIN.to_owned();
+        // Windows checkouts may turn the embedded catalogue into CRLF; the replacements below use LF.
+        let base = BUILTIN.replace("\r\n", "\n");
         let bad = |from: &str, to: &str| {
             assert!(base.contains(from), "{from}");
             parse_free_bios(&base.replacen(from, to, 1)).unwrap_err()
