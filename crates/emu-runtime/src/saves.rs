@@ -30,6 +30,16 @@ pub enum FileMode {
 /// (`.<name>.tmp-<pid>`), `sync_all`, `rename` over `path`, then fsync of the directory on Unix.
 /// A crash leaves either the old or the new file, never a truncated one. The temporary file is removed on error.
 pub fn write_atomic(path: &Path, data: &[u8], mode: FileMode) -> io::Result<()> {
+    write_atomic_with(path, mode, |file| file.write_all(data))
+}
+
+/// [`write_atomic`] with the content produced by `fill` (streamed copies of large files). `fill` writes into the
+/// temporary file; on error nothing replaces `path`.
+pub(crate) fn write_atomic_with(
+    path: &Path,
+    mode: FileMode,
+    fill: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -47,7 +57,7 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: FileMode) -> io::Result<()> 
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp = dir.join(tmp_name);
 
-    let file = match create_new(&tmp, mode) {
+    let mut file = match create_new(&tmp, mode) {
         // Leftover of a crashed run that had the same pid (common in containers): replace it. `remove_file`
         // removes a symlink itself, never its target, and `create_new` refuses to follow one.
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -56,7 +66,10 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: FileMode) -> io::Result<()> 
         }
         other => other?,
     };
-    let written = write_and_sync(file, data).and_then(|()| fs::rename(&tmp, path));
+    let synced = fill(&mut file).and_then(|()| file.sync_all());
+    // Closed before the rename: Windows cannot rename an open file.
+    drop(file);
+    let written = synced.and_then(|()| fs::rename(&tmp, path));
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -76,11 +89,6 @@ fn create_new(path: &Path, mode: FileMode) -> io::Result<File> {
     #[cfg(not(unix))]
     let _ = mode;
     options.open(path)
-}
-
-fn write_and_sync(mut file: File, data: &[u8]) -> io::Result<()> {
-    file.write_all(data)?;
-    file.sync_all()
 }
 
 /// Makes the rename durable. Best effort: some filesystems (9p/drvfs under WSL, FUSE) reject fsync on a

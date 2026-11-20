@@ -121,6 +121,7 @@ mod tests {
             favorite: false,
             last_played_unix: None,
             play_count: 0,
+            media: Vec::new(),
         }
     }
 

@@ -64,66 +64,161 @@ pub(crate) fn prepare(
     extract(rom, info, limits)
 }
 
-fn archive_error(path: &Path, message: impl std::fmt::Display) -> RuntimeError {
+pub(crate) fn archive_error(path: &Path, message: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Archive {
         path: path.to_path_buf(),
         message: message.to_string(),
     }
 }
 
-fn io_error(path: &Path, source: io::Error) -> RuntimeError {
+pub(crate) fn io_error(path: &Path, source: io::Error) -> RuntimeError {
     RuntimeError::Io {
         path: path.to_path_buf(),
         source,
     }
 }
 
-fn extract(rom: &Path, info: &SystemInfo, limits: Limits) -> Result<PreparedContent, RuntimeError> {
-    let file = File::open(rom).map_err(|e| io_error(rom, e))?;
-    let archive_size = file.metadata().map_err(|e| io_error(rom, e))?.len();
+/// Opens `path` as an untrusted zip: archive size and declared entry count are checked before the central
+/// directory is parsed.
+pub(crate) fn open_archive(
+    path: &Path,
+    limits: Limits,
+) -> Result<ZipArchive<BufReader<File>>, RuntimeError> {
+    let file = File::open(path).map_err(|e| io_error(path, e))?;
+    let archive_size = file.metadata().map_err(|e| io_error(path, e))?.len();
     // The file size alone does not bound the central directory that `ZipArchive::new` parses into memory
     // (a small archive can announce millions of entries), so the declared count is checked first.
     if archive_size > limits.max_archive_size {
         return Err(RuntimeError::ContentTooLarge {
-            path: rom.to_path_buf(),
+            path: path.to_path_buf(),
             size: archive_size,
         });
     }
     let mut file = file;
     match declared_entries(&mut file, archive_size) {
         Ok(Some(n)) if n > limits.max_entries as u64 => {
-            return Err(archive_error(rom, format!("too many entries ({n})")));
+            return Err(archive_error(path, format!("too many entries ({n})")));
         }
         Ok(_) => {}
-        Err(e) => return Err(io_error(rom, e)),
+        Err(e) => return Err(io_error(path, e)),
     }
     file.seek(SeekFrom::Start(0))
-        .map_err(|e| io_error(rom, e))?;
-    let mut archive = ZipArchive::new(BufReader::new(file)).map_err(|e| archive_error(rom, e))?;
+        .map_err(|e| io_error(path, e))?;
+    let archive = ZipArchive::new(BufReader::new(file)).map_err(|e| archive_error(path, e))?;
     if archive.len() > limits.max_entries {
         return Err(archive_error(
-            rom,
+            path,
             format!("too many entries ({})", archive.len()),
         ));
     }
+    Ok(archive)
+}
 
-    let mut chosen = None;
+/// File entry of an archive selected by name; `name` is already a safe single file name.
+#[derive(Debug, Clone)]
+pub(crate) struct ArchiveEntry {
+    pub index: usize,
+    pub name: String,
+    pub declared: u64,
+}
+
+/// File entries whose sanitized name satisfies `accept`, in archive order, stopping after `max` of them.
+/// Only central-directory metadata is read.
+pub(crate) fn accepted_entries(
+    archive: &mut ZipArchive<BufReader<File>>,
+    path: &Path,
+    accept: impl Fn(&str) -> bool,
+    max: usize,
+) -> Result<Vec<ArchiveEntry>, RuntimeError> {
+    let mut out = Vec::new();
     for index in 0..archive.len() {
+        if out.len() >= max {
+            break;
+        }
         // Central-directory metadata only: no seek, no decompressor for entries that are only inspected.
         let entry = archive
             .by_index_data(index)
-            .map_err(|e| archive_error(rom, e))?;
+            .map_err(|e| archive_error(path, e))?;
         if !entry.is_file() {
             continue;
         }
         let Some(name) = entry_file_name(entry.name_raw()) else {
             continue;
         };
-        if accepts(info, &name) {
-            chosen = Some((index, name, entry.size()));
-            break;
+        if accept(&name) {
+            out.push(ArchiveEntry {
+                index,
+                name,
+                declared: entry.size(),
+            });
         }
     }
+    Ok(out)
+}
+
+/// Streams one entry into `out` (the file at `out_path`), refusing more than `max` bytes (declared or actually
+/// decompressed). Returns the number of bytes written.
+pub(crate) fn copy_entry(
+    archive: &mut ZipArchive<BufReader<File>>,
+    path: &Path,
+    entry: &ArchiveEntry,
+    max: u64,
+    out: &mut File,
+    out_path: &Path,
+) -> Result<u64, RuntimeError> {
+    if entry.declared > max {
+        return Err(RuntimeError::ContentTooLarge {
+            path: path.to_path_buf(),
+            size: entry.declared,
+        });
+    }
+    let reader = archive
+        .by_index(entry.index)
+        .map_err(|e| archive_error(path, format!("entry `{}`: {e}", entry.name)))?;
+    // One byte past the limit so an entry lying about its size is detected rather than silently cut.
+    let mut reader = reader.take(max + 1);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(archive_error(path, format!("entry `{}`: {e}", entry.name))),
+        };
+        out.write_all(&buf[..n])
+            .map_err(|e| io_error(out_path, e))?;
+        total += n as u64;
+    }
+    if total > max {
+        return Err(RuntimeError::ContentTooLarge {
+            path: path.to_path_buf(),
+            size: total,
+        });
+    }
+    Ok(total)
+}
+
+/// Owner-only (`0700` on Unix from creation) temporary directory: the shared temp dir is world-writable.
+pub(crate) fn private_temp_dir() -> Result<TempDir, RuntimeError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("emu-rust-content-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder
+        .tempdir()
+        .map_err(|e| io_error(&std::env::temp_dir(), e))
+}
+
+fn extract(rom: &Path, info: &SystemInfo, limits: Limits) -> Result<PreparedContent, RuntimeError> {
+    let mut archive = open_archive(rom, limits)?;
+    let chosen = accepted_entries(&mut archive, rom, |name| accepts(info, name), 1)?
+        .into_iter()
+        .next()
+        .map(|e| (e.index, e.name, e.declared));
     let Some((index, name, declared)) = chosen else {
         return Err(RuntimeError::NoContentInArchive(rom.to_path_buf()));
     };
@@ -145,17 +240,7 @@ fn extract(rom: &Path, info: &SystemInfo, limits: Limits) -> Result<PreparedCont
     let read_error = |e: io::Error| archive_error(rom, format!("entry `{name}`: {e}"));
 
     if info.need_fullpath {
-        let mut builder = tempfile::Builder::new();
-        builder.prefix("emu-rust-content-");
-        // Owner-only from creation: the shared temp dir is world-writable.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            builder.permissions(std::fs::Permissions::from_mode(0o700));
-        }
-        let dir = builder
-            .tempdir()
-            .map_err(|e| io_error(&std::env::temp_dir(), e))?;
+        let dir = private_temp_dir()?;
         let path = dir.path().join(&name);
         let mut out = create_private(&path).map_err(|e| io_error(&path, e))?;
         let written = copy(&mut reader, &mut out).map_err(read_error)?;
@@ -281,7 +366,7 @@ pub(crate) fn entry_file_name(raw: &[u8]) -> Option<String> {
     Some(name)
 }
 
-fn accepts(info: &SystemInfo, name: &str) -> bool {
+pub(crate) fn accepts(info: &SystemInfo, name: &str) -> bool {
     let Some((_, ext)) = name.rsplit_once('.') else {
         return false;
     };

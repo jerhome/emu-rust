@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// `PRAGMA user_version` written by this code.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -48,6 +48,9 @@ pub struct Game {
     pub favorite: bool,
     pub last_played_unix: Option<i64>,
     pub play_count: u32,
+    /// Ordered disk images when the game has several (a `(Disk N of M)` group, first disk included, or the
+    /// files of a `.m3u`, which is then `path`); empty for a single image. Stored in `game_media` (schema v3).
+    pub media: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,6 +159,16 @@ ALTER TABLE game ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 UPDATE game SET pinned = 1
     WHERE instr(path, '/' || system || '/') > 0 OR instr(path, '\' || system || '\') > 0;
 "#,
+    r#"
+-- Disk images of a multi-disk game (design v2.0 §3.4): `idx` is the disk order, `path` is unique over the whole
+-- table (a disk belongs to one game). Additive: no existing row changes.
+CREATE TABLE game_media (
+    game_id INTEGER NOT NULL REFERENCES game(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (game_id, idx)
+);
+"#,
 ];
 
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
@@ -242,6 +255,7 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
         favorite: row.get::<_, i64>(9)? != 0,
         last_played_unix: row.get(10)?,
         play_count: u32::try_from(row.get::<_, i64>(11)?.max(0)).unwrap_or(u32::MAX),
+        media: Vec::new(),
     })
 }
 
@@ -574,6 +588,30 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
     Ok(changed)
 }
 
+/// Disk images per game id, in disk order.
+pub(crate) fn load_media(
+    conn: &Connection,
+    only: Option<i64>,
+) -> Result<HashMap<i64, Vec<PathBuf>>, LibraryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT game_id, path FROM game_media WHERE (?1 IS NULL OR game_id = ?1)
+             ORDER BY game_id, idx",
+        )
+        .map_err(db_error)?;
+    let mut map: HashMap<i64, Vec<PathBuf>> = HashMap::new();
+    for row in stmt
+        .query_map([only], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(db_error)?
+    {
+        let (id, path) = row.map_err(db_error)?;
+        map.entry(id).or_default().push(PathBuf::from(path));
+    }
+    Ok(map)
+}
+
 pub(crate) fn identification_text(i: Identification) -> &'static str {
     identification_name(i)
 }
@@ -740,21 +778,35 @@ impl Library {
             .conn
             .prepare(&format!("SELECT {GAME_COLUMNS} FROM game ORDER BY id"))
             .map_err(db_error)?;
-        stmt.query_map([], game_from_row)
+        let mut games: Vec<Game> = stmt
+            .query_map([], game_from_row)
             .map_err(db_error)?
             .collect::<Result<_, _>>()
-            .map_err(db_error)
+            .map_err(db_error)?;
+        let mut media = load_media(&self.conn, None)?;
+        for g in &mut games {
+            g.media = media.remove(&g.id.0).unwrap_or_default();
+        }
+        Ok(games)
     }
 
     pub fn game(&self, id: GameId) -> Result<Option<Game>, LibraryError> {
-        self.conn
+        let game = self
+            .conn
             .query_row(
                 &format!("SELECT {GAME_COLUMNS} FROM game WHERE id = ?1"),
                 [id.0],
                 game_from_row,
             )
             .optional()
-            .map_err(db_error)
+            .map_err(db_error)?;
+        let Some(mut game) = game else {
+            return Ok(None);
+        };
+        game.media = load_media(&self.conn, Some(id.0))?
+            .remove(&id.0)
+            .unwrap_or_default();
+        Ok(Some(game))
     }
 
     /// Unknown id (removed by a concurrent scan): no-op.
@@ -897,6 +949,61 @@ mod tests {
             .unwrap();
         let flags: Vec<bool> = pinned.iter().map(|(_, p)| *p).collect();
         assert_eq!(flags, [true, false, false, true], "{pinned:?}");
+    }
+
+    #[test]
+    fn v3_migration_keeps_every_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("v2.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute_batch(MIGRATIONS[1]).unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+            conn.execute_batch(
+                "INSERT INTO dat_info VALUES ('gb', 'D', '1', 1, 5, 'etag');
+                 INSERT INTO dat_entry VALUES ('gb', 'G', 'g.gb', 3, 7, NULL);
+                 INSERT INTO game (id, path, entry, system, size, file_size, mtime_unix, crc32, sha1, title,
+                                   identification, favorite, last_played_unix, play_count, pinned)
+                 VALUES (1, '/r/gb/a.gb', NULL, 'gb', 3, 3, 9, 7, x'00', 'A', 'sha1', 1, 42, 5, 1),
+                        (2, '/r/b.zip', 'b.sms', 'mastersystem', 4, 8, 10, NULL, NULL, 'B', 'unknown', 0, NULL, 0, 0);
+                 INSERT INTO cover VALUES (1, 'boxart', 'missing', NULL, NULL, 77);",
+            )
+            .unwrap();
+            drop(conn);
+        }
+        let (lib, outcome) = Library::open(&db).unwrap();
+        assert_eq!(outcome, OpenOutcome::Opened);
+        assert_eq!(user_version(&lib.conn).ok(), Some(3));
+        let games = lib.games().unwrap();
+        assert_eq!(games.len(), 2);
+        let a = &games[0];
+        assert_eq!(
+            (
+                a.title.as_str(),
+                a.favorite,
+                a.last_played_unix,
+                a.play_count
+            ),
+            ("A", true, Some(42), 5)
+        );
+        assert!(a.media.is_empty() && games[1].media.is_empty());
+        assert_eq!(games[1].entry.as_deref(), Some("b.sms"));
+        assert_eq!(lib.dat_info("gb").unwrap().unwrap().entries, 1);
+        assert!(lib.cover(GameId(1), CoverKind::Boxart).unwrap().is_some());
+        lib.conn
+            .execute("INSERT INTO game_media VALUES (1, 0, '/r/gb/a.gb')", [])
+            .unwrap();
+        assert_eq!(
+            lib.game(GameId(1)).unwrap().unwrap().media,
+            [PathBuf::from("/r/gb/a.gb")]
+        );
+        // The path is unique across games.
+        assert!(
+            lib.conn
+                .execute("INSERT INTO game_media VALUES (2, 0, '/r/gb/a.gb')", [])
+                .is_err()
+        );
     }
 
     #[test]

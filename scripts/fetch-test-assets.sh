@@ -8,6 +8,11 @@
 #   - cgb-acid2 1.1 (Matt Currie, MIT), Game Boy Color rendering test, SHA256 pinned
 #   - genesis_plus_gx, snes9x and Game Boy / NES candidate libretro cores (gambatte, sameboy, mgba, mesen, nestopia,
 #     fceumm), libretro nightly, hash recorded on first download (TOFU)
+#   - hatari (Atari ST) libretro core, libretro nightly, TOFU
+#   - EmuTOS 1.4 (GPL-2.0-or-later, free TOS): archive emutos-192k-1.4.zip, etos192us.img and etos192fr.img, SHA256 pinned
+#     (installed in tests/roms/system/, with tos.img = the US image, the name the hatari core expects)
+#   - Nova Defense (geekychris/atari_st_games, MIT), SHA256 pinned, turned into a 720 KB floppy by tests/tools/mkst.py
+#     (reproducible output, SHA256 pinned)
 set -euo pipefail
 
 usage() {
@@ -20,7 +25,7 @@ Idempotent: files already present and matching their hash are not downloaded aga
   --refresh-cores  re-download the cores and record its new SHA256 (TOFU)
   --help           show this help
 
-Requires: curl, unzip, sha256sum.
+Requires: curl, unzip, sha256sum, python3 (floppy image of the Atari ST test program).
 USAGE
 }
 
@@ -33,14 +38,14 @@ for arg in "$@"; do
     esac
 done
 
-for tool in curl unzip sha256sum; do
+for tool in curl unzip sha256sum python3; do
     command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 roms_dir="$root/tests/roms"
 cores_dir="$root/tests/cores"
-mkdir -p "$roms_dir" "$cores_dir"
+mkdir -p "$roms_dir" "$cores_dir" "$roms_dir/system"
 
 ROM_URL='https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download'
 ROM_ZIP_SHA256='2054524a7f8695d8df7f4cf1a773af6b26d4c7fe7f74d8f115fab2641a5a9dc5'
@@ -90,7 +95,25 @@ CORES=(
     genesis_plus_gx_libretro.so snes9x_libretro.so
     gambatte_libretro.so sameboy_libretro.so mgba_libretro.so
     mesen_libretro.so nestopia_libretro.so fceumm_libretro.so
+    hatari_libretro.so
 )
+
+# EmuTOS 1.4 (https://emutos.sourceforge.io/, GPL-2.0-or-later); 192 KB images for ST/STE.
+system_dir="$roms_dir/system"
+ETOS_ZIP_URL='https://downloads.sourceforge.net/project/emutos/emutos/1.4/emutos-192k-1.4.zip'
+ETOS_ZIP_SHA256='59abac06a2d29b0864c5a7cfb2af65f022c337aed34188e174a9a08cc737e4bc'
+ETOS_ZIP_NAME='emutos-192k-1.4.zip'
+ETOS_US_SHA256='8fbbf8b44fc3e34281eaf8cda5265510e9af9ccda0e3e409111648060d244cfc'
+ETOS_FR_SHA256='9fe2fc9c4458818bd0d401fc7a5ad5d487c83a5d5501d75f7737fbb84b9a7692'
+
+# Nova Defense (https://github.com/geekychris/atari_st_games, LICENSE = MIT); the tag is date-based and movable,
+# the pinned SHA256 is what protects us.
+NOVA_ZIP_URL='https://github.com/geekychris/atari_st_games/releases/download/games-2026-10-30/nova_defense-atari.zip'
+NOVA_ZIP_SHA256='e7bce16099f3ae508deb35b386bf9cba4c73f96379f2a14f8eb0b2366cb80c4b'
+NOVA_ZIP_NAME='nova_defense-atari-2026-10-30.zip'
+NOVA_PRG_SHA256='94a24e206f435522c9e731866841a01a407abfe64c76a16d971f9fb6453f01f5'
+NOVA_ST_NAME='nova-defense.st'
+NOVA_ST_SHA256='bb3bb0c633094f0df0545017b2e6993d2a15df1f3def774be1614d2e60d7e681'
 
 MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
 
@@ -181,6 +204,78 @@ fetch_file() {
     echo "ROM installed: $path"
 }
 
+# fetch_zip URL ZIP_SHA256 ZIP_PATH : download an archive unless the kept copy already matches.
+fetch_zip() {
+    local url="$1" sha="$2" path="$3"
+    if [ -f "$path" ] && [ "$(sha_of "$path")" = "$sha" ]; then
+        echo "Zip ok: $path"
+        return
+    fi
+    echo "Downloading $(basename "$path") ..."
+    part_files+=("$path.part")
+    download_zip "$url" "$path.part"
+    if [ "$(sha_of "$path.part")" != "$sha" ]; then
+        rm -f "$path.part"
+        echo "error: SHA256 mismatch for $(basename "$path")" >&2
+        exit 1
+    fi
+    mv -f "$path.part" "$path"
+}
+
+# install_member ZIP MEMBER DEST SHA256 : extract one member, verify it, install atomically (skipped if already ok).
+install_member() {
+    local zip="$1" member="$2" dest="$3" sha="$4"
+    if [ -f "$dest" ] && [ "$(sha_of "$dest")" = "$sha" ]; then
+        echo "File ok: $dest"
+        return
+    fi
+    part_files+=("$dest.part")
+    extract_one "$zip" "$member" "$dest.part"
+    if [ "$(sha_of "$dest.part")" != "$sha" ]; then
+        rm -f "$dest.part"
+        echo "error: SHA256 mismatch for $member" >&2
+        exit 1
+    fi
+    mv -f "$dest.part" "$dest"
+    echo "File installed: $dest"
+}
+
+# fetch_emutos : EmuTOS images plus tos.img (copy of the US image).
+fetch_emutos() {
+    local zip="$system_dir/$ETOS_ZIP_NAME"
+    fetch_zip "$ETOS_ZIP_URL" "$ETOS_ZIP_SHA256" "$zip"
+    install_member "$zip" etos192us.img "$system_dir/etos192us.img" "$ETOS_US_SHA256"
+    install_member "$zip" etos192fr.img "$system_dir/etos192fr.img" "$ETOS_FR_SHA256"
+    if [ ! -f "$system_dir/tos.img" ] || [ "$(sha_of "$system_dir/tos.img")" != "$ETOS_US_SHA256" ]; then
+        part_files+=("$system_dir/tos.img.part")
+        cp -f "$system_dir/etos192us.img" "$system_dir/tos.img.part"
+        mv -f "$system_dir/tos.img.part" "$system_dir/tos.img"
+        echo "File installed: $system_dir/tos.img (EmuTOS US)"
+    fi
+}
+
+# fetch_nova : Nova Defense zip, then the floppy generated by mkst.py (output hash pinned: reproducibility check).
+fetch_nova() {
+    local zip="$roms_dir/$NOVA_ZIP_NAME" st="$roms_dir/$NOVA_ST_NAME" work
+    fetch_zip "$NOVA_ZIP_URL" "$NOVA_ZIP_SHA256" "$zip"
+    if [ -f "$st" ] && [ "$(sha_of "$st")" = "$NOVA_ST_SHA256" ]; then
+        echo "ROM ok: $st"
+        return
+    fi
+    work="$(mktemp -d)"; tmp_dirs+=("$work")
+    extract_one "$zip" NOVA.PRG "$work/NOVA.PRG"
+    [ "$(sha_of "$work/NOVA.PRG")" = "$NOVA_PRG_SHA256" ] \
+        || { echo "error: SHA256 mismatch for NOVA.PRG" >&2; exit 1; }
+    # -I: isolated mode (the script is ours, but never import from the current directory).
+    python3 -I "$root/tests/tools/mkst.py" "$work/nova.st" "$work/NOVA.PRG"
+    [ "$(sha_of "$work/nova.st")" = "$NOVA_ST_SHA256" ] \
+        || { echo "error: generated floppy does not match the pinned SHA256 (mkst.py changed?)" >&2; exit 1; }
+    part_files+=("$st.part")
+    cp -f "$work/nova.st" "$st.part"
+    mv -f "$st.part" "$st"
+    echo "ROM installed: $st"
+}
+
 # fetch_core CORE_NAME (TOFU)
 fetch_core() {
     local name="$1" core_path="$cores_dir/$1" work sum expected
@@ -212,4 +307,6 @@ fetch_rom "$GG_ZIP_URL" "$GG_ZIP_SHA256" "$GG_ZIP_NAME" "$GG_MEMBER" "$GG_NAME" 
 fetch_file "$GB_URL" "$GB_NAME" "$GB_SHA256"
 fetch_file "$NES_URL" "$NES_NAME" "$NES_SHA256"
 fetch_file "$CGB_URL" "$CGB_NAME" "$CGB_SHA256"
+fetch_emutos
+fetch_nova
 for core in "${CORES[@]}"; do fetch_core "$core"; done

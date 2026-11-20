@@ -35,6 +35,42 @@ impl HotkeyAction {
     }
 }
 
+/// Action of `host key + key` on a computer system (ADR 0015 §4). Kept apart from [`HotkeyAction`] so the
+/// exhaustive matches of `app.rs` / `ui/text.rs` keep compiling until U2 merges the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostAction {
+    /// Shared with consoles (menu, states, reset, pause, fullscreen, stats, fast-forward).
+    Hotkey(HotkeyAction),
+    /// Host key + K.
+    ToggleVirtualKeyboard,
+    /// Host key + M.
+    ToggleMouseCapture,
+    /// Host key + J: joystick / keyboard.
+    ToggleKeyboardMode,
+    /// Host key + D: next floppy of the set.
+    NextDisk,
+}
+
+impl HostAction {
+    /// Physical keys, any layout: the Ctrl alternatives plus pause, held fast-forward and the computer actions.
+    pub fn from_key(key: KeyCode) -> Option<Self> {
+        match key {
+            KeyCode::KeyK => Some(Self::ToggleVirtualKeyboard),
+            KeyCode::KeyM => Some(Self::ToggleMouseCapture),
+            KeyCode::KeyJ => Some(Self::ToggleKeyboardMode),
+            KeyCode::KeyD => Some(Self::NextDisk),
+            KeyCode::KeyP => Some(Self::Hotkey(HotkeyAction::TogglePause)),
+            KeyCode::Space => Some(Self::Hotkey(HotkeyAction::FastForward)),
+            _ => HotkeyAction::from_ctrl_key(key).map(Self::Hotkey),
+        }
+    }
+
+    /// Held actions get a press and a release outcome (fast-forward).
+    pub fn is_held(self) -> bool {
+        self == Self::Hotkey(HotkeyAction::FastForward)
+    }
+}
+
 impl Hotkeys {
     pub fn action_for(&self, key: KeyCode) -> Option<HotkeyAction> {
         use HotkeyAction as A;
@@ -122,6 +158,28 @@ mod tests {
             Some(HotkeyAction::ToggleStats)
         );
         assert_eq!(HotkeyAction::from_ctrl_key(KeyCode::KeyW), None);
+    }
+
+    #[test]
+    fn host_chords() {
+        use HostAction as H;
+        for (key, action) in [
+            (KeyCode::KeyK, H::ToggleVirtualKeyboard),
+            (KeyCode::KeyM, H::ToggleMouseCapture),
+            (KeyCode::KeyJ, H::ToggleKeyboardMode),
+            (KeyCode::KeyD, H::NextDisk),
+            (KeyCode::KeyS, H::Hotkey(HotkeyAction::SaveState)),
+            (KeyCode::KeyL, H::Hotkey(HotkeyAction::LoadState)),
+            (KeyCode::KeyR, H::Hotkey(HotkeyAction::Reset)),
+            (KeyCode::KeyP, H::Hotkey(HotkeyAction::TogglePause)),
+            (KeyCode::KeyF, H::Hotkey(HotkeyAction::ToggleFullscreen)),
+            (KeyCode::Space, H::Hotkey(HotkeyAction::FastForward)),
+        ] {
+            assert_eq!(H::from_key(key), Some(action), "{key:?}");
+        }
+        assert_eq!(H::from_key(KeyCode::KeyW), None);
+        assert!(H::from_key(KeyCode::Space).unwrap().is_held());
+        assert_eq!(HotkeyAction::from_ctrl_key(KeyCode::KeyK), None);
     }
 
     #[test]

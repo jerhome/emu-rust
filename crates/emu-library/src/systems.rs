@@ -16,6 +16,34 @@ pub enum HeaderRule {
     SnesCopier,
 }
 
+/// Console (cartridge, one file) or computer (disks, keyboard and mouse, several images per game).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SystemKind {
+    #[default]
+    Console,
+    Computer,
+}
+
+/// Where the identification DAT of a system lives in libretro-database (`metadat/<dir>/<database>.dat`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DatSource {
+    /// `metadat/no-intro/`.
+    #[default]
+    NoIntro,
+    /// `metadat/tosec/`.
+    Tosec,
+}
+
+impl DatSource {
+    /// Folder under `metadat/`.
+    pub fn folder(self) -> &'static str {
+        match self {
+            DatSource::NoIntro => "no-intro",
+            DatSource::Tosec => "tosec",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemInfo {
     /// Stable, persisted (`megadrive`, `snes`, `nes`, `gb`, `gbc`, `gamegear`, `mastersystem`).
@@ -29,6 +57,8 @@ pub struct SystemInfo {
     pub database: String,
     pub screenscraper: Option<u32>,
     pub igdb: Option<u32>,
+    pub kind: SystemKind,
+    pub dat: DatSource,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +74,22 @@ enum RawHeader {
     SnesCopier,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum RawKind {
+    #[default]
+    Console,
+    Computer,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+enum RawDat {
+    #[default]
+    NoIntro,
+    Tosec,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSystem {
@@ -54,6 +100,10 @@ struct RawSystem {
     database: String,
     screenscraper: Option<u32>,
     igdb: Option<u32>,
+    #[serde(default)]
+    kind: RawKind,
+    #[serde(default)]
+    dat: RawDat,
 }
 
 /// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database.
@@ -99,6 +149,14 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             database: s.database,
             screenscraper: s.screenscraper,
             igdb: s.igdb,
+            kind: match s.kind {
+                RawKind::Console => SystemKind::Console,
+                RawKind::Computer => SystemKind::Computer,
+            },
+            dat: match s.dat {
+                RawDat::NoIntro => DatSource::NoIntro,
+                RawDat::Tosec => DatSource::Tosec,
+            },
         });
     }
     Ok(out)
@@ -149,7 +207,8 @@ mod tests {
                 "gb",
                 "gbc",
                 "gamegear",
-                "mastersystem"
+                "mastersystem",
+                "atarist"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -157,6 +216,23 @@ mod tests {
             assert!(s.extensions.iter().all(|e| *e == e.to_lowercase()));
             assert!(s.screenscraper.is_some() && s.igdb.is_some(), "{}", s.id);
         }
+    }
+
+    #[test]
+    fn atari_st_is_a_tosec_computer_and_the_others_are_unchanged() {
+        let st = system("atarist").unwrap();
+        assert_eq!((st.kind, st.dat), (SystemKind::Computer, DatSource::Tosec));
+        assert_eq!(st.database, "Atari - ST");
+        assert_eq!(st.extensions, ["st", "msa", "dim", "stx", "ipf", "m3u"]);
+        assert_eq!(st.dat.folder(), "tosec");
+        for s in systems().iter().filter(|s| s.id != "atarist") {
+            assert_eq!((s.kind, s.dat), (SystemKind::Console, DatSource::NoIntro));
+        }
+        assert!(
+            systems_for_extension("m3u")
+                .iter()
+                .all(|s| s.id == "atarist")
+        );
     }
 
     #[test]
@@ -199,5 +275,13 @@ mod tests {
         );
         assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\nheader = \"x\""))).is_err());
         assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\ncores = []"))).is_err());
+        assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\nkind = \"tablet\""))).is_err());
+        assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\ndat = \"redump\""))).is_err());
+        assert!(
+            parse_catalog(&one(&format!(
+                "id = \"a\"\n{base}\nkind = \"computer\"\ndat = \"tosec\""
+            )))
+            .is_ok()
+        );
     }
 }

@@ -104,6 +104,7 @@ pub fn firmware_state(state: &FirmwareState) -> String {
             format!("hash incorrect (md5 {hex})")
         }
         FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
+        FirmwareState::Free { label } => format!("BIOS libre installé ({label})"),
         FirmwareState::Unreadable(e) => format!("illisible : {e}"),
     }
 }

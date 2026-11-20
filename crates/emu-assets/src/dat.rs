@@ -1,4 +1,5 @@
-//! No-Intro DAT files from libretro-database (ADR 0014 §2): downloaded at run time, never shipped.
+//! No-Intro and TOSEC DAT files from libretro-database (ADR 0014 §2, ADR 0015 §1): downloaded at run time,
+//! never shipped. The caller picks the base from `SystemInfo::dat` (both are clrmamepro DAT files).
 
 use std::io::Write;
 use std::path::Path;
@@ -10,6 +11,9 @@ use crate::http::{HttpClient, Method, Request, sync_dir};
 
 pub const DAT_BASE_URL: &str =
     "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/";
+/// TOSEC DAT files (`Atari - ST`: floppy images `.st` / `.stx` / `.ipf` / `.dim`).
+pub const DAT_TOSEC_BASE_URL: &str =
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/tosec/";
 /// Same bound as `emu_library::MAX_DAT_SIZE` (the crates do not depend on each other).
 pub const MAX_DAT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -121,6 +125,10 @@ mod tests {
         assert_eq!(
             dat_url("https://x.test/", "a/../b?c#d"),
             "https://x.test/a%2F..%2Fb%3Fc%23d.dat"
+        );
+        assert_eq!(
+            dat_url(DAT_TOSEC_BASE_URL, "Atari - ST"),
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/tosec/Atari%20-%20ST.dat"
         );
     }
 }

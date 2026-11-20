@@ -4,6 +4,8 @@
 # `header`: "ines" (strip 16 bytes when the file starts with "NES\x1A"), "snes_copier" (strip 512 bytes when
 # size % 1024 == 512).
 # `screenscraper` / `igdb`: platform ids, to be checked against systemesListe.php and the IGDB platforms endpoint.
+# `kind`: "console" (default) or "computer" (disks, keyboard, mouse). `dat`: "no-intro" (default) or "tosec"
+# (folder of libretro-database/metadat/ holding `<database>.dat`).
 
 [[system]]
 id = "megadrive"
@@ -63,3 +65,16 @@ extensions = ["sms"]
 database = "Sega - Master System - Mark III"
 screenscraper = 2
 igdb = 64
+
+[[system]]
+id = "atarist"
+name = "Atari ST"
+kind = "computer"
+# `zip` is handled by the scanner; `.m3u` playlists and `(Disk N of M)` files become one game with several disks.
+extensions = ["st", "msa", "dim", "stx", "ipf", "m3u"]
+database = "Atari - ST"
+dat = "tosec"
+# Ids below are from memory and NOT yet confirmed against systemesListe.php / the IGDB platforms endpoint
+# (no network in the dev container): to confirm before the first real cover lookup.
+screenscraper = 42
+igdb = 63

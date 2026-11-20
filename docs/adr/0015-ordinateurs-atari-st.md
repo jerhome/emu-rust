@@ -77,7 +77,7 @@ Faits vérifiés le 2026-11-20 :
   `<system>/.emu-rust-bios.toml` (fichier, variante, SHA-256). Un `tos.img` **non installé par emu-rust** (TOS d'origine
   fourni par l'utilisateur) n'est **jamais écrasé** sans confirmation ; s'il l'est, il est renommé
   `tos.img.user-<unix>`. La suppression ne touche qu'un fichier à nous et intact.
-- Variante par défaut : **EmuTOS 192 Ko dans la langue du système** (`sys-locale`, repli `us`), car la langue de TOS
+- Variante par défaut : **EmuTOS 192 Ko dans la langue du système** (`sys-locale`, repli `fr`, décision de l'utilisateur), car la langue de TOS
   fixe aussi la **disposition du clavier ST** (§3) : AZERTY → `192fr`. `1024k` proposé pour TT/Falcon (anglais).
   Choix modifiable dans l'écran Cores (ligne BIOS du core) ; jamais de téléchargement sans action de l'utilisateur
   (bouton, ou proposition au premier lancement d'un jeu ST si `tos.img` manque).

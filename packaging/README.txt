@@ -13,6 +13,19 @@ Les cores sont téléchargés depuis le buildbot libretro (HTTPS), vérifiés, e
 désactivées par défaut (activation dans les Réglages).
 La méthode manuelle ci-dessous reste possible : --core accepte un chemin.
 
+0b. Atari ST (2.0, en développement)
+------------------------------------
+Core : hatari (écran Cores). BIOS : EmuTOS 1.4 (GPL-2.0-or-later, libre), proposé et téléchargé automatiquement
+par l'application (HTTPS, SHA-256 vérifié) sous le nom system/tos.img. Aucun TOS Atari commercial n'est téléchargé ;
+un tos.img que vous avez placé vous-même n'est jamais écrasé.
+Disquettes : .st .msa .stx .ipf .dim, ou .m3u pour plusieurs disquettes (copies de travail : l'original reste intact).
+Touche hôte : Ctrl droit (⌘ droit sur macOS). Seule : menu. Avec une autre touche :
+  S / L = sauvegarder / charger l'état   , / . = emplacement -/+   R = reset   P = pause   F = plein écran
+  I = stats   Espace (maintenu) = avance rapide   K = clavier virtuel   M = capturer / libérer la souris
+  J = mode Clavier / Joystick   D = disquette suivante (menu Disquettes aussi)
+Souris : capturée au premier clic dans la fenêtre ; libérée par la touche hôte (menu) ou Hôte + M.
+Sous noVNC ou WSLg la capture n'est pas disponible : la souris reste libre (utiliser le clavier virtuel).
+
 1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :

@@ -11,11 +11,12 @@ use rusqlite::{Connection, params};
 use zip::ZipArchive;
 
 use crate::db::{
-    NameIndex, db_error, extension_of, identification_text, identify, sha1_from, to_i64,
+    NameIndex, db_error, extension_of, identification_text, identify, load_media, sha1_from, to_i64,
 };
+use crate::media::{parse_m3u, strip_media_marker};
 use crate::{
-    Identification, LibraryError, MAX_HASH_SIZE, RomHashes, SystemInfo, hash_reader,
-    systems_for_extension,
+    Identification, LibraryError, MAX_HASH_SIZE, RomHashes, SystemInfo, SystemKind, group_media,
+    hash_reader, systems_for_extension,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -80,6 +81,8 @@ struct Found {
     folders: Vec<String>,
     file_size: u64,
     mtime: i64,
+    /// Ordered disk images of a multi-disk game (a `(Disk N of M)` group or a `.m3u`); empty otherwise.
+    media: Vec<String>,
 }
 
 struct Existing {
@@ -90,6 +93,7 @@ struct Existing {
     entry: Option<String>,
     system: String,
     pinned: bool,
+    media: Vec<String>,
 }
 
 struct Analysis {
@@ -289,6 +293,7 @@ impl Walk<'_> {
                     path,
                     key,
                     folders,
+                    media: Vec::new(),
                 });
             }
             // Reversed so the stack pops them in name order.
@@ -371,6 +376,92 @@ fn hash_error_message(e: &LibraryError) -> String {
         LibraryError::TooLarge { .. } => "taille supérieure à la limite".to_owned(),
         other => other.to_string(),
     }
+}
+
+/// Largest `.m3u` read (a playlist is a few lines).
+const MAX_M3U_SIZE: u64 = 64 * 1024;
+
+/// Existing images listed by a `.m3u` (relative paths below its folder only), in playlist order.
+fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
+    let file = open_regular(path)?;
+    let mut text = Vec::new();
+    file.take(MAX_M3U_SIZE + 1)
+        .read_to_end(&mut text)
+        .map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_M3U_SIZE {
+        return Err("playlist .m3u trop grosse".to_owned());
+    }
+    let text = String::from_utf8(text).map_err(|_| "playlist .m3u non UTF-8".to_owned())?;
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let listed = parse_m3u(&text, dir)?;
+    let images: Vec<String> = listed
+        .iter()
+        .filter(|p| lower_ext(p).is_none_or(|e| e != "m3u"))
+        .filter(|p| fs::metadata(p).is_ok_and(|m| m.is_file()))
+        .filter_map(|p| p.to_str().map(str::to_owned))
+        .collect();
+    if images.is_empty() {
+        return Err("playlist .m3u sans image présente".to_owned());
+    }
+    Ok(images)
+}
+
+/// Multi-disk games (design v2.0 §3.4): the files of a valid `.m3u` are listed under the playlist, and the
+/// disks of a `(Disk N of M)` group of a computer system under their first disk. The other files of these
+/// games are removed from `found` (and `seen`, so a row stored by an earlier scan goes away).
+fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mut ScanReport) {
+    let mut hidden: HashSet<String> = HashSet::new();
+    for f in found.iter_mut() {
+        if lower_ext(&f.path).as_deref() != Some("m3u") {
+            continue;
+        }
+        match read_m3u(&f.path) {
+            Ok(images) => {
+                hidden.extend(images.iter().cloned());
+                f.media = images;
+            }
+            Err(message) => {
+                tracing::warn!("cannot read playlist {}: {message}", f.path.display());
+                report.errors.push((f.path.clone(), message));
+                hidden.insert(f.key.clone());
+            }
+        }
+    }
+    let by_path: HashMap<PathBuf, usize> = found
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !hidden.contains(&f.key))
+        .filter(|(_, f)| {
+            lower_ext(&f.path).is_some_and(|e| {
+                let systems = systems_for_extension(&e);
+                !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
+            })
+        })
+        .filter(|(_, f)| lower_ext(&f.path).is_some_and(|e| e != "m3u"))
+        .map(|(i, f)| (f.path.clone(), i))
+        .collect();
+    let files: Vec<PathBuf> = found
+        .iter()
+        .filter(|f| by_path.contains_key(&f.path))
+        .map(|f| f.path.clone())
+        .collect();
+    let (groups, _) = group_media(&files);
+    for group in groups {
+        let keys: Vec<String> = group
+            .members
+            .iter()
+            .filter_map(|m| m.to_str().map(str::to_owned))
+            .collect();
+        let Some(&first) = group.members.first().and_then(|m| by_path.get(m)) else {
+            continue;
+        };
+        hidden.extend(keys.iter().skip(1).cloned());
+        found[first].media = keys;
+    }
+    for f in found.iter().filter(|f| hidden.contains(&f.key)) {
+        seen.remove(&f.key);
+    }
+    found.retain(|f| !hidden.contains(&f.key));
 }
 
 fn header_of(candidates: &[&SystemInfo]) -> Option<crate::HeaderRule> {
@@ -534,6 +625,7 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
 }
 
 fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, LibraryError> {
+    let mut media = load_media(conn, None)?;
     let mut stmt = conn
         .prepare("SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned FROM game")
         .map_err(db_error)?;
@@ -548,12 +640,44 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 entry: r.get(5)?,
                 system: r.get(6)?,
                 pinned: r.get::<_, i64>(7)? != 0,
+                media: Vec::new(),
             },
         ))
     })
     .map_err(db_error)?
-    .collect::<Result<_, _>>()
+    .collect::<Result<HashMap<String, Existing>, _>>()
     .map_err(db_error)
+    .map(|mut all| {
+        for old in all.values_mut() {
+            old.media = media
+                .remove(&old.id)
+                .unwrap_or_default()
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+        }
+        all
+    })
+}
+
+/// Replaces the disk list of the game stored at `key`.
+fn store_media(conn: &Connection, key: &str, media: &[String]) -> Result<(), LibraryError> {
+    let id: i64 = conn
+        .query_row("SELECT id FROM game WHERE path = ?1", [key], |r| r.get(0))
+        .map_err(db_error)?;
+    conn.execute("DELETE FROM game_media WHERE game_id = ?1", [id])
+        .map_err(db_error)?;
+    for (idx, path) in media.iter().enumerate() {
+        // A disk belongs to one game: it leaves the game that listed it before.
+        conn.execute("DELETE FROM game_media WHERE path = ?1", [path])
+            .map_err(db_error)?;
+        conn.execute(
+            "INSERT INTO game_media (game_id, idx, path) VALUES (?1, ?2, ?3)",
+            params![id, to_i64(idx as u64), path],
+        )
+        .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 /// Inserts or updates the row of `found`; returns whether it was identified.
@@ -571,6 +695,12 @@ fn store(
         analysis.hashes.as_ref(),
         &analysis.stem,
     )?;
+    let title = if found.media.is_empty() {
+        id.title
+    } else {
+        // The DAT names the first disk `Game (Disk 1 of 2)`: the game is the whole set.
+        strip_media_marker(&id.title)
+    };
     let full = analysis.hashes.map(|h| h.full);
     let headerless = analysis.hashes.and_then(|h| h.headerless);
     conn.execute(
@@ -592,12 +722,13 @@ fn store(
             full.as_ref().map(|h| &h.sha1[..]),
             headerless.map(|h| i64::from(h.crc32)),
             headerless.as_ref().map(|h| &h.sha1[..]),
-            id.title,
+            title,
             identification_text(id.how),
             analysis.pinned,
         ],
     )
     .map_err(db_error)?;
+    store_media(conn, &found.key, &found.media)?;
     // Covers are cached by content hash: a different content needs a new lookup.
     if let Some(old) = existing
         && old.sha1 != full.map(|h| h.sha1)
@@ -664,6 +795,7 @@ pub(crate) fn run(
         }
     }
 
+    resolve_media(&mut found, &mut seen, &mut report);
     let existing = load_existing(conn)?;
     let mut names = NameIndex::default();
     let mut state = ScanProgress::default();
@@ -680,7 +812,10 @@ pub(crate) fn run(
         state.current = Some(f.path.clone());
         let old = existing.get(&f.key);
         if old.is_some_and(|o| {
-            o.file_size == to_i64(f.file_size) && o.mtime == f.mtime && pin_agrees(o, f)
+            o.file_size == to_i64(f.file_size)
+                && o.mtime == f.mtime
+                && o.media == f.media
+                && pin_agrees(o, f)
         }) {
             report.unchanged += 1;
         } else {
@@ -828,6 +963,7 @@ mod tests {
             folders: Vec::new(),
             file_size: 1 << 20,
             mtime: 0,
+            media: Vec::new(),
         };
         let cancel = AtomicBool::new(true);
         assert!(matches!(

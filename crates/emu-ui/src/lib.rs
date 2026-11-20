@@ -1,10 +1,13 @@
 //! Window, event loop and egui interface. No `unsafe` here: GL lives in emu-runtime (ADR 0008).
 
 mod app;
+mod computer;
 mod config;
+mod config_computer;
 mod config_library;
 mod cores_ui;
 mod egui_layer;
+mod game_options;
 mod hotkeys;
 mod keyboard;
 mod library;
@@ -20,7 +23,7 @@ pub use crate::config_library::{
     CoresConfig, CoversConfig, CredentialsConfig, IgdbConfig, LibraryConfig, ScreenScraperConfig,
 };
 pub use crate::cores_ui::open_core_manager;
-pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
+pub use crate::hotkeys::{HostAction, HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle};
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;

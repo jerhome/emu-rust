@@ -4,6 +4,48 @@
  * The libretro declarations below were written from the public libretro API specification; libretro.h
  * itself is not vendored. Only the subset used here is declared (layouts must match libretro.h).
  *
+ * Extended protocol (v2.0 / Atari ST, all OFF unless an environment variable is set, so the base behaviour
+ * below and its image are unchanged). Variables are read with getenv() when the core is set up / loaded:
+ *   MOCK_KEYBOARD   contains "cb"   -> SET_KEYBOARD_CALLBACK (12) registered; every event is recorded.
+ *                   contains "poll" -> RETRO_DEVICE_KEYBOARD polled each run (ids 0..341).
+ *                   "1" = both. Events may arrive between runs (same thread as retro_run assumed).
+ *   MOCK_MOUSE      set (any value)  -> RETRO_DEVICE_MOUSE port 0 polled each run (X, Y accumulated).
+ *   MOCK_DISK       "basic" -> SET_DISK_CONTROL_INTERFACE (13) only; "ext" -> asks GET_DISK_CONTROL_INTERFACE_VERSION
+ *                   (57) and, when >= 1, SET_DISK_CONTROL_EXT_INTERFACE (58), else falls back to 13.
+ *                   Up to 8 images; index == num means "no disk"; set_image_index / replace_image_index fail
+ *                   unless the tray is ejected (like real cores). On load_game the content (or the images
+ *                   listed by a .m3u, relative to its directory) becomes the image list when it is empty.
+ *                   set_initial_image (58) is remembered and applied at load_game when the index is valid.
+ *   MOCK_DISK_DUMP  set -> after every disk change `mock-disk.txt` is rewritten in GET_SAVE_DIRECTORY:
+ *                   lines "interface=basic|ext", "ejected=0|1", "index=N", "num=N", "initial=N|-",
+ *                   "image<i>=<path>|<label>" (label = file name without extension; empty for a freshly added slot).
+ *   MOCK_NO_GAME    set -> SET_SUPPORT_NO_GAME answers true to the core (value true) and retro_load_game(NULL)
+ *                   succeeds (seed 0); without it the core announces false and load_game(NULL) fails.
+ * When any of MOCK_KEYBOARD / MOCK_MOUSE / MOCK_DISK / MOCK_NO_GAME is set, rows 0..39 of the 64x48 XRGB8888 image
+ * are overwritten by a "register display": 5 bands of 8 rows (y = 8*band .. 8*band+7) split into 8 cells of
+ * 8 px (x = 8*cell .. 8*cell+7). A cell holds one byte v as the gray pixel 0x00vvvvvv; read it at the cell
+ * centre (x = 8*cell+4, y = 8*band+4). Multi-byte values are little-endian over consecutive cells.
+ * Rows 40..47 keep the base pattern (frame counter / seed / pad), so the base fingerprint logic still applies there.
+ *   band 0 keyboard callback: 0 events received (mod 256); 1-2 newest keycode (u16); 3 flags of the newest event
+ *          (bit0 down, bit1 character != 0); 4-5 newest character (low 16 bits of the UTF-32 value);
+ *          6-7 newest key_modifiers (u16).
+ *   band 1 keyboard counters / polling: 0 number of keys polled down; 1-2 lowest polled keycode down (u16, 0 if none);
+ *          3-4 highest polled keycode down (u16, 0 if none); 5 down events received (mod 256);
+ *          6 up events received (mod 256); 7 events with a non-zero character (mod 256).
+ *   band 2 mouse: 0-1 cumulative dx (int16, two's complement); 2-3 cumulative dy; 4 buttons held now (bit0 left,
+ *          bit1 right, bit2 middle, bit3 wheel up, bit4 wheel down); 5 left presses (rising edges, mod 256);
+ *          6 right presses; 7 wheel steps (up + down, mod 256).
+ *   band 3 disk: 0 current index (255 when >= 255); 1 num images; 2 ejected (0/1); 3 successful set_image_index
+ *          calls (mod 256); 4 low byte of FNV-1a of the current image path (0 when none); 5 same for the label;
+ *          6 initial image index + 1 set by the frontend (0 = never); 7 flags: bit0 ext interface registered,
+ *          bit1 content loaded with load_game(NULL), bit2 basic interface registered, bit3 replace_image_index
+ *          called, bit4 add_image_index called.
+ *   band 4 last 4 keycodes received by the callback, newest first, each u16 over 2 cells (cells 0-1 newest ... 6-7
+ *          oldest); 0 when absent.
+ * All state is reset by retro_init; counters keep running across retro_reset. The events are also logged
+ * (INFO "mock core: key ..." / "mock core: disk ...") for the log tests.
+ * 16-bit pixel variants quantize the gray cells (values are only exact with the default XRGB8888 build).
+ *
  * Behaviour (documented in docs/design/phase2-frontend.md, "Core factice"):
  *  - 64x48 XRGB8888 image computed from a frame counter, a seed (FNV-1a of the content file), the option
  *    `mock_color` and the pad state of port 0. 735 audio frames per run (44100 Hz / 60 fps).
@@ -19,6 +61,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -30,6 +73,16 @@
 /* ---- libretro subset ---- */
 #define RETRO_API_VERSION 1
 #define RETRO_DEVICE_JOYPAD 1
+#define RETRO_DEVICE_MOUSE 2
+#define RETRO_DEVICE_KEYBOARD 3
+#define RETRO_DEVICE_ID_MOUSE_X 0
+#define RETRO_DEVICE_ID_MOUSE_Y 1
+#define RETRO_DEVICE_ID_MOUSE_LEFT 2
+#define RETRO_DEVICE_ID_MOUSE_RIGHT 3
+#define RETRO_DEVICE_ID_MOUSE_WHEELUP 4
+#define RETRO_DEVICE_ID_MOUSE_WHEELDOWN 5
+#define RETRO_DEVICE_ID_MOUSE_MIDDLE 6
+#define RETROK_LAST 342
 #define RETRO_DEVICE_ID_JOYPAD_START 3
 #define RETRO_MEMORY_SAVE_RAM 0
 #define RETRO_REGION_NTSC 0
@@ -39,6 +92,8 @@
 
 #define RETRO_ENVIRONMENT_GET_CAN_DUPE 3
 #define RETRO_ENVIRONMENT_SET_MESSAGE 6
+#define RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE 13
+#define RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK 12
 #define RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY 9
 #define RETRO_ENVIRONMENT_SET_PIXEL_FORMAT 10
 #define RETRO_ENVIRONMENT_GET_VARIABLE 15
@@ -50,6 +105,8 @@
 #define RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION 52
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS 53
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 67
+#define RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION 57
+#define RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE 58
 #define RETRO_ENVIRONMENT_SET_VARIABLE 70
 
 #define RETRO_NUM_CORE_OPTION_VALUES_MAX 128
@@ -106,6 +163,31 @@ struct retro_system_info {
 };
 
 struct retro_game_info { const char *path; const void *data; size_t size; const void *meta; };
+
+typedef void (*retro_keyboard_event_t)(bool down, unsigned keycode, uint32_t character, uint16_t key_modifiers);
+struct retro_keyboard_callback { retro_keyboard_event_t callback; };
+
+struct retro_disk_control_callback {
+    bool (*set_eject_state)(bool ejected);
+    bool (*get_eject_state)(void);
+    unsigned (*get_image_index)(void);
+    bool (*set_image_index)(unsigned index);
+    unsigned (*get_num_images)(void);
+    bool (*replace_image_index)(unsigned index, const struct retro_game_info *info);
+    bool (*add_image_index)(void);
+};
+struct retro_disk_control_ext_callback {
+    bool (*set_eject_state)(bool ejected);
+    bool (*get_eject_state)(void);
+    unsigned (*get_image_index)(void);
+    bool (*set_image_index)(unsigned index);
+    unsigned (*get_num_images)(void);
+    bool (*replace_image_index)(unsigned index, const struct retro_game_info *info);
+    bool (*add_image_index)(void);
+    bool (*set_initial_image)(unsigned index, const char *path);
+    bool (*get_image_path)(unsigned index, char *path, size_t len);
+    bool (*get_image_label)(unsigned index, char *label, size_t len);
+};
 
 typedef bool (*retro_environment_t)(unsigned cmd, void *data);
 typedef void (*retro_video_refresh_t)(const void *data, unsigned width, unsigned height, size_t pitch);
@@ -236,16 +318,334 @@ static uint32_t fnv1a(uint32_t h, const uint8_t *data, size_t len) {
     return h;
 }
 
+/* ---- extended protocol (see header) ---- */
+#define MAX_DISKS 8u
+#define DISK_PATH_MAX 512u
+#define CELL 8u
+#define BANDS 5u
+
+static bool kb_cb_on, kb_poll_on, mouse_on, no_game_on, disk_dump, mock_visible;
+static int disk_mode; /* 0 off, 1 basic, 2 ext */
+static bool disk_ext_registered, disk_basic_registered, loaded_no_game, replace_called, add_called;
+
+static uint8_t kb_events;
+static uint8_t kb_down_events, kb_up_events, kb_char_events;
+static unsigned kb_ring[4];
+static unsigned kb_last_flags, kb_last_mods;
+static uint32_t kb_last_char;
+static unsigned kb_polled_count, kb_polled_lo, kb_polled_hi;
+
+static int32_t mouse_dx, mouse_dy;
+static unsigned mouse_buttons, mouse_left_presses, mouse_right_presses, mouse_wheel_steps;
+static bool mouse_prev_left, mouse_prev_right;
+
+static char disk_path[MAX_DISKS][DISK_PATH_MAX];
+static char disk_label[MAX_DISKS][DISK_PATH_MAX];
+static unsigned disk_num, disk_index, disk_set_calls;
+static bool disk_ejected;
+static bool initial_set;
+static unsigned initial_index;
+static char initial_path[DISK_PATH_MAX];
+
+static bool env_flag(const char *name) {
+    const char *v = getenv(name);
+    return v && v[0];
+}
+
+static void read_protocol_env(void) {
+    const char *kb = getenv("MOCK_KEYBOARD");
+    const char *disk = getenv("MOCK_DISK");
+    kb_cb_on = kb && (!strcmp(kb, "1") || strstr(kb, "cb"));
+    kb_poll_on = kb && (!strcmp(kb, "1") || strstr(kb, "poll"));
+    mouse_on = env_flag("MOCK_MOUSE");
+    no_game_on = env_flag("MOCK_NO_GAME");
+    disk_dump = env_flag("MOCK_DISK_DUMP");
+    disk_mode = !disk ? 0 : !strcmp(disk, "ext") ? 2 : disk[0] ? 1 : 0;
+    mock_visible = kb_cb_on || kb_poll_on || mouse_on || no_game_on || disk_mode != 0;
+}
+
+static void reset_protocol_state(void) {
+    kb_events = kb_down_events = kb_up_events = kb_char_events = 0;
+    memset(kb_ring, 0, sizeof kb_ring);
+    kb_last_flags = kb_last_mods = 0;
+    kb_last_char = 0;
+    mouse_dx = mouse_dy = 0;
+    mouse_buttons = mouse_left_presses = mouse_right_presses = mouse_wheel_steps = 0;
+    mouse_prev_left = mouse_prev_right = false;
+    memset(disk_path, 0, sizeof disk_path);
+    memset(disk_label, 0, sizeof disk_label);
+    disk_num = disk_index = disk_set_calls = 0;
+    disk_ejected = false;
+    initial_set = false;
+    initial_index = 0;
+    initial_path[0] = 0;
+    loaded_no_game = replace_called = add_called = false;
+}
+
+static void mock_keyboard_event(bool down, unsigned keycode, uint32_t character, uint16_t key_modifiers) {
+    kb_events++;
+    if (down) kb_down_events++; else kb_up_events++;
+    if (character) kb_char_events++;
+    kb_ring[3] = kb_ring[2]; kb_ring[2] = kb_ring[1]; kb_ring[1] = kb_ring[0]; kb_ring[0] = keycode & 0xFFFFu;
+    kb_last_flags = (down ? 1u : 0u) | (character ? 2u : 0u);
+    kb_last_char = character;
+    kb_last_mods = key_modifiers;
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: key %s code=%u char=%u mods=%u\n", down ? "down" : "up", keycode,
+                       (unsigned)character, (unsigned)key_modifiers);
+}
+
+/* File name without directory and extension, bounded copy. */
+static void label_from_path(const char *path, char *out, size_t cap) {
+    const char *base = path, *p, *dot;
+    size_t n;
+    for (p = path; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    dot = strrchr(base, '.');
+    n = dot && dot != base ? (size_t)(dot - base) : strlen(base);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, base, n);
+    out[n] = 0;
+}
+
+static void set_disk_slot(unsigned i, const char *path) {
+    snprintf(disk_path[i], DISK_PATH_MAX, "%s", path ? path : "");
+    label_from_path(disk_path[i], disk_label[i], DISK_PATH_MAX);
+}
+
+static void disk_changed(void) {
+    const char *save_dir = NULL;
+    char path[1024];
+    FILE *f;
+    unsigned i;
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: disk ejected=%d index=%u num=%u\n", disk_ejected, disk_index, disk_num);
+    if (!disk_dump || !env_cb || !env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir) || !save_dir) return;
+    snprintf(path, sizeof path, "%s/mock-disk.txt", save_dir);
+    f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "interface=%s\nejected=%d\nindex=%u\nnum=%u\n", disk_ext_registered ? "ext" : "basic", disk_ejected,
+            disk_index, disk_num);
+    if (initial_set) fprintf(f, "initial=%u\n", initial_index); else fputs("initial=-\n", f);
+    for (i = 0; i < disk_num; i++) fprintf(f, "image%u=%s|%s\n", i, disk_path[i], disk_label[i]);
+    fclose(f);
+}
+
+static bool disk_set_eject_state(bool ejected) { disk_ejected = ejected; disk_changed(); return true; }
+static bool disk_get_eject_state(void) { return disk_ejected; }
+static unsigned disk_get_image_index(void) { return disk_index; }
+static bool disk_set_image_index(unsigned index) {
+    if (!disk_ejected || index > disk_num) return false;
+    disk_index = index;
+    disk_set_calls++;
+    disk_changed();
+    return true;
+}
+static unsigned disk_get_num_images(void) { return disk_num; }
+static bool disk_replace_image_index(unsigned index, const struct retro_game_info *info) {
+    unsigned i;
+    if (!disk_ejected || index >= disk_num) return false;
+    replace_called = true;
+    if (!info) { /* removal: later images shift down */
+        for (i = index; i + 1 < disk_num; i++) {
+            memcpy(disk_path[i], disk_path[i + 1], DISK_PATH_MAX);
+            memcpy(disk_label[i], disk_label[i + 1], DISK_PATH_MAX);
+        }
+        disk_num--;
+        disk_path[disk_num][0] = 0;
+        disk_label[disk_num][0] = 0;
+        if (disk_index > disk_num) disk_index = disk_num;
+    } else {
+        set_disk_slot(index, info->path);
+    }
+    disk_changed();
+    return true;
+}
+static bool disk_add_image_index(void) {
+    if (disk_num >= MAX_DISKS) return false;
+    add_called = true;
+    disk_path[disk_num][0] = 0;
+    disk_label[disk_num][0] = 0;
+    disk_num++;
+    disk_changed();
+    return true;
+}
+static bool disk_set_initial_image(unsigned index, const char *path) {
+    initial_set = true;
+    initial_index = index;
+    snprintf(initial_path, sizeof initial_path, "%s", path ? path : "");
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: initial image %u %s\n", index, initial_path);
+    return true;
+}
+static bool disk_get_image_path(unsigned index, char *path, size_t len) {
+    if (index >= disk_num || !disk_path[index][0] || !path || !len) return false;
+    snprintf(path, len, "%s", disk_path[index]);
+    return true;
+}
+static bool disk_get_image_label(unsigned index, char *label, size_t len) {
+    if (index >= disk_num || !disk_label[index][0] || !label || !len) return false;
+    snprintf(label, len, "%s", disk_label[index]);
+    return true;
+}
+
+static void register_disk_interface(void) {
+    static struct retro_disk_control_callback basic = {
+        disk_set_eject_state, disk_get_eject_state, disk_get_image_index, disk_set_image_index,
+        disk_get_num_images, disk_replace_image_index, disk_add_image_index,
+    };
+    static struct retro_disk_control_ext_callback ext = {
+        disk_set_eject_state, disk_get_eject_state, disk_get_image_index, disk_set_image_index,
+        disk_get_num_images, disk_replace_image_index, disk_add_image_index,
+        disk_set_initial_image, disk_get_image_path, disk_get_image_label,
+    };
+    if (disk_mode == 2) {
+        unsigned version = 0;
+        if (!env_cb(RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION, &version)) version = 0;
+        if (version >= 1 && env_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &ext)) {
+            disk_ext_registered = true;
+            return;
+        }
+    }
+    if (env_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE, &basic)) disk_basic_registered = true;
+}
+
+/* Fills the disk list from the loaded content: a .m3u lists images (relative to its directory), anything else
+ * is a single image. `text` is the playlist body (may be NULL when unreadable). */
+static void disk_populate(const char *path, const char *text) {
+    size_t plen = path ? strlen(path) : 0;
+    if (disk_num != 0) return;
+    if (plen > 4 && !strcmp(path + plen - 4, ".m3u") && text) {
+        char dir[DISK_PATH_MAX];
+        const char *p = text, *slash = NULL, *q;
+        size_t dlen;
+        for (q = path; *q; q++)
+            if (*q == '/' || *q == '\\') slash = q;
+        dlen = slash ? (size_t)(slash - path) + 1 : 0;
+        if (dlen >= sizeof dir) dlen = sizeof dir - 1;
+        memcpy(dir, path, dlen);
+        dir[dlen] = 0;
+        while (*p && disk_num < MAX_DISKS) {
+            char line[DISK_PATH_MAX];
+            size_t n = 0;
+            while (*p && *p != '\n' && *p != '\r') { if (n + 1 < sizeof line) line[n++] = *p; p++; }
+            while (*p == '\n' || *p == '\r') p++;
+            line[n] = 0;
+            if (!line[0] || line[0] == '#') continue;
+            if (line[0] == '/' || (line[0] && line[1] == ':')) set_disk_slot(disk_num, line);
+            else {
+                char full[2 * DISK_PATH_MAX];
+                snprintf(full, sizeof full, "%s%s", dir, line);
+                set_disk_slot(disk_num, full);
+            }
+            disk_num++;
+        }
+    } else if (path) {
+        set_disk_slot(0, path);
+        disk_num = 1;
+    }
+    disk_index = 0;
+    if (disk_ext_registered && initial_set && initial_index < disk_num) disk_index = initial_index;
+    disk_ejected = false;
+    disk_changed();
+}
+
+static uint8_t fnv_low(const char *s) {
+    return s[0] ? (uint8_t)fnv1a(2166136261u, (const uint8_t *)s, strlen(s)) : 0;
+}
+
+static void poll_protocol_inputs(void) {
+    unsigned i;
+    if (kb_poll_on) {
+        kb_polled_count = 0;
+        kb_polled_lo = kb_polled_hi = 0;
+        for (i = 0; i < RETROK_LAST; i++) {
+            if (!input_cb(0, RETRO_DEVICE_KEYBOARD, 0, i)) continue;
+            if (kb_polled_count == 0) kb_polled_lo = i;
+            kb_polled_hi = i;
+            kb_polled_count++;
+        }
+    }
+    if (mouse_on) {
+        bool left = input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT) != 0;
+        bool right = input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT) != 0;
+        bool middle = input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_MIDDLE) != 0;
+        bool up = input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_WHEELUP) != 0;
+        bool down = input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_WHEELDOWN) != 0;
+        mouse_dx += input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
+        mouse_dy += input_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
+        if (left && !mouse_prev_left) mouse_left_presses++;
+        if (right && !mouse_prev_right) mouse_right_presses++;
+        if (up) mouse_wheel_steps++;
+        if (down) mouse_wheel_steps++;
+        mouse_prev_left = left;
+        mouse_prev_right = right;
+        mouse_buttons = (left ? 1u : 0u) | (right ? 2u : 0u) | (middle ? 4u : 0u) | (up ? 8u : 0u) | (down ? 16u : 0u);
+    }
+}
+
+static void put_cell(uint32_t *img, unsigned band, unsigned cell, unsigned value) {
+    unsigned x, y;
+    uint32_t v = value & 0xFFu;
+    uint32_t px = (v << 16) | (v << 8) | v;
+    for (y = 0; y < CELL; y++)
+        for (x = 0; x < CELL; x++) img[(band * CELL + y) * WIDTH + cell * CELL + x] = px;
+}
+static void put_cell16(uint32_t *img, unsigned band, unsigned cell, unsigned value) {
+    put_cell(img, band, cell, value);
+    put_cell(img, band, cell + 1, value >> 8);
+}
+
+static void draw_registers(uint32_t *img) {
+    unsigned i;
+    /* band 0 */
+    put_cell(img, 0, 0, kb_events);
+    put_cell16(img, 0, 1, kb_ring[0]);
+    put_cell(img, 0, 3, kb_last_flags);
+    put_cell16(img, 0, 4, kb_last_char & 0xFFFFu);
+    put_cell16(img, 0, 6, kb_last_mods);
+    /* band 1 */
+    put_cell(img, 1, 0, kb_polled_count);
+    put_cell16(img, 1, 1, kb_polled_lo);
+    put_cell16(img, 1, 3, kb_polled_hi);
+    put_cell(img, 1, 5, kb_down_events);
+    put_cell(img, 1, 6, kb_up_events);
+    put_cell(img, 1, 7, kb_char_events);
+    /* band 2 */
+    put_cell16(img, 2, 0, (unsigned)(mouse_dx & 0xFFFF));
+    put_cell16(img, 2, 2, (unsigned)(mouse_dy & 0xFFFF));
+    put_cell(img, 2, 4, mouse_buttons);
+    put_cell(img, 2, 5, mouse_left_presses);
+    put_cell(img, 2, 6, mouse_right_presses);
+    put_cell(img, 2, 7, mouse_wheel_steps);
+    /* band 3 */
+    put_cell(img, 3, 0, disk_index >= 255 ? 255 : disk_index);
+    put_cell(img, 3, 1, disk_num);
+    put_cell(img, 3, 2, disk_ejected ? 1 : 0);
+    put_cell(img, 3, 3, disk_set_calls);
+    put_cell(img, 3, 4, disk_index < disk_num ? fnv_low(disk_path[disk_index]) : 0);
+    put_cell(img, 3, 5, disk_index < disk_num ? fnv_low(disk_label[disk_index]) : 0);
+    put_cell(img, 3, 6, initial_set ? initial_index + 1 : 0);
+    put_cell(img, 3, 7, (disk_ext_registered ? 1u : 0u) | (loaded_no_game ? 2u : 0u) | (disk_basic_registered ? 4u : 0u) |
+                            (replace_called ? 8u : 0u) | (add_called ? 16u : 0u));
+    /* band 4 */
+    for (i = 0; i < 4; i++) put_cell16(img, 4, 2 * i, kb_ring[i]);
+}
+
 /* ---- libretro entry points ---- */
 MOCK_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
 MOCK_API void retro_set_environment(retro_environment_t cb) {
     struct retro_log_callback log;
-    bool no_game = false;
+    bool no_game;
     env_cb = cb;
+    read_protocol_env();
+    no_game = no_game_on;
     env_cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
     log.log = NULL;
     if (env_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log)) log_cb = log.log;
+    if (kb_cb_on) {
+        struct retro_keyboard_callback kb = { mock_keyboard_event };
+        env_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb);
+    }
+    if (disk_mode) register_disk_interface();
     declare_options();
 }
 MOCK_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -258,6 +658,7 @@ MOCK_API void retro_init(void) {
     counter = 0;
     seed = 0;
     memset(sram, 0, sizeof sram);
+    reset_protocol_state();
 }
 MOCK_API void retro_deinit(void) { log_cb = NULL; }
 
@@ -289,10 +690,13 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
     uint32_t h = 2166136261u;
     size_t total = 0;
 
-    if (!game) return false;
+    if (!game && !no_game_on) return false;
     if (!env_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) return false;
 
-    if (game->data) {
+    if (!game) {
+        loaded_no_game = true; /* no content: seed 0 */
+        h = 0;
+    } else if (game->data) {
         h = fnv1a(h, (const uint8_t *)game->data, game->size);
         total = game->size;
     } else if (game->path) {
@@ -314,7 +718,7 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
 #endif
 
     if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: loaded %s (%u bytes, seed %08x)\n",
-                       game->path ? game->path : "<memory>", (unsigned)total, (unsigned)seed);
+                       !game ? "<no game>" : game->path ? game->path : "<memory>", (unsigned)total, (unsigned)seed);
 
     if (env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir) && save_dir) {
         char path[1024];
@@ -324,6 +728,21 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
         f = fopen(path, "wb");
         if (f) { fputs("mock\n", f); fclose(f); }
     }
+    if (disk_mode && game) {
+        /* Playlist body: from memory, or read from the path (need_fullpath); bounded, NUL-terminated. */
+        static char body[4096];
+        size_t n = 0;
+        body[0] = 0;
+        if (game->data) {
+            n = game->size < sizeof body - 1 ? game->size : sizeof body - 1;
+            memcpy(body, game->data, n);
+        } else if (game->path) {
+            FILE *f = fopen(game->path, "rb");
+            if (f) { n = fread(body, 1, sizeof body - 1, f); fclose(f); }
+        }
+        body[n] = 0;
+        disk_populate(game->path, body);
+    }
     return true;
 }
 
@@ -332,7 +751,14 @@ MOCK_API bool retro_load_game_special(unsigned type, const struct retro_game_inf
     return false;
 }
 
-MOCK_API void retro_unload_game(void) { game_loaded = false; }
+MOCK_API void retro_unload_game(void) {
+    game_loaded = false;
+    /* Like real cores: the disk list belongs to the loaded content. */
+    memset(disk_path, 0, sizeof disk_path);
+    memset(disk_label, 0, sizeof disk_label);
+    disk_num = disk_index = 0;
+    disk_ejected = false;
+}
 
 MOCK_API void retro_reset(void) { counter = 0; }
 
@@ -351,6 +777,7 @@ MOCK_API void retro_run(void) {
     poll_cb();
     for (i = 0; i < 16; i++)
         if (input_cb(0, RETRO_DEVICE_JOYPAD, 0, i)) mask |= 1u << i;
+    poll_protocol_inputs();
     start = (mask >> RETRO_DEVICE_ID_JOYPAD_START) & 1u;
 
     if (counter == 10) {
@@ -392,6 +819,7 @@ MOCK_API void retro_run(void) {
             frame_pixels[y * WIDTH + x] = px;
         }
     }
+    if (mock_visible) draw_registers(frame_pixels);
 #ifdef PIXEL_16
     for (y = 0; y < HEIGHT; y++) {
         for (x = 0; x < WIDTH; x++) {

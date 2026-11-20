@@ -1,5 +1,5 @@
 //! Firmware (BIOS) checks. Nothing is ever downloaded here (ADR 0005): commercial BIOS are provided by the
-//! user in the system directory; the free ones (EmuTOS, AROS) get their own installer in 2.0 / 3.0.
+//! user in the system directory; the free ones (EmuTOS, AROS) have their own installer (`crate::bios`).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -34,6 +34,11 @@ pub enum FirmwareState {
     },
     /// Present but no reference hash known.
     Unverified,
+    /// md5 of a free BIOS from `data/free_bios.toml` (EmuTOS in place of TOS): no "missing / wrong hash"
+    /// warning. `label` is shown as is (« EmuTOS 192 Ko — français (ST/STE), version 1.4 »).
+    Free {
+        label: String,
+    },
     Unreadable(String),
 }
 
@@ -86,21 +91,31 @@ impl KnownFirmware {
 
 /// One status per `info.firmware` entry, same order. A spec's own md5 (from `notes`) and `known` are both
 /// accepted. Symlinks are followed (users link BIOS collections); the target is hashed.
+///
+/// `free`: `(path relative to the system directory, md5, label)` of free BIOS images
+/// (`crate::bios::free_firmware_md5`, or `FreeBiosManager::installed_md5`). A file that is not `Ok` but matches
+/// one of them is `Free` rather than `WrongHash` / `Unverified`.
 pub fn check_firmware(
     system_dir: &Path,
     info: &CoreInfo,
     known: &KnownFirmware,
+    free: &[(String, [u8; 16], String)],
 ) -> Vec<FirmwareStatus> {
     info.firmware
         .iter()
         .map(|spec| FirmwareStatus {
-            state: check_one(system_dir, spec, known),
+            state: check_one(system_dir, spec, known, free),
             spec: spec.clone(),
         })
         .collect()
 }
 
-fn check_one(system_dir: &Path, spec: &FirmwareSpec, known: &KnownFirmware) -> FirmwareState {
+fn check_one(
+    system_dir: &Path,
+    spec: &FirmwareSpec,
+    known: &KnownFirmware,
+    free: &[(String, [u8; 16], String)],
+) -> FirmwareState {
     // `FirmwareSpec` fields are public: re-checked here, not only at parse time.
     if !is_safe_relative_path(&spec.path) {
         return FirmwareState::Unreadable("chemin refusé".into());
@@ -129,12 +144,19 @@ fn check_one(system_dir: &Path, spec: &FirmwareSpec, known: &KnownFirmware) -> F
         .iter()
         .chain(spec.md5.iter())
         .peekable();
-    if accepted.peek().is_none() {
-        FirmwareState::Unverified
-    } else if accepted.any(|h| *h == md5) {
-        FirmwareState::Ok
-    } else {
+    let has_reference = accepted.peek().is_some();
+    if accepted.any(|h| *h == md5) {
+        return FirmwareState::Ok;
+    }
+    if let Some((_, _, label)) = free.iter().find(|(p, h, _)| *p == spec.path && *h == md5) {
+        return FirmwareState::Free {
+            label: label.clone(),
+        };
+    }
+    if has_reference {
         FirmwareState::WrongHash { md5 }
+    } else {
+        FirmwareState::Unverified
     }
 }
 
@@ -187,7 +209,7 @@ mod tests {
         let info = parse_info(CoreId::new("x").unwrap(), &text).unwrap();
         let known = KnownFirmware::parse(&format!("[firmware]\n\"sub/known.bin\" = [\"{abc}\"]\n"))
             .unwrap();
-        let states: Vec<_> = check_firmware(system, &info, &known)
+        let states: Vec<_> = check_firmware(system, &info, &known, &[])
             .into_iter()
             .map(|s| s.state)
             .collect();
@@ -200,6 +222,41 @@ mod tests {
     }
 
     #[test]
+    fn free_bios_is_recognised() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tos.img"), b"abc").unwrap();
+        std::fs::write(dir.path().join("other.img"), b"abc").unwrap();
+        let abc = parse_md5("900150983cd24fb0d6963f7d28e17f72").unwrap();
+        // .info md5 of a commercial TOS: EmuTOS would otherwise be `WrongHash`.
+        let text = "firmware0_path = \"tos.img\"\nfirmware1_path = \"other.img\"\n\
+                    firmware2_path = \"none.img\"\n\
+                    notes = \"(!) tos.img (md5): c1c57ce48e8ee4135885cee9e63a68a2\"\n";
+        let info = parse_info(CoreId::new("hatari").unwrap(), text).unwrap();
+        let free = [
+            ("tos.img".to_owned(), abc, "EmuTOS".to_owned()),
+            ("none.img".to_owned(), abc, "X".to_owned()),
+        ];
+        let states: Vec<_> = check_firmware(dir.path(), &info, &KnownFirmware::default(), &free)
+            .into_iter()
+            .map(|s| s.state)
+            .collect();
+        assert_eq!(
+            states[0],
+            FirmwareState::Free {
+                label: "EmuTOS".into()
+            }
+        );
+        // Same content under another name: not the free BIOS's path.
+        assert_eq!(states[1], FirmwareState::Unverified);
+        assert_eq!(states[2], FirmwareState::Missing);
+        let other = [("tos.img".to_owned(), [0u8; 16], "EmuTOS".to_owned())];
+        assert!(matches!(
+            check_firmware(dir.path(), &info, &KnownFirmware::default(), &other)[0].state,
+            FirmwareState::WrongHash { .. }
+        ));
+    }
+
+    #[test]
     fn unsafe_spec_is_not_read() {
         let spec = FirmwareSpec {
             path: "../etc/passwd".into(),
@@ -209,7 +266,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
-            check_one(dir.path(), &spec, &KnownFirmware::default()),
+            check_one(dir.path(), &spec, &KnownFirmware::default(), &[]),
             FirmwareState::Unreadable(_)
         ));
     }

@@ -19,7 +19,9 @@ pub use crate::covers::{
     DEFAULT_COVER_CACHE_BYTES, IgdbCredentials, IgdbSource, LibretroThumbnails,
     ScreenScraperCredentials, ScreenScraperSource, thumbnail_file_name,
 };
-pub use crate::dat::{DAT_BASE_URL, DatDownload, MAX_DAT_BYTES, dat_url, download_dat};
+pub use crate::dat::{
+    DAT_BASE_URL, DAT_TOSEC_BASE_URL, DatDownload, MAX_DAT_BYTES, dat_url, download_dat,
+};
 pub use crate::error::AssetError;
 pub use crate::image::{
     CoverImage, ImageFormat, MAX_COVER_BYTES, MAX_COVER_SIDE, decode_cover, sniff_format,

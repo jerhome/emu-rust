@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod filter;
 mod hash;
+mod media;
 mod scan;
 mod systems;
 
@@ -18,5 +19,8 @@ pub use crate::db::{
 pub use crate::error::LibraryError;
 pub use crate::filter::{GameFilter, SortOrder, filter_games, normalize_title};
 pub use crate::hash::{Hashes, MAX_HASH_SIZE, RomHashes, hash_reader};
+pub use crate::media::{MAX_MEDIA_IMAGES, MediaGroup, group_media};
 pub use crate::scan::{ScanOptions, ScanProgress, ScanReport};
-pub use crate::systems::{HeaderRule, SystemInfo, system, systems, systems_for_extension};
+pub use crate::systems::{
+    DatSource, HeaderRule, SystemInfo, SystemKind, system, systems, systems_for_extension,
+};

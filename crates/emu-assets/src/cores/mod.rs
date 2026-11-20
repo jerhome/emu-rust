@@ -22,4 +22,4 @@ pub use manager::{
     MAX_CORE_ZIP_BYTES, MAX_INDEX_BYTES, MAX_INFO_BUNDLE_BYTES, Origin, RemoteCatalog,
 };
 pub use platform::Platform;
-pub use select::{CoreChoice, CorePreferences, choose_core};
+pub use select::{CoreChoice, CoreMediaPolicy, CorePreferences, choose_core};

@@ -8,7 +8,7 @@ set -euo pipefail
 data="${EMU_DATA_DIR:-/data}"
 export EMU_DATA_DIR="$data"
 # library.sqlite (+ -wal/-shm) lives in $data itself and is created by the app.
-mkdir -p "$data/roms" "$data/system" "$data/saves" "$data/states" "$data/assets" "$data/cores" "$data/covers" "$data/database"
+mkdir -p "$data/roms" "$data/system" "$data/saves" "$data/states" "$data/assets" "$data/cores" "$data/covers" "$data/database" "$data/game-options"
 # config.toml holds credentials later on: keep it private (the app also enforces 0600).
 if [[ -f "$data/config.toml" ]]; then chmod 600 "$data/config.toml"; fi
 

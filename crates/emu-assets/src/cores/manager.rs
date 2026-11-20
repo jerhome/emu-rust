@@ -240,6 +240,8 @@ pub struct CoreManager {
     source: BuildbotSource,
     http: HttpClient,
     known_firmware: KnownFirmware,
+    /// md5 of the free BIOS images of `data/free_bios.toml` (`FirmwareState::Free`).
+    free_firmware: Vec<(String, [u8; 16], String)>,
     /// Never held during a download or while hashing a core.
     state: Mutex<State>,
     /// Serializes [`CoreManager::refresh`] (held during its downloads; the UI thread never takes it).
@@ -352,6 +354,7 @@ impl CoreManager {
             source,
             http,
             known_firmware: KnownFirmware::builtin(),
+            free_firmware: crate::bios::free_firmware_md5(&crate::bios::builtin_free_bios()),
             state: Mutex::new(State {
                 manifest,
                 manifest_ok,
@@ -816,12 +819,18 @@ impl CoreManager {
     }
 
     /// Firmware listed by the core's `.info`, checked in `dirs.system` (no network, nothing downloaded).
-    /// Empty when the `.info` is unknown (refresh first).
+    /// Empty when the `.info` is unknown (refresh first). Any image of `data/free_bios.toml` under its
+    /// `install_as` name is `FirmwareState::Free`, whether emu-rust installed it or the user copied it.
     pub fn firmware_status(&self, id: &CoreId) -> Vec<FirmwareStatus> {
         let Some(info) = self.info(id) else {
             return Vec::new();
         };
-        check_firmware(&self.dirs.system, &info, &self.known_firmware)
+        check_firmware(
+            &self.dirs.system,
+            &info,
+            &self.known_firmware,
+            &self.free_firmware,
+        )
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

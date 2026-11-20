@@ -9,6 +9,9 @@
 //! - `EnvState` (directories, options, geometry, messages, events): installed by `EnvInstall` from `Core::load` until
 //!   `Core` is dropped (after `retro_deinit`).
 //! - The `FrontendHandler`: installed by `HandlerGuard` only for the duration of one `retro_run`.
+//! - Keyboard and disk control function pointers registered by the core (`SET_KEYBOARD_CALLBACK`,
+//!   `SET_DISK_CONTROL(_EXT)_INTERFACE`): copied into `EnvState`, valid while the library is loaded. `Core` copies
+//!   them out and calls them outside any `ENV` borrow (they may re-enter the environment, e.g. `SET_MESSAGE`).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
@@ -19,6 +22,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::{CoreConfig, FrontendHandler, RunEvents};
+use crate::disk::DiskControlKind;
 use crate::error::LibretroError;
 use crate::log;
 use crate::options::{self, OptionStore};
@@ -103,6 +107,16 @@ struct EnvState {
     av_info: Option<AvInfo>,
     events: RunEvents,
     logged_commands: Vec<c_uint>,
+    keyboard: Option<sys::retro_keyboard_event_t>,
+    disk: Option<DiskInterface>,
+    support_no_game: bool,
+}
+
+/// Disk control callbacks as registered; the basic interface leaves the extended entries `None`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DiskInterface {
+    pub(crate) kind: DiskControlKind,
+    pub(crate) fns: sys::retro_disk_control_ext_callback,
 }
 
 /// Removes the environment state of this thread on drop.
@@ -126,6 +140,9 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         av_info: None,
         events: RunEvents::default(),
         logged_commands: Vec::new(),
+        keyboard: None,
+        disk: None,
+        support_no_game: false,
     };
     ENV.with(|env| *env.borrow_mut() = Some(state));
     HOT.with(|hot| {
@@ -215,6 +232,20 @@ pub(crate) fn take_messages() -> Vec<CoreMessage> {
 pub(crate) fn update_display_callback() -> Option<sys::retro_core_options_update_display_callback_t>
 {
     with_env(|env| env.update_display).flatten()
+}
+
+/// To be called outside `with_env` (see the module documentation).
+pub(crate) fn keyboard_callback() -> Option<sys::retro_keyboard_event_t> {
+    with_env(|env| env.keyboard).flatten()
+}
+
+/// To be called outside `with_env` (see the module documentation).
+pub(crate) fn disk_interface() -> Option<DiskInterface> {
+    with_env(|env| env.disk).flatten()
+}
+
+pub(crate) fn supports_no_game() -> bool {
+    with_env(|env| env.support_no_game).unwrap_or(false)
 }
 
 pub(crate) fn options() -> Vec<CoreOption> {
@@ -707,7 +738,14 @@ impl EnvState {
             }
             sys::RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES => {
                 // SAFETY: `uint64_t *`, bit n = RETRO_DEVICE n.
-                unsafe { write_out::<u64>(data, 1 << sys::RETRO_DEVICE_JOYPAD) }
+                unsafe {
+                    write_out::<u64>(
+                        data,
+                        (1 << sys::RETRO_DEVICE_JOYPAD)
+                            | (1 << sys::RETRO_DEVICE_MOUSE)
+                            | (1 << sys::RETRO_DEVICE_KEYBOARD),
+                    )
+                }
             }
             // No overscan preference: the core keeps its own default (it is not told to crop or not).
             sys::RETRO_ENVIRONMENT_GET_OVERSCAN => false,
@@ -753,11 +791,66 @@ impl EnvState {
                 // SAFETY: `int *`.
                 unsafe { write_out::<c_int>(data, 0b11) }
             }
+            sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME => {
+                // SAFETY: `const bool *`.
+                let Some(supported) = (unsafe { read_in::<bool>(data) }) else {
+                    return false;
+                };
+                self.support_no_game = supported;
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK => {
+                // SAFETY: `const struct retro_keyboard_callback *`. The function pointer is copied; it points
+                // into the core library, which stays loaded as long as this state exists.
+                let Some(cb) = (unsafe { read_in::<sys::retro_keyboard_callback>(data) }) else {
+                    return false;
+                };
+                self.keyboard = cb.callback;
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE => {
+                // libretro.h: NULL deregisters.
+                // SAFETY: `const struct retro_disk_control_callback *`; the pointers are copied (see above).
+                self.disk =
+                    unsafe { read_in::<sys::retro_disk_control_callback>(data) }.map(|cb| {
+                        DiskInterface {
+                            kind: DiskControlKind::Basic,
+                            fns: sys::retro_disk_control_ext_callback {
+                                set_eject_state: cb.set_eject_state,
+                                get_eject_state: cb.get_eject_state,
+                                get_image_index: cb.get_image_index,
+                                set_image_index: cb.set_image_index,
+                                get_num_images: cb.get_num_images,
+                                replace_image_index: cb.replace_image_index,
+                                add_image_index: cb.add_image_index,
+                                set_initial_image: None,
+                                get_image_path: None,
+                                get_image_label: None,
+                            },
+                        }
+                    });
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE => {
+                // libretro.h: NULL deregisters.
+                // SAFETY: `const struct retro_disk_control_ext_callback *`; the pointers are copied (see above).
+                self.disk =
+                    unsafe { read_in::<sys::retro_disk_control_ext_callback>(data) }.map(|fns| {
+                        DiskInterface {
+                            kind: DiskControlKind::Extended,
+                            fns,
+                        }
+                    });
+                true
+            }
+            sys::RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION => {
+                // SAFETY: `unsigned *`.
+                unsafe { write_out::<c_uint>(data, 1) }
+            }
             sys::RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
             | sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO
             | sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL
             | sys::RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS
-            | sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME
             | sys::RETRO_ENVIRONMENT_SET_MEMORY_MAPS
             | sys::RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO
             | sys::RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE => true,
@@ -766,7 +859,7 @@ impl EnvState {
                 self.log_unhandled(cmd);
                 false
             }
-            // Rumble, perf, VFS, frame-time / audio / keyboard callbacks…
+            // Rumble, perf, VFS, frame-time / audio callbacks…
             _ => {
                 self.log_unhandled(cmd);
                 false
@@ -1151,7 +1244,12 @@ mod tests {
             sys::RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES,
             (&raw mut caps).cast()
         ));
-        assert_eq!(caps, 1 << sys::RETRO_DEVICE_JOYPAD);
+        assert_eq!(
+            caps,
+            (1 << sys::RETRO_DEVICE_JOYPAD)
+                | (1 << sys::RETRO_DEVICE_MOUSE)
+                | (1 << sys::RETRO_DEVICE_KEYBOARD)
+        );
         let mut overscan = true;
         assert!(!env(
             sys::RETRO_ENVIRONMENT_GET_OVERSCAN,
@@ -1491,5 +1589,145 @@ mod tests {
         let (_, panicked) = guard.finish();
         assert!(panicked);
         assert!(recorder.queries.is_empty());
+    }
+
+    extern "C" fn test_key(_down: bool, _keycode: c_uint, _character: u32, _modifiers: u16) {}
+    extern "C" fn test_eject(_ejected: bool) -> bool {
+        true
+    }
+    extern "C" fn test_num_images() -> c_uint {
+        3
+    }
+    extern "C" fn test_initial(_index: c_uint, _path: *const c_char) -> bool {
+        true
+    }
+
+    #[test]
+    fn computer_environment_commands() {
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
+
+        // SET_SUPPORT_NO_GAME stores the value.
+        assert!(!supports_no_game());
+        let mut flag = true;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME,
+            (&raw mut flag).cast()
+        ));
+        assert!(supports_no_game());
+        flag = false;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME,
+            (&raw mut flag).cast()
+        ));
+        assert!(!supports_no_game());
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME,
+            std::ptr::null_mut()
+        ));
+
+        // Keyboard callback: registered, then unregistered by a NULL callback.
+        assert!(keyboard_callback().is_none());
+        let mut kb = sys::retro_keyboard_callback {
+            callback: Some(test_key),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK,
+            (&raw mut kb).cast()
+        ));
+        assert!(keyboard_callback().is_some());
+        kb.callback = None;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK,
+            (&raw mut kb).cast()
+        ));
+        assert!(keyboard_callback().is_none());
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK,
+            std::ptr::null_mut()
+        ));
+
+        // Disk control: version 1, basic then extended, NULL deregisters.
+        let mut version: c_uint = 0;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION,
+            (&raw mut version).cast()
+        ));
+        assert_eq!(version, 1);
+        assert!(disk_interface().is_none());
+        let mut basic = sys::retro_disk_control_callback {
+            set_eject_state: Some(test_eject),
+            get_eject_state: None,
+            get_image_index: None,
+            set_image_index: None,
+            get_num_images: Some(test_num_images),
+            replace_image_index: None,
+            add_image_index: None,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE,
+            (&raw mut basic).cast()
+        ));
+        let disk = disk_interface().expect("basic interface");
+        assert_eq!(disk.kind, DiskControlKind::Basic);
+        assert!(disk.fns.set_eject_state.is_some() && disk.fns.get_num_images.is_some());
+        assert!(disk.fns.set_initial_image.is_none());
+        // SAFETY: `test_num_images` takes no argument and has no precondition.
+        assert_eq!(unsafe { disk.fns.get_num_images.unwrap()() }, 3);
+
+        let mut ext = sys::retro_disk_control_ext_callback {
+            set_eject_state: Some(test_eject),
+            get_eject_state: None,
+            get_image_index: None,
+            set_image_index: None,
+            get_num_images: None,
+            replace_image_index: None,
+            add_image_index: None,
+            set_initial_image: Some(test_initial),
+            get_image_path: None,
+            get_image_label: None,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE,
+            (&raw mut ext).cast()
+        ));
+        let disk = disk_interface().expect("extended interface");
+        assert_eq!(disk.kind, DiskControlKind::Extended);
+        assert!(disk.fns.set_initial_image.is_some() && disk.fns.get_num_images.is_none());
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE,
+            std::ptr::null_mut()
+        ));
+        assert!(disk_interface().is_none());
+    }
+
+    #[test]
+    fn keyboard_and_mouse_queries_reach_handler() {
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
+        let mut recorder = Recorder::default();
+        {
+            let mut slot: &mut dyn FrontendHandler = &mut recorder;
+            let guard = install_handler(&mut slot);
+            // RETROK_a, then mouse X and left button.
+            assert_eq!(input_state(0, sys::RETRO_DEVICE_KEYBOARD, 0, 97), 7);
+            assert_eq!(
+                input_state(0, sys::RETRO_DEVICE_MOUSE, 0, crate::mouse_id::X),
+                7
+            );
+            assert_eq!(
+                input_state(0, sys::RETRO_DEVICE_MOUSE, 0, crate::mouse_id::LEFT),
+                7
+            );
+            let (_, panicked) = guard.finish();
+            assert!(!panicked);
+        }
+        let devices: Vec<_> = recorder.queries.iter().map(|q| (q.device, q.id)).collect();
+        assert_eq!(
+            devices,
+            vec![
+                (InputDevice::Keyboard, 97),
+                (InputDevice::Mouse, crate::mouse_id::X),
+                (InputDevice::Mouse, crate::mouse_id::LEFT),
+            ]
+        );
     }
 }

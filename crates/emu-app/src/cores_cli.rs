@@ -134,6 +134,7 @@ fn describe(status: &FirmwareStatus) -> String {
         FirmwareState::Missing => "absent".to_owned(),
         FirmwareState::WrongHash { .. } => "empreinte inattendue".to_owned(),
         FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
+        FirmwareState::Free { label } => format!("BIOS libre : {label}"),
         FirmwareState::Unreadable(e) => format!("illisible : {e}"),
     };
     format!("  {} ({kind}) : {state}", status.spec.path)
@@ -156,7 +157,10 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
         for status in &statuses {
             println!("{}", describe(status));
             required_problem |= !status.spec.optional
-                && !matches!(status.state, FirmwareState::Ok | FirmwareState::Unverified);
+                && !matches!(
+                    status.state,
+                    FirmwareState::Ok | FirmwareState::Unverified | FirmwareState::Free { .. }
+                );
         }
     }
     Ok(!required_problem)

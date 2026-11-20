@@ -43,7 +43,8 @@ Dossier des ROMs à indiquer dans les Réglages de la bibliothèque : `/data/rom
 /data/saves/    SRAM : saves/<core_id>/<jeu>.srm (compatible RetroArch)
 /data/states/   savestates à emplacements, par core puis par jeu
 /data/assets/   réservé (non utilisé en 1.0 ; jaquettes dans covers/, DAT dans database/)
-/data/covers/   jaquettes    /data/database/   DAT No-Intro
+/data/covers/   jaquettes    /data/database/   DAT No-Intro / TOSEC
+/data/game-options/   options par jeu : game-options/<core_id>/<jeu>.toml (2.0)
 /data/library.sqlite   base de la bibliothèque (créée par l'application)
 /data/config.toml   configuration (touches, options) ; droits 0600, propriétaire `emu`
 ```
@@ -58,6 +59,22 @@ docker run --rm -v emu-rust_emu-data:/data:ro -v "$PWD:/out" debian:bookworm-sli
 
 Le compilateur C (`build-essential`) n'est présent que dans les étages de build (dev et build du runtime) :
 `emu-libretro` compile une cale C via `cc` (ADR 0009) ; l'image finale n'en contient pas.
+
+## Atari ST (2.0, en développement)
+
+Core `hatari` (installé depuis l'écran Cores). Le BIOS de l'Atari ST est **EmuTOS 1.4** (GPL-2.0-or-later, libre) :
+l'application le propose et le télécharge elle-même (HTTPS, SHA-256 vérifié) dans `/data/system/tos.img`. Aucun TOS
+commercial n'est téléchargé ; si vous placez le vôtre dans `/data/system/tos.img`, il n'est jamais écrasé.
+Disquettes : `.st`, `.msa`, `.stx`, `.ipf`, `.dim` ou `.m3u` (plusieurs disquettes) dans `/data/roms/` ; les écritures
+se font sur des copies de travail (l'original n'est pas modifié).
+
+Touche hôte : **Ctrl droit** (⌘ droit sur macOS). Seule, elle ouvre le menu ; combinée :
+`S`/`L` sauvegarder/charger l'état, `,`/`.` emplacement -/+, `R` reset, `P` pause, `F` plein écran, `I` stats,
+`Espace` avance rapide, `K` clavier virtuel, `M` capture de la souris, `J` mode clavier/joystick, `D` disquette suivante.
+
+Souris : le bureau GEM l'exige. Elle est capturée au premier clic dans la fenêtre ; libération par la touche hôte
+(menu) ou Hôte + M. Sous noVNC et WSLg la capture n'est pas disponible (pas de mouvement relatif) : la souris reste
+libre, utilisez le clavier virtuel et le joystick. Disquettes : menu Disquettes, ou Hôte + D pour passer à la suivante.
 
 ## Raccourcis (à venir, phase 2)
 

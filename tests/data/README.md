@@ -70,3 +70,33 @@ extension-based detection). Zip timestamps are fixed (1980-01-01) so the zips ar
 - `images/bad-signature.png` — text with a `.png` name; rejected by the signature check.
 
 Not provided (not requested): `tests/data/library/` (fixture tree for Xvfb captures) and a JPEG fixture.
+
+## Core factice étendu (`tests/mock-core/mock_core.c`, tâche Q1 v2.0)
+
+Protocole complet en tête du fichier C (source de vérité). Résumé : tout est désactivé par défaut (les images et
+empreintes existantes ne changent pas) ; des variables d'environnement, lues au `retro_set_environment`, activent :
+
+| Variable | Effet |
+|---|---|
+| `MOCK_KEYBOARD` = `1` / `cb` / `poll` | `SET_KEYBOARD_CALLBACK` enregistré (événements mémorisés) et/ou `RETRO_DEVICE_KEYBOARD` lu à chaque `retro_run` (ids 0..341) |
+| `MOCK_MOUSE` | `RETRO_DEVICE_MOUSE` (port 0) lu à chaque run : dx/dy cumulés, boutons, molette |
+| `MOCK_DISK` = `basic` / `ext` | interface disque 13 ; `ext` : version 57 puis 58 (repli sur 13). 8 images max, index == nombre ⇒ « pas de disque », changement refusé hors éjection, `.m3u` lu (chemins relatifs à son dossier), `set_initial_image` appliqué au chargement |
+| `MOCK_DISK_DUMP` | réécrit `mock-disk.txt` dans `GET_SAVE_DIRECTORY` à chaque changement (interface, éjection, index, nombre, initial, `image<i>=chemin\|label`) |
+| `MOCK_NO_GAME` | `SET_SUPPORT_NO_GAME` = true et `retro_load_game(NULL)` accepté (graine 0) ; sans elle : false et refus |
+
+Affichage des registres (si au moins une variable ci-dessus est définie) : dans l'image 64×48 XRGB8888, lignes 0..39 =
+5 bandes de 8 lignes × 8 cellules de 8 px. Une cellule = un octet `v` en gris `0x00vvvvvv`, lu au centre
+(`x = 8*cellule+4`, `y = 8*bande+4`) ; les valeurs 16 bits sont little-endian sur 2 cellules. Lignes 40..47 : motif de base.
+
+| Bande | Cellules |
+|---|---|
+| 0 clavier (callback) | 0 événements reçus ; 1-2 dernier code ; 3 drapeaux (bit0 appui, bit1 caractère ≠ 0) ; 4-5 caractère ; 6-7 modificateurs |
+| 1 clavier (compteurs / lecture) | 0 touches lues enfoncées ; 1-2 plus petit code ; 3-4 plus grand code ; 5 appuis reçus ; 6 relâchements ; 7 événements avec caractère |
+| 2 souris | 0-1 dx cumulé (int16) ; 2-3 dy cumulé ; 4 boutons (bit0 gauche, 1 droit, 2 milieu, 3 molette haut, 4 bas) ; 5 appuis gauche ; 6 appuis droit ; 7 crans de molette |
+| 3 disque | 0 index (255 si ≥ 255) ; 1 nombre d'images ; 2 éjecté ; 3 `set_image_index` réussis ; 4 / 5 octet bas FNV-1a du chemin / label courant ; 6 image initiale + 1 ; 7 drapeaux (bit0 interface 58, bit1 `load_game(NULL)`, bit2 interface 13, bit3 `replace_image_index` appelé, bit4 `add_image_index` appelé) |
+| 4 clavier (historique) | 4 derniers codes du callback, le plus récent d'abord, u16 sur 2 cellules |
+
+Les compteurs sont remis à zéro par `retro_init` (pas par `retro_reset`). Les valeurs ne sont exactes qu'en XRGB8888
+(variantes 16 bits : gris quantifié). Les variables sont lues dans l'environnement du processus : les tests qui les
+positionnent doivent le faire avant `Core::load` et ne pas tourner en parallèle d'autres tests du même binaire qui
+chargent le mock (`std::env::set_var` global ; sérialiser, ou un binaire de test dédié).

@@ -66,6 +66,9 @@ pub struct Core {
     game: Option<LoadedGame>,
     /// `retro_run` calls since the game was loaded (`MUST_INITIALIZE` quirk).
     frames_run: u64,
+    /// Paths handed to the disk control interface (`replace_image_index`, `set_initial_image`). libretro.h does
+    /// not say whether the core copies them, so they are kept until `retro_unload_game` / drop.
+    disk_paths: Vec<CString>,
     // Declared last so it is released after everything above.
     _guard: ProcessGuard,
     // Implementation fields are private to emu-libretro; this marker makes `Core` !Send + !Sync.
@@ -74,7 +77,8 @@ pub struct Core {
 
 /// Buffers handed to `retro_load_game`; cores may keep pointers to them until `retro_unload_game`.
 struct LoadedGame {
-    _path: CString,
+    /// `None` for `load_no_game`.
+    _path: Option<CString>,
     _data: Option<Vec<u8>>,
 }
 
@@ -235,6 +239,7 @@ impl Core {
             pixel_format: callbacks::pixel_format(),
             game: None,
             frames_run: 0,
+            disk_paths: Vec::new(),
             _guard: guard,
             _not_send: PhantomData,
         })
@@ -329,10 +334,53 @@ impl Core {
         if !loaded {
             return Err(LibretroError::LoadGameFailed(rom));
         }
-        self.game = Some(LoadedGame {
-            _path: path,
+        Ok(self.after_load(LoadedGame {
+            _path: Some(path),
             _data: data,
-        });
+        }))
+    }
+
+    /// `retro_load_game(NULL)`: boots the machine without content (GEM desktop for Atari ST).
+    /// [`LibretroError::NoGameUnsupported`] when the core did not send `SET_SUPPORT_NO_GAME` with `true`.
+    pub fn load_no_game(&mut self) -> Result<AvInfo, LibretroError> {
+        if self.game.is_some() {
+            return Err(LibretroError::GameAlreadyLoaded);
+        }
+        if !self.supports_no_game() {
+            return Err(LibretroError::NoGameUnsupported);
+        }
+        // SAFETY: libretro.h allows a NULL `game` once the core announced SET_SUPPORT_NO_GAME (checked above);
+        // owning thread.
+        let loaded = unsafe { (self.api.load_game)(std::ptr::null()) };
+        if !loaded {
+            return Err(LibretroError::LoadGameFailed(PathBuf::new()));
+        }
+        Ok(self.after_load(LoadedGame {
+            _path: None,
+            _data: None,
+        }))
+    }
+
+    /// `SET_SUPPORT_NO_GAME` was received with `true`.
+    pub fn supports_no_game(&self) -> bool {
+        callbacks::supports_no_game()
+    }
+
+    pub(crate) fn game_loaded(&self) -> bool {
+        self.game.is_some()
+    }
+
+    /// Keeps `path` alive until the game is unloaded (or the core dropped) and returns its address, which stays
+    /// valid that long (the `CString` heap buffer does not move when the vector grows).
+    pub(crate) fn retain_disk_path(&mut self, path: CString) -> *const c_char {
+        let ptr = path.as_ptr();
+        self.disk_paths.push(path);
+        ptr
+    }
+
+    /// Common tail of a successful `retro_load_game`.
+    fn after_load(&mut self, game: LoadedGame) -> AvInfo {
+        self.game = Some(game);
         self.frames_run = 0;
 
         let mut raw = sys::retro_system_av_info::default();
@@ -347,7 +395,7 @@ impl Core {
             // SAFETY: valid after retro_load_game; RETRO_DEVICE_JOYPAD is supported by every core.
             unsafe { (self.api.set_controller_port_device)(port, sys::RETRO_DEVICE_JOYPAD) };
         }
-        Ok(av_info)
+        av_info
     }
 
     /// `retro_serialize_size`; 0 when no game is loaded or savestates are unsupported. May change between
@@ -520,6 +568,7 @@ impl Core {
         // SAFETY: a game is loaded; owning thread. The game buffers are freed only afterwards.
         unsafe { (self.api.unload_game)() };
         self.game = None;
+        self.disk_paths.clear();
         self.frames_run = 0;
         self.av_info = None;
         callbacks::set_av_info(None);

@@ -55,13 +55,35 @@ const KEYBOARD_WORDS: usize = (RetroKey::LAST as usize).div_ceil(64);
 
 impl KeyboardState {
     pub fn set(&mut self, key: RetroKey, pressed: bool) {
-        let _ = (key, pressed);
-        todo!("runtime-av (2.0)")
+        let raw = usize::from(key.raw());
+        // `RetroKey` guarantees `raw < LAST`; the `get_mut` only keeps this panic-free.
+        if let Some(word) = self.bits.get_mut(raw / 64) {
+            let bit = 1u64 << (raw % 64);
+            if pressed {
+                *word |= bit;
+            } else {
+                *word &= !bit;
+            }
+        }
     }
 
     pub fn is_pressed(&self, key: RetroKey) -> bool {
-        let _ = (key, self.bits);
-        todo!("runtime-av (2.0)")
+        let raw = usize::from(key.raw());
+        self.bits
+            .get(raw / 64)
+            .is_some_and(|word| word & (1u64 << (raw % 64)) != 0)
+    }
+
+    /// No key held.
+    pub fn is_empty(&self) -> bool {
+        self.bits.iter().all(|&w| w == 0)
+    }
+
+    /// Held keys in ascending `RetroKey` order.
+    pub fn pressed(&self) -> impl Iterator<Item = RetroKey> + '_ {
+        (0..RetroKey::LAST)
+            .filter_map(RetroKey::new)
+            .filter(|&k| self.is_pressed(k))
     }
 }
 
@@ -78,6 +100,20 @@ pub struct MouseState {
     pub buttons: u8,
 }
 
+impl MouseState {
+    pub fn set_button(&mut self, button: MouseButton, pressed: bool) {
+        if pressed {
+            self.buttons |= button.bit();
+        } else {
+            self.buttons &= !button.bit();
+        }
+    }
+
+    pub fn is_pressed(&self, button: MouseButton) -> bool {
+        self.buttons & button.bit() != 0
+    }
+}
+
 /// Buttons of [`MouseState::buttons`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -87,6 +123,23 @@ pub enum MouseButton {
     Middle = 2,
     Button4 = 3,
     Button5 = 4,
+}
+
+impl MouseButton {
+    /// Mask of this button in [`MouseState::buttons`].
+    pub const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+impl InputFrame {
+    /// Back to the default state, keeping the capacity of `key_events` (no allocation per frame).
+    pub(crate) fn clear(&mut self) {
+        self.pads = Default::default();
+        self.keyboard = KeyboardState::default();
+        self.key_events.clear();
+        self.mouse = MouseState::default();
+    }
 }
 
 /// Source of input (keyboard, scripted, gamepad in phase 6).
@@ -108,6 +161,8 @@ impl InputBackend for NullInput {
 #[derive(Debug, Default, Clone)]
 pub struct ScriptedInput {
     presses: Vec<(usize, JoypadButton, Range<u64>)>,
+    keys: Vec<(RetroKey, Range<u64>)>,
+    mouse: Vec<(i32, i32, u8, Range<u64>)>,
 }
 
 impl ScriptedInput {
@@ -120,6 +175,28 @@ impl ScriptedInput {
         self.presses.push((port, button, frames));
         self
     }
+
+    /// Holds `key` (keyboard state) for every frame in `frames`, with a key-down event at `frames.start` and a
+    /// key-up event at `frames.end` (no character, no modifier). An empty range produces nothing.
+    pub fn key(mut self, key: RetroKey, frames: Range<u64>) -> Self {
+        self.keys.push((key, frames));
+        self
+    }
+
+    /// Moves the mouse by (`dx`, `dy`) and holds `buttons` (bit n = [`MouseButton`] n) on every frame in `frames`.
+    pub fn mouse(mut self, dx: i32, dy: i32, buttons: u8, frames: Range<u64>) -> Self {
+        self.mouse.push((dx, dy, buttons, frames));
+        self
+    }
+}
+
+fn key_event(key: RetroKey, down: bool) -> KeyEvent {
+    KeyEvent {
+        down,
+        key,
+        character: 0,
+        modifiers: emu_libretro::KeyModifiers(0),
+    }
 }
 
 impl InputBackend for ScriptedInput {
@@ -130,6 +207,26 @@ impl InputBackend for ScriptedInput {
                 && let Some(pad) = state.pads.get_mut(*port)
             {
                 pad.set(*button, true);
+            }
+        }
+        for (key, frames) in &self.keys {
+            if frames.is_empty() {
+                continue;
+            }
+            if frames.contains(&frame_index) {
+                state.keyboard.set(*key, true);
+            }
+            if frame_index == frames.start {
+                state.key_events.push(key_event(*key, true));
+            } else if frame_index == frames.end {
+                state.key_events.push(key_event(*key, false));
+            }
+        }
+        for (dx, dy, buttons, frames) in &self.mouse {
+            if frames.contains(&frame_index) {
+                state.mouse.dx = state.mouse.dx.saturating_add(*dx);
+                state.mouse.dy = state.mouse.dy.saturating_add(*dy);
+                state.mouse.buttons |= buttons;
             }
         }
     }
@@ -171,6 +268,85 @@ mod tests {
         assert!(f.pads[0].is_pressed(JoypadButton::Down));
         assert!(f.pads[1].is_pressed(JoypadButton::Start));
         assert_eq!(at(410), InputFrame::default());
+    }
+
+    fn key(raw: u16) -> RetroKey {
+        RetroKey::new(raw).unwrap()
+    }
+
+    #[test]
+    fn keyboard_state_bits() {
+        let mut kb = KeyboardState::default();
+        assert!(kb.is_empty());
+        for raw in [0, 63, 64, 97, RetroKey::LAST - 1] {
+            kb.set(key(raw), true);
+            assert!(kb.is_pressed(key(raw)), "{raw}");
+        }
+        assert!(!kb.is_pressed(key(98)));
+        assert_eq!(
+            kb.pressed().map(RetroKey::raw).collect::<Vec<_>>(),
+            [0, 63, 64, 97, RetroKey::LAST - 1]
+        );
+        kb.set(key(64), false);
+        assert!(!kb.is_pressed(key(64)));
+        assert!(kb.is_pressed(key(63)));
+        for raw in [0, 63, 97, RetroKey::LAST - 1] {
+            kb.set(key(raw), false);
+        }
+        assert!(kb.is_empty());
+    }
+
+    #[test]
+    fn mouse_buttons() {
+        let mut m = MouseState::default();
+        m.set_button(MouseButton::Left, true);
+        m.set_button(MouseButton::Button5, true);
+        assert_eq!(m.buttons, 0b1_0001);
+        assert!(m.is_pressed(MouseButton::Left));
+        assert!(!m.is_pressed(MouseButton::Right));
+        m.set_button(MouseButton::Left, false);
+        assert_eq!(m.buttons, MouseButton::Button5.bit());
+    }
+
+    #[test]
+    fn scripted_keys_and_mouse() {
+        let a = key(97);
+        let mut script = ScriptedInput::new()
+            .key(a, 2..4)
+            .key(key(13), 5..5)
+            .mouse(3, -2, MouseButton::Left.bit(), 3..5)
+            .mouse(1, 1, MouseButton::Right.bit(), 4..5);
+        let mut at = |i| {
+            let mut frame = InputFrame::default();
+            script.poll(i, &mut frame);
+            frame
+        };
+        assert_eq!(at(1), InputFrame::default());
+        let f = at(2);
+        assert!(f.keyboard.is_pressed(a));
+        assert_eq!(f.key_events, [key_event(a, true)]);
+        let f = at(3);
+        assert!(f.keyboard.is_pressed(a) && f.key_events.is_empty());
+        assert_eq!((f.mouse.dx, f.mouse.dy, f.mouse.buttons), (3, -2, 1));
+        let f = at(4);
+        assert!(!f.keyboard.is_pressed(a));
+        assert_eq!(f.key_events, [key_event(a, false)]);
+        assert_eq!((f.mouse.dx, f.mouse.dy, f.mouse.buttons), (4, -1, 3));
+        assert_eq!(at(5), InputFrame::default());
+    }
+
+    #[test]
+    fn clear_keeps_event_capacity() {
+        let mut frame = InputFrame::default();
+        ScriptedInput::new()
+            .key(key(97), 0..1)
+            .mouse(1, 1, 1, 0..1)
+            .press(0, JoypadButton::A, 0..1)
+            .poll(0, &mut frame);
+        let capacity = frame.key_events.capacity();
+        frame.clear();
+        assert_eq!(frame, InputFrame::default());
+        assert_eq!(frame.key_events.capacity(), capacity);
     }
 
     #[test]

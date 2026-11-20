@@ -1,0 +1,229 @@
+# Free BIOS catalogue (ADR 0005, ADR 0015 §2). Only free software: never a commercial TOS / Kickstart.
+# Every archive and every image is pinned (size + SHA-256; md5 for `check_firmware`). No TOFU: a new EmuTOS
+# release means a new version of this file, reviewed by `reviewer`.
+# Values measured on 2026-11-20 from the SourceForge archives (they match docs/design/v2.0-atari-st.md §3.3).
+#
+# Default variant: 192 KB French (user decision, ADR 0015 header). Callers first try the variant matching
+# the system language (`FreeBios::preferred_variant`), then fall back to `default_variant`.
+
+[[bios]]
+id = "emutos"
+name = "EmuTOS"
+version = "1.4"
+license = "GPL-2.0-or-later"
+homepage = "https://emutos.sourceforge.io/"
+system = "Atari - ST"
+install_as = "tos.img"
+default_variant = "192fr"
+
+# downloads.sourceforge.net answers 302 to a mirror (`*.dl.sourceforge.net`): integrity comes from the pin.
+[[bios.archive]]
+name = "emutos-192k-1.4.zip"
+url = "https://downloads.sourceforge.net/project/emutos/emutos/1.4/emutos-192k-1.4.zip"
+size = 2260230
+sha256 = "59abac06a2d29b0864c5a7cfb2af65f022c337aed34188e174a9a08cc737e4bc"
+
+[[bios.archive]]
+name = "emutos-1024k-1.4.zip"
+url = "https://downloads.sourceforge.net/project/emutos/emutos/1.4/emutos-1024k-1.4.zip"
+size = 371134
+sha256 = "dc9fbef6455a24ee8955cccd565588c718ba675fd54bc5a749003ac4bbd7f7e1"
+
+[[bios.variant]]
+id = "1024k"
+label = "EmuTOS 1 Mo — multilingue, anglais (ST, STE, TT, Falcon)"
+archive = "emutos-1024k-1.4.zip"
+entry = "emutos-1024k-1.4/etos1024k.img"
+size = 1048576
+md5 = "f187a26efd62d040b93e468a21b67b61"
+sha256 = "154803e3ff4851f3dc358b91b16d6b6110d187a81d8132ecb665af49878939d5"
+
+[[bios.variant]]
+id = "192fr"
+label = "EmuTOS 192 Ko — français (ST/STE)"
+language = "fr"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192fr.img"
+size = 196608
+md5 = "cf2847c15e5251653cd7e6c69d4a2d7f"
+sha256 = "9fe2fc9c4458818bd0d401fc7a5ad5d487c83a5d5501d75f7737fbb84b9a7692"
+
+[[bios.variant]]
+id = "192us"
+label = "EmuTOS 192 Ko — anglais (États-Unis) (ST/STE)"
+language = "en"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192us.img"
+size = 196608
+md5 = "693255fbec212bde1d0054a94d6ffb28"
+sha256 = "8fbbf8b44fc3e34281eaf8cda5265510e9af9ccda0e3e409111648060d244cfc"
+
+[[bios.variant]]
+id = "192uk"
+label = "EmuTOS 192 Ko — anglais (Royaume-Uni) (ST/STE)"
+language = "en-GB"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192uk.img"
+size = 196608
+md5 = "c7d24c38b597a255d1b941fd58c8578a"
+sha256 = "2d6f3f6f304c9ba340aff8d47ba72b274ae29b8fbe6214138846dada97edf0f3"
+
+[[bios.variant]]
+id = "192de"
+label = "EmuTOS 192 Ko — allemand (ST/STE)"
+language = "de"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192de.img"
+size = 196608
+md5 = "85196e7007c1a71155defe55689386c9"
+sha256 = "168e90ddbdfb8312174b72106f6431cfeb0f52c36e8d51d7647515fe3bdad447"
+
+[[bios.variant]]
+id = "192sg"
+label = "EmuTOS 192 Ko — allemand (Suisse) (ST/STE)"
+language = "de-CH"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192sg.img"
+size = 196608
+md5 = "7f35dd27d7fde2cdb638806dbaeaed58"
+sha256 = "aa590d28def3901fc505275593a17b4d612df579175f9afc28e99a396be3496d"
+
+[[bios.variant]]
+id = "192es"
+label = "EmuTOS 192 Ko — espagnol (ST/STE)"
+language = "es"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192es.img"
+size = 196608
+md5 = "bd9caa54226632c4e2ade3c71b598fd4"
+sha256 = "24f0d434b130166b4db72ed91980ebec1be7259d7482b668e5203ada602e4029"
+
+[[bios.variant]]
+id = "192it"
+label = "EmuTOS 192 Ko — italien (ST/STE)"
+language = "it"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192it.img"
+size = 196608
+md5 = "5b510f16a314dbff25fb845456d928bd"
+sha256 = "efe68abe79249846cb1d65f7c94ffaf719b95e0838c3c3a07b79a9b67e302a90"
+
+[[bios.variant]]
+id = "192nl"
+label = "EmuTOS 192 Ko — néerlandais (ST/STE)"
+language = "nl"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192nl.img"
+size = 196608
+md5 = "c686aba3b359d1ff3ffc268f80b6efb5"
+sha256 = "d6e04f2f7c1968bad1a82eef04e092b97af42e8238af075cd8e10fbbc7418830"
+
+[[bios.variant]]
+id = "192se"
+label = "EmuTOS 192 Ko — suédois (ST/STE)"
+language = "sv"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192se.img"
+size = 196608
+md5 = "8f6eba9473aa7fd43f228b26d80a7477"
+sha256 = "01caecb14324ce53e8041cedecc8b0aca30894fed447a5a9fb0296309860935f"
+
+[[bios.variant]]
+id = "192no"
+label = "EmuTOS 192 Ko — norvégien (ST/STE)"
+language = "no"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192no.img"
+size = 196608
+md5 = "24ef35d3696b56f582a865f438da31bd"
+sha256 = "059b0f02838833d97e09778978f96938da9c00a43a2e5dcd6e4fe0ac9772fed1"
+
+[[bios.variant]]
+id = "192fi"
+label = "EmuTOS 192 Ko — finnois (ST/STE)"
+language = "fi"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192fi.img"
+size = 196608
+md5 = "6ae1b064ac9ff3e5f227b4c7478601d2"
+sha256 = "21f339052d8dbc77585c0d4d9577b70bb0551ddbe98f8966cb247f32ba6f4bee"
+
+[[bios.variant]]
+id = "192pl"
+label = "EmuTOS 192 Ko — polonais (ST/STE)"
+language = "pl"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192pl.img"
+size = 196608
+md5 = "dcd6dee0cfb210affadb57b670e64f4c"
+sha256 = "3f3e6f4da83618c3a9e7be43ce36ee971cee409e6a904bea442a65f574437987"
+
+[[bios.variant]]
+id = "192cz"
+label = "EmuTOS 192 Ko — tchèque (ST/STE)"
+language = "cs"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192cz.img"
+size = 196608
+md5 = "f512d4851bcc10c21fde5812aeb0d191"
+sha256 = "10447957ba263e6c9c14951d093de77c510a3c0115cbf1a8618c6dab47fdf68e"
+
+[[bios.variant]]
+id = "192hu"
+label = "EmuTOS 192 Ko — hongrois (ST/STE)"
+language = "hu"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192hu.img"
+size = 196608
+md5 = "9b4c90e7db96c15287454e36ebbe9d98"
+sha256 = "3ef29068faa75f4a45bd7d27b6dcf943a52479bc73cf0ba1e72a1bf9418563f9"
+
+[[bios.variant]]
+id = "192ro"
+label = "EmuTOS 192 Ko — roumain (ST/STE)"
+language = "ro"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192ro.img"
+size = 196608
+md5 = "aab8af2e6dc829320d322d62d9e52c44"
+sha256 = "894f596139ebd410c752aa565226a41a7d5851bb50efa4921112f1c4687bdfb3"
+
+[[bios.variant]]
+id = "192ru"
+label = "EmuTOS 192 Ko — russe (ST/STE)"
+language = "ru"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192ru.img"
+size = 196608
+md5 = "32730d6be10853c5a1cc838cbe04491e"
+sha256 = "6e367746a6e8ca5f44b747de3fa844156827035068450122166eb1112ca989b3"
+
+[[bios.variant]]
+id = "192gr"
+label = "EmuTOS 192 Ko — grec (ST/STE)"
+language = "el"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192gr.img"
+size = 196608
+md5 = "91764ce96d4bd6d8e8750eb5af11371b"
+sha256 = "705a2f46932adb8c834cc436c108f20f7610ed1127d3ca4c4bd36eac47cae9a6"
+
+[[bios.variant]]
+id = "192tr"
+label = "EmuTOS 192 Ko — turc (ST/STE)"
+language = "tr"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192tr.img"
+size = 196608
+md5 = "fe85af7e37f22d08778541466fe72808"
+sha256 = "3ff3a3c4a14ab9fe7946d7be1e30cf23ec7f74e16f31adc9d63d2bc1dcc859a0"
+
+[[bios.variant]]
+id = "192ca"
+label = "EmuTOS 192 Ko — catalan (ST/STE)"
+language = "ca"
+archive = "emutos-192k-1.4.zip"
+entry = "emutos-192k-1.4/etos192ca.img"
+size = 196608
+md5 = "efce90b35353e4ad2a71eb250806dd1e"
+sha256 = "c4fec6f77c0d17056a1f4ea0948a970143085a76a3fd3570dae5a79decb24b38"
