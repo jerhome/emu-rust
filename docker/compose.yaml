@@ -4,6 +4,11 @@
 #   docker compose -f docker/compose.yaml up --build emu-novnc   # any host, browser at http://localhost:6080/vnc.html
 # Published image instead of a local build (ADR 0012):
 #   EMU_IMAGE=ghcr.io/jerhome/emu-rust:0.1.0 docker compose -f docker/compose.yaml up --no-build emu-wslg
+# Host ROM folder (3.0): to use a folder of the host as the ROM library instead of copying files into the volume,
+# uncomment, in the service you use, the `${EMU_HOST_ROMS_DIR}:/data/roms` line AND the `EMU_HOST_ROMS_DIR` line of
+# `environment` (the app shows that host path on its "ROM folder" button), then run with the variable set:
+#   EMU_HOST_ROMS_DIR=/home/me/roms docker compose -f docker/compose.yaml run --rm emu-wslg
+# From WSL, use a path of the WSL filesystem (/home/...), much faster than /mnt/c/...
 name: emu-rust
 
 x-base: &base
@@ -16,6 +21,7 @@ x-base: &base
   # EMU_DATA_DIR=/data is set in the image and repeated in each service (a YAML merge does not merge maps).
   volumes:
     - emu-data:/data
+    # - ${EMU_HOST_ROMS_DIR}:/data/roms
 
 services:
   emu-wslg:
@@ -36,6 +42,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /mnt/wslg:/mnt/wslg
       - /usr/lib/wsl:/usr/lib/wsl
+      # - ${EMU_HOST_ROMS_DIR}:/data/roms
     environment:
       EMU_DATA_DIR: "/data"
       DISPLAY: ":0"
@@ -44,6 +51,7 @@ services:
       PULSE_SERVER: "unix:/mnt/wslg/PulseServer"
       # GPU acceleration through Mesa's d3d12 driver.
       LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+      # EMU_HOST_ROMS_DIR: "${EMU_HOST_ROMS_DIR}"
 
   emu-x11:
     <<: *base
@@ -52,6 +60,7 @@ services:
       - emu-data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/run/pulse/native
+      # - ${EMU_HOST_ROMS_DIR}:/data/roms
     devices:
       - /dev/dri
       # Gamepads on a Linux host (ADR 0016): uncomment, and give uid 1000 read access to /dev/input/event*
@@ -63,6 +72,7 @@ services:
       EMU_DATA_DIR: "/data"
       DISPLAY: "${DISPLAY:-:0}"
       PULSE_SERVER: "unix:/run/pulse/native"
+      # EMU_HOST_ROMS_DIR: "${EMU_HOST_ROMS_DIR}"
 
   emu-novnc:
     <<: *base
@@ -72,6 +82,7 @@ services:
     environment:
       EMU_DATA_DIR: "/data"
       EMU_DISPLAY: "novnc"
+      # EMU_HOST_ROMS_DIR: "${EMU_HOST_ROMS_DIR}"
 
 volumes:
   emu-data:

@@ -4,6 +4,10 @@
 # EMU_DISPLAY=novnc: start a virtual screen reachable at http://<host>:6080/vnc.html (no sound).
 set -euo pipefail
 
+# Tells the app it runs in a container: no native file dialog / file manager (no portal inside), the built-in
+# browser is used and the "ROM folder" button shows the host path from EMU_HOST_ROMS_DIR (see compose.yaml).
+export EMU_RUST_CONTAINER=1
+
 # Data root (ADR 0011): subfolders exist even on a volume created by an older image.
 data="${EMU_DATA_DIR:-/data}"
 export EMU_DATA_DIR="$data"

@@ -26,6 +26,26 @@ Touche hôte : Ctrl droit partout, macOS compris (⌘ droit réglable en repli).
 Souris : capturée au premier clic dans la fenêtre ; libérée par la touche hôte (menu) ou Hôte + M.
 Sous noVNC ou WSLg la capture n'est pas disponible : la souris reste libre (utiliser le clavier virtuel).
 
+0c. Amiga (3.0, en développement)
+---------------------------------
+Cores : puae (par défaut ; précis, A500 à A4000 / CD32) et puae2021 (plus léger, recommandé sur Mac Intel), écran Cores.
+Disquettes : .adf .adz .dms .ipf (lecture seule) .fdi, disques durs .hdf, archives WHDLoad .lha, ou .m3u pour plusieurs
+disquettes (DF0, DF1, ...). Les écritures se font sur des copies de travail : l'original reste intact. Rangez vos jeux
+dans un dossier amiga/ de la bibliothèque (le dossier distingue .ipf Amiga et Atari ST). Le modèle de machine se déduit
+des étiquettes du nom de fichier, p. ex. (A1200) ou (A500+), sinon A500 ; réglable par jeu.
+Kickstart : jamais fourni ni téléchargé (propriété de Cloanto / Commodore). Sans Kickstart, le core utilise AROS, une
+ROM libre intégrée au core (compatibilité limitée : certains jeux ne démarrent pas). Pour une meilleure compatibilité,
+importez le vôtre : écran Cores ou dialogue AROS, bouton « Importer un BIOS... » ; l'application reconnaît le fichier
+par son empreinte et l'installe sous le nom attendu par le core (system/kick34005.A500, kick40068.A1200, ...). Un
+fichier remplacé est conservé (suffixe .user-<date>). Voir aussi docs/bios-utilisateur.md.
+Touches : Alt gauche / Alt droit = Amiga gauche / droite. Touche hôte : Ctrl droit (menu), comme pour l'Atari ST.
+Mode d'entrée par défaut : Clavier (souris capturée au premier clic) ; Hôte + J bascule en joystick.
+Le bouton « Ouvrir le dossier des ROMs » (bibliothèque) ouvre le dossier dans l'explorateur de fichiers ; sous Docker
+il affiche le chemin du volume (/data/roms) et, si EMU_HOST_ROMS_DIR est défini, le dossier de l'hôte monté dessus.
+Licences non embarquées dans le binaire : AROS (AROS Public License 1.1) est fourni par les cores puae et puae2021
+(GPL-2.0) ; les DAT d'identification (No-Intro, TOSEC, WHDLoad) sont téléchargés à la demande depuis leurs dépôts et
+gardent leur propre licence. Aucune ROM, aucun Kickstart ni Workbench n'est distribué avec emu-rust.
+
 1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :

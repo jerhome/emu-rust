@@ -87,6 +87,35 @@ docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/bios:/in:ro" -
   -c 'mkdir -p /data/system && cp /in/bios_CD_*.bin /data/system/'
 ```
 
+## Amiga (3.0, en développement)
+
+Cores `puae` (par défaut) et `puae2021` (plus léger), installés depuis l'écran Cores. Disquettes `.adf`, `.adz`, `.dms`,
+`.ipf`, `.fdi`, disques `.hdf`, archives WHDLoad `.lha` ou `.m3u` dans `/data/roms/amiga/` ; les écritures se font sur
+des copies de travail (`/data/saves/puae/<jeu>.disks/`), l'original n'est pas modifié.
+
+**Kickstart** : jamais fourni ni téléchargé. Sans lui, le core utilise **AROS** (ROM libre intégrée au core, licence
+AROS Public License 1.1 ; compatibilité limitée). Pour un Kickstart à vous, copiez-le dans le volume sous le nom exact
+attendu, ou utilisez « Importer un BIOS... » (navigateur de fichiers intégré : pas de boîte de dialogue native dans le
+conteneur) après l'avoir déposé dans un dossier visible du conteneur :
+
+```sh
+docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/bios:/in:ro" --entrypoint bash emu-wslg \
+  -c 'mkdir -p /data/system && cp /in/kick*.A* /data/system/'
+```
+
+**Dossier des ROMs de l'hôte** : dans le conteneur (`EMU_RUST_CONTAINER=1`, posé par l'entrypoint), le bouton « Ouvrir le
+dossier des ROMs » affiche le chemin `/data/roms` au lieu d'ouvrir un explorateur. Pour déposer les jeux directement
+depuis l'hôte, décommentez dans `compose.yaml`, pour le service utilisé, la ligne `${EMU_HOST_ROMS_DIR}:/data/roms` et la
+ligne `EMU_HOST_ROMS_DIR` de `environment`, puis :
+
+```sh
+EMU_HOST_ROMS_DIR=/home/moi/roms docker compose -f docker/compose.yaml run --rm emu-wslg
+```
+
+Depuis WSL, choisissez un chemin du système de fichiers WSL (`/home/...`), bien plus rapide que `/mnt/c/...`. Le bouton
+affiche alors ce chemin d'hôte. Notices : les licences des cores (GPL-2.0) et d'AROS sont celles des cores ; aucune
+ROM ni Kickstart n'est dans l'image.
+
 ## Manette (2.1)
 
 Le clavier fonctionne toujours. Pour une manette PS4 :
