@@ -15,8 +15,9 @@ use crate::db::{
 };
 use crate::media::{parse_m3u, strip_media_marker};
 use crate::{
-    Identification, LibraryError, MAX_HASH_SIZE, RomHashes, SystemInfo, SystemKind, group_media,
-    hash_reader, systems_for_extension,
+    DISC_EXTENSIONS, DiscFormat, Identification, LibraryError, MAX_HASH_SIZE, RomHashes,
+    SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
+    systems_for_extension,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -110,6 +111,9 @@ enum Failure {
     Cancelled,
     /// Archive whose only recognised entries are empty: ignored, not an error.
     Empty,
+    /// Not a game of the catalog after a closer look (a `.iso` / `.cue` without Sega CD header outside a
+    /// `megacd` folder): not listed, not counted, not an error.
+    Skipped,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -430,6 +434,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
             .or_default()
             .push(f.key.clone());
     }
+    hide_disc_tracks(found, &by_norm, &mut hidden, report);
     for f in found.iter_mut() {
         if lower_ext(&f.path).as_deref() != Some("m3u") {
             continue;
@@ -485,6 +490,54 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
         seen.remove(&f.key);
     }
     found.retain(|f| !hidden.contains(&f.key));
+}
+
+/// Tracks of a disc are not games (design v2.1 Mega CD §3.2): the files named by a `.cue` are hidden (any
+/// extension of the catalog, `.cue` excepted), and a `.bin` left alone whose header is a Sega CD one is a track
+/// without its `.cue`, not a Mega Drive cartridge.
+fn hide_disc_tracks(
+    found: &[Found],
+    by_norm: &HashMap<String, Vec<String>>,
+    hidden: &mut HashSet<String>,
+    report: &mut ScanReport,
+) {
+    for f in found {
+        if lower_ext(&f.path).as_deref() != Some("cue") {
+            continue;
+        }
+        match cue_references(&f.path) {
+            Ok(tracks) => {
+                for track in &tracks {
+                    if lower_ext(track).as_deref() == Some("cue") {
+                        continue;
+                    }
+                    if let Some(keys) = track.to_str().and_then(|t| by_norm.get(&norm_key(t))) {
+                        hidden.extend(keys.iter().cloned());
+                    }
+                }
+            }
+            // The `.cue` stays listed: the core reads it itself and decides.
+            Err(e) => {
+                let message = hash_error_message(&e);
+                tracing::warn!("cannot read cue sheet {}: {message}", f.path.display());
+                report.errors.push((f.path.clone(), message));
+            }
+        }
+    }
+    for f in found {
+        if lower_ext(&f.path).as_deref() != Some("bin") || hidden.contains(&f.key) {
+            continue;
+        }
+        if let Ok(Some(info)) = disc_info(&f.path)
+            && info.format == DiscFormat::SegaCd
+        {
+            report.errors.push((
+                f.path.clone(),
+                "piste de CD sans fichier .cue : ignorée".to_owned(),
+            ));
+            hidden.insert(f.key.clone());
+        }
+    }
 }
 
 fn header_of(candidates: &[&SystemInfo]) -> Option<crate::HeaderRule> {
@@ -556,6 +609,17 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         let Some(ext) = lower_ext(Path::new(&name)) else {
             continue;
         };
+        if DISC_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(
+                "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
+                    .to_owned()
+                    .into(),
+            );
+        }
+        if chosen.is_some() {
+            // Kept walking only to refuse a disc image listed after the chosen entry.
+            continue;
+        }
         let candidates = systems_for_extension(&ext);
         if !candidates.is_empty() {
             if entry.size() == 0 {
@@ -563,7 +627,6 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                 continue;
             }
             chosen = Some((index, name, entry.size(), candidates));
-            break;
         }
     }
     let Some((index, name, declared, candidates)) = chosen else {
@@ -619,6 +682,9 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
     if ext == "zip" {
         return analyze_zip(found, max, cancel);
     }
+    if DISC_EXTENSIONS.contains(&ext.as_str()) {
+        return analyze_disc(found, &ext);
+    }
     let (candidates, pinned) = pin(systems_for_extension(&ext), &found.folders);
     let hashes = if found.file_size > max {
         None
@@ -641,6 +707,25 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
         entry: None,
         size: found.file_size,
         hashes,
+        candidates,
+        pinned,
+        stem: stem_of(&found.path),
+    })
+}
+
+/// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 4 KiB read).
+fn analyze_disc(found: &Found, ext: &str) -> Result<Analysis, Failure> {
+    let (candidates, pinned) = pin(systems_for_extension(ext), &found.folders);
+    // Outside a system folder, a `.cue` / `.iso` without Sega CD header is some other disc (PC, audio CD): not a
+    // game of the catalog. A `.chd` is never read. An unreadable `.cue` stays listed (its error is reported once,
+    // by `hide_disc_tracks`).
+    if !pinned && ext != "chd" && matches!(disc_info(&found.path), Ok(None)) {
+        return Err(Failure::Skipped);
+    }
+    Ok(Analysis {
+        entry: None,
+        size: found.file_size,
+        hashes: None,
         candidates,
         pinned,
         stem: stem_of(&found.path),
@@ -859,6 +944,9 @@ pub(crate) fn run(
                     // Not seen: a row stored by an earlier scan is removed.
                     seen.remove(&f.key);
                 }
+                Err(Failure::Skipped) => {
+                    seen.remove(&f.key);
+                }
                 Err(Failure::Message(message)) => {
                     tracing::warn!("cannot scan {}: {message}", f.path.display());
                     report.errors.push((f.path.clone(), message));
@@ -1017,6 +1105,348 @@ mod tests {
                 canonical.to_str(),
                 "{spelling}"
             );
+        }
+    }
+
+    mod megacd {
+        use super::*;
+        use crate::{Game, Library};
+
+        fn write(path: &Path, data: &[u8]) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        }
+
+        fn sector0(region: u8) -> Vec<u8> {
+            let mut s = vec![0u8; 2048];
+            s[..16].copy_from_slice(b"SEGADISCSYSTEM  ");
+            s[0x20B] = region;
+            s
+        }
+
+        /// A MODE1/2352 data track: sector 0 with its sync and header, then `extra` zero bytes.
+        fn raw_track(region: u8, extra: usize) -> Vec<u8> {
+            let mut s = vec![0x00u8];
+            s.extend([0xFF; 10]);
+            s.extend([0x00, 0x00, 0x02, 0x00, 0x01]);
+            s.extend(sector0(region));
+            s.resize(2352 + extra, 0);
+            s
+        }
+
+        fn cartridge() -> Vec<u8> {
+            let mut rom: Vec<u8> = (0..8192u32).map(|i| (i * 13 % 251) as u8).collect();
+            rom[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+            rom
+        }
+
+        /// Stored (uncompressed) zip of `entries`.
+        fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut central = Vec::new();
+            for (name, data) in entries {
+                let offset = out.len() as u32;
+                let mut common = Vec::new();
+                for v in [20u16, 0, 0, 0, 0] {
+                    common.extend_from_slice(&v.to_le_bytes());
+                }
+                common.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+                common.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                common.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                common.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                common.extend_from_slice(&0u16.to_le_bytes());
+                out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+                out.extend_from_slice(&common);
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(data);
+                central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+                central.extend_from_slice(&20u16.to_le_bytes());
+                central.extend_from_slice(&common);
+                // Comment length, disk number, internal and external attributes.
+                central.extend_from_slice(&[0u8; 10]);
+                central.extend_from_slice(&offset.to_le_bytes());
+                central.extend_from_slice(name.as_bytes());
+            }
+            let cd = out.len() as u32;
+            out.extend_from_slice(&central);
+            out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+            out.extend_from_slice(&[0u8; 4]);
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+            out.extend_from_slice(&cd.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out
+        }
+
+        fn scan(lib: &mut Library, root: &Path) -> (ScanReport, ScanProgress) {
+            let mut last = ScanProgress::default();
+            let opts = ScanOptions {
+                roots: vec![root.to_path_buf()],
+                ..Default::default()
+            };
+            let report = lib
+                .scan(&opts, &AtomicBool::new(false), &mut |p| {
+                    last = p.clone();
+                })
+                .unwrap();
+            (report, last)
+        }
+
+        fn names(games: &[Game]) -> Vec<(String, String)> {
+            let mut v: Vec<_> = games
+                .iter()
+                .map(|g| {
+                    (
+                        g.system.clone(),
+                        g.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        }
+
+        fn has_error(report: &ScanReport, file: &str, needle: &str) -> bool {
+            report
+                .errors
+                .iter()
+                .any(|(p, m)| p.file_name().is_some_and(|n| n == file) && m.contains(needle))
+        }
+
+        #[test]
+        fn cue_with_bin_tracks_is_one_unhashed_game() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("roms/megacd/Dune (Europe)");
+            write(
+                &dir.join("Dune (Europe) (Track 01).bin"),
+                &raw_track(0x64, 4096),
+            );
+            write(&dir.join("Dune (Europe) (Track 02).bin"), &[1u8; 4096]);
+            write(&dir.join("Dune (Europe) (Track 03).bin"), &[2u8; 4096]);
+            write(
+                &dir.join("Dune (Europe).cue"),
+                b"FILE \"Dune (Europe) (Track 01).bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n\
+                  FILE \"Dune (Europe) (Track 02).bin\" BINARY\r\n  TRACK 02 AUDIO\r\n\
+                  FILE \"Dune (Europe) (Track 03).bin\" BINARY\r\n  TRACK 03 AUDIO\r\n",
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, progress) = scan(&mut lib, &tmp.path().join("roms"));
+            assert!(report.errors.is_empty(), "{report:?}");
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [("megacd".to_owned(), "Dune (Europe).cue".to_owned())]
+            );
+            let g = &games[0];
+            assert_eq!((g.sha1, g.crc32), (None, None));
+            assert_eq!(g.title, "Dune (Europe)");
+            assert!(g.media.is_empty());
+            assert_eq!(progress.hashed, 0);
+            let (again, _) = scan(&mut lib, &tmp.path().join("roms"));
+            assert_eq!((again.unchanged, again.added, again.removed), (1, 0, 0));
+        }
+
+        #[test]
+        fn cue_iso_wav_like_240p_outside_a_megacd_folder() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("roms/240p");
+            write(&dir.join("240p_SegaCD_USA.iso"), &sector0(0x7A));
+            write(&dir.join("240p_SegaCD_Track-02.wav"), &[0u8; 512]);
+            write(&dir.join("240p_SegaCD_Track-03.wav"), &[0u8; 512]);
+            write(
+                &dir.join("240pSuite_USA.cue"),
+                b"FILE \"240p_SegaCD_USA.iso\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n    POSTGAP 00:02:00\n\
+                  FILE \"240p_SegaCD_Track-02.wav\" WAVE\n  TRACK 02 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:00\n\
+                  FILE \"240p_SegaCD_Track-03.wav\" WAVE\n  TRACK 03 AUDIO\n    INDEX 01 00:00:00\n",
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &tmp.path().join("roms"));
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [("megacd".to_owned(), "240pSuite_USA.cue".to_owned())]
+            );
+        }
+
+        #[test]
+        fn orphan_sega_cd_bin_is_ignored_and_cartridges_are_unchanged() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("Lost Track 01.bin"), &raw_track(0xA1, 0));
+            write(&root.join("megadrive/Sonic.bin"), &cartridge());
+            write(&root.join("Other.md"), &cartridge()[..4096]);
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert!(
+                has_error(
+                    &report,
+                    "Lost Track 01.bin",
+                    "piste de CD sans fichier .cue"
+                ),
+                "{report:?}"
+            );
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [
+                    ("megadrive".to_owned(), "Other.md".to_owned()),
+                    ("megadrive".to_owned(), "Sonic.bin".to_owned()),
+                ]
+            );
+            assert!(games.iter().all(|g| g.sha1.is_some()));
+        }
+
+        #[test]
+        fn tracks_stored_by_a_2_0_scan_are_removed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("Game (Track 1).bin"), &raw_track(0x64, 0));
+            write(&root.join("Game (Track 2).bin"), &[3u8; 2352]);
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            // Track 2 alone is not a Sega CD header: a Mega Drive "game" until its `.cue` appears.
+            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+            write(
+                &root.join("Game.cue"),
+                b"FILE \"Game (Track 1).bin\" BINARY\nFILE \"Game (Track 2).bin\" BINARY\n",
+            );
+            let (report, _) = scan(&mut lib, &root);
+            assert_eq!(report.removed, 1, "{report:?}");
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [("megacd".to_owned(), "Game.cue".to_owned())]
+            );
+        }
+
+        #[test]
+        fn headerless_iso_and_cue_need_the_megacd_folder() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("pc/Linux.iso"), &[0x20u8; 4096]);
+            write(&root.join("pc/Audio.cue"), b"FILE \"a.wav\" WAVE\n");
+            write(&root.join("pc/a.wav"), &[0u8; 64]);
+            write(&root.join("megacd/Odd.iso"), &[0x20u8; 4096]);
+            write(&root.join("megacd/Odd.cue"), b"FILE \"gone.bin\" BINARY\n");
+            write(&root.join("any/Game.chd"), b"MComprHD");
+            write(&root.join("any/Real (Japan).iso"), &sector0(0xA1));
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert_eq!(report.ignored_empty, 0);
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [
+                    ("megacd".to_owned(), "Game.chd".to_owned()),
+                    ("megacd".to_owned(), "Odd.cue".to_owned()),
+                    ("megacd".to_owned(), "Odd.iso".to_owned()),
+                    ("megacd".to_owned(), "Real (Japan).iso".to_owned()),
+                ]
+            );
+        }
+
+        #[test]
+        fn unreadable_cue_is_reported_and_stays_listed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("Big.cue"), &vec![b' '; 64 * 1024 + 1]);
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert_eq!(report.errors.len(), 1, "{report:?}");
+            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+        }
+
+        #[test]
+        fn hostile_cue_never_hides_files_outside_its_folder() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("megadrive/Sonic.bin"), &cartridge());
+            write(
+                &root.join("megacd/x/Evil.cue"),
+                b"FILE \"../../megadrive/Sonic.bin\" BINARY\nFILE \"/etc/passwd\" BINARY\n",
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [
+                    ("megacd".to_owned(), "Evil.cue".to_owned()),
+                    ("megadrive".to_owned(), "Sonic.bin".to_owned()),
+                ]
+            );
+        }
+
+        #[test]
+        fn zipped_discs_are_refused() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            // The `.bin` comes first: the refusal must not depend on entry order.
+            write(
+                &root.join("Disc.zip"),
+                &zip_of(&[
+                    ("Disc (Track 1).bin", &raw_track(0x64, 0)),
+                    ("Disc.cue", b"FILE \"Disc (Track 1).bin\" BINARY\n"),
+                ]),
+            );
+            write(
+                &root.join("Iso.zip"),
+                &zip_of(&[("Iso.iso", &sector0(0x64))]),
+            );
+            write(
+                &root.join("Cart.zip"),
+                &zip_of(&[("Cart.md", &cartridge())]),
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            for zip in ["Disc.zip", "Iso.zip"] {
+                assert!(
+                    has_error(&report, zip, "Les CD ne se lisent pas dans un zip"),
+                    "{report:?}"
+                );
+            }
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [("megadrive".to_owned(), "Cart.zip".to_owned())]
+            );
+        }
+
+        #[test]
+        fn large_track_is_never_read() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("roms/megacd");
+            write(&dir.join("Big (Track 1).bin"), &raw_track(0x64, 0));
+            // Sparse 600 MiB audio track: hidden by the cue, so neither hashed nor probed.
+            let big = dir.join("Big (Track 2).bin");
+            File::create(&big)
+                .unwrap()
+                .set_len(600 * 1024 * 1024)
+                .unwrap();
+            write(
+                &dir.join("Big.cue"),
+                b"FILE \"Big (Track 1).bin\" BINARY\nFILE \"Big (Track 2).bin\" BINARY\n",
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let start = Instant::now();
+            let (_, progress) = scan(&mut lib, &tmp.path().join("roms"));
+            assert_eq!(progress.hashed, 0);
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+        }
+
+        #[cfg(any(windows, target_os = "macos"))]
+        #[test]
+        fn cue_names_match_tracks_case_insensitively() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("roms/megacd");
+            write(&dir.join("game (track 1).bin"), &raw_track(0x64, 0));
+            write(
+                &dir.join("Game.cue"),
+                b"FILE \"GAME (TRACK 1).BIN\" BINARY\n",
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &tmp.path().join("roms"));
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert_eq!(names(&lib.games().unwrap()).len(), 1);
         }
     }
 

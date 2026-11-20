@@ -208,7 +208,8 @@ mod tests {
                 "gbc",
                 "gamegear",
                 "mastersystem",
-                "atarist"
+                "atarist",
+                "megacd"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
