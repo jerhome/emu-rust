@@ -1,0 +1,72 @@
+# Amstrad CPC 6128 keyboard for the frontend's virtual keyboard (same format as atari_st.toml; design v5.0 §7).
+# `key` = libretro key name as read by cap32; `label` = UK legend; `fr` = legends of the French 6128 (AZERTY),
+# selected when the system is French. The keypad f0-f9 are KP0-KP9; COPY is Alt (user decision).
+id = "cpc"
+name = "Amstrad CPC 6128"
+
+[[row]]
+keys = [
+  { key = "escape", label = "Esc" },
+  { key = "1", label = "1", fr = "&" }, { key = "2", label = "2", fr = "é" }, { key = "3", label = "3", fr = "\"" },
+  { key = "4", label = "4", fr = "'" }, { key = "5", label = "5", fr = "(" }, { key = "6", label = "6", fr = "§" },
+  { key = "7", label = "7", fr = "è" }, { key = "8", label = "8", fr = "!" }, { key = "9", label = "9", fr = "ç" },
+  { key = "0", label = "0", fr = "à" }, { key = "minus", label = "-", fr = ")" },
+  { key = "equals", label = "^", fr = "-" },
+  { key = "delete", label = "CLR" }, { key = "backspace", label = "DEL" },
+  { key = "kp7", label = "f7", gap = 0.5 }, { key = "kp8", label = "f8" }, { key = "kp9", label = "f9" },
+]
+
+[[row]]
+keys = [
+  { key = "tab", label = "Tab", width = 1.5 },
+  { key = "q", label = "Q", fr = "A" }, { key = "w", label = "W", fr = "Z" }, { key = "e", label = "E" },
+  { key = "r", label = "R" }, { key = "t", label = "T" }, { key = "y", label = "Y" },
+  { key = "u", label = "U" }, { key = "i", label = "I" }, { key = "o", label = "O" }, { key = "p", label = "P" },
+  { key = "leftbracket", label = "@", fr = "^" }, { key = "rightbracket", label = "[", fr = "$" },
+  { key = "return", label = "Return", width = 1.5 },
+  { key = "kp4", label = "f4", gap = 0.5 }, { key = "kp5", label = "f5" }, { key = "kp6", label = "f6" },
+]
+
+[[row]]
+keys = [
+  { key = "capslock", label = "Caps Lock", width = 1.75 },
+  { key = "a", label = "A", fr = "Q" }, { key = "s", label = "S" }, { key = "d", label = "D" },
+  { key = "f", label = "F" }, { key = "g", label = "G" }, { key = "h", label = "H" }, { key = "j", label = "J" },
+  { key = "k", label = "K" }, { key = "l", label = "L" }, { key = "semicolon", label = ":", fr = "M" },
+  { key = "quote", label = ";", fr = "ù" }, { key = "backslash", label = "]", fr = "*" },
+  { key = "kp1", label = "f1", gap = 1.25 }, { key = "kp2", label = "f2" }, { key = "kp3", label = "f3" },
+]
+
+[[row]]
+keys = [
+  { key = "lshift", label = "Shift", width = 2.25, sticky = true },
+  { key = "z", label = "Z", fr = "W" }, { key = "x", label = "X" }, { key = "c", label = "C" },
+  { key = "v", label = "V" }, { key = "b", label = "B" }, { key = "n", label = "N" },
+  { key = "m", label = "M", fr = "," }, { key = "comma", label = ",", fr = ";" },
+  { key = "period", label = ".", fr = ":" }, { key = "slash", label = "/", fr = "=" },
+  { key = "rshift", label = "Shift", width = 1.75, sticky = true },
+  { key = "up", label = "^", gap = 0.5 },
+  { key = "kp0", label = "f0", gap = 0.75 }, { key = "kp_period", label = "." }, { key = "kp_enter", label = "ENTER" },
+]
+
+[[row]]
+keys = [
+  { key = "lctrl", label = "Ctrl", width = 1.5, sticky = true },
+  { key = "lalt", label = "COPY", width = 1.5 },
+  { key = "space", label = "", width = 8.0 },
+  { key = "left", label = "<-", gap = 1.5 }, { key = "down", label = "v" }, { key = "right", label = "->" },
+]
+
+# Physical key (winit `KeyCode` name) → libretro key. cap32 hard-codes F9 / F10 as emulator shortcuts: the host F1-F10
+# are sent as the CPC keypad f1-f9, f0 instead. Identical on the three OSes. Must stay the last table of the file.
+[remap]
+F1 = "kp1"
+F2 = "kp2"
+F3 = "kp3"
+F4 = "kp4"
+F5 = "kp5"
+F6 = "kp6"
+F7 = "kp7"
+F8 = "kp8"
+F9 = "kp9"
+F10 = "kp0"

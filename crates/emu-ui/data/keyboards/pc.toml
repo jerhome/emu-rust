@@ -1,0 +1,88 @@
+# PC (102-key, ISO) keyboard for the frontend's virtual keyboard (same format as atari_st.toml; design v4.0 §7).
+# `key` = libretro key name, positional (US place of the key); the core's `dosbox_pure_keyboard_layout` (fr for a
+# French system) gives the character. `label` = US legend; `fr` / `de` = legends of the AZERTY / QWERTZ layouts.
+# The ISO key left of Z is RETROK_OEM_102 (dosbox_pure reads it, not RETROK_LESS). The numeric keypad is here
+# because a 60 % host keyboard has none. AltGr = `ralt`.
+id = "pc"
+name = "PC"
+
+[[row]]
+keys = [
+  { key = "escape", label = "Esc" },
+  { key = "f1", label = "F1", gap = 1.0 }, { key = "f2", label = "F2" }, { key = "f3", label = "F3" },
+  { key = "f4", label = "F4" },
+  { key = "f5", label = "F5", gap = 0.5 }, { key = "f6", label = "F6" }, { key = "f7", label = "F7" },
+  { key = "f8", label = "F8" },
+  { key = "f9", label = "F9", gap = 0.5 }, { key = "f10", label = "F10" }, { key = "f11", label = "F11" },
+  { key = "f12", label = "F12" },
+  { key = "print", label = "Impr", gap = 0.5 }, { key = "scrollock", label = "Arr. défil." },
+  { key = "pause", label = "Pause" },
+]
+
+[[row]]
+keys = [
+  { key = "backquote", label = "`", fr = "²", de = "^" },
+  { key = "1", label = "1", fr = "&" }, { key = "2", label = "2", fr = "é" }, { key = "3", label = "3", fr = "\"" },
+  { key = "4", label = "4", fr = "'" }, { key = "5", label = "5", fr = "(" }, { key = "6", label = "6", fr = "-" },
+  { key = "7", label = "7", fr = "è" }, { key = "8", label = "8", fr = "_" }, { key = "9", label = "9", fr = "ç" },
+  { key = "0", label = "0", fr = "à" }, { key = "minus", label = "-", fr = ")", de = "ß" },
+  { key = "equals", label = "=", fr = "=", de = "´" },
+  { key = "backspace", label = "Retour", width = 2.0 },
+  { key = "insert", label = "Inser", gap = 0.5 }, { key = "home", label = "Début" },
+  { key = "pageup", label = "Pg↑" },
+  { key = "numlock", label = "Verr num", gap = 0.5 }, { key = "kp_divide", label = "/" },
+  { key = "kp_multiply", label = "*" }, { key = "kp_minus", label = "-" },
+]
+
+[[row]]
+keys = [
+  { key = "tab", label = "Tab", width = 1.5 },
+  { key = "q", label = "Q", fr = "A" }, { key = "w", label = "W", fr = "Z", de = "W" }, { key = "e", label = "E" },
+  { key = "r", label = "R" }, { key = "t", label = "T" }, { key = "y", label = "Y", de = "Z" },
+  { key = "u", label = "U" }, { key = "i", label = "I" }, { key = "o", label = "O" }, { key = "p", label = "P" },
+  { key = "leftbracket", label = "[", fr = "^", de = "Ü" }, { key = "rightbracket", label = "]", fr = "$", de = "+" },
+  { key = "return", label = "Entrée", width = 1.5 },
+  { key = "delete", label = "Suppr", gap = 0.5 }, { key = "end", label = "Fin" }, { key = "pagedown", label = "Pg↓" },
+  { key = "kp7", label = "7", gap = 0.5 }, { key = "kp8", label = "8" }, { key = "kp9", label = "9" },
+  { key = "kp_plus", label = "+" },
+]
+
+[[row]]
+keys = [
+  { key = "capslock", label = "Verr maj", width = 2.0 },
+  { key = "a", label = "A", fr = "Q" }, { key = "s", label = "S" }, { key = "d", label = "D" },
+  { key = "f", label = "F" }, { key = "g", label = "G" }, { key = "h", label = "H" }, { key = "j", label = "J" },
+  { key = "k", label = "K" }, { key = "l", label = "L" }, { key = "semicolon", label = ";", fr = "M", de = "Ö" },
+  { key = "quote", label = "'", fr = "ù", de = "Ä" },
+  { key = "backslash", label = "\\", fr = "*", de = "#", width = 2.0 },
+  { key = "kp4", label = "4", gap = 4.0 }, { key = "kp5", label = "5" }, { key = "kp6", label = "6" },
+]
+
+[[row]]
+keys = [
+  { key = "lshift", label = "Maj", width = 1.25, sticky = true }, { key = "oem_102", label = "<" },
+  { key = "z", label = "Z", fr = "W", de = "Y" }, { key = "x", label = "X" }, { key = "c", label = "C" },
+  { key = "v", label = "V" }, { key = "b", label = "B" }, { key = "n", label = "N" },
+  { key = "m", label = "M", fr = "," }, { key = "comma", label = ",", fr = ";" },
+  { key = "period", label = ".", fr = ":" }, { key = "slash", label = "/", fr = "!", de = "-" },
+  { key = "rshift", label = "Maj", width = 2.75, sticky = true },
+  { key = "up", label = "^", gap = 1.5 },
+  { key = "kp1", label = "1", gap = 1.5 }, { key = "kp2", label = "2" }, { key = "kp3", label = "3" },
+  { key = "kp_enter", label = "Entrée" },
+]
+
+[[row]]
+keys = [
+  { key = "lctrl", label = "Ctrl", width = 1.5, sticky = true },
+  { key = "lalt", label = "Alt", width = 1.5, sticky = true },
+  { key = "space", label = "", width = 9.0 },
+  { key = "ralt", label = "Alt Gr", width = 1.5, sticky = true },
+  { key = "rctrl", label = "Ctrl", width = 1.5, sticky = true },
+  { key = "left", label = "<-", gap = 0.5 }, { key = "down", label = "v" }, { key = "right", label = "->" },
+  { key = "kp0", label = "0", width = 2.0, gap = 0.5 }, { key = "kp_period", label = "." },
+]
+
+# Physical key (winit `KeyCode` name) → libretro key. The global positional map sends the ISO key to LESS (hatari
+# needs it); dosbox_pure reads OEM_102. Must stay the last table of the file.
+[remap]
+IntlBackslash = "oem_102"
