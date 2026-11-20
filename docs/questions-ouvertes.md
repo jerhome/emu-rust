@@ -129,3 +129,5 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-21 | 7.0 | Core PlayStation par défaut | **Utilisateur** : **pcsx_rearmed** par défaut ; swanstation et beetle_psx **sélectionnables facilement**. | décidé |
 | 2026-11-21 | toutes | Ordre de travail en autonomie | **Utilisateur** : **en largeur** (plusieurs versions avancées en parallèle), avec **un agent chargé de l'harmonie** (intégration, fichiers partagés, ordre des migrations) pour éviter les conflits. | décidé |
 | 2026-11-21 | essais | Version à essayer | **Utilisateur** : essaiera **la plus récente disponible**, sur le plus d'hôtes possible (demain ou sous peu). | décidé |
+| 2026-11-21 | versions | 2.0.0 stable séparée ? | **Utilisateur** : **non** ; la prochaine stable = **la dernière rc validée** par son essai ; `main` suit la dernière rc taggée. | décidé |
+| 2026-11-21 | essais | Kickstart, BIOS Mega CD / PS1 / 3DO, MT-32 | **Utilisateur** : présents sur son **Mac** (pas sur le PC Windows) ; il les copiera sur le PC si les essais Windows continuent. Essais à BIOS : plutôt sur macOS. | info |
