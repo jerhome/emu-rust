@@ -15,7 +15,7 @@ use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
 use crate::input::{InputBackend, InputFrame, MouseState};
 use crate::media::{
-    ContentSpec, Disks, MediaPolicy, NO_GAME_NAME, PreparedMedia, prepare_media_with,
+    ContentSpec, Disks, MediaRules, NO_GAME_NAME, PreparedMedia, prepare_media_with,
 };
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, core_id_from_path, decode_state,
@@ -73,7 +73,8 @@ pub struct Emulator {
     /// game is unloaded, see `Drop`).
     pub(crate) prepared: Option<PreparedMedia>,
     /// `None` for `File` / `NoGame`: disks added from the menu then get working copies.
-    pub(crate) media_policy: Option<MediaPolicy>,
+    /// Rules of a `ContentSpec::Media` session (disks added from the menu follow them too).
+    pub(crate) media_rules: Option<MediaRules>,
     pub(crate) limits: Limits,
     /// The core asked for `RETRO_DEVICE_KEYBOARD` / `RETRO_DEVICE_MOUSE` at least once.
     keyboard_polled: bool,
@@ -166,7 +167,7 @@ impl Emulator {
         let mut core = Core::load(core_path, config)?;
         let mut content_dir = None;
         let mut prepared = None;
-        let mut media_policy = None;
+        let mut media_rules = None;
         let source = match spec {
             ContentSpec::File(rom) => {
                 let content = content::prepare(&rom, core.system_info(), limits)?;
@@ -174,13 +175,11 @@ impl Emulator {
                 Some(content.source)
             }
             ContentSpec::Media { set, rules } => {
-                // TODO(R3): pass `rules` down (media_direct, max_copy_bytes); 2.0 behaviour until then.
-                let policy = rules.policy;
                 let exts = &core.system_info().valid_extensions;
-                let media = prepare_media_with(&set, policy, exts, &core_save_dir, limits)?;
+                let media = prepare_media_with(&set, &rules, exts, &core_save_dir, limits)?;
                 let source = GameSource::Path(media.content.clone());
                 prepared = Some(media);
-                media_policy = Some(policy);
+                media_rules = Some(rules);
                 Some(source)
             }
             ContentSpec::NoGame => None,
@@ -230,7 +229,7 @@ impl Emulator {
             sram_snapshot,
             content_dir,
             prepared,
-            media_policy,
+            media_rules,
             limits,
             keyboard_polled: false,
             mouse_polled: false,

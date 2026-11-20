@@ -9,6 +9,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufReader, Read};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -98,6 +99,13 @@ impl MediaRules {
             max_copy_bytes: MAX_COPY_BYTES,
         }
     }
+
+    /// The source's extension is in `media_direct` (case ignored): it is handed over in place.
+    fn is_direct(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| accepts_ext(&self.media_direct, e))
+    }
 }
 
 /// Result of [`prepare_media`].
@@ -164,10 +172,19 @@ fn work_dir_candidate(saves_core_dir: &Path, game: &str, n: u32) -> PathBuf {
     }
 }
 
-/// Copies / extracts / writes the playlist as the policy requires. Never modifies the files of `set`.
+/// Copies / extracts / writes the playlist as `rules` require. Never modifies the files of `set`.
 ///
 /// `saves_core_dir` = `<saves>/<core_id>`. Working copies are created only when absent (an existing copy holds
 /// the player's progress and is reused); every write is atomic (`write_atomic`).
+///
+/// Each source (image of the set, or entry of a user `.m3u`) is evaluated in the order of design v3.0 §3.5.1:
+/// (1) extension in `media_direct`: referenced in place by its absolute path, never copied nor extracted, even a
+/// zip; (2) otherwise a `.zip` is inspected (central directory only) whatever extensions the core declares, and
+/// its entries the core accepts (other than `zip`, `7z`, `m3u`) are extracted into the working-copy folder
+/// (`WorkingCopy`) or a private temporary directory (`Direct`); (3) otherwise the policy applies: a plain file is
+/// copied (`WorkingCopy`, at most `max_copy_bytes`, else `InvalidMediaSet`) or referenced in place (`Direct`); a
+/// zip holding no accepted image is handed over whole when the core declares `zip` (copied under
+/// `WorkingCopy`, in place under `Direct`) and refused otherwise (`NoContentInArchive`).
 ///
 /// Working-copy folder (`workcopy.rs` for the identity of a source): `<game>.disks`, `<game> (2).disks`, … are
 /// examined in order and the first one whose manifest records copies of this set's sources is used; a folder
@@ -176,21 +193,25 @@ fn work_dir_candidate(saves_core_dir: &Path, game: &str, n: u32) -> PathBuf {
 /// and [`PreparedMedia::notice`] says why: progress is never overwritten nor handed to another game. A folder
 /// without manifest (made by an earlier version) is adopted as is by the first set prepared into it, which
 /// then records its sources: its origin cannot be known, so this is the earlier behaviour, once. A link or a
-/// file in place of a folder, an unreadable manifest, or a link in place of a copy is never used. Zip entries are read with the
-/// limits of `content.rs` and only entries whose extension the core accepts are kept (a zip is passed whole when
-/// the core accepts `zip`); entry names are never used as paths (sanitised with `fsname`). A generated `.m3u`
-/// uses names relative to its own folder (`WorkingCopy`) or absolute paths (`Direct`, private temp directory).
+/// file in place of a folder, an unreadable manifest, or a link in place of a copy is never used. Zip entries
+/// are read with the limits of `content.rs`; entry names are never used as paths (sanitised with `fsname`),
+/// links and folders inside an archive are skipped. A `WorkingCopy` set whose sources are all direct needs no
+/// folder: like `Direct`, its playlist (if any) goes to a private temporary directory.
+///
+/// Generated `.m3u`: names relative to its own folder for copies, absolute paths for everything else. When it
+/// is made from a user `.m3u`, only white-listed `#` lines are kept, at their place (`#SAVEDISK:`, `#LABEL:`),
+/// as is the `|label` of an entry that gives exactly one image; any other `#` line is a comment and is dropped
+/// (`#COMMAND:` included: no core of this version needs it). A user `.m3u` under `Direct` is handed over
+/// untouched (2.0). Out of disk space: [`RuntimeError::DiskFull`], the partial file is removed.
 pub fn prepare_media(
     set: &MediaSet,
     rules: &MediaRules,
     accepted_extensions: &[String],
     saves_core_dir: &Path,
 ) -> Result<PreparedMedia, RuntimeError> {
-    // TODO(R3, design v3.0 §3.5.1): honour `media_direct` and `max_copy_bytes`, inspect zips whatever the core
-    // declares, keep only white-listed `#` lines of a user `.m3u`. Until then: 2.0 behaviour of `rules.policy`.
     prepare_media_with(
         set,
-        rules.policy,
+        rules,
         accepted_extensions,
         saves_core_dir,
         Limits::DEFAULT,
@@ -199,7 +220,17 @@ pub fn prepare_media(
 
 pub(crate) fn prepare_media_with(
     set: &MediaSet,
-    policy: MediaPolicy,
+    rules: &MediaRules,
+    exts: &[String],
+    saves_core_dir: &Path,
+    limits: Limits,
+) -> Result<PreparedMedia, RuntimeError> {
+    prepare_media_inner(set, rules, exts, saves_core_dir, limits).map_err(disk_full)
+}
+
+fn prepare_media_inner(
+    set: &MediaSet,
+    rules: &MediaRules,
     exts: &[String],
     saves_core_dir: &Path,
     limits: Limits,
@@ -219,7 +250,7 @@ pub(crate) fn prepare_media_with(
         return Err(too_many());
     }
 
-    if policy == MediaPolicy::Direct
+    if rules.policy == MediaPolicy::Direct
         && let Some(playlist) = playlist
     {
         // Handed over untouched; the entries are only listed for the disk menu.
@@ -236,21 +267,34 @@ pub(crate) fn prepare_media_with(
         });
     }
 
-    let sources = match &playlist {
-        Some(playlist) => parse_playlist(playlist)?,
+    let layout = playlist.as_deref().map(read_playlist).transpose()?;
+    let sources = match &layout {
+        Some(layout) => layout.entries(),
         None => set.images.clone(),
     };
-    if policy == MediaPolicy::WorkingCopy {
-        return prepare_working_copies(&game, &sources, exts, saves_core_dir, limits);
+    let all_direct = sources.iter().all(|s| rules.is_direct(s));
+    if rules.policy == MediaPolicy::WorkingCopy && !all_direct {
+        return prepare_working_copies(
+            &game,
+            &sources,
+            layout.as_ref(),
+            rules,
+            exts,
+            saves_core_dir,
+            limits,
+        );
     }
-    let mut stage = Stage::new(policy, exts, limits, PathBuf::new())?;
+    // `Direct`, or only direct sources: nothing is copied, a playlist goes to a private temporary directory.
+    let mut stage = Stage::new(MediaPolicy::Direct, exts, limits, PathBuf::new())?;
+    stage.media_direct = &rules.media_direct;
+    stage.max_copy = rules.max_copy_bytes;
+    let mut ranges = Vec::with_capacity(sources.len());
     for source in &sources {
-        stage.add_source(source)?;
+        let start = stage.images.len();
+        stage.add_source(source, MAX_MEDIA_IMAGES)?;
+        ranges.push(start..stage.images.len());
     }
-    let content = match stage.images.as_slice() {
-        [only] => only.clone(),
-        _ => stage.write_playlist(&game)?,
-    };
+    let content = stage.content(&game, layout.as_ref(), &ranges)?;
     Ok(PreparedMedia {
         content,
         images: stage.images,
@@ -258,6 +302,23 @@ pub(crate) fn prepare_media_with(
         notice: None,
         temp_dir: stage.temp_dir,
     })
+}
+
+/// An I/O error meaning "no space left" (or quota exceeded) becomes [`RuntimeError::DiskFull`].
+/// `write_atomic_with` has already removed the partial file.
+fn disk_full(err: RuntimeError) -> RuntimeError {
+    match err {
+        RuntimeError::Io { path, source }
+            if matches!(
+                source.kind(),
+                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+            ) =>
+        {
+            tracing::warn!("disk full while writing {}", path.display());
+            RuntimeError::DiskFull { path }
+        }
+        other => other,
+    }
 }
 
 /// Folder chosen for a set, with what its manifest says.
@@ -397,13 +458,29 @@ fn choose_work_dir(
 fn prepare_working_copies(
     game: &str,
     sources: &[PathBuf],
+    layout: Option<&UserPlaylist>,
+    rules: &MediaRules,
     exts: &[String],
     saves_core_dir: &Path,
     limits: Limits,
 ) -> Result<PreparedMedia, RuntimeError> {
-    let mut plan = Plan::new(sources, exts, limits, MAX_MEDIA_IMAGES)?;
+    // Direct sources are referenced in place: neither planned, nor recorded in the manifest.
+    let copied: Vec<PathBuf> = sources
+        .iter()
+        .filter(|s| !rules.is_direct(s))
+        .cloned()
+        .collect();
+    let mut plan = Plan::new(
+        &copied,
+        exts,
+        limits,
+        MAX_MEDIA_IMAGES,
+        rules.max_copy_bytes,
+    )?;
     let chosen = choose_work_dir(saves_core_dir, game, &mut plan)?;
     let mut stage = Stage::new(MediaPolicy::WorkingCopy, exts, limits, chosen.dir.clone())?;
+    stage.media_direct = &rules.media_direct;
+    stage.max_copy = rules.max_copy_bytes;
     // Files of other sources stay out of reach: only a pre-manifest folder adopts copies by name.
     stage.fresh = !chosen.legacy;
     stage.used.insert(MANIFEST_NAME.to_lowercase());
@@ -415,28 +492,43 @@ fn prepare_working_copies(
     }
     let mut recorded = Vec::with_capacity(plan.items.len());
     let mut consumed = vec![false; chosen.entries.len()];
-    for i in 0..plan.items.len() {
-        let src = plan.items[i].src;
-        match chosen.assignment.get(i).copied().flatten() {
-            Some(j) => {
-                consumed[j] = true;
-                let mut entry = chosen.entries[j].clone();
-                entry.origin = Origin::Set;
-                entry.refresh(&plan.sources[src]);
-                stage.push(chosen.dir.join(&entry.copy))?;
-                recorded.push(entry);
-            }
-            None => {
-                let copy = stage.materialize(&mut plan, i)?;
-                let name = plan.items[i].entry.as_ref().map(|e| e.name.clone());
-                recorded.push(ManifestEntry::new(
-                    Origin::Set,
-                    copy_name(&copy),
-                    name,
-                    &mut plan.sources[src],
-                )?);
+    let mut ranges = Vec::with_capacity(sources.len());
+    let mut next_item = 0;
+    let mut plan_src = 0;
+    for source in sources {
+        let start = stage.images.len();
+        if rules.is_direct(source) {
+            stage.push_in_place(source)?;
+            ranges.push(start..stage.images.len());
+            continue;
+        }
+        while next_item < plan.items.len() && plan.items[next_item].src == plan_src {
+            let i = next_item;
+            next_item += 1;
+            let src = plan.items[i].src;
+            match chosen.assignment.get(i).copied().flatten() {
+                Some(j) => {
+                    consumed[j] = true;
+                    let mut entry = chosen.entries[j].clone();
+                    entry.origin = Origin::Set;
+                    entry.refresh(&plan.sources[src]);
+                    stage.push(chosen.dir.join(&entry.copy))?;
+                    recorded.push(entry);
+                }
+                None => {
+                    let copy = stage.materialize(&mut plan, i)?;
+                    let name = plan.items[i].entry.as_ref().map(|e| e.name.clone());
+                    recorded.push(ManifestEntry::new(
+                        Origin::Set,
+                        copy_name(&copy),
+                        name,
+                        &mut plan.sources[src],
+                    )?);
+                }
             }
         }
+        plan_src += 1;
+        ranges.push(start..stage.images.len());
     }
     // Disks added from the menu stay available to later sessions.
     // Only the newest ones: the manifest reader refuses more than it expects.
@@ -449,10 +541,7 @@ fn prepare_working_copies(
         .collect();
     let skip = kept.len().saturating_sub(MAX_ADDED_REMEMBERED);
     recorded.extend(kept.into_iter().skip(skip).cloned());
-    let content = match stage.images.as_slice() {
-        [only] => only.clone(),
-        _ => stage.write_playlist(game)?,
-    };
+    let content = stage.content(game, layout, &ranges)?;
     workcopy::write(&chosen.dir, &recorded)?;
     Ok(PreparedMedia {
         content,
@@ -505,6 +594,10 @@ fn disk_file_name(raw: &str) -> String {
 struct Stage<'a> {
     policy: MediaPolicy,
     exts: &'a [String],
+    /// `MediaRules::media_direct`: referenced in place.
+    media_direct: &'a [String],
+    /// `MediaRules::max_copy_bytes`: largest whole file copied.
+    max_copy: u64,
     limits: Limits,
     work_dir: PathBuf,
     temp_dir: Option<Arc<TempDir>>,
@@ -528,6 +621,8 @@ impl<'a> Stage<'a> {
         Ok(Self {
             policy,
             exts,
+            media_direct: &[],
+            max_copy: MAX_COPY_BYTES,
             limits,
             work_dir,
             temp_dir: None,
@@ -588,16 +683,51 @@ impl<'a> Stage<'a> {
         Ok(())
     }
 
-    fn add_source(&mut self, source: &Path) -> Result<(), RuntimeError> {
-        if has_ext(source, "zip") && !accepts_ext(self.exts, "zip") {
-            return self.add_zip(source, MAX_MEDIA_IMAGES);
+    /// Absolute path of a file handed over where it is (never written by us).
+    fn push_in_place(&mut self, source: &Path) -> Result<(), RuntimeError> {
+        let meta = fs::metadata(source).map_err(|e| io_error(source, e))?;
+        if !meta.is_file() {
+            return Err(RuntimeError::InvalidMediaSet(format!(
+                "{} is not a file",
+                source.display()
+            )));
+        }
+        // Absolute so that a generated playlist in another folder still finds it.
+        let path = std::path::absolute(source).map_err(|e| io_error(source, e))?;
+        self.push(path)
+    }
+
+    /// One source, in the order of design v3.0 §3.5.1 (see [`prepare_media`]); a zip gives at most `max_per_zip`
+    /// images (more than [`MAX_MEDIA_IMAGES`] in a set is an error).
+    fn add_source(&mut self, source: &Path, max_per_zip: usize) -> Result<(), RuntimeError> {
+        if accepts_ext(self.media_direct, ext_of(source)) {
+            return self.push_in_place(source);
+        }
+        if has_ext(source, "zip") {
+            let room = MAX_MEDIA_IMAGES
+                .saturating_sub(self.images.len())
+                .min(max_per_zip);
+            match zip_images(source, self.exts, self.limits, room) {
+                Ok(Some((mut archive, entries))) => {
+                    if entries.len() > room && max_per_zip == MAX_MEDIA_IMAGES {
+                        return Err(too_many());
+                    }
+                    for entry in entries.iter().take(room) {
+                        self.extract_entry(&mut archive, source, entry)?;
+                    }
+                    return Ok(());
+                }
+                // No image inside: a core reading zips gets the archive whole (step 3).
+                Ok(None) if accepts_ext(self.exts, "zip") => {}
+                Ok(None) => return Err(RuntimeError::NoContentInArchive(source.to_path_buf())),
+                Err(e) if accepts_ext(self.exts, "zip") => {
+                    tracing::warn!("{e}: handed over whole, the core reads zips");
+                }
+                Err(e) => return Err(e),
+            }
         }
         match self.policy {
-            MediaPolicy::Direct => {
-                // Absolute so that a generated playlist in the temp directory still finds it.
-                let path = std::path::absolute(source).map_err(|e| io_error(source, e))?;
-                self.push(path)
-            }
+            MediaPolicy::Direct => self.push_in_place(source),
             MediaPolicy::WorkingCopy => self.copy_plain(source).map(drop),
         }
     }
@@ -606,9 +736,12 @@ impl<'a> Stage<'a> {
     fn copy_plain(&mut self, source: &Path) -> Result<PathBuf, RuntimeError> {
         let name = disk_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
         let size = fs::metadata(source).map_err(|e| io_error(source, e))?.len();
+        if size > self.max_copy {
+            return Err(copy_too_large(source, size, self.max_copy));
+        }
         let dest = self.dest_path(&name, size)?;
         if !exists(&dest)? {
-            copy_file(source, &dest, self.limits.max_size)?;
+            copy_file(source, &dest, self.max_copy)?;
             tracing::info!("working copy of {} created", source.display());
         }
         self.push(dest.clone())?;
@@ -652,50 +785,82 @@ impl<'a> Stage<'a> {
         Ok(dest)
     }
 
-    /// Extracts up to `max` accepted entries (archive order). A playlist inside the archive is ignored.
-    fn add_zip(&mut self, zip: &Path, max: usize) -> Result<(), RuntimeError> {
-        let mut archive = content::open_archive(zip, self.limits)?;
-        let exts = self.exts;
-        let room = MAX_MEDIA_IMAGES.saturating_sub(self.images.len()).min(max);
-        let entries = content::accepted_entries(
-            &mut archive,
-            zip,
-            |name| workcopy::zip_entry_accepted(exts, name),
-            // One more than allowed, to report an oversized set instead of silently dropping disks.
-            room.saturating_add(1),
-        )?;
-        if entries.is_empty() {
-            return Err(RuntimeError::NoContentInArchive(zip.to_path_buf()));
+    /// File given to `retro_load_game`: the only image, or a generated playlist. A user playlist whose kept
+    /// `#` lines must reach the core always gives a playlist.
+    fn content(
+        &mut self,
+        game: &str,
+        layout: Option<&UserPlaylist>,
+        ranges: &[Range<usize>],
+    ) -> Result<PathBuf, RuntimeError> {
+        match self.images.as_slice() {
+            [only] if !layout.is_some_and(UserPlaylist::has_directives) => Ok(only.clone()),
+            _ => self.write_playlist(game, layout, ranges),
         }
-        if entries.len() > room && max == MAX_MEDIA_IMAGES {
-            return Err(too_many());
-        }
-        for entry in entries.iter().take(room) {
-            self.extract_entry(&mut archive, zip, entry)?;
-        }
-        Ok(())
     }
 
-    /// `<game>.m3u` next to the copies (relative names) or in the temp directory (absolute paths). Rewritten only
-    /// when its content changes.
-    fn write_playlist(&mut self, game: &str) -> Result<PathBuf, RuntimeError> {
+    /// `<game>.m3u` next to the copies (relative names for the copies, absolute paths otherwise) or in the temp
+    /// directory (absolute paths). `layout` (a user playlist) puts its kept `#` lines and labels back in place;
+    /// `ranges[k]` are the images given by its `k`-th entry. Rewritten only when its content changes.
+    fn write_playlist(
+        &mut self,
+        game: &str,
+        layout: Option<&UserPlaylist>,
+        ranges: &[Range<usize>],
+    ) -> Result<PathBuf, RuntimeError> {
         let dir = self.dest_dir()?;
         let path = dir.join(format!("{game}.m3u"));
         let mut text = Vec::new();
-        for image in &self.images {
-            let entry = match self.policy {
-                MediaPolicy::WorkingCopy => image.strip_prefix(&dir).unwrap_or(image),
-                MediaPolicy::Direct => image.as_path(),
+        let policy = self.policy;
+        let line =
+            |text: &mut Vec<u8>, image: &Path, label: Option<&str>| -> Result<(), RuntimeError> {
+                let entry = match policy {
+                    MediaPolicy::WorkingCopy => image.strip_prefix(&dir).unwrap_or(image),
+                    MediaPolicy::Direct => image,
+                };
+                let bytes = path_bytes(entry)?;
+                if bytes.iter().any(|&b| b == b'\n' || b == b'\r' || b == b'|')
+                    || bytes.first() == Some(&b'#')
+                {
+                    return Err(RuntimeError::InvalidMediaSet(format!(
+                        "{} cannot be listed in a playlist",
+                        image.display()
+                    )));
+                }
+                text.extend_from_slice(&bytes);
+                if let Some(label) = label {
+                    text.push(b'|');
+                    text.extend_from_slice(label.as_bytes());
+                }
+                text.push(b'\n');
+                Ok(())
             };
-            let bytes = path_bytes(entry)?;
-            if bytes.iter().any(|&b| b == b'\n' || b == b'\r') || bytes.first() == Some(&b'#') {
-                return Err(RuntimeError::InvalidMediaSet(format!(
-                    "{} cannot be listed in a playlist",
-                    image.display()
-                )));
+        match layout {
+            None => {
+                for image in &self.images {
+                    line(&mut text, image, None)?;
+                }
             }
-            text.extend_from_slice(&bytes);
-            text.push(b'\n');
+            Some(layout) => {
+                let mut k = 0;
+                for item in &layout.lines {
+                    match item {
+                        M3uLine::Directive(d) => {
+                            text.extend_from_slice(d.as_bytes());
+                            text.push(b'\n');
+                        }
+                        M3uLine::Entry { label, .. } => {
+                            let range = ranges.get(k).cloned().unwrap_or_default();
+                            k += 1;
+                            // A label names one disk: a zip giving several loses it.
+                            let label = label.as_deref().filter(|_| range.len() == 1);
+                            for image in &self.images[range] {
+                                line(&mut text, image, label)?;
+                            }
+                        }
+                    }
+                }
+            }
         }
         let unchanged = read_bounded(&path, text.len()).is_ok_and(|old| old == text);
         if !unchanged {
@@ -704,6 +869,40 @@ impl<'a> Stage<'a> {
         }
         Ok(path)
     }
+}
+
+/// Extension of `path` (empty when none or not UTF-8).
+fn ext_of(path: &Path) -> &str {
+    path.extension().and_then(|e| e.to_str()).unwrap_or("")
+}
+
+fn copy_too_large(source: &Path, size: u64, max: u64) -> RuntimeError {
+    RuntimeError::InvalidMediaSet(format!(
+        "{} is too large to be copied ({size} bytes, at most {max})",
+        source.display()
+    ))
+}
+
+/// An opened, untrusted zip archive.
+pub(crate) type UserZip = ZipArchive<BufReader<fs::File>>;
+
+/// Opens a zip as untrusted input and lists, from its central directory only, up to `max + 1` entries the core
+/// accepts (`workcopy::zip_entry_accepted`: never `zip`, `7z` nor `m3u`; links and folders skipped); one more
+/// than allowed, so that an oversized set is reported instead of silently losing disks. `None`: no such entry.
+pub(crate) fn zip_images(
+    zip: &Path,
+    exts: &[String],
+    limits: Limits,
+    max: usize,
+) -> Result<Option<(UserZip, Vec<ArchiveEntry>)>, RuntimeError> {
+    let mut archive = content::open_archive(zip, limits)?;
+    let entries = content::accepted_entries(
+        &mut archive,
+        zip,
+        |name| workcopy::zip_entry_accepted(exts, name),
+        max.saturating_add(1),
+    )?;
+    Ok((!entries.is_empty()).then_some((archive, entries)))
 }
 
 fn exists(path: &Path) -> Result<bool, RuntimeError> {
@@ -784,10 +983,64 @@ fn copy_file(source: &Path, dest: &Path, max: u64) -> Result<(), RuntimeError> {
     written.map_err(|e| io_error(dest, e))
 }
 
-/// Entries of a user `.m3u` (≤ 64 KiB, ≤ [`MAX_MEDIA_IMAGES`] entries): blank lines and `#` lines skipped, a
-/// `|label` suffix dropped, paths absolute or relative to the playlist's folder; `..`, and drive or root prefixes
-/// on a relative path, are refused, as are non-UTF-8 files and control characters inside an entry. Backslashes are separators on every platform (playlists made on Windows).
+/// `#` lines of a user `.m3u` copied into a generated one (design v3.0 §3.5.1, white list): `#SAVEDISK:` (puae:
+/// an empty save disk created by the core, named after the playlist) and `#LABEL:`. `#COMMAND:` is not here: it
+/// is only meant for cores that type it into the machine (5.0), never for cores that read it as arguments.
+const KEPT_DIRECTIVES: [&str; 2] = ["#SAVEDISK:", "#LABEL:"];
+
+/// Longest `#` line or `|label` kept from a user playlist (longer ones are dropped, not cut).
+const MAX_KEPT_LINE_BYTES: usize = 256;
+
+/// A user `.m3u`, as kept to produce a working one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UserPlaylist {
+    pub lines: Vec<M3uLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum M3uLine {
+    /// Resolved path of an entry, with its `|label` when it is safe to repeat.
+    Entry {
+        path: PathBuf,
+        label: Option<String>,
+    },
+    /// A white-listed `#` line, verbatim (trimmed).
+    Directive(String),
+}
+
+impl UserPlaylist {
+    fn entries(&self) -> Vec<PathBuf> {
+        self.lines
+            .iter()
+            .filter_map(|l| match l {
+                M3uLine::Entry { path, .. } => Some(path.clone()),
+                M3uLine::Directive(_) => None,
+            })
+            .collect()
+    }
+
+    fn has_directives(&self) -> bool {
+        self.lines
+            .iter()
+            .any(|l| matches!(l, M3uLine::Directive(_)))
+    }
+}
+
+/// Text kept from a user playlist (`#` line or label): no control character, bounded length.
+fn keepable(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_KEPT_LINE_BYTES && !text.chars().any(char::is_control)
+}
+
+/// Entries of a user `.m3u` (see [`read_playlist`]).
 pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeError> {
+    read_playlist(playlist).map(|p| p.entries())
+}
+
+/// A user `.m3u` (≤ 64 KiB, ≤ [`MAX_MEDIA_IMAGES`] entries): blank lines skipped, `#` lines kept only when
+/// white-listed ([`KEPT_DIRECTIVES`]), a `|label` suffix kept apart, paths absolute or relative to the playlist's
+/// folder; `..`, and drive or root prefixes on a relative path, are refused, as are non-UTF-8 files and control
+/// characters inside an entry. Backslashes are separators on every platform (playlists made on Windows).
+pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeError> {
     let bytes = read_bounded(playlist, MAX_PLAYLIST_BYTES).map_err(|e| io_error(playlist, e))?;
     if bytes.len() > MAX_PLAYLIST_BYTES {
         return Err(RuntimeError::InvalidMediaSet(format!(
@@ -799,13 +1052,29 @@ pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeErr
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         RuntimeError::InvalidMediaSet(format!("{} is not UTF-8", playlist.display()))
     })?;
-    let mut out = Vec::new();
+    let mut lines = Vec::new();
+    let mut count = 0;
     for line in text.lines() {
         let line = line.trim_start_matches('\u{feff}').trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
-        let entry = line.split('|').next().unwrap_or("").trim();
+        if line.starts_with('#') {
+            let kept = KEPT_DIRECTIVES.iter().any(|d| line.starts_with(d));
+            if kept && keepable(line) {
+                lines.push(M3uLine::Directive(line.to_owned()));
+            } else if kept {
+                tracing::warn!(
+                    "{}: `#` line dropped (too long or control characters)",
+                    playlist.display()
+                );
+            }
+            continue;
+        }
+        let (entry, label) = match line.split_once('|') {
+            Some((entry, label)) => (entry.trim(), Some(label.trim())),
+            None => (line, None),
+        };
         if entry.is_empty() {
             continue;
         }
@@ -837,18 +1106,20 @@ pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeErr
             }
             base.join(entry)
         };
-        if out.len() >= MAX_MEDIA_IMAGES {
+        if count >= MAX_MEDIA_IMAGES {
             return Err(too_many());
         }
-        out.push(path);
+        count += 1;
+        let label = label.filter(|l| keepable(l)).map(str::to_owned);
+        lines.push(M3uLine::Entry { path, label });
     }
-    if out.is_empty() {
+    if count == 0 {
         return Err(RuntimeError::InvalidMediaSet(format!(
             "{} lists no disk",
             playlist.display()
         )));
     }
-    Ok(out)
+    Ok(UserPlaylist { lines })
 }
 
 fn playlist_entry_path(entry: &str) -> PathBuf {
@@ -880,8 +1151,110 @@ pub fn reset_core_game_files(
     content_name: &str,
     patterns: &[String],
 ) -> Result<Vec<PathBuf>, RuntimeError> {
-    let _ = (saves_core_dir, content_name, patterns);
-    todo!("R3: design v3.0 §3.5.3")
+    let invalid = |why: String| RuntimeError::InvalidMediaSet(why);
+    if content_name.is_empty()
+        || content_name == "."
+        || content_name == ".."
+        || content_name.contains(['/', '\\', '\0'])
+    {
+        return Err(invalid(format!("`{content_name}` is not a content name")));
+    }
+    let globs = patterns
+        .iter()
+        .map(|p| {
+            SaveGlob::new(p, content_name)
+                .ok_or_else(|| invalid(format!("invalid save pattern `{p}`")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if globs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = match fs::read_dir(saves_core_dir) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_error(saves_core_dir, e)),
+    };
+    let mut doomed = Vec::new();
+    for entry in dir {
+        let entry = entry.map_err(|e| io_error(saves_core_dir, e))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !globs.iter().any(|g| g.matches(&name)) {
+            continue;
+        }
+        let path = entry.path();
+        // `symlink_metadata`: a link (or a folder) matching the pattern is not a file the core wrote.
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => doomed.push(path),
+            Ok(_) => tracing::warn!(
+                "{} matches a save pattern but is not a file: kept",
+                path.display()
+            ),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error(&path, e)),
+        }
+    }
+    doomed.sort();
+    let mut removed = Vec::with_capacity(doomed.len());
+    for path in doomed {
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::info!("core save file removed: {}", path.display());
+                removed.push(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error(&path, e)),
+        }
+    }
+    Ok(removed)
+}
+
+/// One `game_saves` pattern with `{game}` substituted: a literal file name, or `prefix*suffix`.
+#[derive(Debug)]
+struct SaveGlob {
+    prefix: String,
+    /// `None`: no `*`, the whole name is `prefix`.
+    suffix: Option<String>,
+}
+
+impl SaveGlob {
+    /// `None` for anything but a file name: separators, `..`, NUL, more than one `*`, or no `{game}` (a pattern
+    /// that does not name the game would reach the files of every game).
+    fn new(pattern: &str, game: &str) -> Option<Self> {
+        if pattern.is_empty()
+            || pattern.contains(['/', '\\', '\0', ':'])
+            || pattern == "."
+            || pattern == ".."
+            || pattern.matches('*').count() > 1
+            || !pattern.contains("{game}")
+        {
+            return None;
+        }
+        // Split before substituting: a `*` inside the game name is a literal character.
+        let (prefix, suffix) = match pattern.split_once('*') {
+            Some((p, s)) => (p, Some(s)),
+            None => (pattern, None),
+        };
+        let prefix = prefix.replace("{game}", game);
+        let suffix = suffix.map(|s| s.replace("{game}", game));
+        let literal = prefix.clone() + suffix.as_deref().unwrap_or("");
+        if literal.is_empty() || literal == "." || literal == ".." {
+            return None;
+        }
+        Some(Self { prefix, suffix })
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        match &self.suffix {
+            None => name == self.prefix,
+            Some(suffix) => {
+                name.len() >= self.prefix.len() + suffix.len()
+                    && name.starts_with(&self.prefix)
+                    && name.ends_with(suffix.as_str())
+            }
+        }
+    }
 }
 
 /// Deletes one working-copy folder, normally [`PreparedMedia::work_dir`] of the game (the core must not be
@@ -1092,22 +1465,38 @@ impl Disks<'_> {
 impl Emulator {
     /// Copy / extraction of an image added from the disk menu, as `prepare_media` would do it.
     fn stage_added_image(&mut self, image: &Path) -> Result<PathBuf, RuntimeError> {
-        let policy = self.media_policy.unwrap_or(MediaPolicy::WorkingCopy);
+        self.stage_added_image_inner(image).map_err(disk_full)
+    }
+
+    fn stage_added_image_inner(&mut self, image: &Path) -> Result<PathBuf, RuntimeError> {
+        let rules = self
+            .media_rules
+            .clone()
+            .unwrap_or_else(|| MediaRules::new(MediaPolicy::WorkingCopy));
         let work_dir = self
             .prepared
             .as_ref()
             .and_then(|p| p.work_dir.clone())
             .unwrap_or_else(|| work_dir_for(&self.save_root.join(&self.core_id), &self.game_name));
         let exts = self.core.system_info().valid_extensions.clone();
-        if policy == MediaPolicy::WorkingCopy {
+        if rules.policy == MediaPolicy::WorkingCopy && !rules.is_direct(image) {
             let known = self
                 .prepared
                 .as_ref()
                 .map(|p| p.images.as_slice())
                 .unwrap_or_default();
-            return stage_added_copy(&work_dir, image, &exts, self.limits, known);
+            return stage_added_copy(
+                &work_dir,
+                image,
+                &exts,
+                self.limits,
+                rules.max_copy_bytes,
+                known,
+            );
         }
-        let mut stage = Stage::new(policy, &exts, self.limits, work_dir)?;
+        let mut stage = Stage::new(MediaPolicy::Direct, &exts, self.limits, work_dir)?;
+        stage.media_direct = &rules.media_direct;
+        stage.max_copy = rules.max_copy_bytes;
         stage.temp_dir = self.prepared.as_ref().and_then(|p| p.temp_dir.clone());
         // Names already handed to the core keep theirs; a new name never overwrites them in the temp directory.
         stage.fresh = true;
@@ -1116,11 +1505,7 @@ impl Emulator {
                 stage.used.insert(name.to_string_lossy().to_lowercase());
             }
         }
-        if has_ext(image, "zip") && !accepts_ext(&exts, "zip") {
-            stage.add_zip(image, 1)?;
-        } else {
-            stage.add_source(image)?;
-        }
+        stage.add_source(image, 1)?;
         let path = stage
             .images
             .pop()
@@ -1145,6 +1530,7 @@ fn stage_added_copy(
     image: &Path,
     exts: &[String],
     limits: Limits,
+    max_copy: u64,
     known: &[PathBuf],
 ) -> Result<PathBuf, RuntimeError> {
     let mut manifest = match workcopy::inspect(work_dir, is_disk_file_name)? {
@@ -1158,7 +1544,7 @@ fn stage_added_copy(
             )));
         }
     };
-    let mut plan = Plan::new(&[image.to_path_buf()], exts, limits, 1)?;
+    let mut plan = Plan::new(&[image.to_path_buf()], exts, limits, 1, max_copy)?;
     if let Some(entries) = manifest.as_mut() {
         let present = workcopy::present(work_dir, entries)?;
         let in_use = |e: &ManifestEntry| known.iter().any(|k| *k == work_dir.join(&e.copy));
@@ -1176,6 +1562,7 @@ fn stage_added_copy(
         limits,
         work_dir.to_path_buf(),
     )?;
+    stage.max_copy = max_copy;
     stage.fresh = true;
     stage.used.insert(MANIFEST_NAME.to_lowercase());
     for name in known.iter().filter_map(|k| k.file_name()) {
@@ -1301,7 +1688,7 @@ mod tests {
                 st.used
                     .insert(k.file_name().unwrap().to_string_lossy().to_lowercase());
             }
-            st.add_source(src).unwrap();
+            st.add_source(src, 1).unwrap();
             st.images.pop().unwrap()
         };
         let added = emu_stage(&p, &other);
@@ -1437,11 +1824,31 @@ mod tests {
         assert_eq!(fs::read(&zip).unwrap(), zip_before);
     }
 
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn rules(policy: MediaPolicy, direct: &[&str]) -> MediaRules {
+        MediaRules {
+            media_direct: strs(direct),
+            ..MediaRules::new(policy)
+        }
+    }
+
+    fn sha(paths: &[PathBuf]) -> Vec<u32> {
+        paths
+            .iter()
+            .map(|p| crc32fast::hash(&fs::read(p).unwrap()))
+            .collect()
+    }
+
+    /// §3.5.1 step 2: a zip holding accepted images is extracted even when the core declares `zip`.
     #[test]
-    fn zip_passed_whole_when_the_core_reads_zips() {
+    fn zip_of_disks_is_extracted_even_when_the_core_reads_zips() {
         let f = Fixture::new();
         let zip = f.file("Game.zip", &build_zip(&[(b"a.st", b"1", None)]));
-        let exts = vec!["st".to_owned(), "zip".to_owned()];
+        let exts = strs(&["st", "zip"]);
+        let before = sha(std::slice::from_ref(&zip));
         let p = prepare_media(
             &set("Game", vec![zip.clone()]),
             &MediaRules::new(MediaPolicy::Direct),
@@ -1449,8 +1856,354 @@ mod tests {
             &f.saves(),
         )
         .unwrap();
+        let temp = p.temp_dir().unwrap().to_path_buf();
+        assert_eq!(p.content, temp.join("a.st"));
+        let p = prepare_media(
+            &set("Game", vec![zip.clone()]),
+            &MediaRules::new(MediaPolicy::WorkingCopy),
+            &exts,
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, f.saves().join("Game.disks/a.st"));
+        assert_eq!(sha(&[zip]), before);
+    }
+
+    /// §3.5.1 step 3: a zip without accepted image is handed over whole (core with `zip`) or refused.
+    #[test]
+    fn zip_without_image_is_passed_whole_or_refused() {
+        let f = Fixture::new();
+        let zip = f.file(
+            "Folder.zip",
+            &build_zip(&[(b"data.bin", b"1", None), (b"inner.zip", b"z", None)]),
+        );
+        let with_zip = strs(&["st", "zip"]);
+        let p = prepare_media(
+            &set("Folder", vec![zip.clone()]),
+            &MediaRules::new(MediaPolicy::Direct),
+            &with_zip,
+            &f.saves(),
+        )
+        .unwrap();
         assert_eq!(p.content, zip);
         assert!(p.temp_dir().is_none());
+        // Working copy: the archive is copied whole, never extracted.
+        let p = prepare_media(
+            &set("Folder", vec![zip.clone()]),
+            &MediaRules::new(MediaPolicy::WorkingCopy),
+            &with_zip,
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, f.saves().join("Folder.disks/Folder.zip"));
+        assert_eq!(fs::read(&p.content).unwrap(), fs::read(&zip).unwrap());
+        for policy in [MediaPolicy::Direct, MediaPolicy::WorkingCopy] {
+            let err = f
+                .prepare(&set("Folder2", vec![zip.clone()]), policy)
+                .unwrap_err();
+            assert!(matches!(err, RuntimeError::NoContentInArchive(_)), "{err}");
+        }
+        // A broken archive: whole for a core reading zips, refused otherwise.
+        let broken = f.file("Broken.zip", b"not a zip");
+        let p = prepare_media(
+            &set("Broken", vec![broken.clone()]),
+            &MediaRules::new(MediaPolicy::Direct),
+            &with_zip,
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, broken);
+        assert!(
+            f.prepare(&set("Broken", vec![broken]), MediaPolicy::Direct)
+                .is_err()
+        );
+    }
+
+    /// §3.5.1 step 1: a direct extension is referenced in place (absolute), never copied nor extracted, even a zip.
+    #[test]
+    fn direct_extensions_are_referenced_in_place() {
+        let f = Fixture::new();
+        let adf = f.file("Game/Disk 1.adf", b"adf");
+        let ipf = f.file("Game/Disk 2.IPF", b"ipf");
+        let zip = f.file("Dos/Game.zip", &build_zip(&[(b"game.adf", b"x", None)]));
+        let originals = [adf.clone(), ipf.clone(), zip.clone()];
+        let before = sha(&originals);
+        let exts = strs(&["adf", "ipf", "zip"]);
+        let r = rules(MediaPolicy::WorkingCopy, &["ipf", "zip"]);
+        let p = prepare_media(
+            &set("Game", vec![adf, ipf.clone(), zip.clone()]),
+            &r,
+            &exts,
+            &f.saves(),
+        )
+        .unwrap();
+        let work = f.saves().join("Game.disks");
+        assert_eq!(p.work_dir.as_deref(), Some(work.as_path()));
+        assert_eq!(
+            p.images,
+            [work.join("Disk 1.adf"), ipf.clone(), zip.clone()]
+        );
+        assert_eq!(
+            fs::read_to_string(&p.content).unwrap(),
+            format!("Disk 1.adf\n{}\n{}\n", ipf.display(), zip.display())
+        );
+        assert_eq!(
+            f.written(),
+            [
+                "saves/hatari/Game.disks/.emu-rust-disks",
+                "saves/hatari/Game.disks/Disk 1.adf",
+                "saves/hatari/Game.disks/Game.m3u",
+            ]
+        );
+        // The manifest only knows the copy: the next launch reuses the folder silently.
+        let again = prepare_media(&set("Game", originals.to_vec()), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(again, p);
+        assert_eq!(sha(&originals), before);
+
+        // Only direct sources: no working-copy folder at all; one image = the file itself.
+        let single = prepare_media(&set("Solo", vec![ipf.clone()]), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(single.content, ipf);
+        assert_eq!(single.work_dir, None);
+        assert!(single.temp_dir().is_none());
+        let two = prepare_media(
+            &set("Two", vec![ipf.clone(), zip.clone()]),
+            &r,
+            &exts,
+            &f.saves(),
+        )
+        .unwrap();
+        let temp = two.temp_dir().unwrap().to_path_buf();
+        assert_eq!(two.content, temp.join("Two.m3u"));
+        assert!(!f.saves().join("Two.disks").exists());
+        assert!(two.images.iter().all(|i| i.is_absolute()));
+        // A missing direct file is refused.
+        let missing = f.roms().join("Gone.ipf");
+        assert!(matches!(
+            prepare_media(&set("Gone", vec![missing]), &r, &exts, &f.saves()),
+            Err(RuntimeError::Io { .. })
+        ));
+        assert_eq!(sha(&originals), before);
+    }
+
+    /// hatari (no `zip`, no direct extension): exactly the 2.0 result.
+    #[test]
+    fn hatari_non_regression() {
+        let f = Fixture::new();
+        let st = f.file("G/d1.st", b"1");
+        let zip = f.file(
+            "G/d2.zip",
+            &build_zip(&[(b"d2.msa", b"2", None), (b"x.txt", b"t", None)]),
+        );
+        let before = sha(&[st.clone(), zip.clone()]);
+        let p = f
+            .prepare(
+                &set("G", vec![st.clone(), zip.clone()]),
+                MediaPolicy::WorkingCopy,
+            )
+            .unwrap();
+        let work = f.saves().join("G.disks");
+        assert_eq!(p.images, [work.join("d1.st"), work.join("d2.msa")]);
+        assert_eq!(fs::read_to_string(&p.content).unwrap(), "d1.st\nd2.msa\n");
+        assert_eq!(sha(&[st, zip]), before);
+    }
+
+    #[test]
+    fn copy_bound_is_max_copy_bytes() {
+        let f = Fixture::new();
+        let hdf = f.file("Big.hdf", &[0u8; 64]);
+        let exts = strs(&["hdf"]);
+        let r = MediaRules {
+            max_copy_bytes: 63,
+            ..MediaRules::new(MediaPolicy::WorkingCopy)
+        };
+        let err = prepare_media(&set("Big", vec![hdf.clone()]), &r, &exts, &f.saves()).unwrap_err();
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)), "{err}");
+        assert!(f.written().iter().all(|w| !w.ends_with(".hdf")));
+        let r = MediaRules {
+            max_copy_bytes: 64,
+            ..r
+        };
+        let p = prepare_media(&set("Big", vec![hdf]), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(fs::read(&p.content).unwrap().len(), 64);
+        const { assert!(MAX_COPY_BYTES > Limits::DEFAULT.max_size) };
+    }
+
+    #[test]
+    fn user_playlist_keeps_only_white_listed_lines() {
+        let f = Fixture::new();
+        f.file("g/a.adf", b"a");
+        f.file("g/b.adf", b"b");
+        let ipf = f.file("g/c.ipf", b"c");
+        let m3u = f.file(
+            "g/Game.m3u",
+            b"#EXTM3U\n# comment\na.adf|Disk A\n#SAVEDISK:Save\n#COMMAND:RUN\"DISC\n#LABEL:Side B\nb.adf\nc.ipf|Prog\n#EXTINF:x\n",
+        );
+        let before = sha(std::slice::from_ref(&m3u));
+        let exts = strs(&["adf", "ipf", "m3u"]);
+        let r = rules(MediaPolicy::WorkingCopy, &["ipf"]);
+        let p = prepare_media(&set("Game", vec![m3u.clone()]), &r, &exts, &f.saves()).unwrap();
+        let work = f.saves().join("Game.disks");
+        assert_eq!(p.content, work.join("Game.m3u"));
+        assert_eq!(
+            fs::read_to_string(&p.content).unwrap(),
+            format!(
+                "a.adf|Disk A\n#SAVEDISK:Save\n#LABEL:Side B\nb.adf\n{}|Prog\n",
+                ipf.display()
+            )
+        );
+        assert_eq!(p.images, [work.join("a.adf"), work.join("b.adf"), ipf]);
+        assert_eq!(sha(&[m3u]), before);
+
+        // One entry plus `#SAVEDISK:`: the playlist is still generated (the core must see the line).
+        let one = f.file("h/One.m3u", b"#SAVEDISK:\nx.adf\n");
+        f.file("h/x.adf", b"x");
+        let p = prepare_media(&set("One", vec![one]), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p.content).unwrap(),
+            "#SAVEDISK:\nx.adf\n"
+        );
+        // One entry, nothing to keep: the copy itself (2.0).
+        let plain = f.file("i/Plain.m3u", b"#EXTM3U\ny.adf|Label\n");
+        f.file("i/y.adf", b"y");
+        let p = prepare_media(&set("Plain", vec![plain]), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(p.content, f.saves().join("Plain.disks/y.adf"));
+
+        // Hostile kept lines (too long, control characters) are dropped, never copied.
+        let long = format!(
+            "#SAVEDISK:{}\nz.adf|{}\nz2.adf|ok\x07\n",
+            "x".repeat(300),
+            "l".repeat(300)
+        );
+        f.file("j/z.adf", b"z");
+        f.file("j/z2.adf", b"w");
+        let hostile = f.file("j/H.m3u", long.as_bytes());
+        let p = prepare_media(&set("H", vec![hostile]), &r, &exts, &f.saves()).unwrap();
+        assert_eq!(fs::read_to_string(&p.content).unwrap(), "z.adf\nz2.adf\n");
+    }
+
+    #[test]
+    fn zip_slip_links_and_nested_archives_never_escape() {
+        use std::io::Write as _;
+        let f = Fixture::new();
+        let path = f.roms().join("Evil.zip");
+        let mut w = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        w.add_symlink("link.st", "/etc/passwd", opts).unwrap();
+        w.start_file("../../../escape.st", opts).unwrap();
+        w.write_all(b"e").unwrap();
+        w.start_file("nested.zip", opts).unwrap();
+        w.write_all(b"z").unwrap();
+        w.start_file("d.7z", opts).unwrap();
+        w.write_all(b"7").unwrap();
+        w.finish().unwrap();
+        let before = sha(std::slice::from_ref(&path));
+        let exts = strs(&["st", "zip", "7z"]);
+        let p = prepare_media(
+            &set("Evil", vec![path.clone()]),
+            &MediaRules::new(MediaPolicy::WorkingCopy),
+            &exts,
+            &f.saves(),
+        )
+        .unwrap();
+        let work = f.saves().join("Evil.disks");
+        assert_eq!(p.images, [work.join("escape.st")]);
+        assert_eq!(fs::read(&p.images[0]).unwrap(), b"e");
+        assert!(!f.tmp.path().join("escape.st").exists());
+        assert!(!work.join("link.st").exists());
+        assert_eq!(sha(&[path]), before);
+    }
+
+    #[test]
+    fn reset_core_game_files_follows_the_patterns() {
+        let f = Fixture::new();
+        let dir = f.saves();
+        for name in [
+            "Game.save0.adf",
+            "Game.save12.adf",
+            "Game.srm",
+            "Game2.save0.adf",
+            "Other.save0.adf",
+            "Game.save0.adf.bak",
+        ] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        fs::create_dir_all(dir.join("Game.save9.adf")).unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/Game.save1.adf"), b"x").unwrap();
+        let outside = f.file("Game.save3.adf", b"user");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join("Game.save5.adf")).unwrap();
+        let patterns = strs(&["{game}.save*.adf"]);
+        let removed = reset_core_game_files(&dir, "Game", &patterns).unwrap();
+        assert_eq!(
+            removed,
+            [dir.join("Game.save0.adf"), dir.join("Game.save12.adf")]
+        );
+        for kept in [
+            "Game.srm",
+            "Game2.save0.adf",
+            "Other.save0.adf",
+            "Game.save0.adf.bak",
+            "sub/Game.save1.adf",
+        ] {
+            assert!(dir.join(kept).exists(), "{kept}");
+        }
+        assert!(dir.join("Game.save9.adf").is_dir());
+        assert_eq!(fs::read(&outside).unwrap(), b"user");
+        assert!(
+            reset_core_game_files(&dir, "Game", &patterns)
+                .unwrap()
+                .is_empty()
+        );
+        // `{game}` without `*`; a `*` in the game name is literal.
+        fs::write(dir.join("St*r.brm"), b"x").unwrap();
+        fs::write(dir.join("Star.brm"), b"x").unwrap();
+        let removed = reset_core_game_files(&dir, "St*r", &strs(&["{game}.brm"])).unwrap();
+        assert_eq!(removed, [dir.join("St*r.brm")]);
+        assert!(dir.join("Star.brm").exists());
+        // Refused patterns: nothing deleted.
+        for bad in [
+            "../{game}.adf",
+            "sub/{game}*",
+            "{game}\\x",
+            "*.*{game}",
+            "*.adf",
+            "",
+            "C:{game}",
+        ] {
+            let err = reset_core_game_files(&dir, "Game", &strs(&["{game}.srm", bad])).unwrap_err();
+            assert!(matches!(err, RuntimeError::InvalidMediaSet(_)), "{bad}");
+        }
+        for bad_name in ["", "..", "a/b", "a\\b"] {
+            assert!(
+                reset_core_game_files(&dir, bad_name, &patterns).is_err(),
+                "{bad_name}"
+            );
+        }
+        assert!(dir.join("Game.srm").exists());
+        // Missing folder: nothing to do.
+        assert!(
+            reset_core_game_files(&dir.join("none"), "Game", &patterns)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn disk_full_is_reported_as_such() {
+        let full = RuntimeError::Io {
+            path: PathBuf::from("/x/a.adf"),
+            source: io::Error::from(io::ErrorKind::StorageFull),
+        };
+        assert!(
+            matches!(disk_full(full), RuntimeError::DiskFull { path } if path == Path::new("/x/a.adf"))
+        );
+        let other = RuntimeError::Io {
+            path: PathBuf::from("/x"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        assert!(matches!(disk_full(other), RuntimeError::Io { .. }));
     }
 
     #[test]
@@ -1461,14 +2214,9 @@ mod tests {
             max_size: 50,
             ..Limits::DEFAULT
         };
-        let err = prepare_media_with(
-            &set("Big", vec![zip]),
-            MediaPolicy::WorkingCopy,
-            &exts(),
-            &f.saves(),
-            limits,
-        )
-        .unwrap_err();
+        let wc = MediaRules::new(MediaPolicy::WorkingCopy);
+        let err = prepare_media_with(&set("Big", vec![zip]), &wc, &exts(), &f.saves(), limits)
+            .unwrap_err();
         // The reader stops at the declared size and the CRC then fails: refused either way.
         assert!(
             matches!(
@@ -1480,23 +2228,28 @@ mod tests {
         let declared_too_big = f.file("Big2.zip", &build_zip(&[(b"big.st", &[7u8; 100], None)]));
         let err = prepare_media_with(
             &set("Big2", vec![declared_too_big]),
-            MediaPolicy::WorkingCopy,
+            &wc,
             &exts(),
             &f.saves(),
             limits,
         )
         .unwrap_err();
         assert!(matches!(err, RuntimeError::ContentTooLarge { .. }), "{err}");
+        // Whole files are bounded by `max_copy_bytes` (2 GiB by default, for `.hdf`), not by the zip limits.
         let plain = f.file("Plain.st", &[1u8; 100]);
+        let small = MediaRules {
+            max_copy_bytes: 99,
+            ..MediaRules::new(MediaPolicy::WorkingCopy)
+        };
         let err = prepare_media_with(
-            &set("P", vec![plain]),
-            MediaPolicy::WorkingCopy,
+            &set("P", vec![plain.clone()]),
+            &small,
             &exts(),
             &f.saves(),
             limits,
         )
         .unwrap_err();
-        assert!(matches!(err, RuntimeError::ContentTooLarge { .. }), "{err}");
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)), "{err}");
         assert_eq!(f.written(), Vec::<String>::new(), "no partial copy left");
     }
 
@@ -1764,7 +2517,14 @@ mod tests {
         };
         let (e1, p1) = state(&first);
         let (e2, p2) = state(&second);
-        let plan = Plan::new(&[two], &exts(), Limits::DEFAULT, MAX_MEDIA_IMAGES).unwrap();
+        let plan = Plan::new(
+            &[two],
+            &exts(),
+            Limits::DEFAULT,
+            MAX_MEDIA_IMAGES,
+            MAX_COPY_BYTES,
+        )
+        .unwrap();
         assert!(plan.quick_match(&e2, &p2));
         assert!(!plan.quick_match(&e1, &p1));
     }
@@ -2008,7 +2768,7 @@ mod tests {
             .unwrap();
         let work = p.work_dir.clone().unwrap();
         let add = |src: &Path, known: &[PathBuf]| {
-            stage_added_copy(&work, src, &exts(), Limits::DEFAULT, known).unwrap()
+            stage_added_copy(&work, src, &exts(), Limits::DEFAULT, MAX_COPY_BYTES, known).unwrap()
         };
         let added = add(&extra, &p.images);
         assert_eq!(added, work.join("Save.st"));

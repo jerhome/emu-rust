@@ -16,9 +16,9 @@ use std::time::UNIX_EPOCH;
 
 use zip::ZipArchive;
 
-use crate::content::{self, ArchiveEntry, Limits, io_error};
+use crate::content::{ArchiveEntry, Limits, io_error};
 use crate::error::RuntimeError;
-use crate::media::{MAX_MEDIA_IMAGES, accepts_ext, has_ext, too_many};
+use crate::media::{MAX_MEDIA_IMAGES, accepts_ext, has_ext, too_many, zip_images};
 use crate::saves::{FileMode, read_bounded, write_atomic_with};
 
 /// Hidden file in each working-copy folder.
@@ -175,21 +175,30 @@ pub(crate) struct Plan {
     pub items: Vec<PlanItem>,
 }
 
+/// An archive entry worth extracting: an image the core accepts, never a playlist nor another archive.
 pub(crate) fn zip_entry_accepted(exts: &[String], name: &str) -> bool {
     match name.rsplit_once('.') {
-        Some((_, ext)) => !ext.eq_ignore_ascii_case("m3u") && accepts_ext(exts, ext),
+        Some((_, ext)) => {
+            !["m3u", "zip", "7z"]
+                .iter()
+                .any(|x| ext.eq_ignore_ascii_case(x))
+                && accepts_ext(exts, ext)
+        }
         None => false,
     }
 }
 
 impl Plan {
-    /// Same rules as `Stage::add_source` / `Stage::add_zip`: a zip the core cannot read gives up to `max_per_zip`
-    /// accepted entries (more than [`MAX_MEDIA_IMAGES`] in a set is an error).
+    /// Same rules as `Stage::add_source` (design v3.0 §3.5.1, direct sources excluded by the caller): a zip
+    /// holding images the core accepts gives up to `max_per_zip` of them (more than [`MAX_MEDIA_IMAGES`] in a set
+    /// is an error); a zip without any is copied whole when the core reads zips, refused otherwise; any other
+    /// file is copied whole, at most `max_copy` bytes.
     pub fn new(
         paths: &[PathBuf],
         exts: &[String],
         limits: Limits,
         max_per_zip: usize,
+        max_copy: u64,
     ) -> Result<Self, RuntimeError> {
         let mut plan = Self {
             sources: Vec::new(),
@@ -198,47 +207,47 @@ impl Plan {
         };
         for path in paths {
             let src = plan.sources.len();
-            if has_ext(path, "zip") && !accepts_ext(exts, "zip") {
-                let mut archive = content::open_archive(path, limits)?;
+            if has_ext(path, "zip") {
                 let room = MAX_MEDIA_IMAGES
                     .saturating_sub(plan.items.len())
                     .min(max_per_zip);
-                let entries = content::accepted_entries(
-                    &mut archive,
-                    path,
-                    |name| zip_entry_accepted(exts, name),
-                    // One more than allowed, to report an oversized set instead of silently dropping disks.
-                    room.saturating_add(1),
-                )?;
-                if entries.is_empty() {
-                    return Err(RuntimeError::NoContentInArchive(path.clone()));
+                match zip_images(path, exts, limits, room) {
+                    Ok(Some((archive, entries))) => {
+                        if entries.len() > room && max_per_zip == MAX_MEDIA_IMAGES {
+                            return Err(too_many());
+                        }
+                        plan.sources
+                            .push(Source::open(path, limits.max_archive_size)?);
+                        plan.archives.push(Some(archive));
+                        plan.items
+                            .extend(entries.into_iter().take(room).map(|entry| PlanItem {
+                                src,
+                                entry: Some(entry),
+                            }));
+                        continue;
+                    }
+                    Ok(None) if accepts_ext(exts, "zip") => {}
+                    Ok(None) => return Err(RuntimeError::NoContentInArchive(path.clone())),
+                    Err(e) if accepts_ext(exts, "zip") => {
+                        tracing::warn!("{e}: copied whole, the core reads zips");
+                    }
+                    Err(e) => return Err(e),
                 }
-                if entries.len() > room && max_per_zip == MAX_MEDIA_IMAGES {
-                    return Err(too_many());
-                }
-                plan.sources
-                    .push(Source::open(path, limits.max_archive_size)?);
-                plan.archives.push(Some(archive));
-                plan.items
-                    .extend(entries.into_iter().take(room).map(|entry| PlanItem {
-                        src,
-                        entry: Some(entry),
-                    }));
-            } else {
-                if plan.items.len() >= MAX_MEDIA_IMAGES {
-                    return Err(too_many());
-                }
-                let source = Source::open(path, limits.max_size)?;
-                if source.size > limits.max_size {
-                    return Err(RuntimeError::ContentTooLarge {
-                        path: path.clone(),
-                        size: source.size,
-                    });
-                }
-                plan.sources.push(source);
-                plan.archives.push(None);
-                plan.items.push(PlanItem { src, entry: None });
             }
+            if plan.items.len() >= MAX_MEDIA_IMAGES {
+                return Err(too_many());
+            }
+            let source = Source::open(path, max_copy)?;
+            if source.size > max_copy {
+                return Err(RuntimeError::InvalidMediaSet(format!(
+                    "{} is too large to be copied ({} bytes, at most {max_copy})",
+                    path.display(),
+                    source.size
+                )));
+            }
+            plan.sources.push(source);
+            plan.archives.push(None);
+            plan.items.push(PlanItem { src, entry: None });
         }
         Ok(plan)
     }
