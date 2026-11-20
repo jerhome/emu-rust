@@ -796,7 +796,12 @@ mod tests {
                     if p.is_dir() {
                         walk(&p, root, out);
                     } else {
-                        out.push(p.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+                        out.push(
+                            p.strip_prefix(root)
+                                .unwrap()
+                                .to_string_lossy()
+                                .replace('\\', "/"),
+                        );
                     }
                 }
             }
