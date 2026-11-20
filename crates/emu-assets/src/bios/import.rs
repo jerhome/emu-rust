@@ -13,19 +13,35 @@
 //! - `[imported."<name>"]` (`source` = original file name without its folder, `md5`, `verified`) is recorded in
 //!   `system/.emu-rust-bios.toml`; the original path is never logged above `debug`.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::{BiosError, FreeBios, ReplacePolicy};
-use crate::cores::{CoreId, CoreInfo, KnownFirmware};
+use md5::{Digest, Md5};
+use sha1::Sha1;
 
-/// Largest file accepted by the import (largest known BIOS: 4 MiB; Amiga extended ROMs: 1 MiB).
+use super::{
+    BiosError, FreeBios, ImportedEntry, ReplacePolicy, backup_file, hash_file, hex,
+    is_temporary_name, read_manifest, unix_now, update_manifest,
+};
+use crate::cores::{CoreId, CoreInfo, KnownFirmware, is_safe_relative_path};
+
+/// Largest file accepted by the import (largest known BIOS: 4 MiB; Amiga extended ROMs: 1 MiB). Distinct from
+/// `cores::MAX_FIRMWARE_SIZE` (64 MiB), the bound of the 1.0 check of files already in the system directory.
 pub const MAX_FIRMWARE_BYTES: u64 = 16 << 20;
+
+/// Header of the Amiga Forever encrypted ROMs (decrypted by the core with `rom.key`).
+const AMIGA_FOREVER_HEADER: &[u8; 11] = b"AMIROMTYPE1";
+/// Target names: bytes, and folder depth (`.info` sub-folders are one or two levels deep).
+const MAX_TARGET_NAME_BYTES: usize = 255;
+const MAX_TARGET_DEPTH: usize = 4;
 
 /// md5 → expected file names, from `data/firmware.toml`, the `.info` of the installed cores (md5 of their
 /// `notes`, read at run time and never copied into our data: design §3.5.6) and the free BIOS catalogue.
 #[derive(Debug, Clone, Default)]
 pub struct FirmwareCatalogue {
-    by_md5: std::collections::BTreeMap<[u8; 16], Vec<ExpectedFirmware>>,
+    by_md5: BTreeMap<[u8; 16], Vec<ExpectedFirmware>>,
     expected: Vec<ExpectedFirmware>,
 }
 
@@ -42,15 +58,91 @@ pub struct ExpectedFirmware {
 }
 
 impl FirmwareCatalogue {
+    /// Names that would be refused by [`import_firmware`] are left out. The first source naming a file gives its
+    /// label (a `.info` description is better than the bare name); `system` and `size` are filled by any source.
     pub fn build(known: &KnownFirmware, infos: &[(CoreId, CoreInfo)], free: &[FreeBios]) -> Self {
-        let _ = (known, infos, free);
-        todo!("A3: design v3.0 §3.3")
+        let mut expected: BTreeMap<String, ExpectedFirmware> = BTreeMap::new();
+        let mut names_by_md5: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
+        let mut add = |name: &str,
+                       label: &str,
+                       system: Option<&str>,
+                       size: Option<u64>,
+                       md5s: &[[u8; 16]]| {
+            if validate_target_name(name).is_err() {
+                return;
+            }
+            let entry = expected
+                .entry(name.to_owned())
+                .or_insert_with(|| ExpectedFirmware {
+                    name: name.to_owned(),
+                    label: if label.trim().is_empty() { name } else { label }.to_owned(),
+                    system: None,
+                    size: None,
+                });
+            if entry.system.is_none() {
+                entry.system = system.map(str::to_owned);
+            }
+            if entry.size.is_none() {
+                entry.size = size;
+            }
+            for md5 in md5s {
+                names_by_md5
+                    .entry(*md5)
+                    .or_default()
+                    .insert(name.to_owned());
+            }
+        };
+        for (_, info) in infos {
+            let system = info.databases.first().map(String::as_str);
+            for spec in &info.firmware {
+                let md5: Vec<[u8; 16]> = spec.md5.into_iter().collect();
+                add(
+                    &spec.path,
+                    &spec.description,
+                    system,
+                    known.size_for(&spec.path),
+                    &md5,
+                );
+            }
+        }
+        for path in known.paths() {
+            add(path, path, None, known.size_for(path), known.md5_for(path));
+        }
+        for bios in free {
+            for variant in &bios.variants {
+                add(
+                    &bios.install_as,
+                    &bios.name,
+                    Some(&bios.system),
+                    None,
+                    &[variant.md5],
+                );
+            }
+        }
+        let by_md5 = names_by_md5
+            .into_iter()
+            .map(|(md5, names)| {
+                let targets = names
+                    .iter()
+                    .filter_map(|n| expected.get(n).cloned())
+                    .collect();
+                (md5, targets)
+            })
+            .collect();
+        Self {
+            by_md5,
+            expected: expected.into_values().collect(),
+        }
     }
 
     /// Every expected file, sorted by name without duplicates: choices offered for an unverified import.
     pub fn expected_names(&self) -> Vec<ExpectedFirmware> {
-        let _ = (&self.by_md5, &self.expected);
-        todo!("A3: design v3.0 §3.3")
+        self.expected.clone()
+    }
+
+    /// Expected files for a md5 (empty when unknown), sorted by name.
+    pub fn targets_for(&self, md5: &[u8; 16]) -> &[ExpectedFirmware] {
+        self.by_md5.get(md5).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -97,6 +189,9 @@ pub struct ImportOutcome {
     pub installed: PathBuf,
     /// `<name>.user-<unix>` when a user file was moved aside.
     pub backup: Option<PathBuf>,
+    /// md5 recomputed on the installed copy: the caller compares it with the one of [`identify_firmware`] (a
+    /// source changed between the two calls then shows; a change during the copy is refused).
+    pub md5: [u8; 16],
 }
 
 /// Hashes `src` (md5 for the lookup, sha1 for display only) and looks it up. `BiosError::TooLarge` beyond
@@ -105,8 +200,38 @@ pub fn identify_firmware(
     src: &Path,
     catalogue: &FirmwareCatalogue,
 ) -> Result<Identification, BiosError> {
-    let _ = (src, catalogue);
-    todo!("A3: design v3.0 §3.3")
+    let (file, _) = open_source(src)?;
+    let mut header = Vec::with_capacity(AMIGA_FOREVER_HEADER.len());
+    let mut md5 = Md5::new();
+    let mut sha1 = Sha1::new();
+    let size = stream(file, src, |chunk| {
+        if header.len() < AMIGA_FOREVER_HEADER.len() {
+            let take = (AMIGA_FOREVER_HEADER.len() - header.len()).min(chunk.len());
+            header.extend_from_slice(&chunk[..take]);
+        }
+        md5.update(chunk);
+        sha1.update(chunk);
+        Ok(())
+    })?;
+    if header == AMIGA_FOREVER_HEADER {
+        return Ok(Identification::AmigaForeverEncrypted {
+            size,
+            suggested: amiga_forever_name(src),
+        });
+    }
+    let md5: [u8; 16] = md5.finalize().into();
+    let sha1: [u8; 20] = sha1.finalize().into();
+    let targets = catalogue.targets_for(&md5);
+    Ok(if targets.is_empty() {
+        Identification::Unknown { md5, sha1, size }
+    } else {
+        Identification::Known {
+            md5,
+            sha1,
+            size,
+            targets: targets.to_vec(),
+        }
+    })
 }
 
 /// State of `name` in `system_dir`, compared with the md5 of the file about to be imported
@@ -116,8 +241,31 @@ pub fn target_state(
     name: &str,
     md5: &[u8; 16],
 ) -> Result<TargetState, BiosError> {
-    let _ = (system_dir, name, md5);
-    todo!("A3: design v3.0 §3.3")
+    validate_target_name(name)?;
+    let path = target_path(system_dir, name);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(TargetState::Absent),
+        Err(source) => return Err(BiosError::Io { path, source }),
+    }
+    // A link (or a dangling one, a folder, a huge file) is read through: anything unreadable is an error, never
+    // `Absent`, so that it is never replaced silently.
+    let (sha256, current) = hash_file(&path).map_err(|source| BiosError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if current == *md5 {
+        return Ok(TargetState::Same);
+    }
+    let ours = read_manifest(system_dir)
+        .installed
+        .iter()
+        .any(|e| e.file == name && e.sha256 == hex(&sha256));
+    Ok(if ours {
+        TargetState::FreeInstalled
+    } else {
+        TargetState::Other { md5: current }
+    })
 }
 
 /// Copies `src` to `<system_dir>/<name>` (module rules above). `verified = false` records an import the user
@@ -129,6 +277,650 @@ pub fn import_firmware(
     policy: ReplacePolicy,
     verified: bool,
 ) -> Result<ImportOutcome, BiosError> {
-    let _ = (system_dir, src, name, policy, verified);
-    todo!("A3: design v3.0 §3.3")
+    validate_target_name(name)?;
+    fs::create_dir_all(system_dir).map_err(|source| BiosError::Io {
+        path: system_dir.to_path_buf(),
+        source,
+    })?;
+    let parent = prepare_parent(system_dir, name)?;
+    let target = target_path(system_dir, name);
+    let file_name = name.rsplit('/').next().unwrap_or(name);
+    let io_err = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| BiosError::Io { path, source }
+    };
+
+    let (file, before) = open_source(src)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(&format!(".{file_name}.tmp-"))
+        .tempfile_in(&parent)
+        .map_err(io_err(&parent))?;
+    let mut streamed = Md5::new();
+    let copied = {
+        let out = temp.as_file_mut();
+        stream(file, src, |chunk| {
+            streamed.update(chunk);
+            out.write_all(chunk)
+        })?
+    };
+    temp.as_file_mut().flush().map_err(io_err(&target))?;
+    temp.as_file().sync_all().map_err(io_err(&target))?;
+    // Changed while being copied (size or modification time): the bytes may be a mix of two files.
+    let after = fs::metadata(src).map_err(source_err(src))?;
+    if after.len() != copied
+        || after.len() != before.len()
+        || after.modified().ok() != before.modified().ok()
+    {
+        return Err(source_err(src)(io::Error::other(
+            "fichier source modifié pendant la copie",
+        )));
+    }
+    // Hash recomputed on the copy itself: what is recorded is what is installed.
+    let md5 = {
+        let mut hasher = Md5::new();
+        let copy = temp.reopen().map_err(io_err(&target))?;
+        let read = io::copy(&mut copy.take(MAX_FIRMWARE_BYTES + 1), &mut hasher)
+            .map_err(io_err(&target))?;
+        let md5: [u8; 16] = hasher.finalize().into();
+        if read != copied || md5 != <[u8; 16]>::from(streamed.finalize()) {
+            return Err(io_err(&target)(io::Error::other("copie altérée")));
+        }
+        md5
+    };
+
+    let mut backup = None;
+    let replaces_free = match target_state(system_dir, name, &md5)? {
+        TargetState::Same => {
+            tracing::info!("BIOS déjà installé : {name}");
+            return Ok(ImportOutcome {
+                installed: target,
+                backup: None,
+                md5,
+            });
+        }
+        TargetState::Absent => false,
+        TargetState::FreeInstalled => true,
+        TargetState::Other { .. } => match policy {
+            ReplacePolicy::Refuse => return Err(BiosError::TargetExists(name.to_owned())),
+            ReplacePolicy::BackupAndReplace => {
+                backup = Some(backup_file(&target)?);
+                false
+            }
+        },
+    };
+    temp.persist(&target).map_err(|e| BiosError::Io {
+        path: target.clone(),
+        source: e.error,
+    })?;
+    crate::http::sync_dir(&parent);
+    tracing::info!(
+        "BIOS importé : {name} ({})",
+        if verified {
+            "vérifié"
+        } else {
+            "non vérifié"
+        }
+    );
+    tracing::debug!("source de l'import : {}", src.display());
+
+    let entry = ImportedEntry {
+        source: src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        md5: hex(&md5),
+        verified,
+        imported_unix: unix_now(),
+    };
+    // The file is in place: a manifest that cannot be written only loses the record. A replaced free BIOS whose
+    // entry stays reads `Modified`, protected like a user file (the safe side).
+    if let Err(e) = update_manifest(system_dir, |m| {
+        if replaces_free {
+            m.installed.retain(|e| e.file != name);
+        }
+        m.imported.insert(name.to_owned(), entry);
+    }) {
+        tracing::warn!("manifeste des BIOS non mis à jour : {e}");
+    }
+    Ok(ImportOutcome {
+        installed: target,
+        backup,
+        md5,
+    })
+}
+
+/// Rules of the module doc. `/` is accepted (sub-folders declared by `.info` files, `vice/JiffyDOS_C64.bin`);
+/// every component must be safe on every target, and the file name must not be hidden (manifest, temporary
+/// files).
+fn validate_target_name(name: &str) -> Result<(), BiosError> {
+    let invalid = || BiosError::InvalidTargetName(name.to_owned());
+    if name.len() > MAX_TARGET_NAME_BYTES
+        || !is_safe_relative_path(name)
+        || name.split('/').count() > MAX_TARGET_DEPTH
+    {
+        return Err(invalid());
+    }
+    let file_name = name.rsplit('/').next().unwrap_or(name);
+    if file_name.starts_with('.') || is_temporary_name(file_name) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn target_path(system_dir: &Path, name: &str) -> PathBuf {
+    name.split('/')
+        .fold(system_dir.to_path_buf(), |p, c| p.join(c))
+}
+
+/// Creates the sub-folders of `name` inside `system_dir`; an existing component must be a real folder (a link
+/// could lead outside the system directory).
+fn prepare_parent(system_dir: &Path, name: &str) -> Result<PathBuf, BiosError> {
+    let mut dir = system_dir.to_path_buf();
+    let components: Vec<&str> = name.split('/').collect();
+    for component in &components[..components.len() - 1] {
+        dir.push(component);
+        match fs::symlink_metadata(&dir) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Err(BiosError::InvalidTargetName(name.to_owned())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&dir).map_err(|source| BiosError::Io {
+                    path: dir.clone(),
+                    source,
+                })?;
+            }
+            Err(source) => return Err(BiosError::Io { path: dir, source }),
+        }
+    }
+    Ok(dir)
+}
+
+/// Errors about the source name only its file name (the user's folders stay out of messages and logs).
+fn source_err(src: &Path) -> impl Fn(io::Error) -> BiosError {
+    let path = PathBuf::from(src.file_name().unwrap_or(src.as_os_str()));
+    move |source| BiosError::Io {
+        path: path.clone(),
+        source,
+    }
+}
+
+/// Opens the source, links followed (users link BIOS collections), regular file only, size checked first.
+fn open_source(src: &Path) -> Result<(File, fs::Metadata), BiosError> {
+    let meta = fs::metadata(src).map_err(source_err(src))?;
+    if !meta.is_file() {
+        return Err(source_err(src)(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "pas un fichier",
+        )));
+    }
+    if meta.len() > MAX_FIRMWARE_BYTES {
+        return Err(BiosError::TooLarge(meta.len()));
+    }
+    let file = File::open(src).map_err(source_err(src))?;
+    Ok((file, meta))
+}
+
+/// Reads `file` by chunks, never beyond [`MAX_FIRMWARE_BYTES`] (the file may grow after `open_source`).
+fn stream(
+    file: File,
+    src: &Path,
+    mut each: impl FnMut(&[u8]) -> io::Result<()>,
+) -> Result<u64, BiosError> {
+    let mut reader = file.take(MAX_FIRMWARE_BYTES + 1);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(source_err(src)(e)),
+        };
+        total += n as u64;
+        if total > MAX_FIRMWARE_BYTES {
+            return Err(BiosError::TooLarge(total));
+        }
+        each(&buf[..n]).map_err(source_err(src))?;
+    }
+    Ok(total)
+}
+
+/// Amiga Forever names (`amiga-os-130.rom`), lower-cased, when the source carries one.
+fn amiga_forever_name(src: &Path) -> Option<String> {
+    let name = src.file_name()?.to_str()?.to_ascii_lowercase();
+    (name.starts_with("amiga-os-") && name.ends_with(".rom") && validate_target_name(&name).is_ok())
+        .then_some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Manifest, ManifestEntry, write_manifest};
+    use super::*;
+    use crate::cores::parse_info;
+    use sha2::Sha256;
+
+    fn md5_of(data: &[u8]) -> [u8; 16] {
+        Md5::digest(data).into()
+    }
+
+    /// Catalogue of fake files (never a real ROM): `ks13` expected as `kick.A500` and `sub/kick.A500`.
+    fn catalogue() -> FirmwareCatalogue {
+        let known = KnownFirmware::default();
+        let text = format!(
+            "database = \"Commodore - Amiga\"\nfirmware0_path = \"kick.A500\"\nfirmware0_desc = \"Kickstart 1.3\"\n\
+             firmware1_path = \"sub/kick.A500\"\nfirmware2_path = \"other.rom\"\n\
+             notes = \"(!) kick.A500 (md5): {0}|(!) sub/kick.A500 (md5): {0}\"\n",
+            hex(&md5_of(b"ks13"))
+        );
+        let info = parse_info(CoreId::new("puae").unwrap(), &text).unwrap();
+        FirmwareCatalogue::build(&known, &[(info.id.clone(), info)], &[])
+    }
+
+    fn write(dir: &Path, name: &str, data: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, data).unwrap();
+        path
+    }
+
+    fn imported(system: &Path) -> BTreeMap<String, ImportedEntry> {
+        read_manifest(system).imported
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn known_file_is_installed_under_every_name() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "amiga-os-130.bin", b"ks13");
+        let Identification::Known {
+            md5, size, targets, ..
+        } = identify_firmware(&src, &catalogue()).unwrap()
+        else {
+            panic!("not known")
+        };
+        assert_eq!(size, 4);
+        let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["kick.A500", "sub/kick.A500"]);
+        assert_eq!(targets[0].label, "Kickstart 1.3");
+        assert_eq!(targets[0].system.as_deref(), Some("Commodore - Amiga"));
+        for t in &targets {
+            assert_eq!(
+                target_state(system.path(), &t.name, &md5).unwrap(),
+                TargetState::Absent
+            );
+            let out =
+                import_firmware(system.path(), &src, &t.name, ReplacePolicy::Refuse, true).unwrap();
+            assert_eq!(out.md5, md5);
+            assert_eq!(out.backup, None);
+            assert_eq!(fs::read(&out.installed).unwrap(), b"ks13");
+            assert_eq!(
+                target_state(system.path(), &t.name, &md5).unwrap(),
+                TargetState::Same
+            );
+        }
+        assert_eq!(
+            fs::read(system.path().join("sub").join("kick.A500")).unwrap(),
+            b"ks13"
+        );
+        let record = &imported(system.path())["kick.A500"];
+        assert_eq!(record.source, "amiga-os-130.bin");
+        assert_eq!(record.md5, hex(&md5));
+        assert!(record.verified);
+        // Same content again: nothing written, Ok.
+        let out = import_firmware(
+            system.path(),
+            &src,
+            "kick.A500",
+            ReplacePolicy::Refuse,
+            true,
+        )
+        .unwrap();
+        assert_eq!(out.backup, None);
+        assert_eq!(
+            listing(system.path()),
+            [".emu-rust-bios.toml", "kick.A500", "sub"]
+        );
+    }
+
+    #[test]
+    fn other_file_is_never_overwritten_silently() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "ks.rom", b"ks13");
+        write(system.path(), "kick.A500", b"mine");
+        assert_eq!(
+            target_state(system.path(), "kick.A500", &md5_of(b"ks13")).unwrap(),
+            TargetState::Other {
+                md5: md5_of(b"mine")
+            }
+        );
+        let err = import_firmware(
+            system.path(),
+            &src,
+            "kick.A500",
+            ReplacePolicy::Refuse,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, BiosError::TargetExists(ref n) if n == "kick.A500"));
+        assert_eq!(
+            listing(system.path()),
+            ["kick.A500"],
+            "nothing written, no temporary left"
+        );
+        assert_eq!(fs::read(system.path().join("kick.A500")).unwrap(), b"mine");
+
+        let out = import_firmware(
+            system.path(),
+            &src,
+            "kick.A500",
+            ReplacePolicy::BackupAndReplace,
+            true,
+        )
+        .unwrap();
+        let backup = out.backup.unwrap();
+        let backup_name = backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(backup_name.starts_with("kick.A500.user-"), "{backup_name}");
+        assert_eq!(backup.parent(), Some(system.path()));
+        assert_eq!(fs::read(&backup).unwrap(), b"mine");
+        assert_eq!(fs::read(system.path().join("kick.A500")).unwrap(), b"ks13");
+        // An imported file is a user file: replacing it again needs consent.
+        let src2 = write(src_dir.path(), "ks2.rom", b"ks20");
+        assert!(matches!(
+            import_firmware(
+                system.path(),
+                &src2,
+                "kick.A500",
+                ReplacePolicy::Refuse,
+                true
+            ),
+            Err(BiosError::TargetExists(_))
+        ));
+    }
+
+    #[test]
+    fn free_bios_installed_by_us_is_replaced_without_backup() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let emutos = b"emutos image";
+        write(system.path(), "tos.img", emutos);
+        let entry = ManifestEntry {
+            file: "tos.img".into(),
+            bios: "emutos".into(),
+            variant: "192fr".into(),
+            version: "1.4".into(),
+            label: "EmuTOS".into(),
+            sha256: hex(&Sha256::digest(emutos)),
+            md5: hex(&md5_of(emutos)),
+            installed_unix: 1,
+        };
+        write_manifest(
+            system.path(),
+            &Manifest {
+                installed: vec![entry],
+                ..Manifest::default()
+            },
+        )
+        .unwrap();
+        let src = write(src_dir.path(), "TOS 1.62.img", b"tos 1.62");
+        assert_eq!(
+            target_state(system.path(), "tos.img", &md5_of(b"tos 1.62")).unwrap(),
+            TargetState::FreeInstalled
+        );
+        let out =
+            import_firmware(system.path(), &src, "tos.img", ReplacePolicy::Refuse, true).unwrap();
+        assert_eq!(out.backup, None);
+        assert_eq!(
+            fs::read(system.path().join("tos.img")).unwrap(),
+            b"tos 1.62"
+        );
+        let manifest = read_manifest(system.path());
+        assert!(manifest.installed.is_empty(), "no longer ours");
+        assert_eq!(manifest.imported["tos.img"].source, "TOS 1.62.img");
+        // Modified since our install: protected like a user file.
+        write(system.path(), "tos.img", b"edited");
+        assert!(matches!(
+            target_state(system.path(), "tos.img", &md5_of(b"x")).unwrap(),
+            TargetState::Other { .. }
+        ));
+    }
+
+    #[test]
+    fn unknown_file_only_unverified() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "dump.bin", b"something");
+        let id = identify_firmware(&src, &catalogue()).unwrap();
+        assert!(matches!(id, Identification::Unknown { size: 9, .. }));
+        let Identification::Unknown { sha1, .. } = id else {
+            unreachable!()
+        };
+        assert_eq!(<[u8; 20]>::from(Sha1::digest(b"something")), sha1);
+        let names: Vec<String> = catalogue()
+            .expected_names()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["kick.A500", "other.rom", "sub/kick.A500"]);
+        import_firmware(
+            system.path(),
+            &src,
+            "other.rom",
+            ReplacePolicy::Refuse,
+            false,
+        )
+        .unwrap();
+        let record = &imported(system.path())["other.rom"];
+        assert!(!record.verified);
+        assert_eq!(record.md5, hex(&md5_of(b"something")));
+    }
+
+    #[test]
+    fn amiga_forever_encrypted_rom() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = b"AMIROMTYPE1".to_vec();
+        data.extend_from_slice(&[7u8; 64]);
+        let src = write(dir.path(), "Amiga-OS-130.ROM", &data);
+        assert_eq!(
+            identify_firmware(&src, &catalogue()).unwrap(),
+            Identification::AmigaForeverEncrypted {
+                size: 75,
+                suggested: Some("amiga-os-130.rom".into())
+            }
+        );
+        let src = write(dir.path(), "kick.rom", &data);
+        assert!(matches!(
+            identify_firmware(&src, &catalogue()).unwrap(),
+            Identification::AmigaForeverEncrypted {
+                suggested: None,
+                ..
+            }
+        ));
+        // Header shorter than the magic: an ordinary unknown file.
+        let src = write(dir.path(), "short.rom", b"AMIROM");
+        assert!(matches!(
+            identify_firmware(&src, &catalogue()).unwrap(),
+            Identification::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn hostile_target_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        let src = write(dir.path(), "x.rom", b"x");
+        for name in [
+            "",
+            "../x",
+            "/abs",
+            "C:\\x",
+            "C:x",
+            "a\\b",
+            "a/../b",
+            "./x",
+            "a//b",
+            "x.",
+            "x ",
+            "NUL",
+            "com1.rom",
+            ".emu-rust-bios.toml",
+            ".hidden",
+            ".kick.A500.tmp-abcdef",
+            "a/b/c/d/e",
+        ] {
+            assert!(
+                matches!(
+                    import_firmware(&system, &src, name, ReplacePolicy::BackupAndReplace, false),
+                    Err(BiosError::InvalidTargetName(_))
+                ),
+                "{name:?}"
+            );
+            assert!(matches!(
+                target_state(&system, name, &[0; 16]),
+                Err(BiosError::InvalidTargetName(_))
+            ));
+        }
+        let long = "a".repeat(256);
+        assert!(matches!(
+            import_firmware(&system, &src, &long, ReplacePolicy::Refuse, false),
+            Err(BiosError::InvalidTargetName(_))
+        ));
+        assert_eq!(
+            listing(dir.path()),
+            ["x.rom"],
+            "nothing created, not even the system directory"
+        );
+    }
+
+    #[test]
+    fn size_limit_and_source_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        let big = dir.path().join("big.bin");
+        let file = File::create(&big).unwrap();
+        file.set_len(MAX_FIRMWARE_BYTES + 1).unwrap();
+        assert!(matches!(
+            identify_firmware(&big, &catalogue()),
+            Err(BiosError::TooLarge(n)) if n == MAX_FIRMWARE_BYTES + 1
+        ));
+        assert!(matches!(
+            import_firmware(&system, &big, "big.bin", ReplacePolicy::Refuse, false),
+            Err(BiosError::TooLarge(_))
+        ));
+        // Exactly at the limit: accepted.
+        file.set_len(MAX_FIRMWARE_BYTES).unwrap();
+        assert!(identify_firmware(&big, &catalogue()).is_ok());
+        // A folder is not a BIOS; errors name the file only, never the user's folders.
+        let err = identify_firmware(dir.path(), &catalogue()).unwrap_err();
+        assert!(
+            !err.to_string().contains(&*dir.path().to_string_lossy()),
+            "{err}"
+        );
+        let err = identify_firmware(&dir.path().join("missing.rom"), &catalogue()).unwrap_err();
+        assert!(
+            !err.to_string().contains(&*dir.path().to_string_lossy()),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        fs::create_dir(&system).unwrap();
+        let real = write(dir.path(), "real.rom", b"ks13");
+        // A link as source is followed (BIOS collections), the content is copied, not the link.
+        let link = dir.path().join("link.rom");
+        symlink(&real, &link).unwrap();
+        assert!(matches!(
+            identify_firmware(&link, &catalogue()).unwrap(),
+            Identification::Known { .. }
+        ));
+        let out =
+            import_firmware(&system, &link, "kick.A500", ReplacePolicy::Refuse, true).unwrap();
+        assert!(
+            !fs::symlink_metadata(&out.installed)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(imported(&system)["kick.A500"].source, "link.rom");
+        // A link to a folder is refused.
+        let to_dir = dir.path().join("dir.rom");
+        symlink(dir.path(), &to_dir).unwrap();
+        assert!(matches!(
+            identify_firmware(&to_dir, &catalogue()),
+            Err(BiosError::Io { .. })
+        ));
+        // A sub-folder of the system directory that is a link (possibly outside): refused, nothing written.
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), system.join("sub")).unwrap();
+        assert!(matches!(
+            import_firmware(&system, &real, "sub/kick.A500", ReplacePolicy::Refuse, true),
+            Err(BiosError::InvalidTargetName(_))
+        ));
+        assert!(listing(outside.path()).is_empty());
+        // A dangling link at the target: an error, never `Absent`.
+        symlink(dir.path().join("gone"), system.join("kick.A1200")).unwrap();
+        assert!(matches!(
+            target_state(&system, "kick.A1200", &md5_of(b"ks13")),
+            Err(BiosError::Io { .. })
+        ));
+    }
+
+    #[test]
+    fn hash_is_taken_from_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        let src = write(dir.path(), "ks.rom", b"ks13");
+        let Identification::Known { md5, .. } = identify_firmware(&src, &catalogue()).unwrap()
+        else {
+            panic!()
+        };
+        // The source changes between identification and import: the outcome tells it, the record is the truth.
+        write(dir.path(), "ks.rom", b"changed");
+        let out = import_firmware(&system, &src, "kick.A500", ReplacePolicy::Refuse, true).unwrap();
+        assert_ne!(out.md5, md5);
+        assert_eq!(out.md5, md5_of(b"changed"));
+        assert_eq!(imported(&system)["kick.A500"].md5, hex(&md5_of(b"changed")));
+    }
+
+    #[test]
+    fn builtin_catalogue() {
+        let known = KnownFirmware::builtin();
+        let free = super::super::builtin_free_bios();
+        let catalogue = FirmwareCatalogue::build(&known, &[], &free);
+        let names = catalogue.expected_names();
+        assert!(
+            names.windows(2).all(|w| w[0].name < w[1].name),
+            "sorted, no duplicates"
+        );
+        let kick = names.iter().find(|e| e.name == "kick34005.A500").unwrap();
+        assert_eq!(kick.size, Some(262_144));
+        let kick31 = names.iter().find(|e| e.name == "kick40068.A1200").unwrap();
+        assert_eq!(kick31.size, Some(524_288));
+        let targets = catalogue
+            .targets_for(&crate::cores::KnownFirmware::builtin().md5_for("kick34005.A500")[0]);
+        assert_eq!(targets.len(), 1);
+        // Free BIOS images are recognised under their install name.
+        let emutos = &free[0];
+        let t = catalogue.targets_for(&emutos.variants[0].md5);
+        assert!(
+            t.iter()
+                .any(|e| e.name == "tos.img" && e.system.as_deref() == Some("Atari - ST"))
+        );
+        // Same md5 for several names (Game Boy boot ROM): every name is a target.
+        let gb = catalogue.targets_for(&known.md5_for("gb_bios.bin")[0]);
+        let gb: Vec<&str> = gb.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(gb, ["dmg_boot.bin", "dmg_rom.bin", "gb_bios.bin"]);
+    }
 }

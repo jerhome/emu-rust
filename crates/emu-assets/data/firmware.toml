@@ -1,21 +1,53 @@
-# Reference md5 of firmware (BIOS) files used by the 1.0 cores, for files whose `.info` gives no hash
-# (ADR 0013 §8). Hashes only: nothing is ever downloaded (ADR 0005); users provide the files in `system/`.
+# Reference md5 of firmware (BIOS) files, for files whose `.info` gives no hash (ADR 0013 §8) and for the BIOS
+# import (ADR 0017 §3). Hashes only: nothing is ever downloaded (ADR 0005); users provide the files in `system/`.
 # Source: libretro-database `dat/System.dat` (v1.19.0, commit 2a8de0276fd7d3095f2501c3de3799a14c37e910,
-# 2026-10-24), sections listed below. Keys: path relative to the system directory, as in `.info` files.
+# 2026-10-24; file SHA-256 8d66d507fae3b4e005abed2e19c221e249fe4297ae40425947b363c8610e73b3), sections listed
+# below; nothing else (md5 found only in a core's `.info` or README are read from the installed `.info` at run
+# time, never copied here: design v3.0 §3.5.6). Keys: path relative to the system directory, as in `.info` files.
 # License: libretro-database is licensed CC-BY-SA-4.0 (LICENSE at the commit above,
 # https://github.com/libretro/libretro-database). The entries below are derived from it and are distributed under
 # the same license, with attribution to the libretro-database contributors.
-# Several md5 per path are allowed (regional variants).
+# Entry forms: `"name" = ["md5", …]` (several md5 = regional variants) or `"name" = { md5 = "…" | ["…", …],
+# size = <bytes> }` (`size` optional: quick reject at import and display; the md5 stays the only verification).
+# Sections added in 3.0 (one pass for 3.0 to 6.0, inert until a core asks for them): Atari - ST, Commodore -
+# Amiga, Commodore - C128 (JiffyDOS files only), DOS (MT-32 / CM-32L ROMs only, not the BASS libraries);
+# Sega - Mega CD - Sega CD gained its sizes. PlayStation and 3DO (7.0) are not added yet.
 
 [firmware]
+# Atari - ST
+"tos.img" = { md5 = "c1c57ce48e8ee4135885cee9e63a68a2", size = 196608 }
+# Commodore - Amiga
+"kick33180.A500" = { md5 = "85ad74194e87c08904327de1a9443b7a", size = 262144 }
+"kick34005.CDTV" = { md5 = "89da1838a24460e4b93f4f0c5d92d48d", size = 262144 }
+"kick40060.CD32" = { md5 = "5f8924d013dd57a89cf349f4cdedc6b1", size = 524288 }
+"kick34005.A500" = { md5 = "82a21c1890cae844b3df741f2762d48d", size = 262144 }
+"kick40063.A600" = { md5 = "e40a5dfb3d017ba8779faba30cbd1c8e", size = 524288 }
+"kick40068.A1200" = { md5 = "646773759326fbac3b2311fd8c8793ee", size = 524288 }
+"kick37175.A500" = { md5 = "dc10d7bdd1b6f450773dfb558477c230", size = 524288 }
+"kick37350.A600" = { md5 = "465646c9b6729f77eea5314d1f057951", size = 524288 }
+"kick39106.A1200" = { md5 = "b7cc148386aa631136f510cd29e42fc3", size = 524288 }
+"kick39106.A4000" = { md5 = "9b8bdd5a3fd32c2a5a6f5b1aefc799a5", size = 524288 }
+"kick40068.A4000" = { md5 = "9bdedde6a4f33555b4a270c8ca53297d", size = 524288 }
+"kick40060.CD32.ext" = { md5 = "bb72565701b1b6faece07d68ea5da639", size = 524288 }
+# Commodore - C128 (JiffyDOS only)
+"vice/JiffyDOS_1541-II.bin" = { md5 = "1b1e985ea5325a1f46eb7fd9681707bf", size = 16384 }
+"vice/JiffyDOS_1571_repl310654.bin" = { md5 = "41c6cc528e9515ffd0ed9b180f8467c0", size = 32768 }
+"vice/JiffyDOS_1581.bin" = { md5 = "20b6885c6dc2d42c38754a365b043d71", size = 32768 }
+"vice/JiffyDOS_C128.bin" = { md5 = "cbbd1bbcb5e4fd8046b6030ab71fc021", size = 16384 }
+"vice/JiffyDOS_C64.bin" = { md5 = "be09394f0576cf81fa8bacf634daf9a2", size = 8192 }
+# DOS (MT-32 / CM-32L only)
+"MT32_CONTROL.ROM" = { md5 = "5626206284b22c2734f3e9efefcd2675", size = 65536 }
+"MT32_PCM.ROM" = { md5 = "89e42e386e82e0cacb4a2704a03706ca", size = 524288 }
+"CM32L_CONTROL.ROM" = { md5 = "bfff32b6144c1d706109accb6e6b1113", size = 65536 }
+"CM32L_PCM.ROM" = { md5 = "08cdcfa0ed93e9cb16afa76e6ac5f0a4", size = 1048576 }
 # Nintendo - Famicom Disk System
 "disksys.rom" = ["ca30b50f880eb660a320674ed365ef7a"]
+# Nintendo - Game Boy Advance
+"gba_bios.bin" = ["a860e8c0b6d573d191e4ec7db1b1e4f6"]
 # Nintendo - Gameboy
 "dmg_boot.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
 "gb_bios.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
 "dmg_rom.bin" = ["32fbbd84168d3482956eb3c5051637f5"]
-# Nintendo - Game Boy Advance
-"gba_bios.bin" = ["a860e8c0b6d573d191e4ec7db1b1e4f6"]
 # Nintendo - Gameboy Color
 "cgb_boot.bin" = ["dbfce9db9deaa2567f6a84fde55f9680"]
 "gbc_bios.bin" = ["dbfce9db9deaa2567f6a84fde55f9680"]
@@ -48,9 +80,9 @@
 "bios_J.sms" = ["24a519c53f67b00640d0048ef7089105"]
 "bios_U.sms" = ["840481177270d5642a14ca71ee72844c"]
 # Sega - Mega CD - Sega CD
-"bios_CD_E.bin" = ["e66fa1dc5820d254611fdcdba0662372"]
-"bios_CD_J.bin" = ["278a9397d192149e84e820ac621a8edd"]
-"bios_CD_U.bin" = ["2efd74e3232ff260e371b99f84024f7f"]
+"bios_CD_E.bin" = { md5 = "e66fa1dc5820d254611fdcdba0662372", size = 131072 }
+"bios_CD_J.bin" = { md5 = "278a9397d192149e84e820ac621a8edd", size = 131072 }
+"bios_CD_U.bin" = { md5 = "2efd74e3232ff260e371b99f84024f7f", size = 131072 }
 # Sega - Mega Drive - Genesis
 "areplay.bin" = ["a0028b3043f9d59ceeb03da5b073b30d"]
 "bios_MD.bin" = ["d3293ebaaa7f4eb2a6766b68a0fb4609"]

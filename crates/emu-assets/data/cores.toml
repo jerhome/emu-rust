@@ -26,14 +26,83 @@ cores = ["mesen", "nestopia", "fceumm"]           # GPLv3, GPLv2, GPLv2
 [systems."Atari - ST"]
 cores = ["hatari", "hatarib"]                     # GPLv2, GPLv2 (ADR 0015 §1)
 
+[systems."Commodore - Amiga"]
+cores = ["puae", "puae2021"]                      # GPLv2, GPLv2 (ADR 0017 §1); same order on every OS
+
 # Per-core frontend properties (ADR 0015 §1, optional table):
 # - media: "direct" (content paths handed over as is) or "working_copy" (the core writes into disk images:
 #   a copy under <data>/saves/<core_id>/ is handed over instead, the user's files are never modified).
 #   Default "direct".
 # - options: frontend defaults, applied over the core's own defaults and under the user's settings.
+# 3.0 keys (design docs/design/v3.0-amiga.md §3.3 and §3.5):
+# - media_direct: lower-case extensions handed over in place, never copied nor extracted (§3.5.1).
+# - game_saves: file-name patterns of the save files the core writes in saves/<core_id>/ (`{game}` = content
+#   name, at most one `*`, no separator), deleted by « Réinitialiser » (§3.5.3).
+# - builtin_firmware: ROMs compiled into the core (ADR 0005, 2026-11-21 amendment, « Builtin » rule): nothing
+#   expected in system/, nothing downloaded; `notice` is shown in the Cores screen and the release README.
+# - required_firmware."<system>": single pre-launch check (§3.5.5). `variant` = "model" | "region";
+#   `files` = variant -> file name in system/; `default` = key used for an unknown variant; `fallback` = core
+#   option that selects the ROM built into the core when the file is missing (requires builtin_firmware).
+# - recommended_on: ["linux" | "windows" | "macos"]: label shown next to this alternative in the core
+#   selector; the default order above never changes.
 [cores.hatari]
 media = "working_copy"                            # writes into the floppy images by default
 options = { hatari_vkbd = "disabled" }            # the frontend's virtual keyboard replaces it (pad X button)
 
 [cores.hatarib]
 media = "direct"                                  # writes modified floppies to saves/, never the original
+
+[cores.puae]
+media = "working_copy"                            # writes into the floppy images (puae_floppy_write_redirect off)
+media_direct = ["ipf", "lha"]                     # IPF read-only (capsimg), WHDLoad archives never written
+game_saves = ["{game}.save*.adf"]                 # #SAVEDISK: floppies created by the core
+builtin_firmware = { label = "AROS (intégré au core)", notice = "AROS — AROS Public License 1.1, fourni par le core puae." }
+options = { puae_mapper_select = "---", puae_mapper_mouse_toggle = "---", puae_physicalmouse = "enabled", puae_floppy_write_redirect = "disabled" }
+
+[cores.puae.required_firmware."Commodore - Amiga"]
+variant = "model"                                 # resolved puae_model (ADR 0017 §2)
+default = "A500"
+fallback = { option = "puae_kickstart", value = "aros" }
+
+# Kickstart expected per puae model preset (README of the core, ADR 0017 §Contexte).
+[cores.puae.required_firmware."Commodore - Amiga".files]
+A500OG = "kick34005.A500"
+A500 = "kick34005.A500"
+A500ECS = "kick34005.A500"
+A2000OG = "kick34005.A500"
+A500PLUS = "kick37175.A500"
+A600OG = "kick40063.A600"
+A600 = "kick40063.A600"
+A2000 = "kick40063.A600"
+A1200OG = "kick40068.A1200"
+A1200 = "kick40068.A1200"
+A4030 = "kick40068.A4000"
+A4040 = "kick40068.A4000"
+
+[cores.puae2021]
+media = "working_copy"                            # writes into the floppy images (puae_floppy_write_redirect off)
+media_direct = ["ipf", "lha"]                     # IPF read-only (capsimg), WHDLoad archives never written
+game_saves = ["{game}.save*.adf"]                 # #SAVEDISK: floppies created by the core
+builtin_firmware = { label = "AROS (intégré au core)", notice = "AROS — AROS Public License 1.1, fourni par le core puae2021." }
+recommended_on = ["macos"]                        # user decision of 2026-11-21: « recommandé sur Mac »
+options = { puae_mapper_select = "---", puae_mapper_mouse_toggle = "---", puae_physicalmouse = "enabled", puae_floppy_write_redirect = "disabled" }
+
+[cores.puae2021.required_firmware."Commodore - Amiga"]
+variant = "model"                                 # resolved puae_model (ADR 0017 §2)
+default = "A500"
+fallback = { option = "puae_kickstart", value = "aros" }
+
+# Kickstart expected per puae model preset (README of the core, ADR 0017 §Contexte).
+[cores.puae2021.required_firmware."Commodore - Amiga".files]
+A500OG = "kick34005.A500"
+A500 = "kick34005.A500"
+A500ECS = "kick34005.A500"
+A2000OG = "kick34005.A500"
+A500PLUS = "kick37175.A500"
+A600OG = "kick40063.A600"
+A600 = "kick40063.A600"
+A2000 = "kick40063.A600"
+A1200OG = "kick40068.A1200"
+A1200 = "kick40068.A1200"
+A4030 = "kick40068.A4000"
+A4040 = "kick40068.A4000"

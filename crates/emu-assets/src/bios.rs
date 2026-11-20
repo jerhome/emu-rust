@@ -1,4 +1,5 @@
-//! Free BIOS installer (ADR 0015 §2): EmuTOS for the Atari ST in 2.0, AROS for the Amiga in 3.0.
+//! Free BIOS installer (ADR 0015 §2): EmuTOS for the Atari ST (AROS is built into puae, never downloaded:
+//! ADR 0005, 2026-11-21 amendment), and the import of a BIOS provided by the user (`import`, ADR 0017 §3).
 //! Catalogue embedded from `data/free_bios.toml`; every archive and every installed file is pinned by SHA-256.
 //! Only free software is ever downloaded here (ADR 0005): never a commercial TOS or Kickstart.
 //!
@@ -432,6 +433,21 @@ pub enum BiosError {
 struct Manifest {
     #[serde(default)]
     installed: Vec<ManifestEntry>,
+    /// Files imported by the user (`import_firmware`), keyed by name relative to the system directory. They are
+    /// user files: never replaced without `ReplacePolicy::BackupAndReplace`. Read and kept by 2.0 too (field
+    /// ignored there, dropped on its next write: only an informative record is lost).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    imported: std::collections::BTreeMap<String, ImportedEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ImportedEntry {
+    /// Original file name, without its folder (privacy).
+    source: String,
+    /// md5 of the installed copy (recomputed on the copy, not taken from the source).
+    md5: String,
+    verified: bool,
+    imported_unix: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -683,6 +699,7 @@ impl FreeBiosManager {
         };
         self.update_manifest(|m| {
             m.installed.retain(|e| e.file != entry.file);
+            m.imported.remove(&entry.file);
             m.installed.push(entry);
         })?;
         if let Err(e) = write_atomic(&target, &image) {
@@ -695,62 +712,20 @@ impl FreeBiosManager {
         Ok(target)
     }
 
-    /// `<install_as>.user-<unix>` (plus `-<n>` if taken), in the same directory.
     fn backup_user_file(&self, target: &Path) -> Result<(), BiosError> {
-        let name = target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let stamp = unix_now();
-        let mut backup = self.system_dir.join(format!("{name}.user-{stamp}"));
-        let mut n = 1;
-        while fs::symlink_metadata(&backup).is_ok() {
-            backup = self.system_dir.join(format!("{name}.user-{stamp}-{n}"));
-            n += 1;
-        }
-        fs::rename(target, &backup).map_err(|source| BiosError::Io {
-            path: target.to_path_buf(),
-            source,
-        })?;
-        crate::http::sync_dir(&self.system_dir);
-        tracing::info!("BIOS de l'utilisateur conservé sous {}", backup.display());
-        Ok(())
+        backup_file(target).map(|_| ())
     }
 
-    fn manifest_path(&self) -> PathBuf {
-        self.system_dir.join(MANIFEST_FILE_NAME)
-    }
-
-    /// Missing or invalid manifest = nothing installed by us: every file then reads as a user file, the safe side.
     fn read_manifest(&self) -> Manifest {
-        let path = self.manifest_path();
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Manifest::default(),
-            Err(e) => {
-                tracing::warn!("{} illisible : {e}", path.display());
-                return Manifest::default();
-            }
-        };
-        toml::from_str(&text).unwrap_or_else(|e| {
-            tracing::warn!("{} invalide : {e}", path.display());
-            Manifest::default()
-        })
+        read_manifest(&self.system_dir)
     }
 
     fn update_manifest(&self, change: impl FnOnce(&mut Manifest)) -> Result<(), BiosError> {
-        let mut manifest = self.read_manifest();
-        change(&mut manifest);
-        self.write_manifest(&manifest)
+        update_manifest(&self.system_dir, change)
     }
 
     fn write_manifest(&self, manifest: &Manifest) -> Result<(), BiosError> {
-        let text = toml::to_string(manifest).map_err(|e| BiosError::Archive(e.to_string()))?;
-        let text = format!(
-            "# Free BIOS installed by emu-rust (ADR 0015). Do not edit: files listed here may be replaced.\n{text}"
-        );
-        write_atomic(&self.manifest_path(), text.as_bytes())?;
-        Ok(())
+        write_manifest(&self.system_dir, manifest)
     }
 
     /// Only names written by `write_atomic` (`.<name>.tmp-<6 alphanumerics>`), only files, only old ones.
@@ -779,6 +754,65 @@ impl FreeBiosManager {
             }
         }
     }
+}
+
+/// Renames `target` to `<file name>.user-<unix>` (plus `-<n>` if taken), in the same directory.
+fn backup_file(target: &Path) -> Result<PathBuf, BiosError> {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = match target.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let stamp = unix_now();
+    let mut backup = dir.join(format!("{name}.user-{stamp}"));
+    let mut n = 1;
+    while fs::symlink_metadata(&backup).is_ok() {
+        backup = dir.join(format!("{name}.user-{stamp}-{n}"));
+        n += 1;
+    }
+    fs::rename(target, &backup).map_err(|source| BiosError::Io {
+        path: target.to_path_buf(),
+        source,
+    })?;
+    crate::http::sync_dir(dir);
+    tracing::info!("BIOS de l'utilisateur conservé sous {}", backup.display());
+    Ok(backup)
+}
+
+/// Missing or invalid manifest = nothing installed by us: every file then reads as a user file, the safe side.
+fn read_manifest(system_dir: &Path) -> Manifest {
+    let path = system_dir.join(MANIFEST_FILE_NAME);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Manifest::default(),
+        Err(e) => {
+            tracing::warn!("{} illisible : {e}", path.display());
+            return Manifest::default();
+        }
+    };
+    toml::from_str(&text).unwrap_or_else(|e| {
+        tracing::warn!("{} invalide : {e}", path.display());
+        Manifest::default()
+    })
+}
+
+fn update_manifest(system_dir: &Path, change: impl FnOnce(&mut Manifest)) -> Result<(), BiosError> {
+    let mut manifest = read_manifest(system_dir);
+    change(&mut manifest);
+    write_manifest(system_dir, &manifest)
+}
+
+fn write_manifest(system_dir: &Path, manifest: &Manifest) -> Result<(), BiosError> {
+    let text = toml::to_string(manifest).map_err(|e| BiosError::Archive(e.to_string()))?;
+    let text = format!(
+        "# BIOS installed (free BIOS, ADR 0015) or imported (ADR 0017 §3) by emu-rust. Do not edit: files listed \
+         under [[installed]] may be replaced.\n{text}"
+    );
+    write_atomic(&system_dir.join(MANIFEST_FILE_NAME), text.as_bytes())?;
+    Ok(())
 }
 
 fn is_temporary_name(name: &str) -> bool {

@@ -13,10 +13,11 @@ mod select;
 pub use archive::{ArchiveError, ExtractLimits, extract_core, read_info_bundle};
 pub use firmware::{
     FirmwareCheck, FirmwareError, FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE,
-    check_firmware, check_required,
+    check_core_firmware, check_firmware, check_required,
 };
 pub use id::CoreId;
 pub use index::{BuildDate, MAX_INDEX_ENTRIES, RemoteCore, parse_index_extended};
+pub(crate) use info::is_safe_relative_path;
 pub use info::{CoreInfo, FirmwareSpec, InfoError, MAX_INFO_SIZE, parse_info};
 pub use manager::{
     BuildbotSource, CATALOG_MAX_AGE, CoreDirs, CoreError, CoreManager, CoreUpdate,

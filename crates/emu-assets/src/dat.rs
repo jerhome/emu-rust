@@ -1,5 +1,6 @@
 //! No-Intro and TOSEC DAT files from libretro-database (ADR 0014 §2, ADR 0015 §1): downloaded at run time,
-//! never shipped. The caller picks the base from `SystemInfo::dat` (both are clrmamepro DAT files).
+//! never shipped. The caller picks the base from the system's DAT source (`emu_library::DatSource`: No-Intro,
+//! TOSEC or libretro `dat/`; all are clrmamepro DAT files).
 
 use std::io::Write;
 use std::path::Path;
@@ -134,6 +135,15 @@ mod tests {
         assert_eq!(
             dat_url(DAT_TOSEC_BASE_URL, "Atari - ST"),
             "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/tosec/Atari%20-%20ST.dat"
+        );
+        // TOSEC and WHDLoad DAT files of the Amiga share their name: only the base differs.
+        assert_eq!(
+            dat_url(DAT_LIBRETRO_BASE_URL, "Commodore - Amiga"),
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/dat/Commodore%20-%20Amiga.dat"
+        );
+        assert_ne!(
+            dat_url(DAT_TOSEC_BASE_URL, "Commodore - Amiga"),
+            dat_url(DAT_LIBRETRO_BASE_URL, "Commodore - Amiga")
         );
     }
 }

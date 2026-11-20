@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use super::info::is_safe_relative_path;
 use super::{CoreId, CoreInfo, Platform};
 
 const BUILTIN: &str = include_str!("../../data/cores.toml");
@@ -30,7 +31,27 @@ struct CoreEntry {
     #[serde(default)]
     media: Option<CoreMediaPolicy>,
     #[serde(default)]
+    media_direct: Vec<String>,
+    #[serde(default)]
+    game_saves: Vec<String>,
+    #[serde(default)]
+    builtin_firmware: Option<BuiltinFirmware>,
+    #[serde(default)]
+    required_firmware: BTreeMap<String, RequiredFirmwareEntry>,
+    #[serde(default)]
+    recommended_on: Vec<String>,
+    #[serde(default)]
     options: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequiredFirmwareEntry {
+    variant: FirmwareVariant,
+    default: String,
+    #[serde(default)]
+    fallback: Option<FirmwareFallback>,
+    files: BTreeMap<String, String>,
 }
 
 /// How content files reach a core (ADR 0015 §5), `media` in `data/cores.toml`.
@@ -47,6 +68,11 @@ pub enum CoreMediaPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CoreProps {
     media: CoreMediaPolicy,
+    media_direct: Vec<String>,
+    game_saves: Vec<String>,
+    builtin_firmware: Option<BuiltinFirmware>,
+    required_firmware: BTreeMap<String, RequiredFirmware>,
+    recommended_on: Vec<Platform>,
     options: Vec<(String, String)>,
 }
 
@@ -89,15 +115,16 @@ impl CorePreferences {
             if let Some(key) = entry.options.keys().find(|k| !is_option_key(k)) {
                 return Err(format!("option invalide pour {core} : {key}"));
             }
-            cores.insert(
-                id,
-                CoreProps {
-                    media: entry.media.unwrap_or_default(),
-                    options: entry.options.into_iter().collect(),
-                },
-            );
+            let props = core_props(&core, entry)?;
+            cores.insert(id, props);
         }
         Ok(Self { systems, cores })
+    }
+
+    /// Parses a `data/cores.toml`-format text (tests of sibling modules); panics on invalid data.
+    #[cfg(test)]
+    pub(crate) fn builtin_from_text_for_tests(text: &str) -> Self {
+        Self::parse(text).unwrap()
     }
 
     /// `system → core_id` from the user config; invalid ids are ignored with a warning.
@@ -138,37 +165,38 @@ impl CorePreferences {
     /// (puae: `ipf`, `lha`; design v3.0 §3.5.1). Empty for cores without the key. Same name everywhere:
     /// `cores.toml` key, this accessor, `emu_runtime::MediaRules::media_direct`.
     pub fn media_direct(&self, core: &CoreId) -> Vec<String> {
-        let _ = core;
-        todo!("A3: design v3.0 §3.3")
+        self.cores
+            .get(core)
+            .map_or_else(Vec::new, |p| p.media_direct.clone())
     }
 
     /// `game_saves` of `data/cores.toml`: file-name patterns of the save files the core writes in its saves
     /// directory (`{game}.save*.adf`), for `emu_runtime::reset_core_game_files` (design v3.0 §3.5.3).
     /// Patterns holding a separator, `..` or more than one `*` are refused when the file is parsed.
     pub fn game_save_patterns(&self, core: &CoreId) -> Vec<String> {
-        let _ = core;
-        todo!("A3: design v3.0 §3.5.3")
+        self.cores
+            .get(core)
+            .map_or_else(Vec::new, |p| p.game_saves.clone())
     }
 
     /// `[cores.<core>.required_firmware."<system>"]` of `data/cores.toml` (`system` = libretro database name),
     /// input of [`super::check_required`]. `None`: no table (use `builtin_firmware`, else the 1.0 `.info` check).
     pub fn required_firmware(&self, core: &CoreId, system: &str) -> Option<&RequiredFirmware> {
-        let _ = (core, system);
-        todo!("A3: design v3.0 §3.5.5")
+        self.cores.get(core)?.required_firmware.get(system)
     }
 
     /// `builtin_firmware` of `data/cores.toml`: ROMs compiled into the core (AROS in puae; cap32, VICE in 5.0).
     pub fn builtin_firmware(&self, core: &CoreId) -> Option<BuiltinFirmware> {
-        let _ = core;
-        todo!("A3: design v3.0 §3.3")
+        self.cores.get(core)?.builtin_firmware.clone()
     }
 
     /// `recommended_on` of `data/cores.toml` (`["macos"]` for puae2021; values `linux`, `windows`, `macos`):
     /// the core selector of the Cores screen then shows « recommandé sur Mac » next to this alternative, on
     /// every OS. Never changes the default order (user decision of 2026-11-21: puae stays first everywhere).
     pub fn recommended_on(&self, core: &CoreId) -> Vec<Platform> {
-        let _ = core;
-        todo!("A3: design v3.0 §3.3")
+        self.cores
+            .get(core)
+            .map_or_else(Vec::new, |p| p.recommended_on.clone())
     }
 
     /// Systems known to the preferences (for "install recommended cores").
@@ -219,6 +247,112 @@ pub struct RequiredFirmware {
 pub struct BuiltinFirmware {
     pub label: String,
     pub notice: String,
+}
+
+/// Checks and converts one `[cores.<core>]` table (the file is embedded, but its rules are those later
+/// versions rely on: refused here rather than half-applied at run time).
+fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
+    let mut media_direct = Vec::new();
+    for ext in &entry.media_direct {
+        let ext = ext.to_ascii_lowercase();
+        if !is_extension(&ext) {
+            return Err(format!("media_direct invalide pour {core} : {ext}"));
+        }
+        if !media_direct.contains(&ext) {
+            media_direct.push(ext);
+        }
+    }
+    if let Some(pattern) = entry.game_saves.iter().find(|p| !is_save_pattern(p)) {
+        return Err(format!("game_saves invalide pour {core} : {pattern}"));
+    }
+    if let Some(b) = &entry.builtin_firmware
+        && (b.label.trim().is_empty() || b.notice.trim().is_empty())
+    {
+        return Err(format!("builtin_firmware incomplet pour {core}"));
+    }
+    let mut required_firmware = BTreeMap::new();
+    for (system, req) in entry.required_firmware {
+        let req = RequiredFirmware {
+            system: system.clone(),
+            variant: req.variant,
+            files: req.files,
+            default: req.default,
+            fallback: req.fallback,
+        };
+        check_required_table(core, &req, entry.builtin_firmware.is_some())?;
+        required_firmware.insert(system, req);
+    }
+    let mut recommended_on = Vec::new();
+    for os in &entry.recommended_on {
+        let platform = match os.as_str() {
+            "linux" => Platform::LinuxX86_64,
+            "windows" => Platform::WindowsX86_64,
+            "macos" => Platform::MacosX86_64,
+            other => return Err(format!("recommended_on invalide pour {core} : {other}")),
+        };
+        if !recommended_on.contains(&platform) {
+            recommended_on.push(platform);
+        }
+    }
+    Ok(CoreProps {
+        media: entry.media.unwrap_or_default(),
+        media_direct,
+        game_saves: entry.game_saves,
+        builtin_firmware: entry.builtin_firmware,
+        required_firmware,
+        recommended_on,
+        options: entry.options.into_iter().collect(),
+    })
+}
+
+fn check_required_table(
+    core: &str,
+    req: &RequiredFirmware,
+    has_builtin: bool,
+) -> Result<(), String> {
+    let context = format!("required_firmware de {core} ({})", req.system);
+    if req.files.is_empty() {
+        return Err(format!("{context} : table files vide"));
+    }
+    if !req.files.contains_key(&req.default) {
+        return Err(format!("{context} : défaut inconnu {}", req.default));
+    }
+    if let Some(path) = req.files.values().find(|p| !is_safe_relative_path(p)) {
+        return Err(format!("{context} : chemin refusé {path}"));
+    }
+    if let Some(fallback) = &req.fallback {
+        if !has_builtin {
+            return Err(format!("{context} : fallback sans builtin_firmware"));
+        }
+        if !is_option_key(&fallback.option) || fallback.value.trim().is_empty() {
+            return Err(format!("{context} : fallback invalide"));
+        }
+    }
+    Ok(())
+}
+
+/// Lower-case file extension without the dot (`ipf`).
+fn is_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.len() <= 16
+        && ext
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// A file-name pattern (design v3.0 §3.5.3): no separator, no `..`, at most one `*`, `{game}` the only
+/// placeholder; it must name something else than "every file" (`*` alone is refused).
+fn is_save_pattern(pattern: &str) -> bool {
+    let without_game = pattern.replace("{game}", "");
+    !pattern.is_empty()
+        && pattern != "*"
+        && pattern.len() <= 128
+        && !pattern.contains(['/', '\\', ':', '\0'])
+        && !pattern.contains("..")
+        && pattern.matches('*').count() <= 1
+        && !without_game.contains(['{', '}'])
+        && !pattern.starts_with(' ')
+        && !pattern.ends_with([' ', '.'])
 }
 
 /// libretro option keys are plain identifiers (`hatari_vkbd`).
@@ -310,7 +444,12 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        assert_eq!(prefs.systems().count(), 8);
+        assert_eq!(prefs.systems().count(), 9);
+        assert_eq!(first("Commodore - Amiga"), "puae");
+        assert_eq!(
+            prefs.for_system("Commodore - Amiga")[1].to_string(),
+            "puae2021"
+        );
         assert!(prefs.for_system("Unknown").is_empty());
     }
 
@@ -411,5 +550,131 @@ mod tests {
             choose_core(Some(GB), None, &[], &BTreeMap::new(), &prefs),
             CoreChoice::Install(id("sameboy"))
         );
+    }
+
+    #[test]
+    fn amiga_cores() {
+        let prefs = CorePreferences::builtin();
+        for core in ["puae", "puae2021"] {
+            let c = id(core);
+            assert_eq!(prefs.media_policy(&c), CoreMediaPolicy::WorkingCopy);
+            assert_eq!(prefs.media_direct(&c), ["ipf", "lha"]);
+            assert_eq!(prefs.game_save_patterns(&c), ["{game}.save*.adf"]);
+            let builtin = prefs.builtin_firmware(&c).unwrap();
+            assert_eq!(builtin.label, "AROS (intégré au core)");
+            assert!(builtin.notice.contains("AROS Public License 1.1"));
+            let req = prefs.required_firmware(&c, "Commodore - Amiga").unwrap();
+            assert_eq!(req.system, "Commodore - Amiga");
+            assert_eq!(req.variant, FirmwareVariant::Model);
+            assert_eq!(req.default, "A500");
+            assert_eq!(
+                req.fallback,
+                Some(FirmwareFallback {
+                    option: "puae_kickstart".into(),
+                    value: "aros".into()
+                })
+            );
+            // ADR 0017 §Contexte: every model preset of puae.
+            let expected = [
+                ("A500OG", "kick34005.A500"),
+                ("A500", "kick34005.A500"),
+                ("A500ECS", "kick34005.A500"),
+                ("A2000OG", "kick34005.A500"),
+                ("A500PLUS", "kick37175.A500"),
+                ("A600OG", "kick40063.A600"),
+                ("A600", "kick40063.A600"),
+                ("A2000", "kick40063.A600"),
+                ("A1200OG", "kick40068.A1200"),
+                ("A1200", "kick40068.A1200"),
+                ("A4030", "kick40068.A4000"),
+                ("A4040", "kick40068.A4000"),
+            ];
+            assert_eq!(req.files.len(), expected.len());
+            for (model, file) in expected {
+                assert_eq!(req.files[model], file, "{core} {model}");
+            }
+            assert!(prefs.required_firmware(&c, "Atari - ST").is_none());
+            assert_eq!(
+                prefs.frontend_options(&c),
+                [
+                    (
+                        "puae_floppy_write_redirect".to_owned(),
+                        "disabled".to_owned()
+                    ),
+                    ("puae_mapper_mouse_toggle".to_owned(), "---".to_owned()),
+                    ("puae_mapper_select".to_owned(), "---".to_owned()),
+                    ("puae_physicalmouse".to_owned(), "enabled".to_owned()),
+                ]
+            );
+        }
+        assert!(prefs.recommended_on(&id("puae")).is_empty());
+        assert_eq!(
+            prefs.recommended_on(&id("puae2021")),
+            [Platform::MacosX86_64]
+        );
+        // Cores without the 3.0 keys.
+        let hatari = id("hatari");
+        assert!(prefs.media_direct(&hatari).is_empty());
+        assert!(prefs.game_save_patterns(&hatari).is_empty());
+        assert!(prefs.builtin_firmware(&hatari).is_none());
+        assert!(prefs.recommended_on(&id("unknown")).is_empty());
+    }
+
+    #[test]
+    fn v3_keys_are_checked() {
+        let parse = |t: &str| CorePreferences::parse(&format!("[systems]\n[cores.x]\n{t}"));
+        let builtin = "builtin_firmware = { label = \"L\", notice = \"N\" }\n";
+        let table = |extra: &str| {
+            format!(
+                "{builtin}[cores.x.required_firmware.S]\nvariant = \"region\"\ndefault = \"E\"\n{extra}\
+                 [cores.x.required_firmware.S.files]\nE = \"bios_E.bin\"\nU = \"sub/bios_U.bin\"\n"
+            )
+        };
+        let ok = parse(&table("fallback = { option = \"o\", value = \"v\" }\n")).unwrap();
+        let req = ok.required_firmware(&id("x"), "S").unwrap();
+        assert_eq!(req.variant, FirmwareVariant::Region);
+        assert_eq!(req.files.len(), 2);
+        assert!(parse(&table("")).is_ok());
+        // Unknown default, unsafe path, fallback without builtin firmware, bad fallback option.
+        assert!(parse(&table("").replace("default = \"E\"", "default = \"J\"")).is_err());
+        assert!(parse(&table("").replace("sub/bios_U.bin", "../x")).is_err());
+        assert!(parse(&table("").replace("sub/bios_U.bin", "/abs")).is_err());
+        assert!(
+            parse(&table("fallback = { option = \"o\", value = \"v\" }\n").replace(builtin, ""))
+                .is_err()
+        );
+        assert!(parse(&table("fallback = { option = \"a b\", value = \"v\" }\n")).is_err());
+        assert!(parse(&table("").replace("variant = \"region\"", "variant = \"os\"")).is_err());
+        assert!(parse("builtin_firmware = { label = \"\", notice = \"N\" }\n").is_err());
+        // media_direct: lower-cased, deduplicated, plain extensions only.
+        let p = parse("media_direct = [\"IPF\", \"ipf\", \"lha\"]\n").unwrap();
+        assert_eq!(p.media_direct(&id("x")), ["ipf", "lha"]);
+        assert!(parse("media_direct = [\".ipf\"]\n").is_err());
+        assert!(parse("media_direct = [\"\"]\n").is_err());
+        // game_saves: file-name patterns only.
+        assert!(parse("game_saves = [\"{game}.brm\", \"*.sav\"]\n").is_ok());
+        for bad in [
+            "*",
+            "a/b",
+            "a\\\\b",
+            "../x",
+            "{game}*.*",
+            "{other}.sav",
+            "",
+            "x.",
+            "c:x",
+        ] {
+            assert!(
+                parse(&format!("game_saves = [\"{bad}\"]\n")).is_err(),
+                "{bad}"
+            );
+        }
+        // recommended_on: known OS names only.
+        let p = parse("recommended_on = [\"macos\", \"linux\", \"macos\"]\n").unwrap();
+        assert_eq!(
+            p.recommended_on(&id("x")),
+            [Platform::MacosX86_64, Platform::LinuxX86_64]
+        );
+        assert!(parse("recommended_on = [\"mac\"]\n").is_err());
     }
 }

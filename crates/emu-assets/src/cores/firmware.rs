@@ -11,14 +11,37 @@ use serde::Deserialize;
 
 use super::info::{is_safe_relative_path, parse_md5};
 use super::select::RequiredFirmware;
-use super::{CoreInfo, FirmwareSpec};
+use super::{CoreId, CoreInfo, CorePreferences, FirmwareSpec};
 
 const BUILTIN: &str = include_str!("../../data/firmware.toml");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FirmwareFile {
-    firmware: BTreeMap<String, Vec<String>>,
+    firmware: BTreeMap<String, FirmwareEntry>,
+}
+
+/// `"name" = ["md5", …]` (1.0 form) or `"name" = { md5 = "…" | ["…", …], size = 262144 }` (design v3.0 §3.5.6).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FirmwareEntry {
+    List(Vec<String>),
+    Table(FirmwareTable),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FirmwareTable {
+    md5: OneOrMany,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
 }
 
 /// Files larger than this are reported `Unreadable` without hashing (largest 1.0-era BIOS: 128 KiB;
@@ -65,6 +88,7 @@ pub struct FirmwareStatus {
 #[derive(Debug, Clone, Default)]
 pub struct KnownFirmware {
     by_path: BTreeMap<String, Vec<[u8; 16]>>,
+    sizes: BTreeMap<String, u64>,
 }
 
 impl KnownFirmware {
@@ -82,9 +106,26 @@ impl KnownFirmware {
     fn parse(text: &str) -> Result<Self, String> {
         let file: FirmwareFile = toml::from_str(text).map_err(|e| e.to_string())?;
         let mut by_path = BTreeMap::new();
-        for (path, hashes) in file.firmware {
+        let mut sizes = BTreeMap::new();
+        for (path, entry) in file.firmware {
             if !is_safe_relative_path(&path) {
                 return Err(format!("chemin refusé : {path}"));
+            }
+            let (hashes, size) = match entry {
+                FirmwareEntry::List(hashes) => (hashes, None),
+                FirmwareEntry::Table(FirmwareTable { md5, size }) => match md5 {
+                    OneOrMany::One(h) => (vec![h], size),
+                    OneOrMany::Many(hashes) => (hashes, size),
+                },
+            };
+            if hashes.is_empty() && size.is_some() {
+                return Err(format!("taille sans md5 pour {path}"));
+            }
+            if let Some(size) = size {
+                if size == 0 || size > MAX_FIRMWARE_SIZE {
+                    return Err(format!("taille invalide pour {path}"));
+                }
+                sizes.insert(path.clone(), size);
             }
             let hashes = hashes
                 .iter()
@@ -92,7 +133,7 @@ impl KnownFirmware {
                 .collect::<Result<Vec<_>, _>>()?;
             by_path.insert(path, hashes);
         }
-        Ok(Self { by_path })
+        Ok(Self { by_path, sizes })
     }
 
     /// Accepted md5 for a relative path (case-sensitive, `/`-separated).
@@ -104,8 +145,7 @@ impl KnownFirmware {
     /// `"name" = { md5 = "…" | ["…", …], size = 262144 }`, design v3.0 §3.5.6). Only a quick reject at import and
     /// a display hint: the md5 stays the sole verification.
     pub fn size_for(&self, path: &str) -> Option<u64> {
-        let _ = path;
-        todo!("A3: design v3.0 §3.5.6")
+        self.sizes.get(path).copied()
     }
 
     /// Every known relative path, sorted (import catalogue).
@@ -143,8 +183,91 @@ pub fn check_required(
     known: &KnownFirmware,
     fallback_label: Option<&str>,
 ) -> Result<FirmwareCheck, FirmwareError> {
-    let _ = (system_dir, req, variant, known, fallback_label);
-    todo!("A3: design v3.0 §3.5.5")
+    if let Some(path) = req.files.values().find(|p| !is_safe_relative_path(p)) {
+        return Err(FirmwareError::UnsafePath(path.clone()));
+    }
+    let default = req
+        .files
+        .get(&req.default)
+        .ok_or_else(|| FirmwareError::UnknownDefault(req.default.clone()))?;
+    let wanted = variant.and_then(|v| req.files.get(v)).unwrap_or(default);
+    let spec = FirmwareSpec {
+        path: wanted.clone(),
+        description: wanted.clone(),
+        optional: false,
+        md5: None,
+    };
+    let state = match check_one(system_dir, &spec, known, &[]) {
+        FirmwareState::Missing if req.fallback.is_some() => FirmwareState::CoreFallback {
+            label: fallback_label.unwrap_or(DEFAULT_FALLBACK_LABEL).to_owned(),
+        },
+        state => state,
+    };
+    let mut others_present: Vec<String> = req
+        .files
+        .values()
+        .filter(|p| *p != wanted && is_regular_file(&join_relative(system_dir, p)))
+        .cloned()
+        .collect();
+    others_present.sort();
+    others_present.dedup();
+    Ok(FirmwareCheck {
+        wanted: Some(wanted.clone()),
+        state,
+        others_present,
+    })
+}
+
+/// Label of a `CoreFallback` when the caller has none (a fallback without `builtin_firmware` is refused when
+/// `data/cores.toml` is parsed, so only hand-built tables get it).
+const DEFAULT_FALLBACK_LABEL: &str = "ROM intégrée au core";
+
+impl FirmwareCheck {
+    /// Result for a core with `builtin_firmware` and no `required_firmware` table for the system: nothing is
+    /// expected in the system directory.
+    pub fn builtin(label: &str) -> Self {
+        Self {
+            wanted: None,
+            state: FirmwareState::Builtin {
+                label: label.to_owned(),
+            },
+            others_present: Vec::new(),
+        }
+    }
+}
+
+/// The whole decision of design v3.0 §3.5.5 for one (core, system): the `required_firmware` table when there is
+/// one ([`check_required`], with the core's `builtin_firmware` label as fallback label), else
+/// [`FirmwareCheck::builtin`] when the core has ROMs built in, else `None` (the caller keeps the 1.0 `.info`
+/// check, a non-blocking warning).
+pub fn check_core_firmware(
+    system_dir: &Path,
+    prefs: &CorePreferences,
+    core: &CoreId,
+    system: &str,
+    variant: Option<&str>,
+    known: &KnownFirmware,
+) -> Option<Result<FirmwareCheck, FirmwareError>> {
+    let builtin = prefs.builtin_firmware(core);
+    match prefs.required_firmware(core, system) {
+        Some(req) => Some(check_required(
+            system_dir,
+            req,
+            variant,
+            known,
+            builtin.as_ref().map(|b| b.label.as_str()),
+        )),
+        None => builtin.map(|b| Ok(FirmwareCheck::builtin(&b.label))),
+    }
+}
+
+fn join_relative(system_dir: &Path, path: &str) -> PathBuf {
+    path.split('/')
+        .fold(system_dir.to_path_buf(), |p, c| p.join(c))
+}
+
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
 /// Errors of [`check_required`]: data problems only (a missing or wrong file is a [`FirmwareState`]).
@@ -190,10 +313,7 @@ fn check_one(
     if !is_safe_relative_path(&spec.path) {
         return FirmwareState::Unreadable("chemin refusé".into());
     }
-    let path: PathBuf = spec
-        .path
-        .split('/')
-        .fold(system_dir.to_path_buf(), |p, c| p.join(c));
+    let path = join_relative(system_dir, &spec.path);
     let meta = match std::fs::metadata(&path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return FirmwareState::Missing,
@@ -339,5 +459,283 @@ mod tests {
             check_one(dir.path(), &spec, &KnownFirmware::default(), &[]),
             FirmwareState::Unreadable(_)
         ));
+    }
+
+    fn md5_of(data: &[u8]) -> [u8; 16] {
+        Md5::digest(data).into()
+    }
+
+    fn hexs(md5: [u8; 16]) -> String {
+        md5.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn both_entry_forms() {
+        let a = "900150983cd24fb0d6963f7d28e17f72";
+        let b = "d3293ebaaa7f4eb2a6766b68a0fb4609";
+        let known = KnownFirmware::parse(&format!(
+            "[firmware]\n\"list\" = [\"{a}\", \"{b}\"]\n\"one\" = {{ md5 = \"{a}\", size = 3 }}\n\
+             \"many\" = {{ md5 = [\"{a}\", \"{b}\"] }}\n"
+        ))
+        .unwrap();
+        assert_eq!(known.md5_for("list").len(), 2);
+        assert_eq!(known.size_for("list"), None);
+        assert_eq!(known.md5_for("one"), [parse_md5(a).unwrap()]);
+        assert_eq!(known.size_for("one"), Some(3));
+        assert_eq!(known.md5_for("many").len(), 2);
+        assert_eq!(known.size_for("many"), None);
+        assert_eq!(known.paths().collect::<Vec<_>>(), ["list", "many", "one"]);
+        for bad in [
+            format!("\"x\" = {{ md5 = \"{a}\", size = 0 }}"),
+            format!("\"x\" = {{ md5 = \"{a}\", sha1 = \"\" }}"),
+            "\"x\" = { size = 3 }".to_owned(),
+            "\"x\" = { md5 = [], size = 3 }".to_owned(),
+            "\"x\" = { md5 = \"zz\" }".to_owned(),
+        ] {
+            assert!(
+                KnownFirmware::parse(&format!("[firmware]\n{bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_sections_from_system_dat() {
+        let known = KnownFirmware::builtin();
+        let md5 = |p: &str| {
+            known
+                .md5_for(p)
+                .iter()
+                .map(|h| hexs(*h))
+                .collect::<Vec<_>>()
+        };
+        // Kickstarts (ADR 0017 §Contexte table, from System.dat).
+        for (name, hash, size) in [
+            (
+                "kick33180.A500",
+                "85ad74194e87c08904327de1a9443b7a",
+                262_144,
+            ),
+            (
+                "kick34005.A500",
+                "82a21c1890cae844b3df741f2762d48d",
+                262_144,
+            ),
+            (
+                "kick37175.A500",
+                "dc10d7bdd1b6f450773dfb558477c230",
+                524_288,
+            ),
+            (
+                "kick37350.A600",
+                "465646c9b6729f77eea5314d1f057951",
+                524_288,
+            ),
+            (
+                "kick40063.A600",
+                "e40a5dfb3d017ba8779faba30cbd1c8e",
+                524_288,
+            ),
+            (
+                "kick39106.A1200",
+                "b7cc148386aa631136f510cd29e42fc3",
+                524_288,
+            ),
+            (
+                "kick40068.A1200",
+                "646773759326fbac3b2311fd8c8793ee",
+                524_288,
+            ),
+            (
+                "kick40068.A4000",
+                "9bdedde6a4f33555b4a270c8ca53297d",
+                524_288,
+            ),
+        ] {
+            assert_eq!(md5(name), [hash], "{name}");
+            assert_eq!(known.size_for(name), Some(size), "{name}");
+        }
+        // Every file of the puae table is known.
+        let prefs = CorePreferences::builtin();
+        for core in ["puae", "puae2021"] {
+            let req = prefs
+                .required_firmware(&CoreId::new(core).unwrap(), "Commodore - Amiga")
+                .unwrap();
+            for file in req.files.values() {
+                assert!(!known.md5_for(file).is_empty(), "{file}");
+            }
+        }
+        assert_eq!(md5("tos.img"), ["c1c57ce48e8ee4135885cee9e63a68a2"]);
+        assert_eq!(known.size_for("MT32_CONTROL.ROM"), Some(65_536));
+        assert_eq!(known.size_for("CM32L_PCM.ROM"), Some(1_048_576));
+        assert_eq!(known.size_for("vice/JiffyDOS_C64.bin"), Some(8192));
+        assert_eq!(known.size_for("bios_CD_E.bin"), Some(131_072));
+        assert_eq!(md5("bios_CD_U.bin"), ["2efd74e3232ff260e371b99f84024f7f"]);
+        // Not authorised yet (7.0), nor libraries of the DOS section.
+        assert!(known.md5_for("scph5501.bin").is_empty());
+        assert!(known.md5_for("panafz10.bin").is_empty());
+        assert!(known.md5_for("bass.dll").is_empty());
+    }
+
+    fn table(fallback: bool) -> RequiredFirmware {
+        RequiredFirmware {
+            system: "S".into(),
+            variant: crate::cores::FirmwareVariant::Model,
+            files: BTreeMap::from([
+                ("A500".to_owned(), "kick.A500".to_owned()),
+                ("A500ECS".to_owned(), "kick.A500".to_owned()),
+                ("A1200".to_owned(), "kick.A1200".to_owned()),
+                ("A600".to_owned(), "sub/kick.A600".to_owned()),
+            ]),
+            default: "A500".into(),
+            fallback: fallback.then(|| crate::cores::FirmwareFallback {
+                option: "puae_kickstart".into(),
+                value: "aros".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn required_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path();
+        let known = KnownFirmware::parse(&format!(
+            "[firmware]\n\"kick.A500\" = [\"{}\"]\n\"kick.A1200\" = [\"{}\"]\n",
+            hexs(md5_of(b"ks13")),
+            hexs(md5_of(b"ks31"))
+        ))
+        .unwrap();
+        let check = |req: &RequiredFirmware, v: Option<&str>| {
+            check_required(system, req, v, &known, Some("AROS")).unwrap()
+        };
+        // Nothing present: fallback, or missing without it.
+        let c = check(&table(true), Some("A1200"));
+        assert_eq!(c.wanted.as_deref(), Some("kick.A1200"));
+        assert_eq!(
+            c.state,
+            FirmwareState::CoreFallback {
+                label: "AROS".into()
+            }
+        );
+        assert!(c.others_present.is_empty());
+        assert_eq!(
+            check(&table(false), Some("A1200")).state,
+            FirmwareState::Missing
+        );
+        // Label of a hand-built table without builtin firmware.
+        assert!(matches!(
+            check_required(system, &table(true), None, &known, None)
+                .unwrap()
+                .state,
+            FirmwareState::CoreFallback { .. }
+        ));
+        // Unknown or absent variant: default.
+        assert_eq!(
+            check(&table(false), Some("A3000")).wanted.as_deref(),
+            Some("kick.A500")
+        );
+        assert_eq!(
+            check(&table(false), None).wanted.as_deref(),
+            Some("kick.A500")
+        );
+
+        std::fs::write(system.join("kick.A500"), b"ks13").unwrap();
+        let c = check(&table(false), Some("A500ECS"));
+        assert_eq!(c.state, FirmwareState::Ok);
+        assert!(
+            c.others_present.is_empty(),
+            "the wanted file is not an « other »"
+        );
+        // Present with the wrong content; another file of the table is reported.
+        std::fs::write(system.join("kick.A1200"), b"other").unwrap();
+        let c = check(&table(true), Some("A1200"));
+        assert_eq!(
+            c.state,
+            FirmwareState::WrongHash {
+                md5: md5_of(b"other")
+            }
+        );
+        assert_eq!(c.others_present, ["kick.A500"]);
+        // Missing, with others present (« bios_CD_E.bin présent, mais ce jeu est USA »).
+        let c = check(&table(false), Some("A600"));
+        assert_eq!(c.state, FirmwareState::Missing);
+        assert_eq!(c.others_present, ["kick.A1200", "kick.A500"]);
+        // No reference hash: unverified.
+        std::fs::create_dir(system.join("sub")).unwrap();
+        std::fs::write(system.join("sub/kick.A600"), b"x").unwrap();
+        assert_eq!(
+            check(&table(true), Some("A600")).state,
+            FirmwareState::Unverified
+        );
+        // A folder under the wanted name is not a file.
+        std::fs::remove_file(system.join("kick.A500")).unwrap();
+        std::fs::create_dir(system.join("kick.A500")).unwrap();
+        assert!(matches!(
+            check(&table(true), None).state,
+            FirmwareState::Unreadable(_)
+        ));
+        assert!(
+            !check(&table(true), Some("A600"))
+                .others_present
+                .contains(&"kick.A500".to_owned())
+        );
+    }
+
+    #[test]
+    fn required_check_data_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = KnownFirmware::default();
+        let mut req = table(false);
+        req.default = "nope".into();
+        assert_eq!(
+            check_required(dir.path(), &req, Some("A500"), &known, None),
+            Err(FirmwareError::UnknownDefault("nope".into()))
+        );
+        let mut req = table(false);
+        req.files.insert("X".into(), "../outside".into());
+        assert_eq!(
+            check_required(dir.path(), &req, None, &known, None),
+            Err(FirmwareError::UnsafePath("../outside".into()))
+        );
+    }
+
+    #[test]
+    fn core_firmware_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = KnownFirmware::builtin();
+        let prefs = CorePreferences::builtin();
+        let puae = CoreId::new("puae").unwrap();
+        let c = check_core_firmware(
+            dir.path(),
+            &prefs,
+            &puae,
+            "Commodore - Amiga",
+            Some("A1200"),
+            &known,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.wanted.as_deref(), Some("kick40068.A1200"));
+        assert_eq!(
+            c.state,
+            FirmwareState::CoreFallback {
+                label: "AROS (intégré au core)".into()
+            }
+        );
+        // No table, no built-in ROM: the 1.0 `.info` check applies.
+        let hatari = CoreId::new("hatari").unwrap();
+        assert!(
+            check_core_firmware(dir.path(), &prefs, &hatari, "Atari - ST", None, &known).is_none()
+        );
+        // Built-in ROMs without a table for the system: `Builtin`, nothing expected.
+        let p = CorePreferences::builtin_from_text_for_tests(
+            "[systems]\n[cores.cap32]\nbuiltin_firmware = { label = \"ROM Amstrad\", notice = \"N\" }\n",
+        );
+        let cap32 = CoreId::new("cap32").unwrap();
+        assert_eq!(
+            check_core_firmware(dir.path(), &p, &cap32, "Amstrad - CPC", None, &known),
+            Some(Ok(FirmwareCheck::builtin("ROM Amstrad")))
+        );
+        assert_eq!(FirmwareCheck::builtin("x").wanted, None);
     }
 }
