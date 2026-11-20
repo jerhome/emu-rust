@@ -19,6 +19,12 @@
  *   MOCK_DISK_DUMP  set -> after every disk change `mock-disk.txt` is rewritten in GET_SAVE_DIRECTORY:
  *                   lines "interface=basic|ext", "ejected=0|1", "index=N", "num=N", "initial=N|-",
  *                   "image<i>=<path>|<label>" (label = file name without extension; empty for a freshly added slot).
+ *   MOCK_DISK_NO_INITIAL  set (with MOCK_DISK=ext) -> the ext interface is registered with set_initial_image = NULL
+ *                   (like puae): "initial=-" in the dump and band 3 cell 6 stays 0.
+ *   MOCK_ENV_PROBE  set -> retro_set_environment also asks 28 GET_PERF_INTERFACE, 45 GET_VFS_INTERFACE,
+ *                   46 GET_LED_INTERFACE and 64 SET_FASTFORWARDING_OVERRIDE (as puae does). The answers are logged
+ *                   (INFO "mock core: env 28=0|1 45=.. 46=.. 64=..") and, with MOCK_DISK_DUMP, written at retro_init to
+ *                   `mock-env.txt` in GET_SAVE_DIRECTORY ("env28=0|1" ...). No visible effect on the image.
  *   MOCK_NO_GAME    set -> SET_SUPPORT_NO_GAME answers true to the core (value true) and retro_load_game(NULL)
  *                   succeeds (seed 0); without it the core announces false and load_game(NULL) fails.
  * When any of MOCK_KEYBOARD / MOCK_MOUSE / MOCK_DISK / MOCK_NO_GAME is set, rows 0..39 of the 64x48 XRGB8888 image
@@ -101,6 +107,10 @@
 #define RETRO_ENVIRONMENT_SET_VARIABLES 16
 #define RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME 18
 #define RETRO_ENVIRONMENT_GET_LOG_INTERFACE 27
+#define RETRO_ENVIRONMENT_GET_PERF_INTERFACE 28
+#define RETRO_ENVIRONMENT_GET_VFS_INTERFACE 45
+#define RETRO_ENVIRONMENT_GET_LED_INTERFACE 46
+#define RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE 64
 #define RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY 31
 #define RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION 52
 #define RETRO_ENVIRONMENT_SET_CORE_OPTIONS 53
@@ -344,6 +354,8 @@ static char disk_label[MAX_DISKS][DISK_PATH_MAX];
 static unsigned disk_num, disk_index, disk_set_calls;
 static bool disk_ejected;
 static bool initial_set;
+static bool no_initial_on, env_probe_on;
+static int probe_answer[4]; /* 28, 45, 46, 64 */
 static unsigned initial_index;
 static char initial_path[DISK_PATH_MAX];
 
@@ -360,6 +372,8 @@ static void read_protocol_env(void) {
     mouse_on = env_flag("MOCK_MOUSE");
     no_game_on = env_flag("MOCK_NO_GAME");
     disk_dump = env_flag("MOCK_DISK_DUMP");
+    no_initial_on = env_flag("MOCK_DISK_NO_INITIAL");
+    env_probe_on = env_flag("MOCK_ENV_PROBE");
     disk_mode = !disk ? 0 : !strcmp(disk, "ext") ? 2 : disk[0] ? 1 : 0;
     mock_visible = kb_cb_on || kb_poll_on || mouse_on || no_game_on || disk_mode != 0;
 }
@@ -496,6 +510,7 @@ static void register_disk_interface(void) {
         disk_get_num_images, disk_replace_image_index, disk_add_image_index,
         disk_set_initial_image, disk_get_image_path, disk_get_image_label,
     };
+    ext.set_initial_image = no_initial_on ? NULL : disk_set_initial_image;
     if (disk_mode == 2) {
         unsigned version = 0;
         if (!env_cb(RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION, &version)) version = 0;
@@ -629,6 +644,31 @@ static void draw_registers(uint32_t *img) {
     for (i = 0; i < 4; i++) put_cell16(img, 4, 2 * i, kb_ring[i]);
 }
 
+static void probe_environment(void) {
+    /* Zeroed scratch large enough for the perf / VFS / LED structs: a frontend that answers true would fill it. */
+    static union { unsigned char raw[1024]; void *align; } scratch;
+    static bool fast = false;
+    memset(scratch.raw, 0, sizeof scratch.raw);
+    probe_answer[0] = env_cb(RETRO_ENVIRONMENT_GET_PERF_INTERFACE, scratch.raw);
+    probe_answer[1] = env_cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, scratch.raw);
+    probe_answer[2] = env_cb(RETRO_ENVIRONMENT_GET_LED_INTERFACE, scratch.raw);
+    probe_answer[3] = env_cb(RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE, &fast);
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: env 28=%d 45=%d 46=%d 64=%d\n", probe_answer[0], probe_answer[1],
+                       probe_answer[2], probe_answer[3]);
+}
+
+static void dump_probe(void) {
+    const char *save_dir = NULL;
+    char path[DISK_PATH_MAX + 32];
+    FILE *f;
+    if (!env_probe_on || !disk_dump || !env_cb || !env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir) || !save_dir) return;
+    snprintf(path, sizeof path, "%s/mock-env.txt", save_dir);
+    f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "env28=%d\nenv45=%d\nenv46=%d\nenv64=%d\n", probe_answer[0], probe_answer[1], probe_answer[2], probe_answer[3]);
+    fclose(f);
+}
+
 /* ---- libretro entry points ---- */
 MOCK_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -646,6 +686,7 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
         env_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb);
     }
     if (disk_mode) register_disk_interface();
+    if (env_probe_on) probe_environment();
     declare_options();
 }
 MOCK_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -659,6 +700,7 @@ MOCK_API void retro_init(void) {
     seed = 0;
     memset(sram, 0, sizeof sram);
     reset_protocol_state();
+    dump_probe();
 }
 MOCK_API void retro_deinit(void) { log_cb = NULL; }
 
