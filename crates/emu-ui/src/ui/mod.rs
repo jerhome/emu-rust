@@ -41,15 +41,20 @@ impl Profile {
 }
 
 /// Layout shown (and edited) for `profile`.
-pub fn profile_map(config: &Config, core_id: &str, profile: Profile) -> KeyMap {
+pub fn profile_map(
+    config: &Config,
+    core_profile: &str,
+    style: PadStyle,
+    profile: Profile,
+) -> KeyMap {
     match profile {
-        Profile::Core => config.keymap_for(core_id),
+        Profile::Core => config.keymap_for(core_profile, style),
         Profile::Default => config
             .input
             .keyboard
             .get(DEFAULT_PROFILE)
             .cloned()
-            .unwrap_or_else(|| KeyMap::default_for(PadStyle::from_core_id(core_id))),
+            .unwrap_or_else(|| KeyMap::default_for(style)),
     }
 }
 
@@ -174,13 +179,17 @@ pub struct StatsView {
 /// Read-only data for one egui pass.
 pub struct UiData<'a> {
     pub game: &'a str,
+    /// Key of the core profile in the config (see `PadStyle::profile_key`).
     pub core_id: &'a str,
+    pub style: PadStyle,
     pub config: &'a Config,
     pub slot: u8,
     /// `created_unix` of each slot's state, `None` if the slot is empty (cached by the app).
     pub slots: &'a [Option<u64>],
     pub options: &'a [CoreOption],
     pub categories: &'a [CoreOptionCategory],
+    /// Launched from the library: « Quitter » becomes « Retour à la bibliothèque ».
+    pub hosted: bool,
     pub stats: Option<StatsView>,
     pub now: Instant,
 }

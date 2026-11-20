@@ -32,9 +32,17 @@ const SCREEN_CAPTURE_PASSES: u32 = 4;
 /// The initial window is grown (by whole scale steps) up to this size so the menu fits.
 const MIN_WINDOW: (u32, u32) = (640, 480);
 
+/// What a hosted game hands back to the library.
+pub(crate) struct Detached {
+    pub window: Option<GlWindow>,
+    pub egui: Option<EguiLayer>,
+    pub config: crate::Config,
+    pub error: Option<UiError>,
+}
+
 // Field order is the drop order: egui painter, window/context (with its renderer), then the emulator
 // (ADR 0008). The painter is also destroyed explicitly while its context is alive (`teardown`).
-struct App {
+pub(crate) struct App {
     egui: Option<EguiLayer>,
     window: Option<GlWindow>,
     emulator: Emulator,
@@ -44,6 +52,9 @@ struct App {
     audio: AudioOutput,
     error: Option<UiError>,
     core_id: String,
+    style: PadStyle,
+    /// Key of the keyboard profile (core id, plus system suffix on multi-system cores).
+    profile: String,
     speed: SpeedState,
     slot: u8,
     next_flush: Instant,
@@ -59,6 +70,10 @@ struct App {
     finishing: Option<u32>,
     /// Next repaint wanted by egui or the OSD while the game is not driving redraws.
     ui_repaint_at: Option<Instant>,
+    /// Launched from the library: the window belongs to the host and quitting returns to the library.
+    hosted: bool,
+    /// Hosted game over (quit, core shutdown, error): the host detaches the window and drops the game.
+    ended: bool,
 }
 
 struct FpsMeter {
@@ -80,96 +95,43 @@ impl FpsMeter {
     }
 }
 
+/// Window size in logical pixels: height = `base_height × scale`, width from the display aspect (like the
+/// renderer), so there are no black bars at the initial size.
+fn window_size(base_height: u32, aspect: f32, scale: u32) -> (u32, u32) {
+    // A core announcing an absurd aspect must not produce a gigantic window.
+    let aspect = if aspect.is_finite() {
+        aspect.clamp(0.25, 4.0)
+    } else {
+        1.0
+    };
+    let height = base_height.max(1).saturating_mul(scale);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to the u32 range
+    let width = (f64::from(height) * f64::from(aspect))
+        .round()
+        .clamp(1.0, 16384.0) as u32;
+    (width, height)
+}
+
 /// Initial scale: the configured one, grown until the window reaches `MIN_WINDOW` (bounded by `MAX_SCALE`).
-fn initial_scale(base: (u32, u32), wanted: u32) -> u32 {
+fn initial_scale(base_height: u32, aspect: f32, wanted: u32) -> u32 {
     let mut scale = wanted.clamp(MIN_SCALE, MAX_SCALE);
-    while scale < MAX_SCALE
-        && (base.0.saturating_mul(scale) < MIN_WINDOW.0
-            || base.1.saturating_mul(scale) < MIN_WINDOW.1)
-    {
+    while scale < MAX_SCALE && {
+        let (w, h) = window_size(base_height, aspect, scale);
+        w < MIN_WINDOW.0 || h < MIN_WINDOW.1
+    } {
         scale += 1;
     }
     scale
 }
 
-pub(crate) fn run(mut options: LaunchOptions) -> Result<(), UiError> {
-    let core_id = core_id_from_path(&options.core);
-    let emulator = Emulator::load(
-        &options.core,
-        &options.rom,
-        EmulatorOptions {
-            system_dir: options.dirs.system.clone(),
-            save_dir: options.dirs.saves.clone(),
-            state_dir: options.dirs.states.clone(),
-            assets_dir: options.dirs.assets.clone(),
-            core_variables: options.config.core_variables(&core_id),
-        },
-    )?;
-    let audio = if options.audio && options.config.audio.enabled {
-        let cfg = AudioConfig {
-            latency: Duration::from_millis(u64::from(options.config.audio.latency_ms.max(1))),
-            ..AudioConfig::default()
-        };
-        AudioOutput::open_or_null(emulator.av_info().timing.sample_rate, &cfg)
-    } else {
-        AudioOutput::null()
-    };
-    let keymap = options.config.keymap_for(&core_id);
-    let style = PadStyle::from_core_id(&core_id);
-    tracing::info!(
-        "{} touches liées (profil de {core_id}, manette {style:?}) : {}",
-        keymap.bindings().len(),
-        style.describe(&keymap)
-    );
-    if options.dump_window.is_some() || options.screen.is_some() {
-        options
-            .exit_after_frames
-            .get_or_insert(DEFAULT_SCREEN_FRAMES);
-    }
+pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
     let event_loop = EventLoop::new().map_err(|e| UiError::EventLoop(e.to_string()))?;
-    let now = Instant::now();
-    let mut overlay = Overlay::default();
-    overlay
-        .osd
-        .info(text::menu_hint(options.config.hotkeys.menu), now);
-    let mut app = App {
-        egui: None,
-        window: None,
-        emulator,
-        pacer: None,
-        keyboard: KeyboardInput::new(keymap),
-        options,
-        audio,
-        error: None,
-        core_id,
-        speed: SpeedState::default(),
-        slot: 0,
-        next_flush: now + SRAM_FLUSH_INTERVAL,
-        fullscreen: false,
-        overlay,
-        slots: Vec::new(),
-        core_options: Vec::new(),
-        categories: Vec::new(),
-        config_dirty: false,
-        fps: FpsMeter {
-            since: now,
-            frames_at: 0,
-            fps: 0.0,
-        },
-        finishing: None,
-        ui_repaint_at: None,
-    };
+    let mut app = App::build(options, false)?;
     let result = event_loop.run_app(&mut app);
     app.teardown();
     app.flush_sram();
     app.save_config();
-    let stats = app.audio.stats();
-    tracing::info!(
-        "audio stats: underruns={} dropped_samples={} stream_failed={}",
-        stats.underruns,
-        stats.dropped_samples,
-        stats.stream_failed
-    );
+    app.log_audio_stats();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     if let Some(e) = app.error.take() {
         return Err(e);
@@ -181,9 +143,158 @@ pub(crate) fn run(mut options: LaunchOptions) -> Result<(), UiError> {
 }
 
 impl App {
+    /// Loads the core and the game; no window yet (`resumed` creates one, or the library host lends its own
+    /// through [`App::attach`]).
+    pub(crate) fn build(mut options: LaunchOptions, hosted: bool) -> Result<Self, UiError> {
+        let core_id = core_id_from_path(&options.core);
+        let emulator = Emulator::load(
+            &options.core,
+            &options.rom,
+            EmulatorOptions {
+                system_dir: options.dirs.system.clone(),
+                save_dir: options.dirs.saves.clone(),
+                state_dir: options.dirs.states.clone(),
+                assets_dir: options.dirs.assets.clone(),
+                core_variables: options.config.core_variables(&core_id),
+            },
+        )?;
+        let audio = if options.audio && options.config.audio.enabled {
+            let cfg = AudioConfig {
+                latency: Duration::from_millis(u64::from(options.config.audio.latency_ms.max(1))),
+                ..AudioConfig::default()
+            };
+            AudioOutput::open_or_null(emulator.av_info().timing.sample_rate, &cfg)
+        } else {
+            AudioOutput::null()
+        };
+        let style = PadStyle::detect(&core_id, &options.rom);
+        let profile = style.profile_key(&core_id);
+        let keymap = options.config.keymap_for(&profile, style);
+        tracing::info!(
+            "{} touches liées (profil {profile}, manette {style:?}) : {}",
+            keymap.bindings().len(),
+            style.describe(&keymap)
+        );
+        if options.dump_window.is_some() || options.screen.is_some() {
+            options
+                .exit_after_frames
+                .get_or_insert(DEFAULT_SCREEN_FRAMES);
+        }
+        let now = Instant::now();
+        let mut overlay = Overlay::default();
+        overlay
+            .osd
+            .info(text::menu_hint(options.config.hotkeys.menu), now);
+        Ok(Self {
+            egui: None,
+            window: None,
+            emulator,
+            pacer: None,
+            keyboard: KeyboardInput::new(keymap),
+            options,
+            audio,
+            error: None,
+            core_id,
+            style,
+            profile,
+            speed: SpeedState::default(),
+            slot: 0,
+            next_flush: now + SRAM_FLUSH_INTERVAL,
+            fullscreen: false,
+            overlay,
+            slots: Vec::new(),
+            core_options: Vec::new(),
+            categories: Vec::new(),
+            config_dirty: false,
+            fps: FpsMeter {
+                since: now,
+                frames_at: 0,
+                fps: 0.0,
+            },
+            finishing: None,
+            ui_repaint_at: None,
+            hosted,
+            ended: false,
+        })
+    }
+
+    fn log_audio_stats(&self) {
+        let stats = self.audio.stats();
+        tracing::info!(
+            "audio stats: underruns={} dropped_samples={} stream_failed={}",
+            stats.underruns,
+            stats.dropped_samples,
+            stats.stream_failed
+        );
+    }
+
+    /// Hosted mode: takes the library's window (and egui layer) and starts pacing. The window keeps its size.
+    pub(crate) fn attach(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: GlWindow,
+        egui: Option<EguiLayer>,
+    ) {
+        if let Err(e) = window.set_vsync(self.options.config.video.vsync) {
+            tracing::warn!("vsync non réglable : {e}");
+        }
+        let fps = self.emulator.av_info().timing.fps;
+        window.window().request_redraw();
+        self.window = Some(window);
+        self.egui = egui;
+        let mode = match self.options.config.audio.sync {
+            SyncChoice::Audio => SyncMode::Audio,
+            SyncChoice::Clock => SyncMode::Clock,
+        };
+        self.pacer = Some(Pacer::new(fps, mode, Instant::now()));
+        self.apply_speed();
+        event_loop.set_control_flow(ControlFlow::Poll);
+    }
+
+    /// Hosted mode, game over: SRAM and config written, window and egui handed back with the (possibly edited)
+    /// configuration and the error that ended the game, if any. The emulator is dropped by the caller.
+    pub(crate) fn detach(&mut self) -> Detached {
+        self.keyboard.release_all();
+        self.audio.set_paused(true);
+        self.flush_sram();
+        self.save_config();
+        self.log_audio_stats();
+        self.pacer = None;
+        Detached {
+            window: self.window.take(),
+            egui: self.egui.take(),
+            config: self.options.config.clone(),
+            error: self.error.take(),
+        }
+    }
+
+    pub(crate) fn ended(&self) -> bool {
+        self.ended
+    }
+
+    /// OSD message shown when the game starts (BIOS warnings from the library launch).
+    pub(crate) fn warn(&mut self, message: String) {
+        self.overlay.osd.push(
+            message,
+            OsdLevel::Warn,
+            Duration::from_secs(6),
+            Instant::now(),
+        );
+    }
+
+    /// Standalone: quits the program. Hosted: hands control back to the library.
+    fn exit(&mut self, event_loop: &ActiveEventLoop) {
+        if self.hosted {
+            self.ended = true;
+            self.finishing = None;
+        } else {
+            event_loop.exit();
+        }
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl Into<UiError>) {
         self.error = Some(error.into());
-        event_loop.exit();
+        self.exit(event_loop);
     }
 
     /// egui's GL objects go before the context (ADR 0008 drop order).
@@ -307,16 +418,17 @@ impl App {
     }
 
     fn rebuild_keyboard(&mut self) {
-        self.keyboard = KeyboardInput::new(self.options.config.keymap_for(&self.core_id));
+        self.keyboard =
+            KeyboardInput::new(self.options.config.keymap_for(&self.profile, self.style));
     }
 
     fn finish_capture(&mut self, key: KeyCode) {
         let Some((profile, port, button)) = self.overlay.capture() else {
             return;
         };
-        let style = PadStyle::from_core_id(&self.core_id);
+        let style = self.style;
         let config = &self.options.config;
-        let mut map = profile_map(config, &self.core_id, profile);
+        let mut map = profile_map(config, &self.profile, style, profile);
         let outcome = apply_capture(&mut map, &config.hotkeys, key, port, button);
         let notice = match outcome {
             CaptureOutcome::Cancelled => text::KEYS_CANCELLED.to_owned(),
@@ -333,7 +445,7 @@ impl App {
             outcome,
             CaptureOutcome::Cleared | CaptureOutcome::Bound { .. }
         ) {
-            let profile_key = profile.key(&self.core_id).to_owned();
+            let profile_key = profile.key(&self.profile).to_owned();
             self.options.config.set_keymap(&profile_key, map);
             self.config_dirty = true;
             self.rebuild_keyboard();
@@ -428,7 +540,7 @@ impl App {
                 }
                 UiAction::Open(screen) => self.open_screen(screen),
                 UiAction::Back => self.go_back(),
-                UiAction::Quit => event_loop.exit(),
+                UiAction::Quit => self.exit(event_loop),
                 UiAction::SetOption { key, value } => {
                     self.set_option(&key, &value);
                     self.refresh_options();
@@ -446,11 +558,10 @@ impl App {
                     self.refresh_options();
                 }
                 UiAction::RestoreKeys(profile) => {
-                    let key = profile.key(&self.core_id).to_owned();
-                    self.options.config.set_keymap(
-                        &key,
-                        KeyMap::default_for(PadStyle::from_core_id(&self.core_id)),
-                    );
+                    let key = profile.key(&self.profile).to_owned();
+                    self.options
+                        .config
+                        .set_keymap(&key, KeyMap::default_for(self.style));
                     self.config_dirty = true;
                     self.rebuild_keyboard();
                     self.overlay.set_notice(text::KEYS_RESTORED);
@@ -486,7 +597,7 @@ impl App {
                     self.open_screen(Screen::Menu);
                 } else {
                     // No egui (GL too old for it): keep the phase 1 behaviour.
-                    event_loop.exit();
+                    self.exit(event_loop);
                 }
             }
             HotkeyAction::TogglePause => {
@@ -584,7 +695,7 @@ impl App {
             .exit_after_frames
             .is_some_and(|n| self.emulator.frame_count() >= n);
         if status.shutdown_requested {
-            event_loop.exit();
+            self.exit(event_loop);
         } else if done {
             self.finish(event_loop);
         }
@@ -604,7 +715,7 @@ impl App {
         } else if self.options.dump_window.is_some() {
             self.finishing = Some(1);
         } else {
-            event_loop.exit();
+            self.exit(event_loop);
             return;
         }
         self.apply_speed();
@@ -643,12 +754,14 @@ impl App {
         {
             let data = UiData {
                 game: self.emulator.game_name(),
-                core_id: &self.core_id,
+                core_id: &self.profile,
+                style: self.style,
                 config: &self.options.config,
                 slot: self.slot,
                 slots: &self.slots,
                 options: &self.core_options,
                 categories: &self.categories,
+                hosted: self.hosted,
                 stats,
                 now,
             };
@@ -700,18 +813,18 @@ impl ApplicationHandler for App {
             return;
         }
         let av = self.emulator.av_info();
-        let base = (
-            av.geometry.base_width.max(1),
-            av.geometry.base_height.max(1),
-        );
+        let base_height = av.geometry.base_height.max(1);
+        let aspect = av.geometry.display_aspect();
         let scale = initial_scale(
-            base,
+            base_height,
+            aspect,
             self.options
                 .scale
                 .unwrap_or(self.options.config.video.scale),
         );
         // Logical pixels: the window keeps the same apparent size on HiDPI screens.
-        let size = LogicalSize::new(base.0.saturating_mul(scale), base.1.saturating_mul(scale));
+        let (width, height) = window_size(base_height, aspect, scale);
+        let size = LogicalSize::new(width, height);
         let attrs = WindowAttributes::default()
             .with_title("emu-rust")
             .with_inner_size(size);
@@ -794,7 +907,7 @@ impl ApplicationHandler for App {
             w.window().request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.exit(event_loop),
             WindowEvent::Resized(size) => {
                 if let Some(w) = &self.window {
                     w.resize(size);
@@ -816,7 +929,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.pacer.is_none() || event_loop.exiting() {
+        if self.pacer.is_none() || event_loop.exiting() || self.ended {
             return;
         }
         // Deterministic capture: render directly, without relying on RedrawRequested timing.
@@ -824,7 +937,7 @@ impl ApplicationHandler for App {
             let last = left <= 1;
             self.render(event_loop, last);
             if last {
-                event_loop.exit();
+                self.exit(event_loop);
             } else {
                 self.finishing = Some(left - 1);
             }
@@ -849,7 +962,7 @@ impl ApplicationHandler for App {
             match pacer.poll(now, level) {
                 PaceDecision::Run => {
                     self.step(event_loop);
-                    if event_loop.exiting() || self.finishing.is_some() {
+                    if event_loop.exiting() || self.finishing.is_some() || self.ended {
                         return;
                     }
                 }
@@ -877,10 +990,25 @@ mod tests {
 
     #[test]
     fn initial_scale_fits_menu_and_is_bounded() {
-        assert_eq!(initial_scale((320, 224), 3), 3);
-        assert_eq!(initial_scale((320, 224), 1), 3);
-        assert_eq!(initial_scale((64, 48), 3), 10);
-        assert_eq!(initial_scale((1, 1), 99), MAX_SCALE);
-        assert_eq!(initial_scale((u32::MAX, u32::MAX), 0), MIN_SCALE);
+        let a = 320.0 / 224.0;
+        assert_eq!(initial_scale(224, a, 3), 3);
+        assert_eq!(initial_scale(224, a, 1), 3);
+        assert_eq!(initial_scale(48, 4.0 / 3.0, 3), 10);
+        assert_eq!(initial_scale(1, 1.0, 99), MAX_SCALE);
+        assert_eq!(initial_scale(u32::MAX, 1.0, 0), MIN_SCALE);
+    }
+
+    #[test]
+    fn window_follows_display_aspect() {
+        // NES: 256x240 pixels shown at 8:7 → 274 px wide per 240, not 256.
+        assert_eq!(window_size(240, 8.0 / 7.0, 3), (823, 720));
+        // Master System: 256x192 at 4:3.
+        assert_eq!(window_size(192, 4.0 / 3.0, 3), (768, 576));
+        // Mega Drive 320x224 at its own aspect: unchanged.
+        assert_eq!(window_size(224, 320.0 / 224.0, 3), (960, 672));
+        assert_eq!(window_size(0, 0.0, 1), (1, 1));
+        assert_eq!(window_size(240, 1000.0, 1), (960, 240));
+        assert_eq!(window_size(240, f32::NAN, 1), (240, 240));
+        assert!(window_size(240, 4.0, 16).0 <= 16384);
     }
 }

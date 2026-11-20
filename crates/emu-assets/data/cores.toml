@@ -1,0 +1,24 @@
+# Core preferences per system (ADR 0013). Keys: libretro database names (as in `.info` `database` fields and
+# libretro-thumbnails). First core = recommended; users override with `[cores.preferred]` in config.toml.
+# Licences checked against the buildbot `.info` files on 2026-11-19.
+
+[systems."Sega - Mega Drive - Genesis"]
+cores = ["genesis_plus_gx", "picodrive"]          # Non-commercial, MAME licence (non-commercial)
+
+[systems."Sega - Master System - Mark III"]
+cores = ["genesis_plus_gx", "picodrive"]
+
+[systems."Sega - Game Gear"]
+cores = ["genesis_plus_gx", "picodrive"]
+
+[systems."Nintendo - Super Nintendo Entertainment System"]
+cores = ["snes9x", "bsnes", "mesen-s"]            # Non-commercial, GPLv3, GPLv3
+
+[systems."Nintendo - Game Boy"]
+cores = ["gambatte", "sameboy", "mgba"]           # GPLv2, MIT, MPL-2.0
+
+[systems."Nintendo - Game Boy Color"]
+cores = ["gambatte", "sameboy", "mgba"]
+
+[systems."Nintendo - Nintendo Entertainment System"]
+cores = ["mesen", "nestopia", "fceumm"]           # GPLv3, GPLv2, GPLv2

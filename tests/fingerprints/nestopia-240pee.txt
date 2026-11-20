@@ -1,0 +1,4 @@
+# nestopia + 240pee-0.23.nes, B at frame 300 on menu ROMs; core sha256 72e2784bb3822fc70d5e74c98f0a0b2eaa95952ac43c01cae9ac25815b0be105
+frame=120 fingerprint=bb774be20fbc0123
+frame=300 fingerprint=bb774be20fbc0123
+frame=600 fingerprint=d97821aa92791e3d

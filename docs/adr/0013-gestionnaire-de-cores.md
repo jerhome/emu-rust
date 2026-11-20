@@ -47,7 +47,7 @@ Constat sur le buildbot (2026-11-19) :
    ici est plus étroit (copie de la seule vérification du répertoire central, commentée).
 5. **Emplacement** (précise ADR 0006) : `<data>/cores/<os>-<arch>/` (`linux-x86_64`, `windows-x86_64`,
    `macos-x86_64`) avec `<id>_libretro.<ext>`, `<id>_libretro.<ext>.prev`, `manifest.toml`, `info/*.info`,
-   `.cache/index-extended`. Écritures : fichier temporaire dans le même dossier, `sync_all`, renommages, fsync du
+   `.cache/index-extended`, `.lock`. Écritures : fichier temporaire dans le même dossier, `sync_all`, renommages, fsync du
    dossier (Unix) ; résidus d'une installation interrompue nettoyés à l'ouverture. Un fichier `*_libretro.<ext>`
    déposé à la main est listé comme « manuel » (utilisable, jamais vérifié ni mis à jour).
 6. **Core chargé** : jamais remplacé, supprimé ni restauré tant qu'il est chargé (`set_in_use`) — obligatoire sous
@@ -85,3 +85,11 @@ Constat sur le buildbot (2026-11-19) :
 - Le code d'extraction existe en deux exemplaires (runtime : contenu ; assets : cores) ; à factoriser dans un crate
   feuille si un troisième besoin apparaît (ADR requise : graphe de dépendances).
 - `emu-ui` relie bibliothèque et cores : système de la bibliothèque → `choose_core` → `verified_path` → chargement.
+
+## Amendement 2026-11-20 — verrou de dossier inter-processus
+
+- `<cores>/.lock` est verrouillé (`std::fs::File::lock`) pendant toute écriture (installation, mise à jour, retour arrière) :
+  deux instances d'emu-rust ne s'écrasent plus. `Busy` reste la protection à l'intérieur d'un processus.
+- Le manifeste est relu et fusionné sous verrou. Si le système de fichiers ne gère pas le verrou (ENOLCK, `Unsupported`),
+  l'opération continue sans verrou et le repli est journalisé.
+- Les temporaires orphelins (installation interrompue) sont supprimés après 1 h, pour ne pas toucher à ceux d'une autre instance.

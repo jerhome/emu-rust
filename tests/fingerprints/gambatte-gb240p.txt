@@ -1,0 +1,4 @@
+# gambatte + gb240p-0.23.gb, B at frame 300 on menu ROMs; core sha256 e7d5e5c301ca7ec7ff92f9ef9a4d704b315e80f23607551daf598dac335b27be
+frame=120 fingerprint=9b69c2f349d89f1a
+frame=300 fingerprint=9b69c2f349d89f1a
+frame=600 fingerprint=865d7838c0fff277

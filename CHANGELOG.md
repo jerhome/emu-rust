@@ -2,6 +2,43 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [1.0.0] - 2026-11-20
+
+Première version « complète » : petites consoles, bibliothèque de jeux, jaquettes et gestionnaire de cores.
+Systèmes : Mega Drive, Super Nintendo, **Game Boy / Game Boy Color**, **NES**, **Master System** et **Game Gear**.
+
+### Ajouté
+
+- Gestionnaire de cores intégré (écran Cores ou `--install-core`, `--list-cores`, `--update-cores`) : installation
+  vérifiée depuis le buildbot libretro (HTTPS, tailles bornées, SHA-256), mises à jour, retour arrière vers la version
+  précédente. Les BIOS sont vérifiés par empreinte (md5) mais jamais téléchargés.
+- Bibliothèque de jeux : scan des dossiers de ROMs, hash CRC32/SHA-1, identification par les DAT No-Intro, base
+  SQLite, favoris et récemment joués. `emu-rust` sans argument ouvre la bibliothèque.
+- Jaquettes : libretro-thumbnails, puis ScreenScraper, puis IGDB ; désactivées par défaut (réglage explicite,
+  identifiants jamais loggés, fichier de configuration en `600`).
+- Nouveaux systèmes : Game Boy / Color (gambatte), NES (mesen), Master System et Game Gear (genesis_plus_gx).
+- Profils clavier par défaut pour chaque système (Master System / Game Gear, Game Boy / NES).
+- Docker : volume `/data` étendu (`cores`, `covers`, `database`, `library.sqlite`).
+- Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0) : `THIRD-PARTY-DATA.txt` dans les archives.
+
+### Corrigé
+
+- Lancement depuis la bibliothèque : taille de fenêtre selon le format d'image du jeu.
+- Scan : les fichiers vides sont ignorés.
+- Ouverture de la base SQLite sans récupération automatique ; échéance globale pour le téléchargement des jaquettes.
+- Divers points relevés par les revues (réseau, extraction d'archives, écran Cores).
+
+### Limites connues
+
+- Pas de manette (clavier uniquement) ; la manette PS4 est prévue plus tard.
+- Le retour d'un jeu vers la bibliothèque n'est pas testé automatiquement (essai manuel).
+- Jaquettes JPEG de plus de ~2700 x 2700 pixels refusées.
+- Game Gear : un savestate est restauré sans image avec la nightly actuelle de genesis_plus_gx (défaut du core).
+- Aucune ROM ni BIOS commercial n'est fourni ni téléchargé.
+- macOS : application non notarisée (validation manuelle de Gatekeeper requise).
+- Windows : avertissement SmartScreen attendu (binaire non signé).
+- Profil Docker `x11` non testé (pas d'hôte Linux disponible).
+
 ## [0.1.0] - 2026-11-20
 
 Première pré-release. Systèmes cibles : **Mega Drive** (genesis_plus_gx) et **Super Nintendo** (snes9x).

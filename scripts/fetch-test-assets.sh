@@ -4,7 +4,10 @@
 #   - 240p Test Suite (SNES) 1.02, GPL-2.0 homebrew (ArtemioUrbina/240pTestSuite), SHA256 pinned
 #   - Sub Rescue 0.3 (haroldo-ok, MIT), Master System homebrew, SHA256 pinned
 #   - Waternet 1.0 (joyrider3774, MIT), native Game Gear homebrew, SHA256 pinned
-#   - genesis_plus_gx and snes9x libretro cores, libretro nightly, hash recorded on first download (TOFU)
+#   - gb240p (Game Boy / Color) and 240pee (NES) from 240p-test-mini v0.23 (GPL-2.0, Damian Yerrick/Artemio Urbina), SHA256 pinned
+#   - cgb-acid2 1.1 (Matt Currie, MIT), Game Boy Color rendering test, SHA256 pinned
+#   - genesis_plus_gx, snes9x and Game Boy / NES candidate libretro cores (gambatte, sameboy, mgba, mesen, nestopia,
+#     fceumm), libretro nightly, hash recorded on first download (TOFU)
 set -euo pipefail
 
 usage() {
@@ -68,8 +71,26 @@ GG_MEMBER='waternet.gg'
 GG_NAME='waternet-1.0.gg'
 GG_SHA256='ab9f288e2b556263cddd7856deb67269cfe08ac1e6729ca9e44c5e2c19bb1d8c'
 
+# 240p Test Suite mini (https://github.com/pinobatch/240p-test-mini, LICENSE = GPL-2.0), bare ROMs in the release
+MINI_URL='https://github.com/pinobatch/240p-test-mini/releases/download/v0.23'
+GB_URL="$MINI_URL/gb240p.gb"
+GB_NAME='gb240p-0.23.gb'
+GB_SHA256='733eb6e7ec0719752ddd5fcda4e715c2f2e20f4ac4bc971c4bd1d49272f9bb04'
+NES_URL="$MINI_URL/240pee.nes"
+NES_NAME='240pee-0.23.nes'
+NES_SHA256='04f01d7372f66ea2befe325b9bd655a9fcc395a31fa46d9466286bb8f9d2e62e'
+
+# cgb-acid2: https://github.com/mattcurrie/cgb-acid2 (LICENSE = MIT)
+CGB_URL='https://github.com/mattcurrie/cgb-acid2/releases/download/v1.1/cgb-acid2.gbc'
+CGB_NAME='cgb-acid2-1.1.gbc'
+CGB_SHA256='197fb0bcec544f0400527fc707e0a94f55435974986e6986b424ace5de81720e'
+
 CORE_BASE_URL='https://buildbot.libretro.com/nightly/linux/x86_64/latest'
-CORES=(genesis_plus_gx_libretro.so snes9x_libretro.so)
+CORES=(
+    genesis_plus_gx_libretro.so snes9x_libretro.so
+    gambatte_libretro.so sameboy_libretro.so mgba_libretro.so
+    mesen_libretro.so nestopia_libretro.so fceumm_libretro.so
+)
 
 MAX_UNZIPPED_BYTES=$((128 * 1024 * 1024))
 
@@ -141,6 +162,25 @@ fetch_rom() {
     fi
 }
 
+# fetch_file URL NAME SHA256 : a bare ROM published as is (the archive tests build their own zip).
+fetch_file() {
+    local url="$1" name="$2" sha="$3" path="$roms_dir/$2"
+    if [ -f "$path" ] && [ "$(sha_of "$path")" = "$sha" ]; then
+        echo "ROM ok: $path"
+        return
+    fi
+    echo "Downloading $name ..."
+    part_files+=("$path.part")
+    download_zip "$url" "$path.part"
+    if [ "$(sha_of "$path.part")" != "$sha" ]; then
+        rm -f "$path.part"
+        echo "error: SHA256 mismatch for $name" >&2
+        exit 1
+    fi
+    mv -f "$path.part" "$path"
+    echo "ROM installed: $path"
+}
+
 # fetch_core CORE_NAME (TOFU)
 fetch_core() {
     local name="$1" core_path="$cores_dir/$1" work sum expected
@@ -169,4 +209,7 @@ fetch_rom "$ROM_URL" "$ROM_ZIP_SHA256" "$ROM_ZIP_NAME" "$ROM_NAME" "$ROM_NAME" "
 fetch_rom "$SNES_ZIP_URL" "$SNES_ZIP_SHA256" "$SNES_ZIP_NAME" "$SNES_MEMBER" "$SNES_NAME" "$SNES_SHA256"
 fetch_rom "$SR_ZIP_URL" "$SR_ZIP_SHA256" "$SR_ZIP_NAME" "$SR_MEMBER" "$SR_NAME" "$SR_SHA256"
 fetch_rom "$GG_ZIP_URL" "$GG_ZIP_SHA256" "$GG_ZIP_NAME" "$GG_MEMBER" "$GG_NAME" "$GG_SHA256"
+fetch_file "$GB_URL" "$GB_NAME" "$GB_SHA256"
+fetch_file "$NES_URL" "$NES_NAME" "$NES_SHA256"
+fetch_file "$CGB_URL" "$CGB_NAME" "$CGB_SHA256"
 for core in "${CORES[@]}"; do fetch_core "$core"; done

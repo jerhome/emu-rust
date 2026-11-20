@@ -5,7 +5,45 @@ license.workspace = true
 edition.workspace = true
 publish = false
 
+# ADR 0013 (core manager) and ADR 0014 (shared HTTP stack). Versions pinned here (not in
+# [workspace.dependencies]) to keep the task inside this crate. All MIT/Apache-2.0 (ring: Apache-2.0 AND ISC).
 [dependencies]
+crc32fast = "1.5"
+# L2 (ADR 0014 §5): untrusted covers, PNG and JPEG (zune-jpeg) decoders only. MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# digest 0.10 line, shared with emu-library's sha1 0.10.
+md-5 = "0.10"
+percent-encoding = "2"
+# Blocking client only, no default TLS (it would pull aws-lc-rs): rustls with the ring provider, platform
+# certificates through rustls-platform-verifier. No http2 / charset / cookies / proxy autodetection.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
+serde = { workspace = true }
+serde_json = "1"
+sha2 = "0.10"
+# Temporary file next to the destination, then atomic rename (ADR 0005).
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+zip = { workspace = true }
+# Wipes `Secret` buffers on drop.
+zeroize = "1"
+# The JPEG decoder `image` runs, queried directly for its header pass (image.rs). Pinned: the memory budget is
+# derived from this exact version's allocations; zune-core is used through its `zune_jpeg::zune_core` re-export.
+# MIT OR Apache-2.0 OR Zlib.
+zune-jpeg = "=0.5.15"
+
+[target.'cfg(unix)'.dependencies]
+# ENOLCK only (lock unsupported on some network file systems).
+libc = "0.2"
+
+[dev-dependencies]
+# Log capture: credentials must never reach a log line.
+tracing-subscriber = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
+wiremock = "0.6"
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-//! `config.toml` and data directories (ADR 0011). No secret ever goes in this file in phase 2.
+//! `config.toml` and data directories (ADR 0011). Credentials (ScreenScraper, IGDB) are `Secret`s: file kept 0600, never logged.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -9,6 +9,7 @@ use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
+use crate::config_library::{CoresConfig, CoversConfig, CredentialsConfig, LibraryConfig};
 use crate::keyboard::{KeyMap, PadStyle};
 
 /// Profile used when a core has no profile of its own.
@@ -32,6 +33,14 @@ pub struct DataDirs {
     pub saves: PathBuf,
     pub states: PathBuf,
     pub assets: PathBuf,
+    /// `library.sqlite` (ADR 0006).
+    pub library_db: PathBuf,
+    /// `covers/<system>/boxart/` (ADR 0014).
+    pub covers: PathBuf,
+    /// Downloaded No-Intro DAT files: `database/no-intro/<dat>.dat` (ADR 0014).
+    pub database: PathBuf,
+    /// `cores/<os>-<arch>/` (ADR 0013); same folder as `emu_assets::cores::CoreDirs::under`.
+    pub cores: PathBuf,
 }
 
 impl DataDirs {
@@ -43,6 +52,14 @@ impl DataDirs {
             saves: root.join("saves"),
             states: root.join("states"),
             assets: root.join("assets"),
+            library_db: root.join("library.sqlite"),
+            covers: root.join("covers"),
+            database: root.join("database").join("no-intro"),
+            cores: root.join("cores").join(format!(
+                "{}-{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )),
         }
     }
 
@@ -58,7 +75,15 @@ impl DataDirs {
             }
             builder.create(&self.root)?;
         }
-        for dir in [&self.system, &self.saves, &self.states, &self.assets] {
+        for dir in [
+            &self.system,
+            &self.saves,
+            &self.states,
+            &self.assets,
+            &self.covers,
+            &self.database,
+            &self.cores,
+        ] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
@@ -214,6 +239,10 @@ pub struct Config {
     pub speed: SpeedConfig,
     pub hotkeys: Hotkeys,
     pub input: InputConfig,
+    pub library: LibraryConfig,
+    pub covers: CoversConfig,
+    pub credentials: CredentialsConfig,
+    pub cores: CoresConfig,
     /// `core_id` → option key → value.
     pub core_options: BTreeMap<String, BTreeMap<String, String>>,
     /// Unknown top-level keys and tables, written back unchanged.
@@ -376,13 +405,23 @@ impl Config {
     }
 
     /// Core profile, else `"default"`, else the built-in layout of the core's system.
-    pub fn keymap_for(&self, core_id: &str) -> KeyMap {
+    /// The `"default"` profile is a Mega Drive/SNES-style map (A/B/C/X/Y/Z): it would break the
+    /// two-button systems (SMS/GG/GB/NES), so it only applies to the MegaDrive/Snes/Generic styles.
+    pub fn keymap_for(&self, profile: &str, style: PadStyle) -> KeyMap {
+        let default_applies = matches!(
+            style,
+            PadStyle::MegaDrive | PadStyle::Snes | PadStyle::Generic
+        );
         self.input
             .keyboard
-            .get(core_id)
-            .or_else(|| self.input.keyboard.get(DEFAULT_PROFILE))
+            .get(profile)
+            .or_else(|| {
+                default_applies
+                    .then(|| self.input.keyboard.get(DEFAULT_PROFILE))
+                    .flatten()
+            })
             .cloned()
-            .unwrap_or_else(|| KeyMap::default_for(PadStyle::from_core_id(core_id)))
+            .unwrap_or_else(|| KeyMap::default_for(style))
     }
 
     pub fn set_keymap(&mut self, profile: &str, map: KeyMap) {
@@ -543,25 +582,43 @@ port = 99
 button = "a"
 "#;
         let cfg: Config = toml::from_str(text).unwrap();
-        let map = cfg.keymap_for("anything");
+        let map = cfg.keymap_for("anything", PadStyle::Generic);
         assert_eq!(map.bindings(), &[(KeyCode::KeyZ, 0, JoypadButton::Y)]);
     }
 
     #[test]
     fn keymap_fallbacks() {
         let mut cfg = Config::default();
-        assert_eq!(cfg.keymap_for("x"), KeyMap::generic_default());
-        assert_eq!(cfg.keymap_for("genesis_plus_gx"), KeyMap::genesis_default());
-        assert_eq!(cfg.keymap_for("snes9x"), KeyMap::snes_default());
+        assert_eq!(
+            cfg.keymap_for("x", PadStyle::Generic),
+            KeyMap::generic_default()
+        );
+        assert_eq!(
+            cfg.keymap_for("genesis_plus_gx", PadStyle::MegaDrive),
+            KeyMap::genesis_default()
+        );
+        assert_eq!(
+            cfg.keymap_for("snes9x", PadStyle::Snes),
+            KeyMap::snes_default()
+        );
         let mut d = KeyMap::default();
         d.bind(KeyCode::KeyQ, 0, JoypadButton::A);
         cfg.set_keymap(DEFAULT_PROFILE, d.clone());
-        assert_eq!(cfg.keymap_for("x"), d);
+        assert_eq!(cfg.keymap_for("x", PadStyle::Generic), d);
         let mut c = KeyMap::default();
         c.bind(KeyCode::KeyW, 0, JoypadButton::B);
         cfg.set_keymap("x", c.clone());
-        assert_eq!(cfg.keymap_for("x"), c);
-        assert_eq!(cfg.keymap_for("y"), d);
+        assert_eq!(cfg.keymap_for("x", PadStyle::Generic), c);
+        assert_eq!(cfg.keymap_for("y", PadStyle::Generic), d);
+        // The default profile does not override the built-in layout of two-button systems.
+        assert_eq!(
+            cfg.keymap_for("gambatte", PadStyle::GameBoy),
+            KeyMap::default_for(PadStyle::GameBoy)
+        );
+        assert_eq!(
+            cfg.keymap_for("mesen", PadStyle::Nes),
+            KeyMap::default_for(PadStyle::Nes)
+        );
     }
 
     #[test]

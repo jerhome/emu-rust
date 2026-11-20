@@ -28,10 +28,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Default ALSA device is routed to PulseAudio only when PULSE_SERVER is set (see entrypoint.sh),
 # so that sound-less runs (noVNC) do not try to reach a missing server.
 
-RUN useradd --create-home --uid 1000 emu && mkdir -p /data/saves /data/states /data/assets /tmp/.X11-unix && chown -R emu:emu /data && chmod 1777 /tmp/.X11-unix
+RUN useradd --create-home --uid 1000 emu && mkdir -p /data/roms /data/system /data/saves /data/states /data/assets /data/cores /data/covers /data/database /tmp/.X11-unix && chown -R emu:emu /data && chmod 1777 /tmp/.X11-unix
 COPY --from=build /src/target/release/emu-rust /usr/local/bin/emu-rust
 COPY docker/runtime/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/runtime/sound-check.sh /usr/local/bin/sound-check
+COPY LICENSE-MIT LICENSE-APACHE packaging/THIRD-PARTY-DATA.txt /usr/share/doc/emu-rust/
 
 USER emu
 ENV EMU_DATA_DIR=/data

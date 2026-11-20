@@ -1,0 +1,4 @@
+# sameboy + cgb-acid2-1.1.gbc, B at frame 300 on menu ROMs; core sha256 a82f691a5164aa459283ec02bb4050526f6ebd79b20d2c55f7d23804f9efe4a6
+frame=120 fingerprint=154ce6302fdfd6d3
+frame=300 fingerprint=673c963c7ff93794
+frame=600 fingerprint=673c963c7ff93794

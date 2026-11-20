@@ -3,18 +3,35 @@ emu-rust - frontend libretro (usage personnel)
 
 Aucun core, BIOS ni jeu n'est fourni. Vous fournissez le core libretro et la ROM.
 
-1. Télécharger un core (buildbot libretro officiel, puis dézipper)
+0. Cores depuis l'application
+-----------------------------
+Sans argument, emu-rust ouvre la bibliothèque de jeux : indiquez le dossier de vos ROMs dans les Réglages, lancez
+le scan, puis installez les cores depuis l'écran Cores, ou en ligne de commande :
+  emu-rust --install-core recommended      (aussi : --list-cores, --update-cores)
+Les cores sont téléchargés depuis le buildbot libretro (HTTPS), vérifiés, et rangés dans le dossier de données
+(cores/). Les BIOS ne sont jamais téléchargés : l'écran Cores indique ceux qui manquent. Les jaquettes sont
+désactivées par défaut (activation dans les Réglages).
+La méthode manuelle ci-dessous reste possible : --core accepte un chemin.
+
+1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :
   Linux   : https://buildbot.libretro.com/nightly/linux/x86_64/latest/genesis_plus_gx_libretro.so.zip
   macOS   : https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/genesis_plus_gx_libretro.dylib.zip
   Windows : https://buildbot.libretro.com/nightly/windows/x86_64/latest/genesis_plus_gx_libretro.dll.zip
 SNES : même chemin avec snes9x_libretro.{so,dylib,dll}.zip
+Game Boy / Color : gambatte_libretro.*    NES : mesen_libretro.*    Master System / Game Gear : genesis_plus_gx_libretro.*
 
 ROM de test libre (240p Test Suite 1.21, GPL-2.0 ; le .zip se charge directement) :
   https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip/download
 ROM de test libre SNES (240p Test Suite SNES 1.02, GPL-2.0, même auteur) :
   https://sourceforge.net/projects/testsuite240p/files/OldFiles/SNES_SFC/240pSuite-SNES-1.02.zip/download
+
+ROM de test libres (240p Test Suite mini, GPL-2.0, v0.23) :
+  Game Boy : https://github.com/pinobatch/240p-test-mini/releases/download/v0.23/gb240p.gb
+  NES      : https://github.com/pinobatch/240p-test-mini/releases/download/v0.23/240pee.nes
+  Master System : https://github.com/haroldo-ok/sub-rescue/releases/download/v0.3/sub_rescue-0.3.zip (Sub Rescue, MIT)
+  Game Gear     : https://github.com/joyrider3774/waternet/releases/download/v1.0/Waternet.Sega.Game.Gear.zip (Waternet, MIT)
 
 Le core et la ROM peuvent être n'importe où : on passe leur chemin en ligne de commande.
 
@@ -33,6 +50,8 @@ Données (config.toml, saves/, states/) : --data-dir DIR, sinon EMU_DATA_DIR, si
   Flèches = croix directionnelle    Entrée = Start    Maj droite = Mode (Mega Drive) / Select (SNES)
   Mega Drive (genesis_plus_gx, picodrive) : Z / X / C = A / B / C    A / S / D = X / Y / Z (manette 6 boutons)
   Super Nintendo (snes9x, bsnes, mesen-s) : X = A (valider)    Z = B    S = X    A = Y    Q = L    W = R
+  Master System / Game Gear : X = bouton 1    Z = bouton 2    Entrée = Pause (SMS) / Start (GG)
+  Game Boy / NES : X = A    Z = B    Entrée = Start    Maj droite = Select
   Autre core : disposition SNES + E / R = L2 / R2    F / G = L3 / R3
   Échap = menu (pause)    Espace maintenu = avance rapide    P = pause    H = reset
   F2 / F4 = sauvegarder / charger l'état    F6 / F7 = emplacement -/+    F11 = plein écran    F3 = stats
@@ -43,7 +62,7 @@ macOS (Gatekeeper) : après dézippage,
     xattr -dr com.apple.quarantine emu-rust.app
   (ou clic droit > Ouvrir, une fois). Même chose pour une .dylib téléchargée au navigateur :
     xattr -d com.apple.quarantine genesis_plus_gx_libretro.dylib
-  Le double-clic sur l'app sans arguments ne fait rien en 0.1.
+  Le double-clic sur l'app (sans argument) ouvre la bibliothèque.
   macOS 10.13 minimum (Intel) ; Mac d'essai : macOS 12.7.6 (Monterey).
 Windows (SmartScreen) : « Informations complémentaires » > « Exécuter quand même ».
   Le core doit être une DLL 64 bits (x86_64).
@@ -56,3 +75,4 @@ Linux : dépendances (Debian/Ubuntu) :
 
 Licence : MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Licences des dépendances : THIRD-PARTY-LICENSES.html.
+Données embarquées (empreintes de BIOS, libretro-database, CC-BY-SA-4.0) : THIRD-PARTY-DATA.txt.

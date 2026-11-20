@@ -1,0 +1,4 @@
+# gambatte + cgb-acid2-1.1.gbc, B at frame 300 on menu ROMs; core sha256 e7d5e5c301ca7ec7ff92f9ef9a4d704b315e80f23607551daf598dac335b27be
+frame=120 fingerprint=0b069dc5c1326fa0
+frame=300 fingerprint=0b069dc5c1326fa0
+frame=600 fingerprint=0b069dc5c1326fa0

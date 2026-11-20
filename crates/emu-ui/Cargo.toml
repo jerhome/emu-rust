@@ -13,6 +13,8 @@ audio-cpal = ["emu-runtime/audio-cpal"]
 egui = { workspace = true }
 egui-winit = { workspace = true }
 egui_glow = { workspace = true }
+emu-assets = { workspace = true }
+emu-library = { workspace = true }
 emu-runtime = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -22,6 +24,8 @@ winit = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
+wiremock = "0.6"
 
 [lints]
 workspace = true
