@@ -1,4 +1,6 @@
-# Guide d'essai de la 0.1
+# Guide d'essai de la 0.1 (clôturé)
+
+> **Clôturé (2026-11-20)** : l'utilisateur n'essaie que les versions ≥ 1.0. Voir `docs/guide-essai-1.0.md`.
 
 À relire au retour. Les builds sont sur la page des releases :
 https://github.com/jerhome/emu-rust/releases (pré-release `v0.1.0`).

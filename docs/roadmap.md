@@ -27,10 +27,10 @@
 
 | Version | Contenu | Processus |
 |---|---|---|
-| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; **Super Nintendo (snes9x) et Mega Drive (genesis_plus_gx) doivent être irréprochables**. Cores à télécharger à la main (liens dans les notes) | Tag `v0.1.0` → pré-release GitHub → essais de l'utilisateur → corrections |
-| 0.1.x (stable) | 0.1 corrigée après essais ; cores toujours téléchargés à la main (liens dans les notes) | Release stable (non pré-release) |
-| 0.2 … 0.x | Étapes vers la 1.0 (ordre à définir ensemble) | — |
-| 1.0 | **Petites consoles** (choix de l'utilisateur, 2026-11-19) : **Game Boy, NES, Game Gear, Master System** (Master System et Game Gear déjà pris en charge par genesis_plus_gx ; cores Game Boy et NES à choisir par l'architecte), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release, essais, stable |
+| 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; Super Nintendo et Mega Drive. Publiée le 2026-11-20. **Clôturée sans essai** (décision du 2026-11-20 : seules les versions ≥ 1.0 sont essayées) | Pré-release conservée pour l'historique |
+| 0.1.x (stable) | **Clôturée** (2026-11-20) : pas d'essais des versions < 1.0, donc pas de 0.1.x | — |
+| 0.2 … 0.x | **Clôturée** : la 1.0 a été développée directement | — |
+| 1.0 (1.0.0-rc.1 publiée le 2026-11-20 ; 1.0.0 stable après essais) | **Petites consoles** (choix de l'utilisateur, 2026-11-19) : **Game Boy, NES, Game Gear, Master System** (Master System et Game Gear déjà pris en charge par genesis_plus_gx ; cores Game Boy et NES à choisir par l'architecte), **bibliothèque et jaquettes** (phase 4), **gestionnaire de cores complet** dans l'UI (phase 3 : liste, mise à jour, BIOS) | Pré-release `v1.0.0-rc.1` → **premiers essais de l'utilisateur** (guide : `docs/guide-essai-1.0.md`) → corrections → 1.0.0 stable |
 | 2.0 | **Atari ST** (hatari + EmuTOS téléchargé) + toute l'infrastructure « ordinateur » : clavier complet et clavier virtuel, souris capturée, disquettes multiples et changement à chaud, BIOS libres/fournis avec hash, options par jeu | Même cycle |
 | 3.0 | **Amiga** (puae ; AROS + Kickstart fourni par l'utilisateur), réutilise l'infrastructure de la 2.0 | Même cycle |
 | 4.0 | **PC-DOS** (dosbox_pure) | Même cycle |
@@ -43,13 +43,13 @@ Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable s
 |---|---|---|
 | 0 | Cadrage | Squelette, ADR, agents, Dockerfiles. ✅ |
 | 1 | POC | genesis_plus_gx fait tourner une ROM homebrew : empreintes d'images headless + capture Xvfb. ✅ |
-| 1b | Premier déploiement Docker | Image en mode WSLg et noVNC, lancée par l'utilisateur, jouable au clavier ; sortie audio réelle via `cpal`. Code et image ✅ ; essai WSLg par l'utilisateur en attente |
-| 2 | Frontend solide | Callbacks libretro complets, formats de pixels, sync A/V, SRAM, savestates, configuration des touches. ✅ (essai réel par l'utilisateur avec la 0.1) |
-| 0.1 | Release 0.1 | Tag `v0.1.0` : phase 2 + 4 builds (image GHCR, Linux `tar.gz`, macOS Intel `.app`, Windows MSVC `zip`) publiés par `release.yml`, CI Windows ajoutée ; checklist essayée par l'utilisateur sur chaque plateforme (ADR 0012, `docs/design/release-0.1.md`) |
-| 2b | Builds natifs Linux et macOS Intel | Livrés techniquement par la release 0.1 ; phase close après l'essai utilisateur. CI GitHub Actions (fmt, clippy, tests avec le core factice) sur Ubuntu et `macos-15-intel` ; binaire Linux ; bundle `.app` macOS (OpenGL ≤ 4.1, CoreAudio, cores `.dylib`) essayé par l'utilisateur sur son Mac Intel. Binaire Linux essayé directement dans WSL2 (WSLg : Wayland/X11 + PulseAudio) ; profil Docker `x11` non testable (pas d'hôte Linux) |
-| 3 | Gestionnaire de cores | Téléchargement et mise à jour des cores depuis l'UI, vérification des BIOS, dossiers système |
-| 4 | Bibliothèque et covers | Scan, identification, SQLite, covers (libretro-thumbnails → ScreenScraper → IGDB) |
-| 5 | Ordinateurs | ST, Amiga, DOS : clavier/souris émulés, disquettes multiples, EmuTOS/AROS automatiques |
+| 1b | Premier déploiement Docker | Image en mode WSLg et noVNC ; sortie audio réelle via `cpal`. Code et image ✅. **Clôturée** (2026-11-20) : l'essai Docker se fait avec la 1.0 |
+| 2 | Frontend solide | Callbacks libretro complets, formats de pixels, sync A/V, SRAM, savestates, configuration des touches. ✅ (essai réel par l'utilisateur avec la 1.0) |
+| 0.1 | Release 0.1 | Tag `v0.1.0` : phase 2 + 4 builds (image GHCR, Linux `tar.gz`, macOS Intel `.app`, Windows MSVC `zip`) publiés par `release.yml`, CI Windows ajoutée ; publiée ✅ ; **clôturée sans essai** (voir « Versions ») (ADR 0012, `docs/design/release-0.1.md`) |
+| 2b | Builds natifs Linux et macOS Intel | Livrés techniquement par la release 0.1 ; phase close après l'essai utilisateur **de la 1.0**. CI GitHub Actions (fmt, clippy, tests avec le core factice) sur Ubuntu et `macos-15-intel` ; binaire Linux ; bundle `.app` macOS (OpenGL ≤ 4.1, CoreAudio, cores `.dylib`) essayé par l'utilisateur sur son Mac Intel. Binaire Linux essayé directement dans WSL2 (WSLg : Wayland/X11 + PulseAudio) ; profil Docker `x11` non testable (pas d'hôte Linux) |
+| 3 | Gestionnaire de cores | Téléchargement et mise à jour des cores depuis l'UI, vérification des BIOS, dossiers système. ✅ (1.0.0-rc.1, ADR 0013) |
+| 4 | Bibliothèque et covers | Scan, identification, SQLite, covers (libretro-thumbnails → ScreenScraper → IGDB). ✅ (1.0.0-rc.1, ADR 0014) |
+| 5 | Ordinateurs | ST, Amiga, DOS : clavier/souris émulés, disquettes multiples, EmuTOS/AROS automatiques. Découpée en versions 2.0 (ST), 3.0 (Amiga), 4.0 (DOS) |
 | 6 | Windows et manette | Manette PS4 (DualShock 4), CI en matrice complète (core factice `.dll`). Le build Windows est avancé dans la release 0.1 |
 | 7 | 32 bits | PS1, Saturn, 3DO, GBA, 32X ; rendu matériel GL (puis Vulkan) |
 | 8 | Sources de ROMs | Téléchargement de ROMs du domaine public / homebrew |
