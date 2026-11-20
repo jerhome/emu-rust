@@ -26,6 +26,9 @@ cores = ["mesen", "nestopia", "fceumm"]           # GPLv3, GPLv2, GPLv2
 [systems."Atari - ST"]
 cores = ["hatari", "hatarib"]                     # GPLv2, GPLv2 (ADR 0015 §1)
 
+[systems."Sega - Mega-CD - Sega CD"]
+cores = ["genesis_plus_gx", "picodrive"]          # Non-commercial, MAME (non-commercial)
+
 # Per-core frontend properties (ADR 0015 §1, optional table):
 # - media: "direct" (content paths handed over as is) or "working_copy" (the core writes into disk images:
 #   a copy under <data>/saves/<core_id>/ is handed over instead, the user's files are never modified).
@@ -37,3 +40,6 @@ options = { hatari_vkbd = "disabled" }            # the frontend's virtual keybo
 
 [cores.hatarib]
 media = "direct"                                  # writes modified floppies to saves/, never the original
+
+[cores.genesis_plus_gx]
+options = { genesis_plus_gx_system_bram = "per game" }   # Mega CD only: one internal backup RAM file per game
