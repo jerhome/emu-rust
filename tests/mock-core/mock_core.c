@@ -52,6 +52,34 @@
  * (INFO "mock core: key ..." / "mock core: disk ...") for the log tests.
  * 16-bit pixel variants quantize the gray cells (values are only exact with the default XRGB8888 build).
  *
+ * Future-version protocol (v4.0 DOS, v5.0 CPC / C64, v6.0 GBA / 32X / Mega CD; each OFF unless its variable is
+ * set, default behaviour unchanged). Files below are written with stdio into GET_SAVE_DIRECTORY (`save/`) unless noted.
+ *   MOCK_VFS        set -> retro_set_environment asks GET_VFS_INTERFACE (45 | EXPERIMENTAL) for version 3. At load_game
+ *                   `mock-vfs.txt` is written: "version=N|0" (0 = refused), then, through the VFS only: "opendir=ok|fail|
+ *                   unsupported" + one "entry=<name>|d|f" per non-hidden entry of GET_SYSTEM_DIRECTORY, "write=<n>" /
+ *                   "read=<text>" / "size=<n>" (file `mock-vfs-out.bin` in the system directory), "stat=<flags>:<size>".
+ *                   Contains "thread" -> the stat is repeated from another thread: "thread_stat=<flags>:<size>".
+ *   MOCK_RESET_KEYS set -> retro_reset polls the keyboard (input_poll, then RETRO_DEVICE_KEYBOARD ids 0..341) and
+ *                   rewrites `mock-reset.txt`: "resets=N", "shift=0|1" (Left or Right Shift down), "down=<csv keycodes>".
+ *   MOCK_ANALOG     set -> retro_run reads RETRO_DEVICE_ANALOG on port <value> (a number, 0 if not numeric): sticks
+ *                   (index 0 / 1, ids X / Y) and the 16 analog buttons (index 2, ids 0..15). `mock-analog.txt` is
+ *                   rewritten when a value changes: "port=P", "left=x,y", "right=x,y", "buttons=v0,...,v15".
+ *   MOCK_FASTFORWARD comma list: "null" -> at set_environment SET_FASTFORWARDING_OVERRIDE (64) with NULL (support probe);
+ *                   "load" -> same call with a struct at load_game; "run" -> struct at frame 5 (on) and frame 10 (off);
+ *                   "get" -> GET_FASTFORWARDING (49 | EXPERIMENTAL) each run. `mock-ff.txt`: "null=", "load=", "run_on=",
+ *                   "run_off=" (1 accepted, 0 refused, -1 not asked) and "get=" (0 / 1 value, -1 refused or not asked).
+ *                   MOCK_FF_RATIO (strtod, default 2.0; "nan" and "-1" work) is the requested ratio.
+ *   MOCK_SAVEDIR_VISIBLE set -> band 5 (rows 40..47) shows FNV-1a (32 bit, little-endian over cells 0-3) of the
+ *                   GET_SAVE_DIRECTORY string and (cells 4-7) of GET_SYSTEM_DIRECTORY, queried at every run (0 if absent).
+ *   MOCK_STATE_SIZE "A" or "A,B" (>= 64) -> retro_serialize_size returns A (B once the frame counter reaches 20) and the
+ *                   core announces SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE (44).
+ *   MOCK_LOAD_ERROR set -> logs ERROR "mock core: error before load" at retro_init; at retro_load_game logs ERROR
+ *                   "mock core: first error during load", ERROR <value> ("1" = "mock core: BIOS file missing"), WARN, then
+ *                   fails; at retro_deinit logs ERROR "mock core: error after load".
+ *   MOCK_FPS        strtod (default 60) -> retro_get_system_av_info fps (e.g. 70.09 for VGA); audio frames per run =
+ *                   44100 / fps.
+ *   MOCK_AV_CHANGE  strtod fps -> at frame 10 (once per load) SET_SYSTEM_AV_INFO (32) with that fps, same geometry.
+ *
  * Behaviour (documented in docs/design/phase2-frontend.md, "Core factice"):
  *  - 64x48 XRGB8888 image computed from a frame counter, a seed (FNV-1a of the content file), the option
  *    `mock_color` and the pad state of port 0. 735 audio frames per run (44100 Hz / 60 fps).
@@ -81,6 +109,7 @@
 #define RETRO_DEVICE_JOYPAD 1
 #define RETRO_DEVICE_MOUSE 2
 #define RETRO_DEVICE_KEYBOARD 3
+#define RETRO_DEVICE_ANALOG 5
 #define RETRO_DEVICE_ID_MOUSE_X 0
 #define RETRO_DEVICE_ID_MOUSE_Y 1
 #define RETRO_DEVICE_ID_MOUSE_LEFT 2
@@ -89,6 +118,8 @@
 #define RETRO_DEVICE_ID_MOUSE_WHEELDOWN 5
 #define RETRO_DEVICE_ID_MOUSE_MIDDLE 6
 #define RETROK_LAST 342
+#define RETROK_RSHIFT 303
+#define RETROK_LSHIFT 304
 #define RETRO_DEVICE_ID_JOYPAD_START 3
 #define RETRO_MEMORY_SAVE_RAM 0
 #define RETRO_REGION_NTSC 0
@@ -118,6 +149,14 @@
 #define RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION 57
 #define RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE 58
 #define RETRO_ENVIRONMENT_SET_VARIABLE 70
+#define RETRO_ENVIRONMENT_EXPERIMENTAL 0x10000
+#define RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO 32
+#define RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS 44
+#define RETRO_ENVIRONMENT_GET_VFS_INTERFACE_X (45 | RETRO_ENVIRONMENT_EXPERIMENTAL)
+#define RETRO_ENVIRONMENT_GET_FASTFORWARDING (49 | RETRO_ENVIRONMENT_EXPERIMENTAL)
+#define RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE (1u << 2)
+#define RETRO_VFS_FILE_ACCESS_READ 1u
+#define RETRO_VFS_FILE_ACCESS_WRITE 2u
 
 #define RETRO_NUM_CORE_OPTION_VALUES_MAX 128
 
@@ -199,6 +238,41 @@ struct retro_disk_control_ext_callback {
     bool (*get_image_label)(unsigned index, char *label, size_t len);
 };
 
+/* VFS v3 (layout from libretro.h: v1 up to rename, v2 adds truncate, v3 the rest). */
+struct retro_vfs_file_handle;
+struct retro_vfs_dir_handle;
+struct retro_vfs_interface {
+    const char *(*get_path)(struct retro_vfs_file_handle *stream);
+    struct retro_vfs_file_handle *(*open)(const char *path, unsigned mode, unsigned hints);
+    int (*close)(struct retro_vfs_file_handle *stream);
+    int64_t (*size)(struct retro_vfs_file_handle *stream);
+    int64_t (*tell)(struct retro_vfs_file_handle *stream);
+    int64_t (*seek)(struct retro_vfs_file_handle *stream, int64_t offset, int seek_position);
+    int64_t (*read)(struct retro_vfs_file_handle *stream, void *s, uint64_t len);
+    int64_t (*write)(struct retro_vfs_file_handle *stream, const void *s, uint64_t len);
+    int (*flush)(struct retro_vfs_file_handle *stream);
+    int (*remove)(const char *path);
+    int (*rename)(const char *old_path, const char *new_path);
+    int64_t (*truncate)(struct retro_vfs_file_handle *stream, int64_t length);
+    int (*stat)(const char *path, int32_t *size);
+    int (*mkdir)(const char *dir);
+    struct retro_vfs_dir_handle *(*opendir)(const char *dir, bool include_hidden);
+    bool (*readdir)(struct retro_vfs_dir_handle *dirstream);
+    const char *(*dirent_get_name)(struct retro_vfs_dir_handle *dirstream);
+    bool (*dirent_is_dir)(struct retro_vfs_dir_handle *dirstream);
+    int (*closedir)(struct retro_vfs_dir_handle *dirstream);
+};
+struct retro_vfs_interface_info {
+    uint32_t required_interface_version;
+    struct retro_vfs_interface *iface;
+};
+struct retro_fastforwarding_override {
+    float ratio;
+    bool fastforward;
+    bool notification;
+    bool inhibit_toggle;
+};
+
 typedef bool (*retro_environment_t)(unsigned cmd, void *data);
 typedef void (*retro_video_refresh_t)(const void *data, unsigned width, unsigned height, size_t pitch);
 typedef void (*retro_audio_sample_t)(int16_t left, int16_t right);
@@ -209,7 +283,8 @@ typedef int16_t (*retro_input_state_t)(unsigned port, unsigned device, unsigned 
 /* ---- mock state ---- */
 #define WIDTH 64u
 #define HEIGHT 48u
-#define AUDIO_FRAMES 735u
+#define AUDIO_FRAMES_DEFAULT 735u
+#define AUDIO_FRAMES_MAX 1024u
 #define SRAM_SIZE 2048u
 #define STATE_SIZE 64u
 
@@ -225,7 +300,8 @@ static uint32_t seed;
 static bool game_loaded;
 static uint8_t sram[SRAM_SIZE];
 static uint32_t frame_pixels[WIDTH * HEIGHT];
-static int16_t audio_buf[AUDIO_FRAMES * 2];
+static int16_t audio_buf[AUDIO_FRAMES_MAX * 2];
+static unsigned audio_frames = AUDIO_FRAMES_DEFAULT;
 
 /* -DMOCK_PIXEL_RGB565 / -DMOCK_PIXEL_1555: the same image quantized to 16 bits, rows padded by 8 bytes. */
 #if defined(MOCK_PIXEL_RGB565)
@@ -669,6 +745,282 @@ static void dump_probe(void) {
     fclose(f);
 }
 
+/* ---- future-version protocol (see header) ---- */
+#if !defined(_WIN32)
+#include <pthread.h>
+#define MOCK_HAVE_THREADS 1
+#endif
+
+static bool vfs_on, vfs_thread_on, reset_keys_on, analog_on, savedir_on, load_error_on;
+static bool ff_null_on, ff_load_on, ff_run_on, ff_get_on;
+static unsigned analog_port, reset_count, state_size_a, state_size_b, ff_stage;
+static double mock_fps = 60.0, av_change_fps;
+static float ff_ratio = 2.0f;
+static const char *load_error_text;
+static struct retro_vfs_interface *vfs;
+static uint32_t vfs_version;
+static int ff_res[4] = { -1, -1, -1, -1 }; /* null, load, run_on, run_off */
+static int ff_get_value = -1;
+static bool av_change_done;
+
+static double env_double(const char *name, double fallback) {
+    const char *v = getenv(name);
+    char *end = NULL;
+    double d;
+    if (!v || !v[0]) return fallback;
+    d = strtod(v, &end);
+    return end == v ? fallback : d;
+}
+
+static void read_future_env(void) {
+    const char *v = getenv("MOCK_VFS");
+    const char *ff = getenv("MOCK_FASTFORWARD");
+    const char *an = getenv("MOCK_ANALOG");
+    const char *st = getenv("MOCK_STATE_SIZE");
+    vfs_on = v && v[0];
+    vfs_thread_on = v && strstr(v, "thread");
+    reset_keys_on = env_flag("MOCK_RESET_KEYS");
+    analog_on = an && an[0];
+    analog_port = analog_on ? (unsigned)strtoul(an, NULL, 10) % 8u : 0;
+    ff_null_on = ff && strstr(ff, "null");
+    ff_load_on = ff && strstr(ff, "load");
+    ff_run_on = ff && strstr(ff, "run");
+    ff_get_on = ff && strstr(ff, "get");
+    ff_ratio = (float)env_double("MOCK_FF_RATIO", 2.0);
+    savedir_on = env_flag("MOCK_SAVEDIR_VISIBLE");
+    state_size_a = state_size_b = 0;
+    if (st && st[0]) {
+        char *end = NULL;
+        unsigned long a = strtoul(st, &end, 10), b = 0;
+        if (end && *end == ',') b = strtoul(end + 1, NULL, 10);
+        state_size_a = a < STATE_SIZE ? STATE_SIZE : a > (1ul << 20) ? (1u << 20) : (unsigned)a;
+        state_size_b = b == 0 ? 0 : b < STATE_SIZE ? STATE_SIZE : b > (1ul << 20) ? (1u << 20) : (unsigned)b;
+    }
+    load_error_on = env_flag("MOCK_LOAD_ERROR");
+    load_error_text = load_error_on ? (strcmp(getenv("MOCK_LOAD_ERROR"), "1") ? getenv("MOCK_LOAD_ERROR")
+                                                                             : "mock core: BIOS file missing")
+                                    : NULL;
+    mock_fps = env_double("MOCK_FPS", 60.0);
+    if (!(mock_fps > 1.0 && mock_fps < 1000.0)) mock_fps = 60.0;
+    av_change_fps = env_double("MOCK_AV_CHANGE", 0.0);
+    if (!(av_change_fps > 1.0 && av_change_fps < 1000.0)) av_change_fps = 0.0;
+    audio_frames = (unsigned)(44100.0 / mock_fps + 0.5);
+    if (audio_frames < 1) audio_frames = 1;
+    if (audio_frames > AUDIO_FRAMES_MAX) audio_frames = AUDIO_FRAMES_MAX;
+}
+
+/* Path of `name` inside GET_SAVE_DIRECTORY; false when the frontend gives none. */
+static bool save_file_path(const char *name, char *out, size_t cap) {
+    const char *dir = NULL;
+    if (!env_cb || !env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &dir) || !dir) return false;
+    snprintf(out, cap, "%s/%s", dir, name);
+    return true;
+}
+
+/* -- VFS -- */
+static void vfs_request(void) {
+    struct retro_vfs_interface_info info;
+    info.required_interface_version = 3;
+    info.iface = NULL;
+    vfs = NULL;
+    vfs_version = 0;
+    if (env_cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE_X, &info) && info.iface) {
+        vfs = info.iface;
+        vfs_version = info.required_interface_version;
+    }
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: vfs version %u\n", (unsigned)vfs_version);
+}
+
+#ifdef MOCK_HAVE_THREADS
+struct vfs_job { char path[1100]; int flags; int32_t size; };
+static void *vfs_thread_main(void *arg) {
+    struct vfs_job *job = (struct vfs_job *)arg;
+    job->size = -1;
+    job->flags = vfs->stat(job->path, &job->size);
+    return NULL;
+}
+#endif
+
+static void vfs_exercise(void) {
+    const char *sys_dir = NULL;
+    char out[1100], file[1100];
+    FILE *f;
+    struct retro_vfs_file_handle *h;
+    int32_t size = -1;
+    if (!vfs_on || !save_file_path("mock-vfs.txt", out, sizeof out)) return;
+    f = fopen(out, "w");
+    if (!f) return;
+    fprintf(f, "version=%u\n", (unsigned)(vfs ? vfs_version : 0));
+    if (!vfs || vfs_version < 3 || !env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys_dir) || !sys_dir) {
+        fprintf(f, "opendir=unsupported\n");
+        fclose(f);
+        return;
+    }
+    {
+        struct retro_vfs_dir_handle *d = vfs->opendir(sys_dir, false);
+        if (!d) fprintf(f, "opendir=fail\n");
+        else {
+            fprintf(f, "opendir=ok\n");
+            while (vfs->readdir(d))
+                fprintf(f, "entry=%s|%c\n", vfs->dirent_get_name(d), vfs->dirent_is_dir(d) ? 'd' : 'f');
+            vfs->closedir(d);
+        }
+    }
+    snprintf(file, sizeof file, "%s/mock-vfs-out.bin", sys_dir);
+    h = vfs->open(file, RETRO_VFS_FILE_ACCESS_WRITE, 0);
+    if (h) {
+        fprintf(f, "write=%d\n", (int)vfs->write(h, "vfs-ok", 6));
+        vfs->close(h);
+    } else fprintf(f, "write=-1\n");
+    h = vfs->open(file, RETRO_VFS_FILE_ACCESS_READ, 0);
+    if (h) {
+        char buf[32];
+        int64_t n;
+        fprintf(f, "size=%d\n", (int)vfs->size(h));
+        n = vfs->read(h, buf, sizeof buf - 1);
+        buf[n > 0 ? n : 0] = 0;
+        fprintf(f, "read=%s\n", buf);
+        vfs->close(h);
+    } else fprintf(f, "read=-1\n");
+    {
+        int flags = vfs->stat(file, &size); /* sequenced before the printf: argument order is unspecified */
+        fprintf(f, "stat=%d:%d\n", flags, (int)size);
+    }
+#ifdef MOCK_HAVE_THREADS
+    if (vfs_thread_on) {
+        struct vfs_job job;
+        pthread_t t;
+        snprintf(job.path, sizeof job.path, "%s", file);
+        job.flags = -1;
+        job.size = -1;
+        if (pthread_create(&t, NULL, vfs_thread_main, &job) == 0) {
+            pthread_join(t, NULL);
+            fprintf(f, "thread_stat=%d:%d\n", job.flags, (int)job.size);
+        } else fprintf(f, "thread_stat=nothread\n");
+    }
+#endif
+    fclose(f);
+}
+
+/* -- keyboard read inside retro_reset -- */
+static void reset_poll_keys(void) {
+    char path[1100];
+    FILE *f;
+    unsigned i, n = 0;
+    bool shift = false;
+    reset_count++;
+    if (!reset_keys_on || !input_cb || !save_file_path("mock-reset.txt", path, sizeof path)) return;
+    if (poll_cb) poll_cb();
+    shift = input_cb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_LSHIFT) || input_cb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_RSHIFT);
+    f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "resets=%u\nshift=%d\ndown=", reset_count, shift ? 1 : 0);
+    for (i = 0; i < RETROK_LAST; i++)
+        if (input_cb(0, RETRO_DEVICE_KEYBOARD, 0, i)) fprintf(f, n++ ? ",%u" : "%u", i);
+    fputc('\n', f);
+    fclose(f);
+}
+
+/* -- analog -- */
+static void poll_analog(void) {
+    static int16_t last[20];
+    static bool written;
+    int16_t cur[20];
+    unsigned i;
+    char path[1100];
+    FILE *f;
+    if (!analog_on) return;
+    cur[0] = input_cb(analog_port, RETRO_DEVICE_ANALOG, 0, 0);
+    cur[1] = input_cb(analog_port, RETRO_DEVICE_ANALOG, 0, 1);
+    cur[2] = input_cb(analog_port, RETRO_DEVICE_ANALOG, 1, 0);
+    cur[3] = input_cb(analog_port, RETRO_DEVICE_ANALOG, 1, 1);
+    for (i = 0; i < 16; i++) cur[4 + i] = input_cb(analog_port, RETRO_DEVICE_ANALOG, 2, i);
+    if (written && !memcmp(cur, last, sizeof cur)) return;
+    memcpy(last, cur, sizeof cur);
+    if (!save_file_path("mock-analog.txt", path, sizeof path) || !(f = fopen(path, "w"))) return;
+    written = true;
+    fprintf(f, "port=%u\nleft=%d,%d\nright=%d,%d\nbuttons=", analog_port, cur[0], cur[1], cur[2], cur[3]);
+    for (i = 0; i < 16; i++) fprintf(f, i ? ",%d" : "%d", cur[4 + i]);
+    fputc('\n', f);
+    fclose(f);
+}
+
+/* -- fast-forward override -- */
+static void ff_dump(void) {
+    char path[1100];
+    FILE *f;
+    if (!save_file_path("mock-ff.txt", path, sizeof path) || !(f = fopen(path, "w"))) return;
+    fprintf(f, "null=%d\nload=%d\nrun_on=%d\nrun_off=%d\nget=%d\n", ff_res[0], ff_res[1], ff_res[2], ff_res[3],
+            ff_get_value);
+    fclose(f);
+}
+
+static int ff_request(bool on) {
+    struct retro_fastforwarding_override o;
+    o.ratio = ff_ratio;
+    o.fastforward = on;
+    o.notification = false;
+    o.inhibit_toggle = false;
+    return env_cb(RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE, &o) ? 1 : 0;
+}
+
+static void ff_probe_null(void) {
+    ff_res[0] = env_cb(RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE, NULL) ? 1 : 0;
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: fastforward override probe=%d\n", ff_res[0]);
+}
+
+static void ff_on_load(void) {
+    ff_stage = 0;
+    av_change_done = false;
+    if (ff_load_on) ff_res[1] = ff_request(true);
+    if (ff_null_on || ff_load_on) ff_dump();
+}
+
+/* Called once per retro_run before the image is built. */
+static void future_run_hooks(void) {
+    bool dirty = false;
+    if (ff_run_on && ff_stage == 0 && counter >= 5) { ff_res[2] = ff_request(true); ff_stage = 1; dirty = true; }
+    if (ff_run_on && ff_stage == 1 && counter >= 10) { ff_res[3] = ff_request(false); ff_stage = 2; dirty = true; }
+    if (ff_get_on) {
+        bool v = false;
+        int now = env_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &v) ? (v ? 1 : 0) : -1;
+        if (now != ff_get_value) { ff_get_value = now; dirty = true; }
+    }
+    if (dirty) ff_dump();
+    if (av_change_fps > 0.0 && !av_change_done && counter >= 10) {
+        struct retro_system_av_info av;
+        av_change_done = true;
+        memset(&av, 0, sizeof av);
+        av.geometry.base_width = av.geometry.max_width = WIDTH;
+        av.geometry.base_height = av.geometry.max_height = HEIGHT;
+        av.geometry.aspect_ratio = (float)WIDTH / (float)HEIGHT;
+        av.timing.fps = av_change_fps;
+        av.timing.sample_rate = 44100.0;
+        audio_frames = (unsigned)(44100.0 / av_change_fps + 0.5);
+        if (audio_frames < 1) audio_frames = 1;
+        if (audio_frames > AUDIO_FRAMES_MAX) audio_frames = AUDIO_FRAMES_MAX;
+        env_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+    }
+}
+
+/* Band 5 (rows 40..47): FNV-1a of the save and system directory strings. */
+static void draw_dirs(uint32_t *img) {
+    const char *save = NULL, *sys = NULL;
+    uint32_t hs = 0, hy = 0;
+    unsigned i;
+    if (env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save) && save) hs = fnv1a(2166136261u, (const uint8_t *)save, strlen(save));
+    if (env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys) && sys) hy = fnv1a(2166136261u, (const uint8_t *)sys, strlen(sys));
+    for (i = 0; i < 4; i++) {
+        put_cell(img, 5, i, (hs >> (8 * i)) & 0xFFu);
+        put_cell(img, 5, 4 + i, (hy >> (8 * i)) & 0xFFu);
+    }
+}
+
+static unsigned current_state_size(void) {
+    if (state_size_a == 0) return STATE_SIZE;
+    return state_size_b && counter >= 20 ? state_size_b : state_size_a;
+}
+
 /* ---- libretro entry points ---- */
 MOCK_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -677,6 +1029,7 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
     bool no_game;
     env_cb = cb;
     read_protocol_env();
+    read_future_env();
     no_game = no_game_on;
     env_cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
     log.log = NULL;
@@ -687,6 +1040,12 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
     }
     if (disk_mode) register_disk_interface();
     if (env_probe_on) probe_environment();
+    if (vfs_on) vfs_request();
+    if (ff_null_on) ff_probe_null();
+    if (state_size_a) {
+        uint64_t quirks = RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE;
+        env_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
+    }
     declare_options();
 }
 MOCK_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -700,9 +1059,15 @@ MOCK_API void retro_init(void) {
     seed = 0;
     memset(sram, 0, sizeof sram);
     reset_protocol_state();
+    reset_count = 0;
+    ff_get_value = -1;
     dump_probe();
+    if (load_error_on && log_cb) log_cb(RETRO_LOG_ERROR, "mock core: error before load\n");
 }
-MOCK_API void retro_deinit(void) { log_cb = NULL; }
+MOCK_API void retro_deinit(void) {
+    if (load_error_on && log_cb) log_cb(RETRO_LOG_ERROR, "mock core: error after load\n");
+    log_cb = NULL;
+}
 
 MOCK_API void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof *info);
@@ -720,7 +1085,7 @@ MOCK_API void retro_get_system_av_info(struct retro_system_av_info *info) {
     info->geometry.max_width = WIDTH;
     info->geometry.max_height = HEIGHT;
     info->geometry.aspect_ratio = (float)WIDTH / (float)HEIGHT;
-    info->timing.fps = 60.0;
+    info->timing.fps = mock_fps;
     info->timing.sample_rate = 44100.0;
 }
 
@@ -733,6 +1098,14 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
     size_t total = 0;
 
     if (!game && !no_game_on) return false;
+    if (load_error_on) {
+        if (log_cb) {
+            log_cb(RETRO_LOG_ERROR, "mock core: first error during load\n");
+            log_cb(RETRO_LOG_ERROR, "%s\n", load_error_text);
+            log_cb(RETRO_LOG_WARN, "mock core: load refused\n");
+        }
+        return false;
+    }
     if (!env_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) return false;
 
     if (!game) {
@@ -785,6 +1158,8 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
         body[n] = 0;
         disk_populate(game->path, body);
     }
+    ff_on_load();
+    vfs_exercise();
     return true;
 }
 
@@ -802,7 +1177,10 @@ MOCK_API void retro_unload_game(void) {
     disk_ejected = false;
 }
 
-MOCK_API void retro_reset(void) { counter = 0; }
+MOCK_API void retro_reset(void) {
+    counter = 0;
+    reset_poll_keys();
+}
 
 MOCK_API void retro_run(void) {
     unsigned x, y, i;
@@ -820,6 +1198,8 @@ MOCK_API void retro_run(void) {
     for (i = 0; i < 16; i++)
         if (input_cb(0, RETRO_DEVICE_JOYPAD, 0, i)) mask |= 1u << i;
     poll_protocol_inputs();
+    poll_analog();
+    future_run_hooks();
     start = (mask >> RETRO_DEVICE_ID_JOYPAD_START) & 1u;
 
     if (counter == 10) {
@@ -862,6 +1242,7 @@ MOCK_API void retro_run(void) {
         }
     }
     if (mock_visible) draw_registers(frame_pixels);
+    if (savedir_on) draw_dirs(frame_pixels);
 #ifdef PIXEL_16
     for (y = 0; y < HEIGHT; y++) {
         for (x = 0; x < WIDTH; x++) {
@@ -879,23 +1260,24 @@ MOCK_API void retro_run(void) {
     video_cb(frame_pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t));
 #endif
 
-    for (i = 0; i < AUDIO_FRAMES; i++) {
-        uint32_t n = counter * AUDIO_FRAMES + i;
+    for (i = 0; i < audio_frames; i++) {
+        uint32_t n = counter * audio_frames + i;
         int16_t s = (int16_t)(((n * 220u) % 4096u) - 2048);
         audio_buf[2 * i] = s;
         audio_buf[2 * i + 1] = (int16_t)(-s);
     }
-    audio_batch_cb(audio_buf, AUDIO_FRAMES);
+    audio_batch_cb(audio_buf, audio_frames);
 
     counter += step;
 }
 
-MOCK_API size_t retro_serialize_size(void) { return STATE_SIZE; }
+MOCK_API size_t retro_serialize_size(void) { return current_state_size(); }
 
 MOCK_API bool retro_serialize(void *data, size_t size) {
     uint8_t *p = (uint8_t *)data;
-    if (!data || size < STATE_SIZE) return false;
-    memset(p, 0, STATE_SIZE);
+    size_t need = current_state_size();
+    if (!data || size < need) return false;
+    memset(p, 0, need);
     memcpy(p, "MOCK", 4);
     put_u32(p + 4, counter);
     put_u32(p + 8, seed);
