@@ -2,7 +2,7 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
-## [1.0.0] - 2026-11-20
+## [1.0.0-rc.1] - 2026-11-20
 
 Première version « complète » : petites consoles, bibliothèque de jeux, jaquettes et gestionnaire de cores.
 Systèmes : Mega Drive, Super Nintendo, **Game Boy / Game Boy Color**, **NES**, **Master System** et **Game Gear**.
