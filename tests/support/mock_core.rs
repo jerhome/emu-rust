@@ -77,6 +77,11 @@ pub fn build(variant: Variant) -> PathBuf {
     };
     let out = dir.join(format!("mock_core_{}.{ext}", variant.name()));
 
+    // Serialize builds inside this process; a poisoned lock only means another test panicked.
+    static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let _guard = BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     if let (Some(o), Some(s)) = (mtime(&out), mtime(&source))
         && o >= s
@@ -85,9 +90,10 @@ pub fn build(variant: Variant) -> PathBuf {
     }
 
     let tmp = dir.join(format!(
-        "mock_core_{}.{}.tmp",
+        "mock_core_{}.{}.{}.tmp",
         variant.name(),
-        std::process::id()
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
     let mut cmd = Command::new(&compiler);
@@ -111,6 +117,10 @@ pub fn build(variant: Variant) -> PathBuf {
         variant.name(),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::rename(&tmp, &out).expect("install mock core");
+    if let Err(e) = std::fs::rename(&tmp, &out) {
+        let _ = std::fs::remove_file(&tmp);
+        // Another process may have installed the same file meanwhile.
+        assert!(out.exists(), "install mock core: {e}");
+    }
     out
 }

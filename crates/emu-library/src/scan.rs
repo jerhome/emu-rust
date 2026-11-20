@@ -166,6 +166,13 @@ fn mtime_of(meta: &fs::Metadata) -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// Rebuilds the root from its components: stored paths (the game keys) then have one spelling per file whatever
+/// the root's spelling (`/` on Windows, `.` components, trailing separator). Without it, a root typed
+/// `C:\x\gb/roms` stores `C:\x\gb/roms\a.gb`, which a scan from `C:\x\gb` sees as another file.
+fn normalize_root(root: &Path) -> PathBuf {
+    root.components().collect()
+}
+
 fn lower_ext(path: &Path) -> Option<String> {
     Some(path.extension()?.to_str()?.to_ascii_lowercase())
 }
@@ -189,6 +196,7 @@ impl Walk<'_> {
         max_depth: usize,
         cancel: &AtomicBool,
     ) -> Result<(), LibraryError> {
+        let root = &normalize_root(root);
         // The root itself may be a symlink (a mounted drive): it is the only followed directory link.
         if !fs::metadata(root).is_ok_and(|m| m.is_dir()) {
             self.report.missing_roots.push(root.to_path_buf());
@@ -839,5 +847,29 @@ mod tests {
         let sfc = systems_for_extension("sfc");
         let (pinned, applied) = pin(sfc, &["gb".into()]);
         assert_eq!((pinned[0].id.as_str(), applied), ("snes", false));
+    }
+
+    #[test]
+    fn root_spelling_is_normalized() {
+        let canonical: PathBuf = ["base", "gb", "roms"].iter().collect();
+        for spelling in ["base/gb/roms", "base/./gb/roms/", "base//gb/roms"] {
+            assert_eq!(
+                normalize_root(Path::new(spelling)).to_str(),
+                canonical.to_str(),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_root_with_forward_slashes_is_normalized() {
+        for spelling in [r"C:\base\gb/roms", "C:/base/gb/roms", r"C:\base\gb\roms\"] {
+            assert_eq!(
+                normalize_root(Path::new(spelling)).to_str(),
+                Some(r"C:\base\gb\roms"),
+                "{spelling}"
+            );
+        }
     }
 }

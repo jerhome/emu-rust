@@ -563,6 +563,21 @@ fn dat_import_uses_the_folder_rule_of_the_scan() {
     assert_eq!(r.unchanged, 2, "{r:?}");
 }
 
+/// The stored path does not depend on how the root is spelled (`.` components, trailing or `/` separators on
+/// Windows): rescanning the same folder under another spelling finds the same, unchanged games.
+#[test]
+fn root_spelling_does_not_change_the_stored_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(&tmp.path().join("x/roms/a.gb"), &rom(9, 300));
+    let mut lib = Library::open_in_memory().unwrap();
+    let r = scan(&mut lib, &options(&[&tmp.path().join("x/./roms/")]));
+    assert_eq!(r.added, 1, "{r:?}");
+    let r = scan(&mut lib, &options(&[&tmp.path().join("x").join("roms")]));
+    assert_eq!((r.added, r.unchanged, r.removed), (0, 1, 0), "{r:?}");
+    let r = scan(&mut lib, &options(&[&tmp.path().join("x")]));
+    assert_eq!((r.added, r.unchanged, r.removed), (0, 1, 0), "{r:?}");
+}
+
 #[test]
 fn empty_files_and_empty_zip_entries_are_ignored() {
     let tmp = tempfile::tempdir().unwrap();
