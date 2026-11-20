@@ -138,7 +138,12 @@ impl Host {
                 for w in &request.warnings {
                     app.warn(w.clone());
                 }
-                if !self.gamepad_opened {
+                // Only a real attempt (backend enabled) counts as "opened"; a disabled pad is retried later.
+                if should_open_gamepad(
+                    self.gamepad_allowed,
+                    self.library.config().input.gamepad.enabled,
+                    self.gamepad_opened,
+                ) {
                     self.gamepad_opened = true;
                     let (pad, notice) = open_gamepad(self.gamepad_allowed, self.library.config());
                     self.gamepad = pad;
@@ -367,5 +372,23 @@ impl ApplicationHandler<Wake> for Host {
             .repaint_at
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         event_loop.set_control_flow(flow);
+    }
+}
+
+/// Opens only on a real attempt: a disabled pad is retried once it is enabled.
+fn should_open_gamepad(allowed: bool, enabled: bool, opened: bool) -> bool {
+    allowed && enabled && !opened
+}
+
+#[cfg(test)]
+mod gamepad_open_tests {
+    use super::should_open_gamepad;
+
+    #[test]
+    fn disabled_pad_is_retried_when_enabled() {
+        assert!(!should_open_gamepad(true, false, false));
+        assert!(!should_open_gamepad(false, true, false));
+        assert!(should_open_gamepad(true, true, false));
+        assert!(!should_open_gamepad(true, true, true));
     }
 }

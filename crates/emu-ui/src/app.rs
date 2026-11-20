@@ -91,6 +91,18 @@ impl Restart {
 /// Pad polling period while nothing else wakes the loop (paused game, open menu): gilrs does not wake winit.
 const PAD_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Polling period while the backend exists but no pad is plugged in (hotplug detection only).
+const PAD_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Loop wake-up period for the pad backend: fast with a pad attached, slow otherwise.
+fn pad_poll_interval(has_pad: bool) -> Duration {
+    if has_pad {
+        PAD_POLL_INTERVAL
+    } else {
+        PAD_IDLE_POLL_INTERVAL
+    }
+}
+
 /// Opens the pad backend for `run` or the library. On failure the app goes on with the keyboard alone and the
 /// returned notice is shown once.
 pub(crate) fn open_gamepad(
@@ -1825,7 +1837,10 @@ impl ApplicationHandler for App {
             let Some(pacer) = &mut self.pacer else {
                 return;
             };
-            let pad_at = self.gamepad.as_ref().map(|_| now + PAD_POLL_INTERVAL);
+            let pad_at = self
+                .gamepad
+                .as_ref()
+                .map(|p| now + pad_poll_interval(!p.attached().is_empty()));
             let wake = |t: Instant| {
                 let t = self.ui_repaint_at.map_or(t, |u| u.min(t));
                 pad_at.map_or(t, |p| p.min(t))
@@ -1879,6 +1894,12 @@ fn modifier_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_poll_is_slow_without_pad() {
+        assert_eq!(pad_poll_interval(true), PAD_POLL_INTERVAL);
+        assert!(pad_poll_interval(false) > PAD_POLL_INTERVAL);
+    }
 
     #[test]
     fn reset_disks_deletes_only_the_session_work_dir() {

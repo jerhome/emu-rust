@@ -120,7 +120,7 @@ impl Translator {
                 if !mapped {
                     if self.ignored.insert(id) {
                         tracing::warn!(
-                            "manette sans correspondance de boutons ignorée : {name} ({guid})"
+                            "manette sans correspondance de boutons ignorée : {name:?} ({guid})"
                         );
                     }
                     return;
@@ -129,7 +129,7 @@ impl Translator {
                 if !self.known.insert(id) {
                     return;
                 }
-                tracing::info!("manette détectée : {name} ({guid})");
+                tracing::info!("manette détectée : {name:?} ({guid})");
                 PadEventKind::Connected { name, guid }
             }
             Raw::Disconnected => {
