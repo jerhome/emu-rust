@@ -4,3 +4,6 @@
 tests/data/** binary
 *.png binary
 *.zip binary
+# Append-only logs edited on several branches: keep both sides on merge.
+docs/questions-ouvertes.md merge=union
+CHANGELOG.md merge=union
