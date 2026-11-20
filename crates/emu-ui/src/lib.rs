@@ -14,6 +14,9 @@ mod gamepad;
 mod hotkeys;
 mod keyboard;
 mod library;
+// Used by U3b/U4.
+#[allow(dead_code)]
+mod platform;
 mod ui;
 
 use std::path::PathBuf;
