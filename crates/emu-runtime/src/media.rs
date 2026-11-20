@@ -221,6 +221,8 @@ struct Stage<'a> {
     images: Vec<PathBuf>,
     /// Lower-cased names already given in the destination folder (case-insensitive filesystems).
     used: HashSet<String>,
+    /// Disk added during a session: never adopt a file already on disk (it may be another source's working copy).
+    fresh: bool,
 }
 
 impl<'a> Stage<'a> {
@@ -241,6 +243,7 @@ impl<'a> Stage<'a> {
             temp_dir: None,
             images: Vec::new(),
             used: HashSet::new(),
+            fresh: false,
         })
     }
 
@@ -267,7 +270,13 @@ impl<'a> Stage<'a> {
         let dir = self.dest_dir()?;
         let mut candidate = name.to_owned();
         let mut n = self.images.len() + 1;
-        while !self.used.insert(candidate.to_lowercase()) {
+        loop {
+            let free = !self.used.contains(&candidate.to_lowercase())
+                && !(self.fresh && exists(&dir.join(&candidate))?);
+            if free {
+                self.used.insert(candidate.to_lowercase());
+                break;
+            }
             candidate = disk_file_name(&format!("{n:02} {name}"));
             n += 1;
         }
@@ -662,7 +671,7 @@ impl Disks<'_> {
 
     /// Adds an image during the session and returns its index; it is not inserted. Under `WorkingCopy` (and for
     /// `File` / `NoGame` sessions, whose policy is unknown) the core gets a working copy in
-    /// `<saves>/<core_id>/<game>.disks/` (an existing copy of the same name is reused); a zip the core cannot read
+    /// `<saves>/<core_id>/<game>.disks/` (a name already taken, by this game or by another source, gets a numeric prefix: an added disk is never merged with an existing copy, so its progress starts from the source); a zip the core cannot read
     /// gives its first accepted entry. The addition lasts for the session (the generated playlist is unchanged).
     pub fn add(&mut self, image: &Path) -> Result<u32, RuntimeError> {
         let num = self.control()?.num_images();
@@ -713,11 +722,10 @@ impl Emulator {
         let mut stage = Stage::new(policy, &exts, self.limits, work_dir)?;
         stage.temp_dir = self.prepared.as_ref().and_then(|p| p.temp_dir.clone());
         // Names already handed to the core keep theirs; a new name never overwrites them in the temp directory.
-        if policy == MediaPolicy::Direct {
-            for known in self.prepared.iter().flat_map(|p| &p.images) {
-                if let Some(name) = known.file_name() {
-                    stage.used.insert(name.to_string_lossy().to_lowercase());
-                }
+        stage.fresh = true;
+        for known in self.prepared.iter().flat_map(|p| &p.images) {
+            if let Some(name) = known.file_name() {
+                stage.used.insert(name.to_string_lossy().to_lowercase());
             }
         }
         if has_ext(image, "zip") && !accepts_ext(&exts, "zip") {
@@ -809,6 +817,40 @@ mod tests {
 
     fn snapshot(paths: &[PathBuf]) -> Vec<Vec<u8>> {
         paths.iter().map(|p| fs::read(p).unwrap()).collect()
+    }
+
+    #[test]
+    fn added_disk_never_reuses_another_sources_copy() {
+        let f = Fixture::new();
+        let own = f.file("Game/Disk 1.st", b"own");
+        let other = f.file("Other/Disk 1.st", b"other");
+        let p = f
+            .prepare(&set("Game", vec![own]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        fs::write(&p.images[0], b"progress").unwrap();
+        let emu_stage = |prepared: &PreparedMedia, src: &Path| {
+            let work = prepared.work_dir.clone().unwrap();
+            let exts = exts();
+            let mut st =
+                Stage::new(MediaPolicy::WorkingCopy, &exts, Limits::DEFAULT, work).unwrap();
+            st.fresh = true;
+            for k in &prepared.images {
+                st.used
+                    .insert(k.file_name().unwrap().to_string_lossy().to_lowercase());
+            }
+            st.add_source(src).unwrap();
+            st.images.pop().unwrap()
+        };
+        let added = emu_stage(&p, &other);
+        assert_ne!(added, p.images[0]);
+        assert_eq!(fs::read(&added).unwrap(), b"other");
+        assert_eq!(fs::read(&p.images[0]).unwrap(), b"progress");
+        // Next session: the name is taken on disk, so a third source cannot adopt it either.
+        let third = f.file("Third/Disk 1.st", b"third");
+        let again = emu_stage(&p, &third);
+        assert_ne!(again, added);
+        assert_eq!(fs::read(&again).unwrap(), b"third");
+        assert_eq!(fs::read(&added).unwrap(), b"other");
     }
 
     #[test]

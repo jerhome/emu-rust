@@ -86,13 +86,21 @@ fn panel() -> Frame {
         .corner_radius(4.0)
 }
 
-pub(super) fn show(ctx: &Context, osd: &Osd, now: Instant) {
+/// `top`: anchored at the top-left instead (the virtual keyboard owns the bottom of the screen).
+pub(super) fn show(ctx: &Context, osd: &Osd, now: Instant, top: bool) {
     if osd.items.iter().all(|i| i.until <= now) {
         return;
     }
     egui::Area::new(Id::unique("osd"))
         .order(Order::Foreground)
-        .anchor(Align2::LEFT_BOTTOM, [10.0, -10.0])
+        .anchor(
+            if top {
+                Align2::LEFT_TOP
+            } else {
+                Align2::LEFT_BOTTOM
+            },
+            [10.0, if top { 10.0 } else { -10.0 }],
+        )
         .interactable(false)
         .show(ctx, |ui| {
             panel().show(ui, |ui| {

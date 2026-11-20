@@ -11,9 +11,9 @@
 //! - the image is found by **comparing** entry names (never used as a path, see `cores::archive`), bounded by
 //!   its pinned size, then checked by size, SHA-256 and md5;
 //! - the target name comes from the catalogue and must be a plain file name;
-//! - a file emu-rust did not install is never overwritten: [`ReplacePolicy::BackupAndReplace`] renames it first;
+//! - a file emu-rust did not install (or that changed since: `Modified`) is never overwritten: [`ReplacePolicy::BackupAndReplace`] renames it first;
 //! - manifest then image are written atomically (temporary file + rename); a crash in between leaves a state
-//!   (`Missing` / `Modified`) that a new install repairs without touching any user file.
+//!   (`Missing` / `Modified`); `Modified` is protected like a user file, so repairing it follows the `ReplacePolicy`.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
@@ -368,7 +368,8 @@ pub enum FreeBiosState {
     UserFile {
         md5: [u8; 16],
     },
-    /// Installed by emu-rust, then modified or replaced outside the application.
+    /// Installed by emu-rust, then modified or replaced outside the application. Treated like `UserFile`
+    /// for replacement: never overwritten without consent (`ReplacePolicy`).
     Modified,
     Unreadable(String),
 }
@@ -499,8 +500,9 @@ impl FreeBiosManager {
     }
 
     /// Downloads the archive (pinned SHA-256), extracts `variant.entry` in memory (pinned SHA-256), writes
-    /// `<system>/<install_as>` atomically and updates the manifest. Replaces an `Installed` / `Modified` file
-    /// without asking (it is ours); a `UserFile` (or an unreadable file) follows `policy`, checked before the
+    /// `<system>/<install_as>` atomically and updates the manifest. Replaces an `Installed` file without
+    /// asking (it is ours and unchanged); a `UserFile`, a `Modified` file (changed outside the application, so
+    /// possibly the user's own dump) or an unreadable file follows `policy`, checked before the
     /// download and again before writing.
     pub fn install(
         &self,
@@ -597,7 +599,9 @@ impl FreeBiosManager {
 
     fn check_policy(&self, bios: &FreeBios, policy: ReplacePolicy) -> Result<(), BiosError> {
         match self.state(bios) {
-            FreeBiosState::UserFile { .. } | FreeBiosState::Unreadable(_)
+            FreeBiosState::UserFile { .. }
+            | FreeBiosState::Modified
+            | FreeBiosState::Unreadable(_)
                 if policy == ReplacePolicy::Refuse =>
             {
                 Err(BiosError::UserFileExists(
@@ -638,11 +642,13 @@ impl FreeBiosManager {
         let target = self.system_dir.join(&bios.install_as);
         // Authoritative check: a file may have appeared during the download.
         match self.state(bios) {
-            FreeBiosState::UserFile { .. } | FreeBiosState::Unreadable(_) => match policy {
+            FreeBiosState::UserFile { .. }
+            | FreeBiosState::Modified
+            | FreeBiosState::Unreadable(_) => match policy {
                 ReplacePolicy::Refuse => return Err(BiosError::UserFileExists(target)),
                 ReplacePolicy::BackupAndReplace => self.backup_user_file(&target)?,
             },
-            FreeBiosState::Missing | FreeBiosState::Installed { .. } | FreeBiosState::Modified => {}
+            FreeBiosState::Missing | FreeBiosState::Installed { .. } => {}
         }
 
         // Manifest first: if the image write fails or the process dies in between, the old file (ours or none:

@@ -53,8 +53,13 @@ impl ComputerConfig {
     pub fn emutos_variant_or_system(&self) -> Option<String> {
         self.emutos_variant
             .clone()
-            .or_else(|| sys_locale::get_locale().and_then(|l| variant_for_locale(&l)))
+            .or_else(emutos_variant_or_system)
     }
+}
+
+/// Variant for the system language (`sys-locale`), else `None`: what the UI installs when nothing is configured.
+pub fn emutos_variant_or_system() -> Option<String> {
+    sys_locale::get_locale().and_then(|l| variant_for_locale(&l))
 }
 
 /// EmuTOS 192 KB variant id for a locale such as `fr-FR`, `de_DE.UTF-8` or `en-GB`; `None` when EmuTOS has no

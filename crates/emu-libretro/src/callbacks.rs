@@ -792,11 +792,12 @@ impl EnvState {
                 unsafe { write_out::<c_int>(data, 0b11) }
             }
             sys::RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME => {
-                // SAFETY: `const bool *`.
-                let Some(supported) = (unsafe { read_in::<bool>(data) }) else {
+                // SAFETY: `const bool *`; read as `u8` so a byte other than 0/1 from a buggy core is not
+                // an invalid Rust `bool` (undefined behaviour).
+                let Some(supported) = (unsafe { read_in::<u8>(data) }) else {
                     return false;
                 };
-                self.support_no_game = supported;
+                self.support_no_game = supported != 0;
                 true
             }
             sys::RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK => {

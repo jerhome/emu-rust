@@ -341,7 +341,7 @@ mod tests {
         let l = KeyboardLayout::load("atari_st").unwrap();
         let all: Vec<&LayoutKey> = l.rows.iter().flatten().collect();
         for name in [
-            "f1", "f10", "pageup", "pagedown", "kp5", "kp_enter", "up", "lalt", "escape",
+            "f1", "f10", "help", "undo", "kp5", "kp_enter", "up", "lalt", "escape",
         ] {
             assert!(all.iter().any(|k| k.key == key(name)), "{name}");
         }

@@ -19,7 +19,7 @@ Core : hatari (écran Cores). BIOS : EmuTOS 1.4 (GPL-2.0-or-later, libre), propo
 par l'application (HTTPS, SHA-256 vérifié) sous le nom system/tos.img. Aucun TOS Atari commercial n'est téléchargé ;
 un tos.img que vous avez placé vous-même n'est jamais écrasé.
 Disquettes : .st .msa .stx .ipf .dim, ou .m3u pour plusieurs disquettes (copies de travail : l'original reste intact).
-Touche hôte : Ctrl droit (⌘ droit sur macOS). Seule : menu. Avec une autre touche :
+Touche hôte : Ctrl droit partout, macOS compris (⌘ droit réglable en repli). Seule : menu. Avec une autre touche :
   S / L = sauvegarder / charger l'état   , / . = emplacement -/+   R = reset   P = pause   F = plein écran
   I = stats   Espace (maintenu) = avance rapide   K = clavier virtuel   M = capturer / libérer la souris
   J = mode Clavier / Joystick   D = disquette suivante (menu Disquettes aussi)

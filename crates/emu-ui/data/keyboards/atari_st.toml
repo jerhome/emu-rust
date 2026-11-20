@@ -2,7 +2,7 @@
 # `key` = libretro key name (`RetroKey::name`), positional (US place of the key); the machine's TOS language gives
 # the character. `label` = US legend; `fr` / `de` = legends of the French / German ST keyboards when they differ.
 # `width` in key units (default 1); `gap` = empty space before the key; `sticky` = modifier held until the next key.
-# Help / Undo: hatari maps them from Page Up / Page Down (Hatari symbolic keymap) — to confirm on the real core (Q2).
+# Help / Undo: RETROK_HELP / RETROK_UNDO (libretro/hatari src/retro/keymap.c: ST Help 0x62, ST Undo 0x61; PageUp/PageDown there are the keypad ( and )).
 # The keypad ( and ) keys have no libretro key: left out.
 id = "atari_st"
 name = "Atari ST"
@@ -14,8 +14,8 @@ keys = [
   { key = "f5", label = "F5", width = 1.5 }, { key = "f6", label = "F6", width = 1.5 },
   { key = "f7", label = "F7", width = 1.5 }, { key = "f8", label = "F8", width = 1.5 },
   { key = "f9", label = "F9", width = 1.5 }, { key = "f10", label = "F10", width = 1.5 },
-  { key = "pageup", label = "Help", fr = "Help", de = "Help", width = 1.5, gap = 0.5 },
-  { key = "pagedown", label = "Undo", fr = "Undo", de = "Undo", width = 1.5 },
+  { key = "help", label = "Help", fr = "Help", de = "Help", width = 1.5, gap = 0.5 },
+  { key = "undo", label = "Undo", fr = "Undo", de = "Undo", width = 1.5 },
 ]
 
 [[row]]
@@ -58,7 +58,7 @@ keys = [
 
 [[row]]
 keys = [
-  { key = "lshift", label = "Shift", width = 1.25, sticky = true }, { key = "oem_102", label = "<", fr = "<", de = "<" },
+  { key = "lshift", label = "Shift", width = 1.25, sticky = true }, { key = "less", label = "<", fr = "<", de = "<" },
   { key = "z", label = "Z", fr = "W", de = "Y" }, { key = "x", label = "X" }, { key = "c", label = "C" },
   { key = "v", label = "V" }, { key = "b", label = "B" }, { key = "n", label = "N" },
   { key = "m", label = "M", fr = "," }, { key = "comma", label = ",", fr = ";" },

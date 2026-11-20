@@ -159,11 +159,13 @@ pub const BIOS_INSTALL: &str = "Installer";
 pub const BIOS_REINSTALL: &str = "Installer cette variante";
 pub const BIOS_REMOVE: &str = "Supprimer";
 pub const BIOS_REPLACE: &str = "Remplacer le fichier existant…";
-pub const BIOS_REPLACE_CONFIRM: &str = "Le fichier actuel n'a pas été installé par emu-rust (TOS d'origine ?). \
-                                        Il sera renommé « .user-<date> », jamais effacé. Confirmer ?";
+pub const BIOS_REPLACE_CONFIRM: &str = "Remplacer votre TOS (fichier non installé par emu-rust, ou modifié depuis) ? \
+                                        Votre fichier sera renommé en « .user-<date> », jamais effacé. Confirmer ?";
 pub const BIOS_REPLACE_YES: &str = "Oui, remplacer";
 pub const BIOS_MISSING: &str = "non installé";
-pub const BIOS_MODIFIED: &str = "installé puis modifié hors d'emu-rust";
+pub fn bios_modified(file: &str) -> String {
+    format!("{file} modifié ou remplacé par vous")
+}
 pub const BIOS_INSTALLED_OK: &str = "BIOS libre installé.";
 pub const BIOS_REMOVED: &str = "BIOS libre supprimé.";
 pub const BIOS_NOT_REMOVED: &str =

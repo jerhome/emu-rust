@@ -259,6 +259,8 @@ pub struct Overlay {
     confirm_unlock: bool,
     confirm_reset: bool,
     pub osd: Osd,
+    /// Set by the app each frame: the virtual keyboard covers the bottom, the toasts move to the top.
+    pub vkbd_open: bool,
     pub show_stats: bool,
 }
 
@@ -274,6 +276,7 @@ impl Default for Overlay {
             confirm_unlock: false,
             confirm_reset: false,
             osd: Osd::default(),
+            vkbd_open: false,
             show_stats: false,
         }
     }
@@ -366,7 +369,12 @@ pub fn show(ctx: &Context, overlay: &mut Overlay, data: &UiData<'_>) -> Vec<UiAc
             Screen::VirtualKeyboard => {}
         }
     }
-    osd::show(ctx, &overlay.osd, data.now);
+    osd::show(
+        ctx,
+        &overlay.osd,
+        data.now,
+        overlay.screen == Some(Screen::VirtualKeyboard) || overlay.vkbd_open,
+    );
     if overlay.show_stats
         && let Some(stats) = data.stats
     {

@@ -35,6 +35,21 @@ fn stem(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Floppy image extensions of the computer systems (`m3u` excluded: playlists are handled apart).
+const FLOPPY_EXTENSIONS: [&str; 6] = ["st", "msa", "dim", "stx", "ipf", "adf"];
+
+fn is_floppy(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| FLOPPY_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+fn is_known(prefs: &CorePreferences, id: &CoreId) -> bool {
+    prefs
+        .systems()
+        .any(|(_, cores)| cores.iter().any(|c| c == id))
+}
+
 /// Name of a disk set: the library group name (without `(Disk N of M)`), else the first file's stem.
 pub fn media_set_name(files: &[PathBuf]) -> String {
     let (groups, _) = emu_library::group_media(files);
@@ -46,6 +61,8 @@ pub fn media_set_name(files: &[PathBuf]) -> String {
         .unwrap_or_default()
 }
 
+/// Media policy rule: `working_copy` cores always get working copies; a core absent from the preferences gets
+/// one as soon as a file is a floppy image (prudent default); everything else is `Direct`.
 /// `File` for a single file of a `direct` core (1.0 behaviour, zips included); `Media` for several disks, a
 /// `.m3u`, or any content of a `working_copy` core (hatari writes into its disks: the user's file must never be
 /// handed over, even alone); `NoGame` without files.
@@ -55,8 +72,16 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         GameContent::Files(f) if f.is_empty() => return ContentSpec::NoGame,
         GameContent::Files(f) => f,
     };
-    let policy = match CoreId::new(core_id).map(|id| prefs.media_policy(&id)) {
+    let id = CoreId::new(core_id);
+    let policy = match id.as_ref().map(|id| prefs.media_policy(id)) {
         Some(CoreMediaPolicy::WorkingCopy) => MediaPolicy::WorkingCopy,
+        // Unknown core (renamed file, `--core /x/hatari-old.so`): it may write into its disks, so floppy
+        // images get a working copy by default. Cores known to the preferences keep their explicit policy.
+        _ if id.as_ref().is_none_or(|id| !is_known(prefs, id))
+            && files.iter().any(|f| is_floppy(f)) =>
+        {
+            MediaPolicy::WorkingCopy
+        }
         _ => MediaPolicy::Direct,
     };
     if files.len() == 1 && is_m3u(&files[0]) {
@@ -110,6 +135,26 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_cores_get_working_copies_for_floppies_only() {
+        let prefs = CorePreferences::builtin();
+        for name in ["hatari-old", "../x"] {
+            match content_spec(name, &files(&["/g/Nova.st"]), &prefs) {
+                ContentSpec::Media { policy, .. } => assert_eq!(policy, MediaPolicy::WorkingCopy),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            content_spec("mystery", &files(&["/g/a.sfc"]), &prefs),
+            ContentSpec::File(PathBuf::from("/g/a.sfc"))
+        );
+        // Known direct core: explicit policy kept.
+        assert_eq!(
+            content_spec("hatarib", &files(&["/g/Nova.st"]), &prefs),
+            ContentSpec::File(PathBuf::from("/g/Nova.st"))
+        );
     }
 
     #[test]

@@ -58,8 +58,9 @@ fn name(code: KeyCode) -> Option<&'static str> {
         K::Comma => "comma",
         K::Period => "period",
         K::Slash => "slash",
-        // ISO key next to left Shift (`<>` on AZERTY): RetroArch reports it as RETROK_OEM_102.
-        K::IntlBackslash => "oem_102",
+        // ISO key next to left Shift (`<>` on AZERTY). hatari ignores RETROK_OEM_102 but maps RETROK_LESS to the
+        // ST ISO key (scancode $60, measured in crates/emu-ui/tests/atari_st.rs).
+        K::IntlBackslash => "less",
         K::Space => "space",
         K::Enter => "return",
         K::Tab => "tab",
@@ -252,6 +253,14 @@ impl HeldKeys {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iso_key_maps_to_less() {
+        assert_eq!(
+            retro_key(KeyCode::IntlBackslash).and_then(|k| k.name()),
+            Some("less")
+        );
+    }
+
     use super::*;
 
     /// Every `KeyCode` the table claims must resolve to a distinct libretro key.

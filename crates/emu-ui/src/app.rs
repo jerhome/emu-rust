@@ -605,6 +605,7 @@ impl App {
         c.vkbd.set_open(open);
         if open {
             c.keyboard.release_all();
+            self.keyboard.release_all();
             self.capture(CaptureEvent::MenuOpened);
         }
         self.request_redraw();
@@ -1279,6 +1280,7 @@ impl App {
                 game_scope: self.game_scope,
                 game_overrides: &self.game_options.options.core_options,
             };
+            self.overlay.vkbd_open = vkbd_open;
             let overlay = &mut self.overlay;
             let mut vkbd = self.computer.as_mut().map(|c| &mut c.vkbd);
             let delay = egui.run(window.window(), |ctx| {
@@ -1361,6 +1363,9 @@ impl App {
     }
 }
 
+/// Directory entries examined at most (the folder may be huge).
+const MAX_SCANNED: usize = 4096;
+
 /// Images next to the game's files that the core accepts and that are not in the set yet (sorted, bounded).
 fn addable_images(content: &[PathBuf], extensions: &[String]) -> Vec<PathBuf> {
     let Some(dir) = content.first().and_then(|f| f.parent()) else {
@@ -1370,6 +1375,7 @@ fn addable_images(content: &[PathBuf], extensions: &[String]) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = entries
+        .take(MAX_SCANNED)
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.is_file() && !content.contains(p))

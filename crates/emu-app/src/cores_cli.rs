@@ -179,7 +179,10 @@ fn list_bios(dirs: &DataDirs) -> Result<(), String> {
             FreeBiosState::UserFile { .. } => {
                 format!("{} fourni par l'utilisateur (conservé)", bios.install_as)
             }
-            FreeBiosState::Modified => "installé puis modifié".to_owned(),
+            FreeBiosState::Modified => format!(
+                "{} modifié ou remplacé par l'utilisateur (conservé)",
+                bios.install_as
+            ),
             FreeBiosState::Unreadable(e) => format!("illisible : {e}"),
         };
         println!(
@@ -212,13 +215,15 @@ fn install_bios(
         .emutos_variant
         .as_deref()
         .filter(|_| id == "emutos");
-    let locale = sys_locale_tag();
     let variant = match variant.or(configured) {
         Some(v) => bios
             .variant(v)
             .ok_or_else(|| format!("variante inconnue : {v} (voir --list-bios)"))?,
-        None => bios
-            .preferred_variant(locale.as_deref())
+        // Same logic as the UI; a system variant absent from the catalogue falls back to the default (192fr).
+        None => emu_ui::emutos_variant_or_system()
+            .filter(|_| id == "emutos")
+            .and_then(|v| bios.variant(&v))
+            .or_else(|| bios.preferred_variant(None))
             .ok_or("catalogue de BIOS vide")?,
     };
     let manager = emu_ui::open_free_bios_manager(dirs)?;
@@ -243,19 +248,12 @@ fn install_bios(
             Ok(())
         }
         Err(BiosError::UserFileExists(path)) => Err(format!(
-            "{} existe déjà et n'a pas été installé par emu-rust (TOS d'origine ?) : conservé.\n\
+            "{} existe déjà et n'a pas été installé par emu-rust, ou a été modifié (TOS d'origine ?) : conservé.\n\
              Pour le remplacer (il sera renommé, jamais effacé) : --replace-user-bios",
             path.display()
         )),
         Err(e) => Err(e.to_string()),
     }
-}
-
-fn sys_locale_tag() -> Option<String> {
-    std::env::var("LC_ALL")
-        .ok()
-        .or_else(|| std::env::var("LANG").ok())
-        .filter(|v| !v.is_empty() && v != "C" && v != "POSIX")
 }
 
 /// `Ok(true)` = success, `Ok(false)` = ran but found a problem (exit 1), `Err` = failure.

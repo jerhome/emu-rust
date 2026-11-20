@@ -68,7 +68,7 @@ commercial n'est téléchargé ; si vous placez le vôtre dans `/data/system/tos
 Disquettes : `.st`, `.msa`, `.stx`, `.ipf`, `.dim` ou `.m3u` (plusieurs disquettes) dans `/data/roms/` ; les écritures
 se font sur des copies de travail (l'original n'est pas modifié).
 
-Touche hôte : **Ctrl droit** (⌘ droit sur macOS). Seule, elle ouvre le menu ; combinée :
+Touche hôte : **Ctrl droit** partout, macOS compris (⌘ droit réglable en repli si le clavier n'a pas de Ctrl droit). Seule, elle ouvre le menu ; combinée :
 `S`/`L` sauvegarder/charger l'état, `,`/`.` emplacement -/+, `R` reset, `P` pause, `F` plein écran, `I` stats,
 `Espace` avance rapide, `K` clavier virtuel, `M` capture de la souris, `J` mode clavier/joystick, `D` disquette suivante.
 

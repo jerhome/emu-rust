@@ -4,7 +4,7 @@
 //! Combination with other backends: `GamepadInput` is one more `InputBackend` next to `KeyboardInput` (library
 //! games) or `ComputerKeyboard`/`ComputerMouse` (computer mode); backends OR their buttons into the same
 //! `InputFrame`, so the pad needs no mode switch. Hotkeys: `take_hotkeys` yields `HotkeyAction`s, which the app
-//! wraps in `HostAction::Hotkey` (computer mode) or uses directly (consoles).
+//! handles the same way in computer mode and for consoles.
 
 #![allow(dead_code, unused_imports)] // Until wired into app.rs (T3).
 

@@ -368,7 +368,7 @@ pub fn sensitivity_value(v: f32) -> String {
 
 pub fn host_key_line(host: KeyCode) -> String {
     format!(
-        "Touche hôte : {} ([hotkeys] host_key dans config.toml ; ⌘ droit = SuperRight)",
+        "Touche hôte : {} ([hotkeys] host_key dans config.toml ; Cmd droit = SuperRight)",
         key_label(host)
     )
 }

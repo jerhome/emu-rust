@@ -267,7 +267,7 @@ impl BiosUi {
                         None => (text::bios_user_file(&bios.install_as), WARNING),
                     }
                 }
-                FreeBiosState::Modified => (text::BIOS_MODIFIED.to_owned(), WARNING),
+                FreeBiosState::Modified => (text::bios_modified(&bios.install_as), WARNING),
                 FreeBiosState::Unreadable(e) => (text::bios_unreadable(e), ERROR),
             };
             ui.colored_label(color, status);
@@ -302,10 +302,7 @@ impl BiosUi {
                 });
             } else {
                 ui.horizontal_wrapped(|ui| {
-                    let user_file = matches!(
-                        state,
-                        FreeBiosState::UserFile { .. } | FreeBiosState::Unreadable(_)
-                    );
+                    let user_file = is_user_owned(&state);
                     let label = match state {
                         FreeBiosState::Missing => text::BIOS_INSTALL,
                         _ if user_file => text::BIOS_REPLACE,
@@ -347,6 +344,14 @@ impl BiosUi {
     }
 }
 
+/// A file the user may care about: replacing it needs confirmation and a backup (never `Refuse`-then-overwrite).
+fn is_user_owned(state: &FreeBiosState) -> bool {
+    matches!(
+        state,
+        FreeBiosState::UserFile { .. } | FreeBiosState::Modified | FreeBiosState::Unreadable(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use emu_assets::cores::{FirmwareSpec, FirmwareState};
@@ -363,6 +368,16 @@ mod tests {
             },
             state: FirmwareState::Missing,
         }
+    }
+
+    #[test]
+    fn modified_file_is_treated_as_the_users() {
+        assert!(is_user_owned(&FreeBiosState::Modified));
+        assert!(is_user_owned(&FreeBiosState::UserFile { md5: [0; 16] }));
+        assert!(!is_user_owned(&FreeBiosState::Missing));
+        assert!(!is_user_owned(&FreeBiosState::Installed {
+            variant: "x".into()
+        }));
     }
 
     #[test]

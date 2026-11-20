@@ -414,6 +414,57 @@ fn offline_install_from_archive() {
     assert!(matches!(err, BiosError::Io { .. }), "{err:?}");
 }
 
+/// A file installed by us then replaced by the user's own dump is protected like any user file.
+fn installed_then_replaced(dir: &Path, zip: &[u8], url: &str) -> (FreeBiosManager, FreeBios) {
+    let archive = dir.join("a.zip");
+    fs::write(&archive, zip).unwrap();
+    let system = dir.join("system");
+    let bios = catalogue(url, zip);
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    manager
+        .install_from_archive(&bios, "192fr", &archive, ReplacePolicy::Refuse)
+        .unwrap();
+    fs::write(system.join("tos.img"), b"user TOS 1.02").unwrap();
+    assert_eq!(manager.state(&bios), FreeBiosState::Modified);
+    (manager, bios)
+}
+
+#[test]
+fn modified_file_with_refuse_fails_before_any_request() {
+    let server = Server::start();
+    let zip = fixture_zip();
+    server.serve(zip.clone(), 0);
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, bios) = installed_then_replaced(dir.path(), &zip, &server.url());
+    let err = install(&manager, &bios, "192fr", ReplacePolicy::Refuse).unwrap_err();
+    assert!(matches!(err, BiosError::UserFileExists(_)), "{err:?}");
+    let tos = dir.path().join("system/tos.img");
+    assert_eq!(fs::read(tos).unwrap(), b"user TOS 1.02");
+    server.verify();
+}
+
+#[test]
+fn modified_file_with_backup_is_kept_then_replaced() {
+    let server = Server::start();
+    let zip = fixture_zip();
+    server.serve(zip.clone(), 1);
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, bios) = installed_then_replaced(dir.path(), &zip, &server.url());
+    let system = dir.path().join("system");
+    install(&manager, &bios, "192fr", ReplacePolicy::BackupAndReplace).unwrap();
+    assert_eq!(fs::read(system.join("tos.img")).unwrap(), IMAGE_FR);
+    let backups: Vec<_> = listing(&system)
+        .into_iter()
+        .filter(|n| n.starts_with("tos.img.user-"))
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(
+        fs::read(system.join(&backups[0])).unwrap(),
+        b"user TOS 1.02"
+    );
+    server.verify();
+}
+
 #[test]
 fn modified_and_remove() {
     let dir = tempfile::tempdir().unwrap();
@@ -427,21 +478,22 @@ fn modified_and_remove() {
         .install_from_archive(&bios, "192fr", &archive, ReplacePolicy::Refuse)
         .unwrap();
 
-    // Changed outside the application: still ours, so a new install replaces it without asking,
-    // but `remove` leaves it alone.
+    // Changed outside the application: possibly the user's own dump, so a new install must ask,
+    // and `remove` leaves it alone.
     fs::write(system.join("tos.img"), b"patched").unwrap();
     assert_eq!(manager.state(&bios), FreeBiosState::Modified);
     assert!(manager.installed_md5().is_empty());
     assert!(!manager.remove(&bios).unwrap());
     assert_eq!(fs::read(system.join("tos.img")).unwrap(), b"patched");
-    manager
+    let err = manager
         .install_from_archive(&bios, "192fr", &archive, ReplacePolicy::Refuse)
+        .unwrap_err();
+    assert!(matches!(err, BiosError::UserFileExists(_)), "{err:?}");
+    assert_eq!(fs::read(system.join("tos.img")).unwrap(), b"patched");
+    manager
+        .install_from_archive(&bios, "192fr", &archive, ReplacePolicy::BackupAndReplace)
         .unwrap();
-    assert!(
-        !listing(&system)
-            .iter()
-            .any(|n| n.starts_with("tos.img.user-"))
-    );
+    assert_eq!(fs::read(system.join("tos.img")).unwrap(), IMAGE_FR);
 
     assert!(manager.remove(&bios).unwrap());
     assert_eq!(manager.state(&bios), FreeBiosState::Missing);

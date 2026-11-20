@@ -2,6 +2,23 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [2.0.0-rc.1] - 2026-11-20
+
+Première pré-release de la 2.0 : **Atari ST** et l'infrastructure « ordinateur » (ADR 0015).
+
+### Ajouté
+
+- Atari ST (core hatari, hatarib en alternative) : lancement depuis la bibliothèque (jeux sur plusieurs disquettes
+  regroupés, `.m3u`, zip) ou sans jeu (« Bureau Atari ST »), et en ligne de commande (`--rom` répétable, `--no-game`).
+- EmuTOS 1.4 (TOS libre, GPL) téléchargé et vérifié par hash (192 Ko, langue du système, français par défaut) ;
+  un `tos.img` fourni par l'utilisateur n'est jamais écrasé sans confirmation (sauvegarde `.user-<date>`).
+- Touche hôte **Ctrl droit** (tous systèmes) : menu et raccourcis (Hôte+K clavier virtuel, M souris, J joystick /
+  clavier, D disquette suivante) ; clavier ST complet par position de touche ; clavier virtuel (F1-F10, Help, Undo,
+  pavé numérique).
+- Souris capturée au clic (repli sans capture sous noVNC/WSLg), menu Disquettes, options par jeu
+  (`game-options/`), copies de travail : les disquettes de l'utilisateur ne sont jamais modifiées.
+- Bibliothèque : système Atari ST, regroupement multi-disquettes (schéma de base v3, migration automatique).
+
 ## [1.0.0] - 2026-11-20
 
 Première version stable. Contenu identique à la 1.0.0-rc.2, validé par l'utilisateur (`docs/essais-1.0.md`) :

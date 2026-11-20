@@ -1,5 +1,7 @@
 # Guide d'essai — version 2.0 (Atari ST)
 
+Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v2.0.0-rc.1`).
+
 Durée : 30 à 45 minutes. But : vérifier l'Atari ST au clavier 60 % (Windows), sur macOS Intel et dans Docker (WSLg).
 Notez pour chaque étape « OK » ou ce qui s'est passé (capture d'écran bienvenue).
 
@@ -90,3 +92,10 @@ qu'un autre jeu garde la valeur globale.
 - Capture de la souris : fluide ? pointeur qui sort de la fenêtre ? (macOS : autorisations d'accessibilité.)
 - Touches du clavier ST mal placées (avec EmuTOS français), Help / Undo.
 - Tout message d'erreur affiché.
+
+## Limites connues (2.0.0-rc.1)
+
+- Une disquette **ajoutée en cours de jeu** (menu Disquettes → Ajouter) n'est pas mémorisée : la rajouter à la
+  session suivante crée une nouvelle copie de travail (`02 X.st`, `03 X.st`…) qui repart de l'original ; ces copies
+  ne sont pas nettoyées automatiquement (dossier `<données>/saves/hatari/<jeu>.disks/`). Corrigé en 2.1.
+- La manette PS4 n'est pas encore branchée (prévue après la 2.0).
