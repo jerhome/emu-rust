@@ -4,6 +4,9 @@ Frontend **libretro** écrit en Rust : il charge des cores libretro existants (`
 image, son, entrées, bibliothèque de jeux, téléchargements (cores, BIOS libres, covers). Usage **personnel**.
 Feuille de route : `docs/roadmap.md`. Décisions d'architecture : `docs/adr/` (elles font autorité).
 
+Conventions communes de mes projets Rust : `../agents-home/docs/rust/CONVENTIONS.md` (Home Repo `../agents-home`,
+lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
+
 ## Contraintes non négociables
 
 - **Pas de cores maison** : l'émulation est faite par les cores libretro (ADR 0001).
