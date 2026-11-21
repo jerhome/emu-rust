@@ -27,6 +27,11 @@ Première pré-release de la 7.0 : **PlayStation** et **3DO** (rendu logiciel). 
   en-tête Opera) ; un `.chd` ambigu reste non classé jusqu'à son rangement dans le bon dossier.
 - `--check-bios` pour PlayStation (par région) et 3DO ; réglages de cores PlayStation / 3DO en tête des options.
 - Écran Cores : ligne « BIOS HLE intégré — BIOS d'origine recommandé » (information, pas une erreur).
+## [6.0.0] - 2026-11-21
+
+Version stable de la 6.0 : contenu de la 6.0.0-rc.1, **validé par l'utilisateur sous Windows** sur les 15 plates-formes
+(Mega Drive, Super Nintendo, NES, Master System, Game Gear, Game Boy, Game Boy Color, Game Boy Advance, 32X, Mega CD,
+Atari ST, Amiga, PC-DOS, Amstrad CPC, Commodore 64 ; son, manette PS4, sauvegardes, changement de disquette).
 
 ### Corrigé
 
@@ -46,6 +51,7 @@ Première pré-release de la 7.0 : **PlayStation** et **3DO** (rendu logiciel). 
 - `.chd` et `.pbp` reconnus par leur nom ; jamais de CD dans un zip.
 - Cartes mémoire copiées une fois d'un core à l'autre, non synchronisées.
 - Sega CD 32X (Mega CD + 32X) : prévu en 7.2.
+  TOSEC « Disk N of M ») ; les disquettes extraites sont listées dans cet ordre.
 
 ## [6.0.0-rc.1] - 2026-11-21
 
