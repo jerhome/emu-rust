@@ -11,6 +11,10 @@ worktree (verrou de `target/`) : `CARGO_BUILD_JOBS=3` avec 2 worktrees actifs, *
 target/debug/incremental` entre les vagues ; dans C, `cargo check` et tests ciblés (`-p <crate>`) seulement, la
 vérification complète se fait en B.
 
+> **Mise à jour du 2026-11-21 (soir)** : tout jusqu'à la 6.0 est livré (`v6.0.0-rc.1`) et l'utilisateur a donné son
+> feu vert pour la 7.0. Les mentions « ADR 0021 abandonnée » et « aucune tâche 7.0 » ci-dessous sont **caduques** :
+> ADR 0021 acceptée, découpage dans `docs/design/v7.0-ps1-3do.md` §6 (une seule branche, `wip-7.0`).
+
 Décisions utilisateur de la nuit (prioritaires) : **la 7.0 n'est pas abordée sans son feu vert** (ADR 0021
 abandonnée, aucune tâche 7.0 ci-dessous ne doit être lancée) ; **tout jusqu'à la 6.0 est validé par nous-mêmes**
 (les tâches « essai réel » E3, DE1, CE1, KE1, GE1 ne bloquent plus la version suivante : la revue et la vérification
