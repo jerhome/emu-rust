@@ -155,6 +155,32 @@ fn mixed_archive_is_ignored_and_counted() {
 }
 
 #[test]
+fn other_computers_zips_are_not_mixed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("roms");
+    // `.prg` only exists for the C64 and `.voc` only under `cpc/`: neither makes these zips ambiguous.
+    zip_of(
+        &root.join("st.zip"),
+        &[("game.st", &blob(1)), ("game.prg", &blob(2))],
+    );
+    zip_of(
+        &root.join("amiga.zip"),
+        &[("game.adf", &blob(3)), ("sound.voc", &blob(4))],
+    );
+    zip_of(
+        &root.join("mixed.zip"),
+        &[("a.dsk", &blob(5)), ("b.d64", &blob(6))],
+    );
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan(&mut lib, &root);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(report.ignored_mixed_archives, 1, "{report:?}");
+    assert_eq!(system_of(&lib, "st.zip").as_deref(), Some("atarist"));
+    assert_eq!(system_of(&lib, "amiga.zip").as_deref(), Some("amiga"));
+    assert_eq!(system_of(&lib, "mixed.zip"), None);
+}
+
+#[test]
 fn two_cpc_dats_and_the_c64_dat_identify_by_crc() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");

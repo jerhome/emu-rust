@@ -584,6 +584,14 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
             tape_rewind: action_name(core, "tape_rewind", a.tape_rewind)?,
         },
     };
+    if entry.m3u_launch == Some(M3uLaunchPref::Program)
+        && entry.media.unwrap_or_default() == CoreMediaPolicy::Direct
+    {
+        // `<image>:<program>` would carry a second `:` with an absolute Windows path (`C:\x.d64:prog`).
+        return Err(format!(
+            "m3u_launch = \"program\" exige media = \"working_copy\" pour {core}"
+        ));
+    }
     Ok(CoreProps {
         media: entry.media.unwrap_or_default(),
         media_direct,
@@ -1476,6 +1484,10 @@ mod tests {
         }
         assert!(parse("[cores.x.actions]\nplay = \"HOME\"\n").is_err());
         assert!(parse("m3u_launch = \"other\"\n").is_err());
+        assert!(parse("m3u_launch = \"program\"\n").is_err());
+        assert!(parse("m3u_launch = \"program\"\nmedia = \"direct\"\n").is_err());
+        assert!(parse("m3u_launch = \"program\"\nmedia = \"working_copy\"\n").is_ok());
+        assert!(parse("m3u_launch = \"command\"\n").is_ok());
         assert!(parse("save_scope = \"all\"\n").is_err());
         assert!(parse("[cores.x.options_by_extension]\ncpr = { k = \"v\" }\n").is_ok());
         for bad in [

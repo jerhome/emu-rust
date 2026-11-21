@@ -145,7 +145,8 @@ options = { dosbox_pure_midi = "disabled" }       # MIDI only once a SoundFont /
 # 5.0 keys (design docs/design/v5.0-cpc-c64.md §3.3):
 # - save_scope: "core" (default) or "game" = <saves>/<core_id>/<save_name>/ for every game. A `game_saves`
 #   pattern without `{game}` (`*.sav`) is accepted only with "game".
-# - fastforward_override: the core may request fast-forward (env 64). variable_state_size: VICE savestates vary.
+# - fastforward_override: the core may request fast-forward (env 64). variable_state_size: VICE savestates vary;
+#   reserved for cores that never read more than the size given to retro_unserialize.
 # - m3u_launch: "command" (`#COMMAND:` first line, cap32) or "program" (`<image>:<launch>` first entry, VICE).
 # - options_by_extension.<ext>: computed defaults by content extension (lower-case, no dot).
 # - actions: libretro key names (without RETROK_) pressed by the « Cassette » menu.

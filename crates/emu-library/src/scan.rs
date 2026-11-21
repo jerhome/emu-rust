@@ -241,6 +241,21 @@ fn is_candidate(path: &Path) -> bool {
 }
 
 /// Extensions of the programs that make a folder a DOS game.
+/// Computers whose extensions overlap enough (`.dsk`/`.d64`, `.tap`, `.prg`) for a zip holding both to be refused.
+const AMBIGUOUS_COMPUTERS: &[&str] = &["cpc", "c64"];
+
+/// The CPC / C64 system `attribute` gives to a file with this extension, when it is a single one.
+fn ambiguous_computer(ext: &str, folders: &[String]) -> Option<&'static str> {
+    let system = match attribute(ext, folders) {
+        Attribution::Folder(s) => s,
+        Attribution::Candidates(c) if c.len() == 1 => c[0],
+        _ => return None,
+    };
+    AMBIGUOUS_COMPUTERS
+        .contains(&system.id.as_str())
+        .then_some(system.id.as_str())
+}
+
 const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "bat"];
 /// Disc-like images of `dos` never hashed (like `DISC_EXTENSIONS`): identified by name.
 const NAME_ONLY_EXTENSIONS: &[&str] = &["ins", "vhd", "jrc"];
@@ -873,7 +888,8 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let mut saw_program = false;
     let mut saw_disc = false;
     let mut dos_files = Vec::new();
-    // Computers owning, alone, the extension of a non-empty entry (`.dsk` = cpc, `.d64` = c64).
+    // CPC / C64 systems that `attribute` really gives a non-empty entry here (`.dsk` = cpc, `.d64` = c64).
+    // Other computers (`.st` + `.prg`) and folder-only extensions outside their folder (`.voc`) never count.
     let mut computers: HashSet<&'static str> = HashSet::new();
     for index in 0..archive.len() {
         let entry = archive
@@ -900,11 +916,10 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
         saw_disc |= DISC_EXTENSIONS.contains(&ext.as_str());
         let candidates = systems_for_extension(&ext);
-        if let [only] = candidates.as_slice()
-            && only.kind == SystemKind::Computer
-            && entry.size() > 0
+        if entry.size() > 0
+            && let Some(id) = ambiguous_computer(&ext, &found.folders)
         {
-            computers.insert(only.id.as_str());
+            computers.insert(id);
         }
         if chosen.is_some() {
             // Kept walking to see the programs and discs listed after the chosen entry.
