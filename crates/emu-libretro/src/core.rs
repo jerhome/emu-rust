@@ -6,6 +6,7 @@ use libloading::Library;
 
 use crate::callbacks::{self, EnvInstall, ProcessGuard};
 use crate::error::LibretroError;
+use crate::resident::{self, CopyFile};
 use crate::sys;
 use crate::types::{
     AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameSource, InputQuery, MemoryKind,
@@ -27,6 +28,9 @@ pub struct CoreConfig {
     /// Answer `GET_VFS_INTERFACE` (45) with the frontend's VFS v3 table (`cores.toml` `vfs = true`, ADR 0018).
     /// `false`: 45 is refused, as in 3.0.
     pub provide_vfs: bool,
+    /// Where a private copy of the library is written when the original stays resident after unloading
+    /// (ADR 0022). `None`: reloading a resident core fails with `LibretroError::CoreCopy`.
+    pub copy_dir: Option<PathBuf>,
 }
 
 /// Receives the per-frame callbacks while `Core::run` executes. Called on the thread that owns the `Core`.
@@ -68,6 +72,9 @@ impl RunEvents {
 ///
 /// Drop order: `retro_unload_game` (if a game is loaded), `retro_deinit`, library unload, then the
 /// process-wide guard is released.
+///
+/// A library that stays mapped after unloading (ADR 0022) is reloaded from a private copy written under
+/// `CoreConfig::copy_dir`; the first load of a library in a process is always direct.
 pub struct Core {
     api: sys::CoreApi,
     /// `Some` until `Drop`; the function pointers in `api` are valid only while it is loaded.
@@ -85,6 +92,14 @@ pub struct Core {
     /// Paths handed to the disk control interface (`replace_image_index`, `set_initial_image`). libretro.h does
     /// not say whether the core copies them, so they are kept until `retro_unload_game` / drop.
     disk_paths: Vec<CString>,
+    /// Registry key of the library given to `load` (ADR 0022); journals and `GET_LIBRETRO_PATH` use the
+    /// original path, never the copy.
+    origin: PathBuf,
+    /// File actually opened: the original, or a private copy when the original stayed resident.
+    loaded_from: PathBuf,
+    /// Windows only: the private copy, deleted after unloading if its image is gone (Unix deletes it right
+    /// after `dlopen`).
+    copy: Option<CopyFile>,
     // Declared last so it is released after everything above.
     _guard: ProcessGuard,
     // Implementation fields are private to emu-libretro; this marker makes `Core` !Send + !Sync.
@@ -190,17 +205,63 @@ unsafe fn system_info_from_raw(raw: &sys::retro_system_info) -> SystemInfo {
     }
 }
 
+/// Writes and loads a private copy of `path` (ADR 0022). Returns the library, the copy's path and, on Windows,
+/// the copy to delete once its image is gone (on Unix the file is deleted as soon as `dlopen` succeeded).
+fn open_private_copy(
+    path: &Path,
+    copy_dir: Option<&Path>,
+) -> Result<(Library, PathBuf, Option<CopyFile>), LibretroError> {
+    let err = |source| LibretroError::CoreCopy {
+        path: path.to_path_buf(),
+        source,
+    };
+    let dir = copy_dir.ok_or_else(|| {
+        err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "no directory configured for private core copies",
+        ))
+    })?;
+    let copy_path = resident::write_private_copy(path, dir).map_err(err)?;
+    let copy = CopyFile::new(copy_path.clone());
+    let library = resident::load_copy(&copy_path).map_err(err)?;
+    tracing::debug!(
+        core = %path.display(),
+        copy = %copy_path.display(),
+        "loaded private copy of a resident core library"
+    );
+    #[cfg(unix)]
+    {
+        // The image stays mapped after unlink; the inode cannot be reused while it is.
+        drop(copy);
+        Ok((library, copy_path, None))
+    }
+    #[cfg(not(unix))]
+    Ok((library, copy_path, Some(copy)))
+}
+
 impl Core {
     /// Opens the library, checks `retro_api_version`, sets the environment, calls `retro_init`, then installs the
     /// AV/input callbacks (RetroArch order; some cores, e.g. Mesen, crash if they are set before `retro_init`).
     pub fn load(path: &Path, config: CoreConfig) -> Result<Self, LibretroError> {
         let guard = ProcessGuard::acquire()?;
-        // SAFETY: loading a libretro core runs its initialisers; cores are trusted native code chosen by the
-        // user (ADR 0001). No other core is loaded (guard held), so no global callback state is shared.
-        let library = unsafe { Library::new(path) }.map_err(|source| LibretroError::Load {
-            path: path.to_path_buf(),
-            source: Box::new(source),
-        })?;
+        let origin = resident::origin_key(path);
+        // Declared before `library` so that, on an early error, the library is closed before the copy is removed.
+        let mut copy = None;
+        let mut loaded_from = path.to_path_buf();
+        let library = if resident::is_resident(&origin) {
+            // Never fall back to the resident image: its static state survived retro_deinit (ADR 0022).
+            let (library, copy_path, kept) = open_private_copy(path, config.copy_dir.as_deref())?;
+            copy = kept;
+            loaded_from = copy_path;
+            library
+        } else {
+            // SAFETY: loading a libretro core runs its initialisers; cores are trusted native code chosen by the
+            // user (ADR 0001). No other core is loaded (guard held), so no global callback state is shared.
+            unsafe { Library::new(path) }.map_err(|source| LibretroError::Load {
+                path: path.to_path_buf(),
+                source: Box::new(source),
+            })?
+        };
         let api = resolve_api(&library)?;
 
         // SAFETY: `api` was resolved from `library`, which is alive; retro_api_version has no preconditions.
@@ -257,6 +318,9 @@ impl Core {
             frames_run: 0,
             pending_events: RunEvents::default(),
             disk_paths: Vec::new(),
+            origin,
+            loaded_from,
+            copy,
             _guard: guard,
             _not_send: PhantomData,
         })
@@ -638,6 +702,19 @@ impl Drop for Core {
             && let Err(err) = library.close()
         {
             tracing::warn!(%err, "failed to unload libretro core");
+        }
+        if resident::still_loaded(&self.loaded_from) {
+            if resident::mark_resident(&self.origin) {
+                tracing::info!(
+                    core = %self.origin.display(),
+                    "core library stayed in memory after unloading; later loads in this session use a private copy"
+                );
+            }
+            if let Some(copy) = self.copy.take() {
+                copy.keep();
+            }
+        } else {
+            self.copy = None;
         }
         self.env = None;
         // `_guard` is released after this body returns.

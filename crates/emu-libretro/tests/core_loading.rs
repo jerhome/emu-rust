@@ -27,6 +27,7 @@ fn config() -> CoreConfig {
         assets_dir: out.join("assets"),
         variables: Vec::new(),
         provide_vfs: false,
+        copy_dir: None,
     }
 }
 

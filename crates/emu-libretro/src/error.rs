@@ -56,4 +56,14 @@ pub enum LibretroError {
     DiskControlFailed(&'static str),
     #[error("core cannot start without content")]
     NoGameUnsupported,
+    /// The core library stayed mapped after a previous unload and reloading it needs a private copy (ADR 0022),
+    /// which could not be written or loaded (or `CoreConfig::copy_dir` is `None`). `path` is the original library.
+    #[error(
+        "core {path} stayed in memory after unloading and no private copy could be loaded: {source}"
+    )]
+    CoreCopy {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }

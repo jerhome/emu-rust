@@ -66,6 +66,7 @@ fn config(dir: &Path) -> CoreConfig {
         assets_dir: dir.join("assets"),
         variables: Vec::new(),
         provide_vfs: false,
+        copy_dir: None,
     }
 }
 
@@ -389,6 +390,7 @@ fn vfs_provided(lib: &Path) {
         lib,
         CoreConfig {
             provide_vfs: true,
+            copy_dir: None,
             ..config(&dir)
         },
     )

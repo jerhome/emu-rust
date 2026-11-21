@@ -314,6 +314,8 @@ pub const RETRO_VFS_SEEK_POSITION_END: c_int = 2;
 
 pub const RETRO_VFS_STAT_IS_VALID: c_int = 1 << 0;
 pub const RETRO_VFS_STAT_IS_DIRECTORY: c_int = 1 << 1;
+// Only reported on Unix (character devices); Windows has no equivalent in `std::fs::Metadata`.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const RETRO_VFS_STAT_IS_CHARACTER_SPECIAL: c_int = 1 << 2;
 
 /// Opaque to the core; the frontend defines it (`vfs::VfsFile`).

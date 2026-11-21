@@ -25,8 +25,8 @@ mod workcopy;
 
 pub use emu_libretro::{
     AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, DiskControlKind,
-    GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LogLevel, MemoryKind, RetroKey, SystemInfo,
-    SystemTiming, mouse_id,
+    GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LibretroError, LogLevel, MemoryKind,
+    RetroKey, SystemInfo, SystemTiming, mouse_id,
 };
 
 pub use crate::added::{AddedDisk, OrphanCopy, OrphanKind};

@@ -208,6 +208,7 @@ impl Emulator {
             assets_dir: options.assets_dir,
             variables: options.core_variables,
             provide_vfs: options.provide_vfs,
+            copy_dir: Some(options.cache_dir.join("core-copies")),
         };
         let mut core = Core::load(core_path, config)?;
         let mut content_dir = None;

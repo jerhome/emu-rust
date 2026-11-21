@@ -1013,6 +1013,7 @@ mod tests {
             assets_dir: PathBuf::from("/tmp/assets"),
             variables,
             provide_vfs: false,
+            copy_dir: None,
         }
     }
 

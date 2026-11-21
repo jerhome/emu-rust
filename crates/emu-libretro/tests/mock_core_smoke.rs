@@ -47,6 +47,7 @@ mod unix_tests {
             assets_dir: out.join("assets"),
             variables: Vec::new(),
             provide_vfs: false,
+            copy_dir: None,
         };
         let mut core = Core::load(&lib, config).expect("load mock core");
         assert_eq!(core.system_info().library_name, "Mock Core");

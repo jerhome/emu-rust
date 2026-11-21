@@ -50,6 +50,7 @@ fn load(name: &str) -> (Core, PathBuf) {
             assets_dir: dir.join("assets"),
             variables: Vec::new(),
             provide_vfs: false,
+            copy_dir: None,
         },
     )
     .expect("load hatari");

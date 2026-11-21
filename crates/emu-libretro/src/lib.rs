@@ -10,6 +10,7 @@ mod error;
 mod keyboard;
 mod log;
 mod options;
+mod resident;
 mod sys;
 mod types;
 mod vfs;
