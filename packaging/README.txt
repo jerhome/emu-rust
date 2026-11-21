@@ -46,7 +46,22 @@ Licences non embarquées dans le binaire : AROS (AROS Public License 1.1) est fo
 (GPL-2.0) ; les DAT d'identification (No-Intro, TOSEC, WHDLoad) sont téléchargés à la demande depuis leurs dépôts et
 gardent leur propre licence. Aucune ROM, aucun Kickstart ni Workbench n'est distribué avec emu-rust.
 
-0d. Amstrad CPC et Commodore 64 (5.0, en développement)
+0d. PC-DOS (4.0, en développement)
+----------------------------------
+Core : dosbox_pure (écran Cores). Jeux : un dossier par jeu ou un .zip dans un dossier dos/ de la bibliothèque ; les
+dossiers sont copiés dans le cache (cache/dosbox_pure/, supprimable : Réglages > Vider le cache DOS), l'original reste
+intact. Aucun jeu ni système DOS commercial n'est fourni ou téléchargé.
+Musique MIDI (facultative) : SoundFont GeneralUser GS 2.0.3, téléchargé **seulement sur votre action** (Réglages DOS ou
+écran Cores) depuis https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2
+(HTTPS, SHA-256 vérifié), rangé dans system/GeneralUser-GS.sf2. Licence : « GeneralUser GS License v2.0 » (S. Christian
+Collins ; usage libre, redistribution et modification permises ; pas une licence OSI), https://github.com/mrbumpy409/GeneralUser-GS .
+Il n'est ni empaqueté ni redistribué avec emu-rust. MT-32 / CM-32L : ROM Roland commerciales, à importer vous-même.
+Licences non embarquées dans le binaire : dosbox_pure (GPL-2.0) est téléchargé depuis le buildbot libretro et garde sa
+licence ; le DAT d'identification DOS.dat (libretro-database, dépôt sous CC-BY-SA-4.0 ; source
+https://github.com/robloach/libretro-database-dos, sans licence propre) est téléchargé à la demande et n'est pas
+redistribué. Les données de THIRD-PARTY-DATA.txt (section « DOS » de System.dat : empreintes MT-32) sont inchangées.
+
+0e. Amstrad CPC et Commodore 64 (5.0, en développement)
 -------------------------------------------------------
 Cores (écran Cores, téléchargés depuis le buildbot libretro, HTTPS, vérifiés) : cap32 (Amstrad CPC / GX4000, GPL-2.0) ;
 vice_x64 (C64, GPL-2.0, par défaut) et vice_x64sc (C64, plus précis mais environ 5 fois plus lent : à réserver aux démos

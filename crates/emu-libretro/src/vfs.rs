@@ -80,13 +80,15 @@ static VFS_INTERFACE: sys::retro_vfs_interface = sys::retro_vfs_interface {
 /// Answers `GET_VFS_INTERFACE`: `false` (nothing written) for a null pointer or a version above 3.
 ///
 /// # Safety
-/// `data` is null or points to a `retro_vfs_interface_info` valid for reads and writes for the call.
+/// `data` is null or points to a properly aligned `retro_vfs_interface_info` valid for reads and writes for the
+/// call.
 pub(crate) unsafe fn answer(data: *mut c_void) -> bool {
     let info = data.cast::<sys::retro_vfs_interface_info>();
     if info.is_null() {
         return false;
     }
-    // SAFETY: non-null and valid for reads per this function's contract; the field is a plain `u32`.
+    // SAFETY: non-null and valid for reads per this function's contract (which includes alignment, as for any
+    // pointer to a Rust-visible struct); the field is a plain `u32`, read in place without forming a reference.
     let required = unsafe { (&raw const (*info).required_interface_version).read() };
     if required > VFS_INTERFACE_VERSION {
         tracing::debug!(
@@ -96,7 +98,7 @@ pub(crate) unsafe fn answer(data: *mut c_void) -> bool {
         );
         return false;
     }
-    // SAFETY: valid for writes per this function's contract. The table is a `static`: the pointer stays valid
+    // SAFETY: valid for writes and suitably aligned per this function's contract. The table is a `static`: the pointer stays valid
     // for the whole process, on every thread.
     unsafe {
         info.write(sys::retro_vfs_interface_info {
@@ -140,6 +142,15 @@ unsafe fn dir_mut<'a>(dir: *mut sys::retro_vfs_dir_handle) -> Option<&'a mut Vfs
     // SAFETY: per this function's contract the pointer comes from `Box::<VfsDir>::into_raw`, the box is alive and
     // no other reference to it exists during this call.
     unsafe { dir.cast::<VfsDir>().as_mut() }
+}
+
+/// # Safety
+/// `dir` is null or a pointer returned by `vfs_opendir` and not yet passed to `vfs_closedir`, for `'a`, and not
+/// passed to `readdir` / `closedir` during that time (read-only accessors only form shared references).
+unsafe fn dir_ref<'a>(dir: *mut sys::retro_vfs_dir_handle) -> Option<&'a VfsDir> {
+    // SAFETY: per this function's contract the pointer comes from `Box::<VfsDir>::into_raw` and the box is alive;
+    // only a shared reference is formed.
+    unsafe { dir.cast::<VfsDir>().cast_const().as_ref() }
 }
 
 fn to_i64(value: u64) -> i64 {
@@ -393,7 +404,14 @@ unsafe extern "C" fn vfs_remove(path: *const c_char) -> c_int {
         };
         let result = match std::fs::symlink_metadata(p) {
             Ok(m) if m.is_dir() => std::fs::remove_dir(p),
-            Ok(_) => std::fs::remove_file(p),
+            Ok(_) => std::fs::remove_file(p).or_else(|e| {
+                // Windows: a link or junction to a directory is removed with `remove_dir`.
+                if cfg!(windows) && std::fs::remove_dir(p).is_ok() {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }),
             Err(e) => Err(e),
         };
         if result.is_ok() { 0 } else { -1 }
@@ -578,7 +596,7 @@ unsafe extern "C" fn vfs_dirent_get_name(
     guard(ptr::null(), || {
         // SAFETY: forwarded from this function's contract. The name is owned by the handle and only replaced or
         // freed by `vfs_readdir` / `vfs_closedir`, matching the lifetime libretro.h documents.
-        unsafe { dir_mut(dirstream) }
+        unsafe { dir_ref(dirstream) }
             .and_then(|d| d.current.as_ref())
             .map_or(ptr::null(), |(name, _)| name.as_ptr())
     })
@@ -591,7 +609,7 @@ unsafe extern "C" fn vfs_dirent_get_name(
 unsafe extern "C" fn vfs_dirent_is_dir(dirstream: *mut sys::retro_vfs_dir_handle) -> bool {
     guard(false, || {
         // SAFETY: forwarded from this function's contract.
-        unsafe { dir_mut(dirstream) }
+        unsafe { dir_ref(dirstream) }
             .and_then(|d| d.current.as_ref())
             .is_some_and(|(_, is_dir)| *is_dir)
     })

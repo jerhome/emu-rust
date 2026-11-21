@@ -283,8 +283,8 @@ fn game_folder_system(folders: &[String]) -> Option<&'static SystemInfo> {
 
 fn entries_have_executable(entries: &[fs::DirEntry]) -> bool {
     entries.iter().any(|e| {
-        let path = e.path();
-        is_executable(&path) && fs::metadata(&path).is_ok_and(|m| m.is_file())
+        // Links are ignored (not followed), like the runtime snapshot.
+        is_executable(&e.path()) && e.file_type().is_ok_and(|t| t.is_file())
     })
 }
 
@@ -317,8 +317,8 @@ impl Walk<'_> {
         let mut file_size = 0u64;
         let mut mtime = fs::metadata(dir).map_or(0, |m| mtime_of(&m));
         for entry in entries {
-            if let Ok(meta) = fs::metadata(entry.path())
-                && meta.is_file()
+            if entry.file_type().is_ok_and(|t| t.is_file())
+                && let Ok(meta) = entry.metadata()
             {
                 file_size = file_size.saturating_add(meta.len());
                 mtime = mtime.max(mtime_of(&meta));
@@ -1138,6 +1138,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let mut names: Vec<(std::ffi::OsString, PathBuf)> = fs::read_dir(&found.path)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| (e.file_name(), e.path()))
         .filter(|(_, path)| {
             is_executable(path) || lower_ext(path).is_some_and(|e| e == "ima" || e == "img")
@@ -1152,7 +1153,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         if is_cancelled(cancel) {
             return Err(Failure::Cancelled);
         }
-        let Some(size) = fs::metadata(&path)
+        let Some(size) = fs::symlink_metadata(&path)
             .ok()
             .filter(|m| m.is_file())
             .map(|m| m.len())

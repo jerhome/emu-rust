@@ -72,10 +72,12 @@ pub(crate) struct LaunchRequest {
 
 #[derive(Debug)]
 pub(crate) enum LibraryEvent {
-    Launch(LaunchRequest),
+    Launch(Box<LaunchRequest>),
     Quit,
 }
 
+// One instance at a time: the size difference between variants costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Dialog {
     Install {
         core: CoreId,
@@ -643,7 +645,7 @@ impl LibraryUi {
                     vec![text::firmware_warning(&names)]
                 };
                 self.events
-                    .push(LibraryEvent::Launch(request(id, path, warnings)));
+                    .push(LibraryEvent::Launch(Box::new(request(id, path, warnings))));
             }
             LaunchCheck::NeedsInstall(core) => match game_id {
                 Some(game_id) => self.open_dialog(Dialog::Install {
@@ -933,7 +935,7 @@ impl LibraryUi {
         if fresh == megacd::BiosVerdict::Ready {
             if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
                 self.focus = Some(Focus::Grid);
-                self.events.push(LibraryEvent::Launch(request));
+                self.events.push(LibraryEvent::Launch(Box::new(request)));
             }
             return;
         }
@@ -1017,7 +1019,7 @@ impl LibraryUi {
         } else if anyway {
             if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
                 self.focus = Some(Focus::Grid);
-                self.events.push(LibraryEvent::Launch(request));
+                self.events.push(LibraryEvent::Launch(Box::new(request)));
             }
         } else if cancel {
             self.dialog = None;
@@ -1224,7 +1226,7 @@ impl LibraryUi {
                     continue;
                 };
                 if done.ok {
-                    self.events.push(LibraryEvent::Launch(request));
+                    self.events.push(LibraryEvent::Launch(Box::new(request)));
                 } else {
                     if let Some(m) = self.cores.manager() {
                         cores_ui::release(m);
@@ -1303,7 +1305,7 @@ impl LibraryUi {
             self.focus_dialog = true;
         } else if anyway {
             if let Some(Dialog::FreeBios { request, .. }) = self.dialog.take() {
-                self.events.push(LibraryEvent::Launch(request));
+                self.events.push(LibraryEvent::Launch(Box::new(request)));
             }
         } else if cancel {
             if installing {
@@ -1450,7 +1452,7 @@ impl LibraryUi {
             }
             (Choice::DownloadDat, _) => self.start_dat_download(ctx),
             (Choice::Launch, Some(Dialog::Firmware { request, .. })) => {
-                self.events.push(LibraryEvent::Launch(request));
+                self.events.push(LibraryEvent::Launch(Box::new(request)));
             }
             (_, Some(Dialog::Firmware { .. })) => {
                 // Cancelled: the core was marked in use by `prepare_launch`.
@@ -1557,7 +1559,7 @@ impl LibraryUi {
                 });
             }
             self.focus = Some(Focus::Grid);
-            self.events.push(LibraryEvent::Launch(request));
+            self.events.push(LibraryEvent::Launch(Box::new(request)));
         } else if cancel {
             self.dialog = None;
             self.focus = Some(Focus::Grid);

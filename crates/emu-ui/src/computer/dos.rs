@@ -209,6 +209,21 @@ pub(crate) fn dos_cache_dir(cache_dir: &Path, core: &CoreId) -> PathBuf {
     cache_dir.join(core.as_str())
 }
 
+/// Snapshot folders « Vider le cache DOS » may delete: the DOS cores that take game folders. `for_system` includes
+/// the user's `[cores.preferred]`, so a core named `core-copies` (private core copies, ADR 0022 section 5) is
+/// explicitly excluded.
+pub(crate) fn clearable_cache_dirs(
+    prefs: &emu_assets::cores::CorePreferences,
+    cache_dir: &Path,
+) -> Vec<PathBuf> {
+    prefs
+        .for_system("DOS")
+        .iter()
+        .filter(|c| c.as_str() != "core-copies" && prefs.folder_policy(c).is_some())
+        .map(|c| dos_cache_dir(cache_dir, c))
+        .collect()
+}
+
 /// Bytes under `dir` (links not followed); missing folder: 0. Off the UI thread for a large cache.
 pub(crate) fn cache_size(dir: &Path) -> u64 {
     let Ok(read) = std::fs::read_dir(dir) else {

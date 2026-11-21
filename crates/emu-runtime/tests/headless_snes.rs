@@ -407,7 +407,9 @@ fn snes_zip_matches_sfc() {
     let _guard = lock();
     let zip = root().join("tests/roms/240pSuite-SNES-1.02.zip");
     let data = tempfile::tempdir().unwrap();
-    let reference = run_frames(&mut load_in(data.path(), &rom_path()), &mut NullInput, 300);
+    // Separate data dirs: a same-named game already known would make the zip an homonym.
+    let bare = tempfile::tempdir().unwrap();
+    let reference = run_frames(&mut load_in(bare.path(), &rom_path()), &mut NullInput, 300);
     let mut emu = load_in(data.path(), &zip);
     assert_eq!(emu.game_name(), "240pSuite-SNES-1.02");
     let got = run_frames(&mut emu, &mut NullInput, 300);

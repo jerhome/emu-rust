@@ -62,8 +62,7 @@ pub fn prepare_dos_snapshot(
 pub fn clear_dos_cache(dirs: &DataDirs, config: &Config) -> Result<u64, String> {
     let prefs = crate::cores_ui::preferences(&config.cores);
     let mut freed = 0;
-    for core in prefs.for_system("DOS") {
-        let dir = dos::dos_cache_dir(&dirs.cache_dir(), core);
+    for dir in dos::clearable_cache_dirs(&prefs, &dirs.cache_dir()) {
         let size = dos::cache_size(&dir);
         dos::clear_cache(&dir).map_err(|e| format!("{} : {e}", dir.display()))?;
         freed += size;
@@ -152,6 +151,14 @@ mod tests {
             "core copies are not the DOS cache"
         );
         assert_eq!(clear_dos_cache(&dirs, &config).unwrap(), 0);
+        // A user preference naming `core-copies` never reaches the private copies.
+        let mut hostile = Config::default();
+        hostile
+            .cores
+            .preferred
+            .insert("DOS".into(), "core-copies".into());
+        assert_eq!(clear_dos_cache(&dirs, &hostile).unwrap(), 0);
+        assert!(copies.join("x.so").is_file());
         // The source folder is never written.
         assert_eq!(std::fs::read_dir(&game).unwrap().count(), 1);
         assert!(dos_cli_content(Path::new("/x/a.zip"), core, &config).is_none());
