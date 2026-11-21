@@ -87,6 +87,17 @@ pub struct SystemInfo {
     /// A sub-folder of `roms/<id>/` holding an `exe` / `com` / `bat` at its root is one game (DOS, design v4.0
     /// §3.4; `systems.toml` `folder_games`, default `false`).
     pub folder_games: bool,
+    /// Keyboard mode of a game of this system when neither the game nor `[computer] keyboard_mode` chooses
+    /// (design v5.0 §3.4; `systems.toml` `default_input`, default `"keyboard"`; `cpc`, `c64`: `"joystick"`).
+    pub default_input: InputDefault,
+}
+
+/// `systems.toml` `default_input` (user decision of 2026-11-21: Joystick for CPC and C64).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputDefault {
+    #[default]
+    Keyboard,
+    Joystick,
 }
 
 #[derive(Deserialize)]
@@ -231,6 +242,8 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             dats,
             folder_extensions: s.folder_extensions,
             folder_games: s.folder_games,
+            // CB1: `default_input` key of `systems.toml`.
+            default_input: InputDefault::Keyboard,
         });
     }
     Ok(out)

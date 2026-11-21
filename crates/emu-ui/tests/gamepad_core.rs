@@ -73,6 +73,9 @@ fn run(input: &mut dyn InputBackend) -> Vec<u64> {
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     };
     let mut emu = Emulator::load(&mock_core::build(Variant::Default), &rom, options).unwrap();
     let mut audio = CollectSink::default();

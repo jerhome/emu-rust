@@ -103,6 +103,9 @@ fn load_in(data: &Path, rom: &Path) -> Emulator {
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     };
     fs::create_dir_all(&options.system_dir).unwrap();
     fs::create_dir_all(&options.save_dir).unwrap();

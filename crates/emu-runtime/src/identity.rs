@@ -64,6 +64,18 @@ pub enum IdentityNotice {
     RegistryUnusable,
 }
 
+/// Where a core's own files go (`cores.toml` `save_scope`, design v5.0 §3.2, §10 n° 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SaveScope {
+    /// `GET_SAVE_DIRECTORY` = `<saves>/<core_id>/`, or `<saves>/<core_id>/<save_name>/` for a homonym (2.1).
+    #[default]
+    Core,
+    /// `GET_SAVE_DIRECTORY` = `<saves>/<core_id>/<save_name>/` for every game of the core, index 1 included
+    /// (cap32 names its differential `<image>.sav` after the image only). SRAM, states, `.disks` and the registry
+    /// stay flat under `<saves>/<core_id>/`.
+    Game,
+}
+
 /// Input of [`resolve_game_identity`]. `primary = None` for `NoGame` (fixed identity, outside the registry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityRequest<'a> {
@@ -76,6 +88,9 @@ pub struct IdentityRequest<'a> {
     /// User `.m3u`, else first image, else the file (the archive for a zip); a CD's `.cue` / `.chd` / `.iso`; the
     /// folder of a game folder (fingerprinted by its file list, design v4.0 §10 n° 4).
     pub primary: Option<&'a Path>,
+    /// [`SaveScope::Game`]: `core_save_dir` is the per-game sub-folder for every game (CR1). Set by the caller
+    /// after [`identity_request_for`], which leaves [`SaveScope::Core`].
+    pub scope: SaveScope,
 }
 
 impl GameIdentity {
@@ -148,6 +163,7 @@ pub fn identity_request_for<'a>(
         states_core_dir,
         base_name,
         primary,
+        scope: SaveScope::Core,
     }
 }
 

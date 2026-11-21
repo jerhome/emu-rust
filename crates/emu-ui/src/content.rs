@@ -130,6 +130,7 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
                 name: stem(&files[0]),
                 images: Vec::new(),
                 playlist: Some(files[0].clone()),
+                launch: None,
             },
             rules,
         };
@@ -142,6 +143,7 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
             name: media_set_name(files),
             images: files.clone(),
             playlist: None,
+            launch: None,
         },
         rules,
     }

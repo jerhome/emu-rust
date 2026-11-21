@@ -38,6 +38,8 @@ fn config(dir: &Path, variables: Vec<(String, String)>) -> CoreConfig {
         variables,
         provide_vfs: false,
         copy_dir: None,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 

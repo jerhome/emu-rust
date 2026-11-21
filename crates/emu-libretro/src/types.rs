@@ -237,6 +237,22 @@ pub enum MemoryKind {
     VideoRam,
 }
 
+/// `struct retro_fastforwarding_override` received with `SET_FASTFORWARDING_OVERRIDE` (64), answered only when
+/// `CoreConfig::fastforward_override` is set (design v5.0 §3.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
+pub struct FastForwardOverride {
+    /// Speed requested by the core; `0.0` = the frontend's own fast-forward ratio (a negative or non-finite value
+    /// sent by the core is stored as `0.0`).
+    pub ratio: f32,
+    /// `true`: the core wants fast-forward now; `false`: back to normal speed.
+    pub fastforward: bool,
+    /// The core asks the frontend to show that fast-forward is active.
+    pub notification: bool,
+    /// While set, the user's fast-forward key is ignored.
+    pub inhibit_toggle: bool,
+}
+
 /// `RETRO_SERIALIZATION_QUIRK_*` flags declared with `SET_SERIALIZATION_QUIRKS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SerializationQuirks(pub u64);

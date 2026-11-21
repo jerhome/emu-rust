@@ -118,6 +118,9 @@ fn options(data: &Path, provide_vfs: bool) -> EmulatorOptions {
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 
@@ -129,6 +132,7 @@ fn rules() -> MediaRules {
             .map(String::from)
             .to_vec(),
         max_copy_bytes: MAX_COPY_BYTES,
+        m3u_launch: emu_runtime::M3uLaunch::None,
     }
 }
 
@@ -138,6 +142,7 @@ fn image(name: &str, path: &Path) -> ContentSpec {
             name: name.into(),
             images: vec![path.to_path_buf()],
             playlist: None,
+            launch: None,
         },
         rules: rules(),
     }

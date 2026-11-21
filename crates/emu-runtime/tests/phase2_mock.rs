@@ -42,6 +42,9 @@ fn options(root: &Path) -> EmulatorOptions {
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 

@@ -69,6 +69,9 @@ fn options(dir: &Path) -> EmulatorOptions {
         assets_dir: dir.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 
@@ -78,6 +81,7 @@ fn rules() -> MediaRules {
         policy: MediaPolicy::WorkingCopy,
         media_direct: vec!["ipf".into(), "lha".into()],
         max_copy_bytes: emu_runtime::MAX_COPY_BYTES,
+        m3u_launch: emu_runtime::M3uLaunch::None,
     }
 }
 
@@ -87,6 +91,7 @@ fn media(name: &str, images: &[&Path]) -> ContentSpec {
             name: name.into(),
             images: images.iter().map(|p| p.to_path_buf()).collect(),
             playlist: None,
+            launch: None,
         },
         rules: rules(),
     }

@@ -67,6 +67,8 @@ fn config(dir: &Path) -> CoreConfig {
         variables: Vec::new(),
         provide_vfs: false,
         copy_dir: None,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 
@@ -391,6 +393,8 @@ fn vfs_provided(lib: &Path) {
         CoreConfig {
             provide_vfs: true,
             copy_dir: None,
+            fastforward_override: false,
+            variable_state_size: false,
             ..config(&dir)
         },
     )

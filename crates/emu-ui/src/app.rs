@@ -451,6 +451,9 @@ impl App {
                 cache_dir: options.dirs.cache_dir(),
                 provide_vfs: typed_id.as_ref().is_some_and(|id| prefs.provides_vfs(id)),
                 restore_added_disks: true,
+                core_save_scope: emu_runtime::SaveScope::Core,
+                fastforward_override: false,
+                variable_state_size: false,
             },
         )?;
         let dos_core = typed_id

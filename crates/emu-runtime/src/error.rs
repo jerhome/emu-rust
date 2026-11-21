@@ -57,4 +57,8 @@ pub enum RuntimeError {
     /// `ContentSpec::Folder::start` is not an 8.3 `exe` / `com` / `bat` at the root of the folder.
     #[error("invalid start program: {0}")]
     InvalidStart(String),
+    /// `MediaSet::launch` refused (design v5.0 §3.2): not printable ASCII, longer than 64, line break, `:` `|` `#`
+    /// with `M3uLaunch::Program`, or a launch text for a core without `m3u_launch`.
+    #[error("invalid launch command: {0}")]
+    InvalidLaunch(String),
 }

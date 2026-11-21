@@ -4,16 +4,16 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use emu_libretro::{
-    AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FrontendHandler,
-    GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind, RetroKey,
-    SystemInfo, VideoFrame, mouse_id,
+    AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride,
+    FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind,
+    RetroKey, SystemInfo, VideoFrame, mouse_id,
 };
 
 use crate::audio::{AudioSink, NullSink};
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
-use crate::identity::{GameIdentity, identity_request_for, resolve_game_identity};
+use crate::identity::{GameIdentity, SaveScope, identity_request_for, resolve_game_identity};
 use crate::input::{AnalogStick, InputBackend, InputFrame, KeyboardState, MouseState};
 use crate::media::{ContentSpec, Disks, MediaRules, PreparedMedia, prepare_media_with};
 use crate::saves::{
@@ -45,6 +45,13 @@ pub struct EmulatorOptions {
     pub provide_vfs: bool,
     /// Re-add disks added from the menu in earlier sessions (design §2.3).
     pub restore_added_disks: bool,
+    /// `cores.toml` `save_scope` (design v5.0 §3.2): `Game` forces the per-game sub-folder of the 2.1 identity
+    /// (`IdentityRequest::scope`) for every game of the core. `Core`: 4.0 behaviour.
+    pub core_save_scope: SaveScope,
+    /// `CoreConfig::fastforward_override` (`cores.toml` `fastforward_override`, and `[computer] auto_fast_load`).
+    pub fastforward_override: bool,
+    /// `CoreConfig::variable_state_size` (`cores.toml` `variable_state_size`).
+    pub variable_state_size: bool,
 }
 
 /// Outcome of one emulated frame.
@@ -57,6 +64,8 @@ pub struct FrameStatus {
     pub shutdown_requested: bool,
     /// `RunEvents::options_changed`: re-read `Emulator::options`.
     pub options_changed: bool,
+    /// `Emulator::fastforward_override` changed during this frame (env 64, design v5.0 §2.4).
+    pub fastforward_changed: bool,
 }
 
 /// Headless emulation session: one core, one game. Same threading rules as `emu_libretro::Core` (!Send).
@@ -177,7 +186,8 @@ impl Emulator {
         let core_id = core_id_from_path(core_path);
         let saves_core_dir = options.save_dir.join(&core_id);
         let states_core_dir = options.state_dir.join(&core_id);
-        let request = identity_request_for(&spec, &saves_core_dir, &states_core_dir);
+        let mut request = identity_request_for(&spec, &saves_core_dir, &states_core_dir);
+        request.scope = options.core_save_scope;
         let identity = resolve_game_identity(&request).unwrap_or_else(|e| {
             tracing::warn!("game identity not resolved ({e}): 2.0 name used");
             GameIdentity::legacy(&request.base_name, &saves_core_dir)
@@ -209,6 +219,8 @@ impl Emulator {
             variables: options.core_variables,
             provide_vfs: options.provide_vfs,
             copy_dir: Some(options.cache_dir.join("core-copies")),
+            fastforward_override: options.fastforward_override,
+            variable_state_size: options.variable_state_size,
         };
         let mut core = Core::load(core_path, config)?;
         let mut content_dir = None;
@@ -389,6 +401,8 @@ impl Emulator {
             av_info_changed: events.av_info_changed,
             shutdown_requested: events.shutdown_requested,
             options_changed: events.options_changed,
+            // CR1: true when `Core::fastforward_override` changed during the frame.
+            fastforward_changed: false,
         })
     }
 
@@ -606,6 +620,21 @@ impl Emulator {
     pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), RuntimeError> {
         self.core.set_option(key, value)?;
         Ok(())
+    }
+
+    /// Queues a simulated key press (menu « Cassette », design v5.0 §2.3): during `frames` frames (at least 2)
+    /// `KeyboardState` reports `key` pressed; a press `KeyEvent` is delivered at the start and a release at the
+    /// end, through the same path as `InputFrame::key_events` (outside `retro_run`, ADR 0015). Queued pulses
+    /// follow one another without overlapping; a key really held by the user is not released by the pulse.
+    /// Never goes through the host key nor the remapping. Usual value: [`crate::PULSE_FRAMES`].
+    pub fn pulse_key(&mut self, key: RetroKey, frames: u32) {
+        let _ = (key, frames);
+        todo!("CR1: key pulses (design v5.0 §3.2)")
+    }
+
+    /// `Core::fastforward_override`: last fast-forward request of the core (env 64), `None` without one.
+    pub fn fastforward_override(&self) -> Option<FastForwardOverride> {
+        todo!("CR1: env 64 state (design v5.0 §3.2)")
     }
 
     /// Forwarded to the core (`GET_FASTFORWARDING`).

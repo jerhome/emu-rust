@@ -76,6 +76,9 @@ impl Fixture {
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
             restore_added_disks: true,
+            core_save_scope: emu_runtime::SaveScope::Core,
+            fastforward_override: false,
+            variable_state_size: false,
             cache_dir: data.join("cache"),
             provide_vfs: false,
         }
@@ -103,6 +106,7 @@ impl Fixture {
                 name: name.into(),
                 images: vec![self.rom(rel)],
                 playlist: None,
+                launch: None,
             },
             rules: emu_runtime::MediaRules::new(MediaPolicy::WorkingCopy),
         }

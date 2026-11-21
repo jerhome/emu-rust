@@ -63,6 +63,9 @@ impl Env {
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
             restore_added_disks: false,
+            core_save_scope: emu_runtime::SaveScope::Core,
+            fastforward_override: false,
+            variable_state_size: false,
         }
     }
 
@@ -175,6 +178,7 @@ fn disks_working_copy(lib: &Path) {
         name: "Game".into(),
         images: vec![d1.clone(), d2.clone()],
         playlist: None,
+        launch: None,
     };
     let spec = ContentSpec::Media {
         set,
@@ -251,6 +255,7 @@ fn disks_basic_direct(lib: &Path) {
             name: "Only".into(),
             images: vec![d1.clone()],
             playlist: None,
+            launch: None,
         },
         rules: MediaRules::new(MediaPolicy::Direct),
     };

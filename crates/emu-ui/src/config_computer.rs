@@ -15,6 +15,24 @@ pub enum KeyboardModeChoice {
     Joystick,
 }
 
+/// `[computer] keyboard_mode` (design v5.0 §4, §10 n° 5): initial mode of a game without a remembered one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyboardModeSetting {
+    /// `default_input` of the game's system (`emu_library::SystemInfo`): Joystick for CPC / C64, else Keyboard.
+    #[default]
+    Auto,
+    Keyboard,
+    Joystick,
+}
+
+impl KeyboardModeSetting {
+    /// Never written while `Auto`.
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComputerConfig {
@@ -23,7 +41,12 @@ pub struct ComputerConfig {
     /// A click in the game area captures the pointer.
     pub auto_capture: bool,
     /// Mode of games launched from the library; the desktop (no game) is always `Keyboard`.
+    /// 2.0-4.0 key, superseded by `keyboard_mode` (5.0): CU1 makes it a read-only migration input (`"joystick"`
+    /// ⇒ `keyboard_mode = "joystick"`, `"keyboard"` ignored, never written again); `app.rs` reads it until CU2.
     pub default_keyboard_mode: KeyboardModeChoice,
+    /// 5.0: initial mode of a game without a remembered one (`Auto` = the system's `default_input`).
+    #[serde(skip_serializing_if = "KeyboardModeSetting::is_auto")]
+    pub keyboard_mode: KeyboardModeSetting,
     /// `false`: never grab the pointer, always the uncaptured fallback (noVNC, WSLg setups where the grab
     /// misbehaves).
     pub grab_pointer: bool,
@@ -43,6 +66,7 @@ impl Default for ComputerConfig {
             mouse_sensitivity: 1.0,
             auto_capture: true,
             default_keyboard_mode: KeyboardModeChoice::default(),
+            keyboard_mode: KeyboardModeSetting::Auto,
             grab_pointer: true,
             emutos_variant: None,
             remap: BTreeMap::new(),

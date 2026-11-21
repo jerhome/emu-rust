@@ -59,6 +59,9 @@ impl Env {
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
             restore_added_disks: restore,
+            core_save_scope: emu_runtime::SaveScope::Core,
+            fastforward_override: false,
+            variable_state_size: false,
             cache_dir: data.join("cache"),
             provide_vfs: false,
         }
@@ -83,6 +86,7 @@ impl Env {
                 name: "Game".into(),
                 images: vec![image.to_path_buf()],
                 playlist: None,
+                launch: None,
             },
             rules: emu_runtime::MediaRules::new(MediaPolicy::WorkingCopy),
         }

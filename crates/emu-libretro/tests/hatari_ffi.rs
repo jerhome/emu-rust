@@ -51,6 +51,8 @@ fn load(name: &str) -> (Core, PathBuf) {
             variables: Vec::new(),
             provide_vfs: false,
             copy_dir: None,
+            fastforward_override: false,
+            variable_state_size: false,
         },
     )
     .expect("load hatari");

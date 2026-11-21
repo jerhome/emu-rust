@@ -34,7 +34,8 @@ pub use crate::config::{
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
 pub use crate::config_computer::{
-    ComputerConfig, KeyboardModeChoice, emutos_variant_or_system, variant_for_locale,
+    ComputerConfig, KeyboardModeChoice, KeyboardModeSetting, emutos_variant_or_system,
+    variant_for_locale,
 };
 pub use crate::config_gamepad::{GamepadConfig, GamepadDeviceConfig, HotkeyButton};
 pub use crate::config_library::{

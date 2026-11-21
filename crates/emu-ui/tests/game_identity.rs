@@ -63,6 +63,9 @@ impl Env {
             assets_dir: self.dirs.assets.clone(),
             core_variables: Vec::new(),
             restore_added_disks: true,
+            core_save_scope: emu_runtime::SaveScope::Core,
+            fastforward_override: false,
+            variable_state_size: false,
             cache_dir: self.dirs.root.join("cache"),
             provide_vfs: false,
         }

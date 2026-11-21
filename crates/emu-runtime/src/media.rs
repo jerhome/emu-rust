@@ -69,6 +69,23 @@ pub struct MediaSet {
     /// A user `.m3u`: used as is when the policy is `Direct` (its entries are never rewritten); under
     /// `WorkingCopy` its entries are copied and a new playlist is generated. Takes precedence over `images`.
     pub playlist: Option<PathBuf>,
+    /// Launch text of the game (`[media] launch`, design v5.0 §3.2): CPC command (`RUN"DISC`) or C64 program
+    /// name, written into a generated `.m3u` as [`MediaRules::m3u_launch`] says. `None` or empty: 4.0 behaviour.
+    /// Printable ASCII, at most 64 characters, no line break; with `M3uLaunch::Program` also no `:` `|` `#`;
+    /// with `M3uLaunch::None` any text is refused (`RuntimeError::InvalidLaunch`, CR1).
+    pub launch: Option<String>,
+}
+
+/// How a core takes a launch command from a `.m3u` (`cores.toml` `m3u_launch`, design v5.0 §3.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum M3uLaunch {
+    /// No launch command: `MediaSet::launch` is refused; `#COMMAND:` of a user `.m3u` is never copied.
+    #[default]
+    None,
+    /// cap32: first line `#COMMAND:<launch>`; a valid `#COMMAND:` of a user `.m3u` is kept (replaced by `launch`).
+    Command,
+    /// VICE: first entry `<image>:<launch>`; `#COMMAND:` of a user `.m3u` is never copied (core arguments).
+    Program,
 }
 
 /// Whether the user's files may be handed to the core (from `emu-assets/data/cores.toml`, `media = …`).
@@ -98,6 +115,9 @@ pub struct MediaRules {
     pub media_direct: Vec<String>,
     /// A source larger than this is refused (`InvalidMediaSet`) instead of being copied.
     pub max_copy_bytes: u64,
+    /// `cores.toml` `m3u_launch`. Anything but `None` also makes every user `.m3u` read back and regenerated
+    /// with the white list, under `Direct` too (design v5.0 §3.2, revue V3a, §10 n° 13; CR1).
+    pub m3u_launch: M3uLaunch,
 }
 
 impl MediaRules {
@@ -107,6 +127,7 @@ impl MediaRules {
             policy,
             media_direct: Vec::new(),
             max_copy_bytes: MAX_COPY_BYTES,
+            m3u_launch: M3uLaunch::None,
         }
     }
 
@@ -131,6 +152,8 @@ pub struct PreparedMedia {
     /// Set when this preparation had to start new copies in a suffixed folder instead of `<game>.disks`
     /// (only at that launch; the next ones reuse the new folder silently). The UI should tell the player.
     pub notice: Option<WorkDirNotice>,
+    /// `#` lines of a user `.m3u` dropped by the white list (design v5.0 §3.2): the OSD says so once (CR1).
+    pub dropped_lines: u32,
     /// `Direct` only: private directory holding extracted zip entries and the generated playlist. Removed when
     /// the last clone is dropped, so keep this value alive as long as the core may read the files.
     pub(crate) temp_dir: Option<Arc<TempDir>>,
@@ -153,6 +176,7 @@ impl PartialEq for PreparedMedia {
             && self.images == other.images
             && self.work_dir == other.work_dir
             && self.notice == other.notice
+            && self.dropped_lines == other.dropped_lines
     }
 }
 
@@ -273,6 +297,7 @@ fn prepare_media_inner(
             images,
             work_dir: None,
             notice: None,
+            dropped_lines: 0,
             temp_dir: None,
         });
     }
@@ -310,6 +335,7 @@ fn prepare_media_inner(
         images: stage.images,
         work_dir: None,
         notice: None,
+        dropped_lines: 0,
         temp_dir: stage.temp_dir,
     })
 }
@@ -559,6 +585,7 @@ fn prepare_working_copies(
         images: stage.images,
         work_dir: Some(chosen.dir),
         notice: chosen.notice,
+        dropped_lines: 0,
         temp_dir: None,
     })
 }
@@ -1723,6 +1750,7 @@ mod tests {
             name: name.into(),
             images,
             playlist: None,
+            launch: None,
         }
     }
 
@@ -2075,6 +2103,7 @@ mod tests {
         let exts = strs(&["hdf"]);
         let r = MediaRules {
             max_copy_bytes: 63,
+            m3u_launch: M3uLaunch::None,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let err = prepare_media(&set("Big", vec![hdf.clone()]), &r, &exts, &f.saves()).unwrap_err();
@@ -2082,6 +2111,7 @@ mod tests {
         assert!(f.written().iter().all(|w| !w.ends_with(".hdf")));
         let r = MediaRules {
             max_copy_bytes: 64,
+            m3u_launch: M3uLaunch::None,
             ..r
         };
         let p = prepare_media(&set("Big", vec![hdf]), &r, &exts, &f.saves()).unwrap();
@@ -2180,6 +2210,7 @@ mod tests {
         let f = Fixture::new();
         let rules = MediaRules {
             max_copy_bytes: 150,
+            m3u_launch: M3uLaunch::None,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let zip = f.file(
@@ -2367,6 +2398,7 @@ mod tests {
         let plain = f.file("Plain.st", &[1u8; 100]);
         let small = MediaRules {
             max_copy_bytes: 99,
+            m3u_launch: M3uLaunch::None,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let err = prepare_media_with(
@@ -2459,6 +2491,7 @@ mod tests {
             name: "Game".into(),
             images: Vec::new(),
             playlist: Some(m3u.clone()),
+            launch: None,
         };
         let p = f.prepare(&s, MediaPolicy::Direct).unwrap();
         assert_eq!(p.content, m3u);

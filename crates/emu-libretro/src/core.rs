@@ -9,8 +9,8 @@ use crate::error::LibretroError;
 use crate::resident::{self, CopyFile};
 use crate::sys;
 use crate::types::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameSource, InputQuery, MemoryKind,
-    PixelFormat, SerializationQuirks, SystemInfo, VideoFrame,
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride, GameSource,
+    InputQuery, MemoryKind, PixelFormat, SerializationQuirks, SystemInfo, VideoFrame,
 };
 
 /// Frontend-side configuration answered through environment callbacks.
@@ -31,6 +31,14 @@ pub struct CoreConfig {
     /// Where a private copy of the library is written when the original stays resident after unloading
     /// (ADR 0022). `None`: reloading a resident core fails with `LibretroError::CoreCopy`.
     pub copy_dir: Option<PathBuf>,
+    /// Answer `SET_FASTFORWARDING_OVERRIDE` (64): `true` to a `NULL` probe, requests stored and reported by
+    /// `RunEvents::fastforward` (`cores.toml` `fastforward_override`, design v5.0 §3.1). `false`: 64 is declined
+    /// (4.0 behaviour).
+    pub fastforward_override: bool,
+    /// `unserialize` accepts a state shorter than the current `serialize_size()` even without the
+    /// `CORE_VARIABLE_SIZE` quirk (VICE: the size depends on the inserted media; `cores.toml`
+    /// `variable_state_size`). `false`: 4.0 behaviour.
+    pub variable_state_size: bool,
 }
 
 /// Receives the per-frame callbacks while `Core::run` executes. Called on the thread that owns the `Core`.
@@ -45,7 +53,7 @@ pub trait FrontendHandler {
 }
 
 /// Environment-driven events observed during one `Core::run`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RunEvents {
     /// `SET_GEOMETRY` or `SET_SYSTEM_AV_INFO` was received; re-read `Core::av_info`.
@@ -55,6 +63,9 @@ pub struct RunEvents {
     /// Option list, values or visibility changed (`SET_VARIABLE`, `SET_CORE_OPTIONS_DISPLAY`, late
     /// `SET_CORE_OPTIONS*`): re-read `Core::options`.
     pub options_changed: bool,
+    /// Last `SET_FASTFORWARDING_OVERRIDE` request seen during this run (or since the previous run, for a request
+    /// sent while loading). Only with `CoreConfig::fastforward_override`.
+    pub fastforward: Option<FastForwardOverride>,
 }
 
 impl RunEvents {
@@ -64,6 +75,8 @@ impl RunEvents {
             av_info_changed: self.av_info_changed || other.av_info_changed,
             shutdown_requested: self.shutdown_requested || other.shutdown_requested,
             options_changed: self.options_changed || other.options_changed,
+            // The later request wins.
+            fastforward: other.fastforward.or(self.fastforward),
         }
     }
 }
@@ -633,6 +646,12 @@ impl Core {
     /// Value answered to `GET_FASTFORWARDING`.
     pub fn set_fast_forwarding(&mut self, enabled: bool) {
         callbacks::set_fast_forwarding(enabled);
+    }
+
+    /// Current `SET_FASTFORWARDING_OVERRIDE` state of the core (last request, including one sent outside
+    /// `run`); `None` if it never sent one or `CoreConfig::fastforward_override` is off (design v5.0 §3.1, CF1).
+    pub fn fastforward_override(&self) -> Option<FastForwardOverride> {
+        todo!("CF1: env 64 opt-in (design v5.0 §3.1)")
     }
 
     /// Drains the OSD messages received since the last call (`SET_MESSAGE`, `SET_MESSAGE_EXT`).

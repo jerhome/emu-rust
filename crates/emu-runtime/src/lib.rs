@@ -25,8 +25,8 @@ mod workcopy;
 
 pub use emu_libretro::{
     AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, DiskControlKind,
-    GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LibretroError, LogLevel, MemoryKind,
-    RetroKey, SystemInfo, SystemTiming, mouse_id,
+    FastForwardOverride, GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LibretroError,
+    LogLevel, MemoryKind, RetroKey, SystemInfo, SystemTiming, mouse_id,
 };
 
 pub use crate::added::{AddedDisk, OrphanCopy, OrphanKind};
@@ -43,16 +43,16 @@ pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SI
 pub use crate::error::RuntimeError;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
-pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest};
+pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest, SaveScope};
 pub use crate::identity::{identity_request_for, resolve_game_identity};
 pub use crate::input::{
     AnalogStick, InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState,
-    NullInput, PadState, ScriptedInput,
+    NullInput, PULSE_FRAMES, PadState, ScriptedInput,
 };
 pub use crate::media::{
-    ContentSpec, DiskSlot, Disks, MAX_COPY_BYTES, MAX_MEDIA_IMAGES, MediaPolicy, MediaRules,
-    MediaSet, NO_GAME_NAME, PreparedMedia, WorkDirNotice, prepare_media, reset_core_game_files,
-    reset_work_dir, reset_working_copies,
+    ContentSpec, DiskSlot, Disks, M3uLaunch, MAX_COPY_BYTES, MAX_MEDIA_IMAGES, MediaPolicy,
+    MediaRules, MediaSet, NO_GAME_NAME, PreparedMedia, WorkDirNotice, prepare_media,
+    reset_core_game_files, reset_work_dir, reset_working_copies,
 };
 pub use crate::pacing::{
     AudioLevel, DEFAULT_FAST_FORWARD_RATIO, MAX_BURST, PaceDecision, Pacer, Speed, SyncMode,

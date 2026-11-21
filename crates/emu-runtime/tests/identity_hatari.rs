@@ -70,6 +70,9 @@ fn options(dir: &Path, restore_added_disks: bool) -> EmulatorOptions {
         assets_dir: dir.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
         cache_dir: dir.join("cache"),
         provide_vfs: false,
     }
@@ -82,6 +85,7 @@ fn session(image: &Path, data: &Path, restore: bool) -> Emulator {
             name: image.file_stem().unwrap().to_string_lossy().into_owned(),
             images: vec![image.to_path_buf()],
             playlist: None,
+            launch: None,
         },
         rules: emu_runtime::MediaRules::new(MediaPolicy::WorkingCopy),
     };

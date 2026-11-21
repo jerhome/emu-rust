@@ -119,6 +119,9 @@ fn emu_options(data: &Path, variables: Vec<(String, String)>) -> EmulatorOptions
         assets_dir: data.join("assets"),
         core_variables: variables,
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 

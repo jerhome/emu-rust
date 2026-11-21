@@ -48,6 +48,8 @@ mod unix_tests {
             variables: Vec::new(),
             provide_vfs: false,
             copy_dir: None,
+            fastforward_override: false,
+            variable_state_size: false,
         };
         let mut core = Core::load(&lib, config).expect("load mock core");
         assert_eq!(core.system_info().library_name, "Mock Core");

@@ -75,6 +75,9 @@ fn options(dir: &Path) -> EmulatorOptions {
         assets_dir: dir.join("assets"),
         core_variables: Vec::new(),
         restore_added_disks: false,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 
@@ -90,6 +93,7 @@ fn single(name: &str, image: &Path) -> ContentSpec {
             name: name.into(),
             images: vec![image.to_path_buf()],
             playlist: None,
+            launch: None,
         },
         rules: MediaRules::new(MediaPolicy::WorkingCopy),
     }
@@ -401,6 +405,7 @@ fn two_floppies_generated_playlist_and_swap() {
             name: "two disks".into(),
             images: vec![a.clone(), b.clone()],
             playlist: None,
+            launch: None,
         },
         rules: MediaRules::new(MediaPolicy::WorkingCopy),
     };

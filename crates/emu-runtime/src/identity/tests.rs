@@ -267,6 +267,7 @@ fn media(name: &str, image: &Path) -> ContentSpec {
             name: name.into(),
             images: vec![image.to_path_buf()],
             playlist: None,
+            launch: None,
         },
         rules: crate::media::MediaRules::new(crate::media::MediaPolicy::WorkingCopy),
     }
@@ -515,6 +516,7 @@ fn request_names_the_primary_source() {
             name: "Ys: Book I".into(),
             images: vec!["/r/1.st".into(), "/r/2.st".into()],
             playlist: playlist.map(PathBuf::from),
+            launch: None,
         },
         rules: crate::media::MediaRules::new(crate::media::MediaPolicy::Direct),
     };
@@ -624,6 +626,7 @@ fn a_sole_owner_moved_before_the_first_2_1_launch_keeps_its_name_and_copies() {
             name: "G".into(),
             images: Vec::new(),
             playlist: Some(playlist),
+            launch: None,
         },
         rules: crate::media::MediaRules::new(MediaPolicy::WorkingCopy),
     };

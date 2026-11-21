@@ -270,9 +270,90 @@ impl CorePreferences {
             .map_or_else(Vec::new, |p| p.system_caches.clone())
     }
 
+    /// `save_scope` of `data/cores.toml` (design v5.0 §3.3): `Game` ⇒ `emu_runtime::SaveScope::Game` (cap32).
+    /// `Core` for cores without the key.
+    pub fn save_scope(&self, core: &CoreId) -> SaveScopePref {
+        let _ = core;
+        todo!("CA1: cores.toml `save_scope`")
+    }
+
+    /// `fastforward_override = true` of `data/cores.toml`: the core may request fast-forward (env 64,
+    /// `CoreConfig::fastforward_override`). `false` without the key.
+    pub fn fastforward_override(&self, core: &CoreId) -> bool {
+        let _ = core;
+        todo!("CA1: cores.toml `fastforward_override`")
+    }
+
+    /// `variable_state_size = true` of `data/cores.toml` (VICE): `CoreConfig::variable_state_size`. `false`
+    /// without the key.
+    pub fn variable_state_size(&self, core: &CoreId) -> bool {
+        let _ = core;
+        todo!("CA1: cores.toml `variable_state_size`")
+    }
+
+    /// `[cores.<core>.options_by_extension] <ext> = { key = "value" }` (cap32: `cpr` ⇒ `cap32_model = "6128+"`):
+    /// third source of the computed defaults (design v3.0 §3.5.4). `extension`: case ignored, without the dot.
+    /// Sorted by key; empty for an unknown core or extension.
+    pub fn options_by_extension(&self, core: &CoreId, extension: &str) -> Vec<(String, String)> {
+        let _ = (core, extension);
+        todo!("CA1: cores.toml `options_by_extension`")
+    }
+
+    /// `m3u_launch` of `data/cores.toml` (`"command"` cap32, `"program"` VICE) ⇒ `emu_runtime::M3uLaunch`.
+    /// `None` without the key (`M3uLaunch::None`).
+    pub fn m3u_launch(&self, core: &CoreId) -> Option<M3uLaunchPref> {
+        let _ = core;
+        todo!("CA1: cores.toml `m3u_launch`")
+    }
+
+    /// `[cores.<core>.actions]` of `data/cores.toml`: keys pressed by the « Cassette » menu. Names checked when
+    /// the file is parsed against the libretro key names. All `None` without the table.
+    pub fn actions(&self, core: &CoreId) -> CoreActions {
+        let _ = core;
+        todo!("CA1: cores.toml `[actions]`")
+    }
+
     /// Systems known to the preferences (for "install recommended cores").
     pub fn systems(&self) -> impl Iterator<Item = (&str, &[CoreId])> {
         self.systems.iter().map(|(s, c)| (s.as_str(), c.as_slice()))
+    }
+}
+
+/// `save_scope` of `data/cores.toml` (design v5.0 §3.3; not `save_dir`, a path of `CoreConfig`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveScopePref {
+    /// `<saves>/<core_id>/` (sub-folder only for a homonym, 2.1).
+    #[default]
+    Core,
+    /// `<saves>/<core_id>/<save_name>/` for every game. Only such a core may list a `game_saves` pattern without
+    /// `{game}` (`*.sav`): on a shared folder it would delete the files of other games.
+    Game,
+}
+
+/// `m3u_launch` of `data/cores.toml` (design v5.0 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum M3uLaunchPref {
+    /// `#COMMAND:<launch>` first line (cap32).
+    Command,
+    /// `<image>:<launch>` first entry (VICE).
+    Program,
+}
+
+/// `[cores.<core>.actions]` of `data/cores.toml`: libretro key names without the `RETROK_` prefix (`"HOME"`,
+/// `"F13"`), converted by the UI with `RetroKey::from_name` (emu-assets does not depend on emu-libretro).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoreActions {
+    pub tape_play: Option<String>,
+    pub tape_stop: Option<String>,
+    pub tape_rewind: Option<String>,
+}
+
+impl CoreActions {
+    /// No action declared: the « Cassette » menu is hidden.
+    pub fn is_empty(&self) -> bool {
+        self.tape_play.is_none() && self.tape_stop.is_none() && self.tape_rewind.is_none()
     }
 }
 

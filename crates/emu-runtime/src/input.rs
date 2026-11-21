@@ -5,6 +5,9 @@ use emu_libretro::{JoypadButton, KeyEvent, RetroKey};
 /// Number of virtual controller ports exposed to cores in phase 1.
 pub const MAX_PORTS: usize = 2;
 
+/// Frames a simulated key stays pressed for `Emulator::pulse_key` (cassette actions, design v5.0 §2.3).
+pub const PULSE_FRAMES: u32 = 4;
+
 /// Digital state of one libretro joypad (bit n = `JoypadButton` with id n).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PadState {
