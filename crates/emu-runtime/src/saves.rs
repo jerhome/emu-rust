@@ -115,8 +115,98 @@ pub fn adopt_family_save(
     family: &[String],
     save_rel: &Path,
 ) -> Result<Option<String>, RuntimeError> {
-    let _ = (saves_dir, core_id, family, save_rel);
-    todo!("PR1: copy the newest family save (memory card) when the target does not exist")
+    if !is_plain_name(core_id) || family.iter().any(|c| !is_plain_name(c)) {
+        return Err(bad_name(saves_dir, core_id));
+    }
+    let mut parts = save_rel.components();
+    let name = match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(n)), None) if n.to_str().is_some_and(is_plain_name) => n,
+        _ => return Err(bad_name(saves_dir, &save_rel.to_string_lossy())),
+    };
+    let target_dir = saves_dir.join(core_id);
+    let target = target_dir.join(name);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Ok(None);
+    }
+    // Newest regular file (never a link) among the other cores of the family.
+    let mut best: Option<(std::time::SystemTime, &str, PathBuf)> = None;
+    for other in family.iter().filter(|c| c.as_str() != core_id) {
+        let dir = saves_dir.join(other);
+        if !fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let path = dir.join(name);
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > ADOPT_MAX_BYTES {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, ..)| modified > *t) {
+            best = Some((modified, other, path));
+        }
+    }
+    let Some((_, source_id, source)) = best else {
+        return Ok(None);
+    };
+    let io_err = |path: &Path, source| RuntimeError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut input = File::open(&source).map_err(|e| io_err(&source, e))?;
+    // Checked again on the opened file (narrows the window after `symlink_metadata`; size stays bounded).
+    let meta = input.metadata().map_err(|e| io_err(&source, e))?;
+    if !meta.is_file() || meta.len() > ADOPT_MAX_BYTES {
+        return Ok(None);
+    }
+    let mut data = Vec::with_capacity(meta.len() as usize);
+    (&mut input)
+        .take(ADOPT_MAX_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| io_err(&source, e))?;
+    if data.len() as u64 > ADOPT_MAX_BYTES {
+        return Ok(None);
+    }
+    // A link in place of the target folder would redirect the copy.
+    match fs::symlink_metadata(&target_dir) {
+        Ok(m) if !m.is_dir() => return Err(bad_name(saves_dir, core_id)),
+        Ok(_) => {}
+        Err(_) => fs::create_dir_all(&target_dir).map_err(|e| io_err(&target_dir, e))?,
+    }
+    let mut out = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(e) => return Err(io_err(&target, e)),
+    };
+    let written = out.write_all(&data).and_then(|()| out.sync_all());
+    if let Err(e) = written {
+        drop(out);
+        let _ = fs::remove_file(&target);
+        return Err(io_err(&target, e));
+    }
+    tracing::info!("{} adopted from {}", target.display(), source.display());
+    Ok(Some(source_id.to_owned()))
+}
+
+/// Largest save adopted from another core (a PS1 memory card is 128 KiB).
+const ADOPT_MAX_BYTES: u64 = 1 << 20;
+
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0', ':'])
+}
+
+fn bad_name(dir: &Path, what: &str) -> RuntimeError {
+    RuntimeError::Io {
+        path: dir.join(what),
+        source: io::Error::new(io::ErrorKind::InvalidInput, "not a plain file name"),
+    }
 }
 
 /// Stable identifier of a core from its library path: file stem, `_libretro` suffix and a leading `lib`
@@ -434,6 +524,157 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    fn family() -> Vec<String> {
+        ["pcsx", "swan", "beetle"].map(String::from).to_vec()
+    }
+
+    fn put(root: &Path, core: &str, name: &str, data: &[u8]) -> PathBuf {
+        let path = root.join(core).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, data).unwrap();
+        path
+    }
+
+    #[test]
+    fn adopt_copies_when_absent_and_never_overwrites() {
+        let tmp = tempdir();
+        let root = tmp.path();
+        let rel = Path::new("Game.srm");
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), rel).unwrap(),
+            None
+        );
+        put(root, "pcsx", "Game.srm", b"card");
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), rel).unwrap(),
+            Some("pcsx".into())
+        );
+        assert_eq!(fs::read(root.join("swan/Game.srm")).unwrap(), b"card");
+        assert!(root.join("pcsx/Game.srm").exists(), "original kept");
+        // Target exists: untouched, nothing reported.
+        put(root, "beetle", "Game.srm", b"other");
+        fs::write(root.join("swan/Game.srm"), b"mine").unwrap();
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), rel).unwrap(),
+            None
+        );
+        assert_eq!(fs::read(root.join("swan/Game.srm")).unwrap(), b"mine");
+        // A core outside the family is never a source.
+        put(root, "stranger", "Y.srm", b"x");
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), Path::new("Y.srm")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn adopt_picks_the_newest_source() {
+        let tmp = tempdir();
+        let root = tmp.path();
+        let old = put(root, "pcsx", "G.srm", b"old");
+        put(root, "beetle", "G.srm", b"new");
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), Path::new("G.srm")).unwrap(),
+            Some("beetle".into())
+        );
+        assert_eq!(fs::read(root.join("swan/G.srm")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn adopt_refuses_hostile_input() {
+        let tmp = tempdir();
+        let root = tmp.path();
+        put(root, "pcsx", "G.srm", b"card");
+        for bad in ["../G.srm", "a/G.srm", "", ".", "..", "/G.srm", "a\\b.srm"] {
+            assert!(
+                adopt_family_save(root, "swan", &family(), Path::new(bad)).is_err(),
+                "{bad}"
+            );
+        }
+        for bad_core in ["..", "a/b", ""] {
+            assert!(adopt_family_save(root, bad_core, &family(), Path::new("G.srm")).is_err());
+        }
+        let evil = vec!["..".to_string()];
+        assert!(adopt_family_save(root, "swan", &evil, Path::new("G.srm")).is_err());
+        assert!(!root.join("swan").exists());
+        // Too large: skipped.
+        put(
+            root,
+            "pcsx",
+            "Big.srm",
+            &vec![0u8; (ADOPT_MAX_BYTES + 1) as usize],
+        );
+        assert_eq!(
+            adopt_family_save(root, "swan", &family(), Path::new("Big.srm")).unwrap(),
+            None
+        );
+        assert!(!root.join("swan/Big.srm").exists());
+        // Exactly the limit: copied.
+        put(
+            root,
+            "pcsx",
+            "Max.srm",
+            &vec![1u8; ADOPT_MAX_BYTES as usize],
+        );
+        assert!(
+            adopt_family_save(root, "swan", &family(), Path::new("Max.srm"))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adopt_never_follows_links() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir();
+        let root = tmp.path().join("saves");
+        let secret = tmp.path().join("secret.srm");
+        fs::write(&secret, b"secret").unwrap();
+        // Source is a link.
+        fs::create_dir_all(root.join("pcsx")).unwrap();
+        symlink(&secret, root.join("pcsx/G.srm")).unwrap();
+        assert_eq!(
+            adopt_family_save(&root, "swan", &family(), Path::new("G.srm")).unwrap(),
+            None
+        );
+        assert!(!root.join("swan/G.srm").exists());
+        // Source folder is a link.
+        let real = tmp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("H.srm"), b"x").unwrap();
+        symlink(&real, root.join("beetle")).unwrap();
+        assert_eq!(
+            adopt_family_save(&root, "swan", &family(), Path::new("H.srm")).unwrap(),
+            None
+        );
+        // Target is a dangling link: not written through.
+        put(&root, "pcsx", "T.srm", b"card");
+        fs::create_dir_all(root.join("swan")).unwrap();
+        let victim = tmp.path().join("victim");
+        symlink(&victim, root.join("swan/T.srm")).unwrap();
+        assert_eq!(
+            adopt_family_save(&root, "swan", &family(), Path::new("T.srm")).unwrap(),
+            None
+        );
+        assert!(!victim.exists());
+        // Target folder is a link: refused.
+        put(&root, "pcsx", "U.srm", b"card");
+        fs::remove_dir_all(root.join("swan")).unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        symlink(&elsewhere, root.join("swan")).unwrap();
+        assert!(adopt_family_save(&root, "swan", &family(), Path::new("U.srm")).is_err());
+        assert!(!elsewhere.join("U.srm").exists());
     }
 
     #[test]

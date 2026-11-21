@@ -373,6 +373,11 @@ impl Emulator {
                 return Err(e);
             }
         };
+        for &(port, id) in &options.port_devices {
+            if let Err(e) = core.set_controller_device(port, id) {
+                tracing::warn!("port {port}: device {id} refused, keeping the joypad: {e}");
+            }
+        }
         let info = core.system_info();
         tracing::info!(
             core = %info.library_name,

@@ -1343,10 +1343,11 @@ pub fn reset_working_copies(saves_core_dir: &Path, game: &str) -> Result<bool, R
 /// v3.0 §3.5.3; puae: `{game}.save*.adf` created for `#SAVEDISK:`), and returns the deleted paths. The core must
 /// not be running that game.
 ///
-/// `patterns` are **file names**, never paths: `{game}` stands for `content_name` (the content name handed to
+/// `patterns` are file names, optionally preceded by at most two literal folders (`opera/per_game/{game}.*.srm`,
+/// folders `[a-z0-9_]+` walked without following links): `{game}` stands for `content_name` (the content name handed to
 /// the core), at most one `*` matches any run of characters other than `.` (so that the files of a game whose
-/// name extends this one, `X.saveY` for `X`, are never matched). A pattern holding a path separator, `..`, or more
-/// than one `*` is refused (`InvalidMediaSet`), nothing is deleted. Only regular files directly inside
+/// name extends this one, `X.saveY` for `X`, are never matched). A pattern holding a backslash, `..`, a folder that is not
+/// a plain literal, more than two folders, or more than one `*` is refused (`InvalidMediaSet`), nothing is deleted. Only regular files directly inside
 /// `saves_core_dir` are looked at (not recursive, links never followed).
 pub fn reset_core_game_files(
     saves_core_dir: &Path,
@@ -1371,33 +1372,62 @@ pub fn reset_core_game_files(
     if globs.is_empty() {
         return Ok(Vec::new());
     }
-    let dir = match fs::read_dir(saves_core_dir) {
-        Ok(dir) => dir,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io_error(saves_core_dir, e)),
-    };
     let mut doomed = Vec::new();
-    for entry in dir {
-        let entry = entry.map_err(|e| io_error(saves_core_dir, e))?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !globs.iter().any(|g| g.matches(&name)) {
+    for glob in &globs {
+        // Folders are walked one component at a time, never through a link: a link or a file in the path
+        // means nothing is deleted for this pattern.
+        let mut folder = saves_core_dir.to_path_buf();
+        let mut reachable = true;
+        for part in &glob.dirs {
+            folder.push(part);
+            match fs::symlink_metadata(&folder) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => {
+                    tracing::warn!(
+                        "{} is not a plain folder: save pattern skipped",
+                        folder.display()
+                    );
+                    reachable = false;
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    reachable = false;
+                    break;
+                }
+                Err(e) => return Err(io_error(&folder, e)),
+            }
+        }
+        if !reachable {
             continue;
         }
-        let path = entry.path();
-        // `symlink_metadata`: a link (or a folder) matching the pattern is not a file the core wrote.
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_file() => doomed.push(path),
-            Ok(_) => tracing::warn!(
-                "{} matches a save pattern but is not a file: kept",
-                path.display()
-            ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_error(&path, e)),
+        let dir = match fs::read_dir(&folder) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(io_error(&folder, e)),
+        };
+        for entry in dir {
+            let entry = entry.map_err(|e| io_error(&folder, e))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !glob.matches(&name) {
+                continue;
+            }
+            let path = entry.path();
+            // `symlink_metadata`: a link (or a folder) matching the pattern is not a file the core wrote.
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() => doomed.push(path),
+                Ok(_) => tracing::warn!(
+                    "{} matches a save pattern but is not a file: kept",
+                    path.display()
+                ),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_error(&path, e)),
+            }
         }
     }
     doomed.sort();
+    doomed.dedup();
     let mut removed = Vec::with_capacity(doomed.len());
     for path in doomed {
         match fs::remove_file(&path) {
@@ -1415,6 +1445,8 @@ pub fn reset_core_game_files(
 /// One `game_saves` pattern with `{game}` substituted: a literal file name, or `prefix*suffix`.
 #[derive(Debug)]
 struct SaveGlob {
+    /// Literal folders (at most two, `[a-z0-9_]+`) below the core's save folder.
+    dirs: Vec<String>,
     prefix: String,
     /// `None`: no `*`, the whole name is `prefix`.
     suffix: Option<String>,
@@ -1423,7 +1455,19 @@ struct SaveGlob {
 impl SaveGlob {
     /// `None` for anything but a file name: separators, `..`, NUL, more than one `*`, or no `{game}` (a pattern
     /// that does not name the game would reach the files of every game).
-    fn new(pattern: &str, game: &str) -> Option<Self> {
+    fn new(full_pattern: &str, game: &str) -> Option<Self> {
+        let mut pieces: Vec<&str> = full_pattern.split('/').collect();
+        let pattern = pieces.pop()?;
+        if pieces.len() > 2
+            || !pieces.iter().all(|d| {
+                !d.is_empty()
+                    && d.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            })
+        {
+            return None;
+        }
+        let dirs = pieces.into_iter().map(str::to_owned).collect();
         if pattern.is_empty()
             || pattern.contains(['/', '\\', '\0', ':'])
             || pattern == "."
@@ -1444,7 +1488,11 @@ impl SaveGlob {
         if literal.is_empty() || literal == "." || literal == ".." {
             return None;
         }
-        Some(Self { prefix, suffix })
+        Some(Self {
+            dirs,
+            prefix,
+            suffix,
+        })
     }
 
     fn matches(&self, name: &str) -> bool {
@@ -2467,7 +2515,13 @@ mod tests {
         // Refused patterns: nothing deleted.
         for bad in [
             "../{game}.adf",
-            "sub/{game}*",
+            "sub/*",
+            "a/b/c/{game}.srm",
+            "Sub/{game}.srm",
+            "a/../{game}.srm",
+            "/{game}.srm",
+            "a//{game}.srm",
+            "{game}/x",
             "{game}\\x",
             "*.*{game}",
             "*.adf",
@@ -2490,6 +2544,78 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn reset_core_game_files_walks_literal_subfolders() {
+        let f = Fixture::new();
+        let dir = f.saves();
+        let per = dir.join("opera/per_game");
+        fs::create_dir_all(&per).unwrap();
+        fs::create_dir_all(dir.join("opera/shared")).unwrap();
+        for name in ["Game.0.srm", "Game.1.srm", "Game2.0.srm", "Game.0.srm.bak"] {
+            fs::write(per.join(name), b"x").unwrap();
+        }
+        fs::write(dir.join("opera/shared/nvram.0.srm"), b"x").unwrap();
+        fs::write(dir.join("Game.0.srm"), b"top").unwrap();
+        fs::write(dir.join("opera/Game.0.srm"), b"mid").unwrap();
+        let removed = reset_core_game_files(
+            &dir,
+            "Game",
+            &strs(&["opera/per_game/{game}.*.srm", "opera/per_game/{game}.*.srm"]),
+        )
+        .unwrap();
+        assert_eq!(removed, [per.join("Game.0.srm"), per.join("Game.1.srm")]);
+        for kept in [
+            "opera/per_game/Game2.0.srm",
+            "opera/per_game/Game.0.srm.bak",
+            "opera/shared/nvram.0.srm",
+            "Game.0.srm",
+            "opera/Game.0.srm",
+        ] {
+            assert!(dir.join(kept).exists(), "{kept}");
+        }
+        // One folder level, and a missing folder, are fine.
+        let removed = reset_core_game_files(
+            &dir,
+            "Game",
+            &strs(&["opera/{game}.*.srm", "x/y/{game}.srm"]),
+        )
+        .unwrap();
+        assert_eq!(removed, [dir.join("opera/Game.0.srm")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_core_game_files_never_leaves_the_saves_folder() {
+        use std::os::unix::fs::symlink;
+        let f = Fixture::new();
+        let dir = f.saves();
+        let outside = f.tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("Game.0.srm"), b"user").unwrap();
+        // Intermediate and last folder are links; a file stands in for a folder.
+        symlink(&outside, dir.join("opera")).unwrap();
+        fs::write(dir.join("flat"), b"x").unwrap();
+        let removed = reset_core_game_files(
+            &dir,
+            "Game",
+            &strs(&[
+                "opera/{game}.*.srm",
+                "opera/per_game/{game}.*.srm",
+                "flat/{game}.srm",
+            ]),
+        )
+        .unwrap();
+        assert!(removed.is_empty());
+        assert_eq!(fs::read(outside.join("Game.0.srm")).unwrap(), b"user");
+        fs::remove_file(dir.join("opera")).unwrap();
+        fs::create_dir_all(dir.join("opera")).unwrap();
+        symlink(&outside, dir.join("opera/per_game")).unwrap();
+        let removed =
+            reset_core_game_files(&dir, "Game", &strs(&["opera/per_game/{game}.*.srm"])).unwrap();
+        assert!(removed.is_empty());
+        assert!(outside.join("Game.0.srm").exists());
     }
 
     #[test]
