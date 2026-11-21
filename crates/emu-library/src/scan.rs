@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use zip::ZipArchive;
 
 use crate::db::{
@@ -99,14 +99,14 @@ const BATCH: usize = 128;
 const BATCH_TIME: Duration = Duration::from_secs(2);
 
 /// Largest plausible Mega Drive / 32X ROM; a bigger `.bin` without a Sega header is not a cartridge.
-const MAX_CARTRIDGE_BIN: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_CARTRIDGE_BIN: u64 = 8 * 1024 * 1024;
 
 /// Result of the header probe of a `.bin`, kept for the duration of a scan.
 #[derive(Clone, Copy)]
-struct BinProbe {
-    kind: BinKind,
+pub(crate) struct BinProbe {
+    pub(crate) kind: BinKind,
     /// `SEGA` at 0x100 (cartridge header).
-    sega_header: bool,
+    pub(crate) sega_header: bool,
 }
 
 thread_local! {
@@ -116,8 +116,13 @@ thread_local! {
     static PROBE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Empties the probe cache: a run (scan, tidy plan) never trusts the probes of an earlier one.
+pub(crate) fn clear_probes() {
+    PROBES.with(|p| p.borrow_mut().clear());
+}
+
 /// [`probe_bin`] at most once per file and scan (up to four callers per `.bin`); `None` if unreadable.
-fn probe_cached(path: &Path) -> Option<BinProbe> {
+pub(crate) fn probe_cached(path: &Path) -> Option<BinProbe> {
     if let Some(hit) = PROBES.with(|p| p.borrow().get(path).copied()) {
         return hit;
     }
@@ -131,7 +136,7 @@ fn probe_cached(path: &Path) -> Option<BinProbe> {
 }
 
 /// `Name (Track 02).bin`: an audio / secondary track of a multi-file disc (track 1 holds the data).
-fn audio_track_name(path: &Path) -> bool {
+pub(crate) fn audio_track_name(path: &Path) -> bool {
     let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else {
         return false;
     };
@@ -143,18 +148,18 @@ fn audio_track_name(path: &Path) -> bool {
     rest[digits.len()..].starts_with(')') && digits.parse::<u32>().is_ok_and(|n| n >= 2)
 }
 
-struct Found {
-    path: PathBuf,
+pub(crate) struct Found {
+    pub(crate) path: PathBuf,
     /// UTF-8 form of `path` (stored in the base).
-    key: String,
+    pub(crate) key: String,
     /// Path components (root folder name included) checked against system ids.
-    folders: Vec<String>,
-    file_size: u64,
-    mtime: i64,
+    pub(crate) folders: Vec<String>,
+    pub(crate) file_size: u64,
+    pub(crate) mtime: i64,
     /// Ordered disk images of a multi-disk game (a `(Disk N of M)` group or a `.m3u`); empty otherwise.
-    media: Vec<String>,
+    pub(crate) media: Vec<String>,
     /// An unpacked game folder (`path` is the folder; `file_size` / `mtime` summarise its root).
-    is_dir: bool,
+    pub(crate) is_dir: bool,
 }
 
 struct Existing {
@@ -162,6 +167,8 @@ struct Existing {
     file_size: i64,
     mtime: i64,
     sha1: Option<[u8; 20]>,
+    /// Full-content CRC32 (the moved-file check of 7.1 compares it when no SHA1 is stored).
+    crc32: Option<i64>,
     entry: Option<String>,
     system: String,
     pinned: bool,
@@ -175,7 +182,7 @@ struct Existing {
 }
 
 /// How the system of an analysed file is decided once the DATs can be read (design v3.0 §3.5.2).
-enum Rule {
+pub(crate) enum Rule {
     /// Identification among `candidates`, the first one when nothing matches. `pinned`: the folder rule chose.
     Identify {
         candidates: Vec<&'static SystemInfo>,
@@ -205,24 +212,24 @@ enum Rule {
 }
 
 /// One image listed by a `.m3u`, hashed only when the DATs may be needed to attribute it.
-struct EntryCheck {
-    attribution: Attribution,
-    hashes: Option<RomHashes>,
+pub(crate) struct EntryCheck {
+    pub(crate) attribution: Attribution,
+    pub(crate) hashes: Option<RomHashes>,
 }
 
-struct Analysis {
-    entry: Option<String>,
-    size: u64,
-    hashes: Option<RomHashes>,
-    rule: Rule,
-    stem: String,
+pub(crate) struct Analysis {
+    pub(crate) entry: Option<String>,
+    pub(crate) size: u64,
+    pub(crate) hashes: Option<RomHashes>,
+    pub(crate) rule: Rule,
+    pub(crate) stem: String,
     /// Region of a disc image or playlist (design v6.0 §2.2), stored only when the game lands in a `disc` system.
     region: Option<DiscRegion>,
     /// A zip of several disks of one computer: stored as `media = [the zip]` (see `zip_disk_order`).
     zip_disks: bool,
 }
 
-enum Failure {
+pub(crate) enum Failure {
     Cancelled,
     /// Archive whose only recognised entries are empty: ignored, not an error.
     Empty,
@@ -240,7 +247,7 @@ impl From<String> for Failure {
     }
 }
 
-fn is_cancelled(cancel: &AtomicBool) -> bool {
+pub(crate) fn is_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
@@ -283,7 +290,7 @@ fn open_regular(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn mtime_of(meta: &fs::Metadata) -> i64 {
+pub(crate) fn mtime_of(meta: &fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -293,15 +300,15 @@ fn mtime_of(meta: &fs::Metadata) -> i64 {
 /// Rebuilds the root from its components: stored paths (the game keys) then have one spelling per file whatever
 /// the root's spelling (`/` on Windows, `.` components, trailing separator). Without it, a root typed
 /// `C:\x\gb/roms` stores `C:\x\gb/roms\a.gb`, which a scan from `C:\x\gb` sees as another file.
-fn normalize_root(root: &Path) -> PathBuf {
+pub(crate) fn normalize_root(root: &Path) -> PathBuf {
     root.components().collect()
 }
 
-fn lower_ext(path: &Path) -> Option<String> {
+pub(crate) fn lower_ext(path: &Path) -> Option<String> {
     Some(path.extension()?.to_str()?.to_ascii_lowercase())
 }
 
-fn is_candidate(path: &Path) -> bool {
+pub(crate) fn is_candidate(path: &Path) -> bool {
     lower_ext(path).is_some_and(|e| e == "zip" || !systems_for_extension(&e).is_empty())
 }
 
@@ -328,16 +335,16 @@ const NAME_ONLY_EXTENSIONS: &[&str] = &["ins", "vhd", "jrc"];
 const MAX_DOS_FILES: usize = 64;
 const MAX_DOS_FILE_SIZE: u64 = 16 * 1024 * 1024;
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     lower_ext(path).is_some_and(|e| EXECUTABLE_EXTENSIONS.contains(&e.as_str()))
 }
 
-fn is_m3u(ext: &str) -> bool {
+pub(crate) fn is_m3u(ext: &str) -> bool {
     ext == "m3u" || ext == "m3u8"
 }
 
 /// Path components of `dir` below `base` (the parent of the scan root, so the root's own name is included).
-fn folders_of(base: &Path, dir: &Path) -> Vec<String> {
+pub(crate) fn folders_of(base: &Path, dir: &Path) -> Vec<String> {
     dir.strip_prefix(base)
         .map(|rel| {
             rel.components()
@@ -656,7 +663,7 @@ fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
 }
 
 /// Key used to match a `.m3u` entry with a scanned file: NTFS and APFS ignore case, so `DISK1.ST` names `disk1.st`.
-fn norm_key(key: &str) -> String {
+pub(crate) fn norm_key(key: &str) -> String {
     if cfg!(windows) {
         // `.m3u` entries joined to the folder may mix `/` and `\`: compare with one separator, case-insensitively.
         key.replace('/', "\\").to_lowercase()
@@ -741,7 +748,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
 /// disc header outside any system folder, a `.pbp`, a PlayStation track without `.cue`): its `(Disc N)` files are
 /// grouped like disks (design v6.0 §3.4). DOS discs, and the discs of a system with `group_discs = false` (3DO),
 /// are left as they are.
-fn is_console_disc(found: &Found) -> bool {
+pub(crate) fn is_console_disc(found: &Found) -> bool {
     let Some(ext) = lower_ext(&found.path) else {
         return false;
     };
@@ -773,13 +780,13 @@ fn is_console_disc(found: &Found) -> bool {
 const PBP: &str = "pbp";
 
 /// Disc images handed to the core in place: `DISC_EXTENSIONS` and `.pbp`.
-fn is_disc_image(ext: &str) -> bool {
+pub(crate) fn is_disc_image(ext: &str) -> bool {
     DISC_EXTENSIONS.contains(&ext) || ext == PBP
 }
 
 /// Format of a `.bin` that is a game by itself when no `.cue` names it (design v7.0 §3.4): a PlayStation or 3DO
 /// track (a Sega CD track never is).
-fn track_format(kind: BinKind) -> Option<DiscFormat> {
+pub(crate) fn track_format(kind: BinKind) -> Option<DiscFormat> {
     match kind {
         BinKind::PsxTrack => Some(DiscFormat::Psx),
         BinKind::OperaTrack => Some(DiscFormat::Opera),
@@ -857,10 +864,9 @@ fn hide_disc_tracks(
             continue;
         }
         if probe_cached(&f.path).is_some_and(|p| p.kind == BinKind::SegaCdTrack) {
-            report.errors.push((
-                f.path.clone(),
-                "piste de CD sans fichier .cue : ignorée".to_owned(),
-            ));
+            report
+                .errors
+                .push((f.path.clone(), SEGA_TRACK_ALONE.to_owned()));
             hidden.insert(f.key.clone());
         }
     }
@@ -886,7 +892,7 @@ fn rule_of(attribution: Attribution) -> Result<Rule, Failure> {
 }
 
 /// The attribution needs the DATs (a shared extension, or consoles sharing one).
-fn needs_hashes(attribution: &Attribution) -> bool {
+pub(crate) fn needs_hashes(attribution: &Attribution) -> bool {
     match attribution {
         Attribution::ByDat(_) => true,
         Attribution::Candidates(c) => c.len() > 1,
@@ -1043,7 +1049,12 @@ fn dos_system() -> Option<&'static SystemInfo> {
     systems().iter().find(|s| s.folder_games)
 }
 
-const ZIPPED_DISC: &str =
+/// Sega CD track found without the `.cue` naming it (also reported this way inside a zip).
+pub(crate) const SEGA_TRACK_ALONE: &str = "piste de CD sans fichier .cue : ignorée";
+/// `Name (Track 02).bin` without its `.cue`: not a game by itself.
+pub(crate) const AUDIO_TRACK_ALONE: &str = "piste audio d'un disque : ignorée";
+
+pub(crate) const ZIPPED_DISC: &str =
     "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD.";
 
 fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
@@ -1185,7 +1196,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         match bin_kind(&head) {
             // Same rule as a track outside a zip (2.1): never a Mega Drive ROM.
             BinKind::SegaCdTrack => {
-                return Err("piste de CD sans fichier .cue : ignorée".to_owned().into());
+                return Err(SEGA_TRACK_ALONE.to_owned().into());
             }
             BinKind::PsxTrack | BinKind::OperaTrack => {
                 return Err(ZIPPED_DISC.to_owned().into());
@@ -1348,7 +1359,7 @@ fn stem_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn analyze(
+pub(crate) fn analyze(
     found: &Found,
     max: u64,
     cancel: &AtomicBool,
@@ -1405,7 +1416,7 @@ fn analyze_file(
         } else if let Some(folder) = track_folder(&found.folders) {
             return Err(format!("fichier .bin non reconnu sous {folder}/ : ignoré").into());
         } else if audio_track_name(&found.path) {
-            return Err("piste audio d'un disque : ignorée".to_owned().into());
+            return Err(AUDIO_TRACK_ALONE.to_owned().into());
         } else if found.file_size > MAX_CARTRIDGE_BIN && !probe.is_some_and(|p| p.sega_header) {
             // No Mega Drive / 32X ROM is this big: a disc track whose `.cue` is missing. Never hashed.
             return Err(Failure::Unclassified);
@@ -1801,7 +1812,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
     let mut stmt = conn
         .prepare(
             "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification, is_dir,
-                    title, region
+                    title, region, crc32
              FROM game",
         )
         .map_err(db_error)?;
@@ -1813,6 +1824,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 file_size: r.get(2)?,
                 mtime: r.get(3)?,
                 sha1: sha1_from(r.get(4)?),
+                crc32: r.get(12)?,
                 entry: r.get(5)?,
                 system: r.get(6)?,
                 pinned: r.get::<_, i64>(7)? != 0,
@@ -1892,7 +1904,7 @@ fn playlist_system(
 }
 
 /// Identification and folder flag of an analysed file; `None` when it is unclassified.
-fn resolve(
+pub(crate) fn resolve(
     conn: &Connection,
     names: &mut NameIndex,
     analysis: &Analysis,
@@ -2026,7 +2038,8 @@ fn store(
     })
 }
 
-/// Writes the analysed files of `pending` in one short transaction, then empties it.
+/// Writes the analysed files of `pending` in one short transaction, then empties it. Returns the keys of the rows
+/// it inserted (no row at that path before this scan): the candidates of the moved-file check.
 fn store_batch(
     conn: &mut Connection,
     names: &mut NameIndex,
@@ -2035,14 +2048,15 @@ fn store_batch(
     state: &mut ScanProgress,
     report: &mut ScanReport,
     unclassified: &mut Vec<(usize, PathBuf)>,
-) -> Result<(), LibraryError> {
+) -> Result<Vec<String>, LibraryError> {
     if pending.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let tx = conn.transaction().map_err(db_error)?;
     let mut added = 0;
     let mut updated = 0;
     let mut skipped = Vec::new();
+    let mut inserted = Vec::new();
     for (index, f, analysis) in pending.iter() {
         let old = existing.get(&f.key);
         match store(&tx, names, f, analysis, old)? {
@@ -2057,6 +2071,7 @@ fn store_batch(
             updated += 1;
         } else {
             added += 1;
+            inserted.push(f.key.clone());
         }
     }
     tx.commit().map_err(db_error)?;
@@ -2065,7 +2080,189 @@ fn store_batch(
     report.updated += updated;
     unclassified.extend(skipped);
     pending.clear();
-    Ok(())
+    Ok(inserted)
+}
+
+/// Fields of a row compared by the moved-file check.
+struct Twin {
+    id: i64,
+    system: String,
+    file_size: i64,
+    mtime: i64,
+    sha1: Option<[u8; 20]>,
+    crc32: Option<i64>,
+    is_dir: bool,
+    name: Option<std::ffi::OsString>,
+}
+
+impl Twin {
+    fn of_existing(path: &str, old: &Existing) -> Self {
+        Twin {
+            id: old.id,
+            system: old.system.clone(),
+            file_size: old.file_size,
+            mtime: old.mtime,
+            sha1: old.sha1,
+            crc32: old.crc32,
+            is_dir: old.is_dir,
+            name: Path::new(path).file_name().map(ToOwned::to_owned),
+        }
+    }
+
+    /// Same system and size, then the same content (SHA1, else CRC32); without any hash on either side, the same
+    /// file name and mtime (disc images, game folders, files above the hash bound).
+    fn same_game(&self, other: &Twin) -> bool {
+        if self.system != other.system
+            || self.file_size != other.file_size
+            || self.is_dir != other.is_dir
+        {
+            return false;
+        }
+        match (self.sha1, other.sha1, self.crc32, other.crc32) {
+            (Some(a), Some(b), _, _) => a == b,
+            (None, None, Some(a), Some(b)) => a == b,
+            (None, None, None, None) => {
+                self.name.is_some() && self.name == other.name && self.mtime == other.mtime
+            }
+            _ => false,
+        }
+    }
+}
+
+fn load_twins(conn: &Connection, keys: &[String]) -> Result<Vec<Twin>, LibraryError> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, system, file_size, mtime_unix, sha1, crc32, is_dir FROM game WHERE path = ?1",
+        )
+        .map_err(db_error)?;
+    let mut twins = Vec::new();
+    for key in keys {
+        let row = stmt
+            .query_row([key], |r| {
+                Ok(Twin {
+                    id: r.get(0)?,
+                    system: r.get(1)?,
+                    file_size: r.get(2)?,
+                    mtime: r.get(3)?,
+                    sha1: sha1_from(r.get(4)?),
+                    crc32: r.get(5)?,
+                    is_dir: r.get::<_, i64>(6)? != 0,
+                    name: Path::new(key).file_name().map(ToOwned::to_owned),
+                })
+            })
+            .optional()
+            .map_err(db_error)?;
+        twins.extend(row);
+    }
+    Ok(twins)
+}
+
+/// Moved-file check (ADR 0023 §4.5): a row whose file disappeared (`gone`, never a `keep` row) and a row inserted
+/// by this scan (`fresh`) that are each other's only twin are one game. The fresh row is deleted first (`path` and
+/// `game_media.path` are UNIQUE), then its fields and disks are carried over to the old row, which keeps its `id`
+/// (favourite, history, covers). Returns the ids of the old rows kept this way.
+fn merge_moved(
+    conn: &mut Connection,
+    gone: &[Twin],
+    fresh: &[Twin],
+) -> Result<HashSet<i64>, LibraryError> {
+    let mut pairs = Vec::new();
+    for old in gone {
+        let mut hits = fresh.iter().filter(|new| old.same_game(new));
+        let (Some(new), None) = (hits.next(), hits.next()) else {
+            continue;
+        };
+        if gone.iter().filter(|o| o.same_game(new)).count() == 1 {
+            pairs.push((old.id, new.id));
+        }
+    }
+    let mut kept = HashSet::new();
+    if pairs.is_empty() {
+        return Ok(kept);
+    }
+    let tx = conn.transaction().map_err(db_error)?;
+    for (old, new) in pairs {
+        type Fields = (
+            String,
+            Option<String>,
+            String,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<Vec<u8>>,
+            Option<i64>,
+            Option<Vec<u8>>,
+            String,
+            String,
+            i64,
+            i64,
+            Option<String>,
+        );
+        let f: Fields = tx
+            .query_row(
+                "SELECT path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh, title,
+                        identification, pinned, is_dir, region
+                 FROM game WHERE id = ?1",
+                [new],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                        r.get(12)?,
+                        r.get(13)?,
+                        r.get(14)?,
+                    ))
+                },
+            )
+            .map_err(db_error)?;
+        let media: Vec<String> = {
+            let mut stmt = tx
+                .prepare_cached("SELECT path FROM game_media WHERE game_id = ?1 ORDER BY idx")
+                .map_err(db_error)?;
+            stmt.query_map([new], |r| r.get(0))
+                .map_err(db_error)?
+                .collect::<Result<_, _>>()
+                .map_err(db_error)?
+        };
+        tx.execute(
+            "DELETE FROM game_media WHERE game_id IN (?1, ?2)",
+            [new, old],
+        )
+        .map_err(db_error)?;
+        tx.execute("DELETE FROM game WHERE id = ?1", [new])
+            .map_err(db_error)?;
+        tx.execute(
+            "UPDATE game SET path = ?2, entry = ?3, system = ?4, size = ?5, file_size = ?6, mtime_unix = ?7,
+                 crc32 = ?8, sha1 = ?9, crc32_nh = ?10, sha1_nh = ?11, title = ?12, identification = ?13,
+                 pinned = ?14, is_dir = ?15, region = ?16
+             WHERE id = ?1",
+            params![
+                old, f.0, f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8, f.9, f.10, f.11, f.12, f.13, f.14
+            ],
+        )
+        .map_err(db_error)?;
+        for (idx, path) in media.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO game_media (game_id, idx, path) VALUES (?1, ?2, ?3)",
+                params![old, to_i64(idx as u64), path],
+            )
+            .map_err(db_error)?;
+        }
+        kept.insert(old);
+    }
+    tx.commit().map_err(db_error)?;
+    Ok(kept)
 }
 
 pub(crate) fn run(
@@ -2075,7 +2272,7 @@ pub(crate) fn run(
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport, LibraryError> {
     let mut report = ScanReport::default();
-    PROBES.with(|p| p.borrow_mut().clear());
+    clear_probes();
     let mut keep = Vec::new();
     let mut seen = HashSet::new();
     let mut found = Vec::new();
@@ -2104,6 +2301,7 @@ pub(crate) fn run(
     let mut unclassified: Vec<(usize, PathBuf)> = Vec::new();
     let mut batch_start = Instant::now();
     let mut cancelled = false;
+    let mut inserted: Vec<String> = Vec::new();
     for (index, f) in found.iter().enumerate() {
         if is_cancelled(cancel) {
             cancelled = true;
@@ -2161,7 +2359,7 @@ pub(crate) fn run(
             }
         }
         if pending.len() >= BATCH || (!pending.is_empty() && batch_start.elapsed() >= BATCH_TIME) {
-            store_batch(
+            inserted.extend(store_batch(
                 conn,
                 &mut names,
                 &existing,
@@ -2169,7 +2367,7 @@ pub(crate) fn run(
                 &mut state,
                 &mut report,
                 &mut unclassified,
-            )?;
+            )?);
             batch_start = Instant::now();
         }
         if last_emit.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL) {
@@ -2178,7 +2376,7 @@ pub(crate) fn run(
         }
     }
     // Work done before a cancellation is kept: the next scan skips it as unchanged.
-    store_batch(
+    inserted.extend(store_batch(
         conn,
         &mut names,
         &existing,
@@ -2186,7 +2384,7 @@ pub(crate) fn run(
         &mut state,
         &mut report,
         &mut unclassified,
-    )?;
+    )?);
     if !regions.is_empty() {
         let tx = conn.transaction().map_err(db_error)?;
         for (id, region) in &regions {
@@ -2202,9 +2400,24 @@ pub(crate) fn run(
         return Err(LibraryError::Cancelled);
     }
 
+    let kept_rows = |path: &String| keep.iter().any(|k| Path::new(path).starts_with(k));
+    let gone: Vec<Twin> = existing
+        .iter()
+        .filter(|(path, _)| !seen.contains(*path) && !kept_rows(path))
+        .map(|(path, old)| Twin::of_existing(path, old))
+        .collect();
+    let moved = if gone.is_empty() || inserted.is_empty() {
+        HashSet::new()
+    } else {
+        let fresh = load_twins(conn, &inserted)?;
+        merge_moved(conn, &gone, &fresh)?
+    };
+    report.moved = moved.len() as u64;
+    report.added = report.added.saturating_sub(report.moved);
+
     let tx = conn.transaction().map_err(db_error)?;
     for (path, old) in &existing {
-        if seen.contains(path) || keep.iter().any(|k| Path::new(path).starts_with(k)) {
+        if seen.contains(path) || kept_rows(path) || moved.contains(&old.id) {
             continue;
         }
         report.removed += tx

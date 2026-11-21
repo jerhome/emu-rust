@@ -2,12 +2,23 @@
 //! journal written before acting, never overwrites, never renames, never deletes user data, undo and recovery.
 //! Only the roms root is tidied (never `[library] roots`). The scan classifier is reused, not duplicated.
 
+mod journal;
+mod plan;
+mod relocate;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use crate::db::{GameId, Library};
 use crate::error::LibraryError;
 use crate::scan::{ScanOptions, ScanProgress};
+
+#[cfg_attr(
+    not(test),
+    allow(unused_imports, reason = "used by the tidy execution (FB1b)")
+)]
+pub(crate) use journal::{JournalWriter, Op};
+pub(crate) use plan::Fingerprint;
 
 /// Bounds and paths of a tidying run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +32,8 @@ pub struct TidyOptions {
     journal_dir: PathBuf,
     max_depth: usize,
     max_file_size: u64,
+    /// Lower-case file names of known firmware (BIOS): such a file is never a unit, it stays in place.
+    firmware_names: Vec<String>,
 }
 
 impl TidyOptions {
@@ -42,11 +55,53 @@ impl TidyOptions {
             journal_dir: journal_dir.to_path_buf(),
             max_depth: defaults.max_depth,
             max_file_size: defaults.max_file_size,
+            firmware_names: Vec::new(),
         })
+    }
+
+    /// File names of the known firmware (`firmware.toml`, `required_firmware` of emu-assets: this crate does not
+    /// know them). A file of such a name (case-insensitive, any folder; a path keeps its last component) is never
+    /// planned as a game: it stays in place and is listed in [`TidyPlan::ignored_paths`], for « Importer un BIOS… ».
+    pub fn with_firmware_names<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.firmware_names = names
+            .into_iter()
+            .filter_map(|n| {
+                let n = n.as_ref().replace('\\', "/");
+                n.rsplit('/').next().map(str::to_lowercase)
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        self
     }
 
     pub fn roms_root(&self) -> &Path {
         &self.roms_root
+    }
+
+    /// The root as the scan spells it (`normalize_root` of the given path): prefix of the database keys.
+    pub(crate) fn scan_root(&self) -> &Path {
+        &self.scan_root
+    }
+
+    pub(crate) fn journal_dir(&self) -> &Path {
+        &self.journal_dir
+    }
+
+    pub(crate) fn max_depth(&self) -> usize {
+        self.max_depth
+    }
+
+    pub(crate) fn max_file_size(&self) -> u64 {
+        self.max_file_size
+    }
+
+    pub(crate) fn is_firmware_name(&self, name: &str) -> bool {
+        let name = name.to_lowercase();
+        self.firmware_names.contains(&name)
     }
 }
 
@@ -140,7 +195,7 @@ pub struct TidyUnit {
     pub moves: Vec<TidyMove>,
     /// Unit moved by one directory rename (DOS game folder, folder holding only this unit).
     pub whole_dir: Option<TidyMove>,
-    /// Lower-case extension of the primary file (bulk choice by extension).
+    /// Lower-case extension of the primary file (bulk choice by extension); empty for a game folder.
     pub extension: String,
     /// Already a row of the library.
     pub known_game: Option<GameId>,
@@ -149,29 +204,81 @@ pub struct TidyUnit {
 }
 
 /// Result of [`Library::plan_tidy`]; never persisted.
+///
+/// Paths of [`TidyMove`], [`TidyBlock::Conflict`] / [`TidyBlock::Duplicate`] (`existing`),
+/// [`TidyBlock::DestinationNotPlainDir`] and `ignored_paths` are relative to the canonical roms root. A unit of
+/// status `Ambiguous` whose `system` is set was resolved by [`TidyPlan::choose_system`]: it may be selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TidyPlan {
     pub units: Vec<TidyUnit>,
-    /// Items already under the folder of their system.
+    /// Items directly under the folder of their system (`roms/<id>/…`), never analysed nor moved.
     pub already_tidy: u64,
-    /// Files that are not games (texts, images…), left in place.
+    /// Files that are not games (texts, images, executables outside a game folder, empty files…), left in place.
     pub ignored: u64,
-    /// `(path, size, mtime)` of every file of each unit as analysed, rechecked before the unit is moved.
-    fingerprints: Vec<Vec<(PathBuf, u64, i64)>>,
+    /// The first [`MAX_IGNORED_PATHS`] of them, in walk order: the UI checks them against the known BIOS md5
+    /// (« Importer un BIOS… »), which this crate does not know.
+    pub ignored_paths: Vec<PathBuf>,
+    /// One entry per unit (same index): files as analysed, layout and status before the destination checks.
+    meta: Vec<plan::UnitMeta>,
+    context: plan::PlanContext,
 }
+
+/// Bound of [`TidyPlan::ignored_paths`] (the count itself is not bounded).
+pub const MAX_IGNORED_PATHS: usize = 2000;
 
 impl TidyPlan {
     /// Resolves an `Ambiguous` unit (or overrides a known game: `system_change` is then set) to one of its
     /// candidates: fills `moves`, re-runs the collision and blocking checks.
     pub fn choose_system(&mut self, unit: u32, system: &str) -> Result<(), LibraryError> {
-        let _ = (unit, system);
-        todo!("FB1a: system choice")
+        self.set_system(unit, system)?;
+        self.place_all();
+        Ok(())
     }
 
     /// Same for every still `Ambiguous` unit of `extension` that lists `system`; returns how many were resolved.
     pub fn choose_system_for_extension(&mut self, extension: &str, system: &str) -> u32 {
-        let _ = (extension, system);
-        todo!("FB1a: bulk system choice")
+        let extension = extension.trim_start_matches('.').to_ascii_lowercase();
+        let ids: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| {
+                u.status == TidyStatus::Ambiguous
+                    && u.system.is_none()
+                    && u.extension == extension
+                    && u.candidates.iter().any(|c| c == system)
+            })
+            .map(|u| u.id)
+            .collect();
+        let mut resolved = 0;
+        for id in ids {
+            if self.set_system(id, system).is_ok() {
+                resolved += 1;
+            }
+        }
+        if resolved > 0 {
+            self.place_all();
+        }
+        resolved
+    }
+
+    /// Canonical roms root the plan was made for ([`Library::apply_tidy`] refuses another one).
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "used by the tidy execution (FB1b)")
+    )]
+    pub(crate) fn roms_root(&self) -> &Path {
+        &self.context.root
+    }
+
+    /// `(path relative to the root, size, mtime)` of every file of `unit` as analysed (primary file first; every
+    /// file below a game folder), rechecked just before the unit is moved.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "used by the tidy execution (FB1b)")
+    )]
+    pub(crate) fn fingerprints(&self, unit: u32) -> Option<&[Fingerprint]> {
+        let index = self.units.iter().position(|u| u.id == unit)?;
+        Some(&self.meta[index].files)
     }
 }
 
@@ -214,16 +321,36 @@ pub struct TidyJournalInfo {
     pub identities_done: bool,
 }
 
-/// Creates `roms/<id>/` for every system of the catalog, moving nothing. Returns the created ones only.
+/// Creates `roms/<id>/` for every system of the catalog, moving nothing. Returns the created ones only. The roms
+/// root itself is created when missing; an existing entry of that name (folder, file or link) is left alone.
 pub fn create_system_folders(roms_root: &Path) -> Result<Vec<PathBuf>, LibraryError> {
-    let _ = roms_root;
-    todo!("FB1a: system folders")
+    let io = |path: &Path, source| LibraryError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    std::fs::create_dir_all(roms_root).map_err(|e| io(roms_root, e))?;
+    let mut created = Vec::new();
+    for system in crate::systems() {
+        let dir = roms_root.join(&system.id);
+        if std::fs::symlink_metadata(&dir).is_ok() {
+            continue;
+        }
+        match std::fs::create_dir(&dir) {
+            Ok(()) => created.push(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(&dir, e)),
+        }
+    }
+    Ok(created)
 }
 
 /// Newest journal, if any (« Annuler le dernier rangement » is offered when it is complete and not undone).
 pub fn last_tidy(options: &TidyOptions) -> Result<Option<TidyJournalInfo>, LibraryError> {
-    let _ = options;
-    todo!("FB1a: journal reading")
+    let Some((path, created_unix)) = journal::list(options.journal_dir())?.pop() else {
+        return Ok(None);
+    };
+    let journal = journal::read(&path)?;
+    Ok(Some(journal.info(path, created_unix)))
 }
 
 impl Library {
@@ -234,8 +361,7 @@ impl Library {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(&ScanProgress),
     ) -> Result<TidyPlan, LibraryError> {
-        let _ = (options, cancel, progress);
-        todo!("FB1a: plan")
+        plan::run(&self.conn, options, cancel, progress)
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.
@@ -296,18 +422,25 @@ impl Library {
     /// `normalize_root`); `moves` are relative to it, like [`TidyMove`].
     /// Keys are built by the scan's function; a stale row at a destination (file gone) is removed, a live one is
     /// an error (transaction rolled back). Never creates a row.
+    ///
+    /// Destination row that is not one of the moved rows: stale (removed) when its file is absent, or when the
+    /// source of the move is gone (the file was moved: that row duplicates it); live (error) when both the source
+    /// and the destination exist — the call does not match the disk. `pinned` follows the folder rule of the scan
+    /// at the new place, so the next scan finds the row unchanged. Returns the number of `game` rows rewritten.
     pub fn relocate(
         &mut self,
         roms_root: &Path,
         moves: &[(PathBuf, PathBuf)],
     ) -> Result<u64, LibraryError> {
-        let _ = (roms_root, moves);
-        todo!("FB1a: relocate")
+        relocate::run(&mut self.conn, roms_root, moves)
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod options_tests {
     use super::*;
 
     #[test]
@@ -322,7 +455,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "FB1a: plan_tidy is a todo!() until then"]
     fn plan_of_an_empty_root_is_empty_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let roms = dir.path().join("roms");

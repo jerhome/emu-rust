@@ -33,6 +33,6 @@ pub use crate::systems::{
     systems_for_extension,
 };
 pub use crate::tidy::{
-    AbsoluteMoves, TidyBlock, TidyJournalInfo, TidyMove, TidyOptions, TidyPlan, TidyProgress,
-    TidyReason, TidyReport, TidyStatus, TidyUnit, create_system_folders, last_tidy,
+    AbsoluteMoves, MAX_IGNORED_PATHS, TidyBlock, TidyJournalInfo, TidyMove, TidyOptions, TidyPlan,
+    TidyProgress, TidyReason, TidyReport, TidyStatus, TidyUnit, create_system_folders, last_tidy,
 };

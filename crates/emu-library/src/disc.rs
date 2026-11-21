@@ -192,6 +192,14 @@ fn parse_cue(text: &str) -> Vec<String> {
 
 /// Files named by the `FILE` lines of a `.cue`, resolved in the cue's folder, in order, without duplicates.
 pub fn cue_references(cue: &Path) -> Result<Vec<PathBuf>, LibraryError> {
+    let dir = cue.parent().unwrap_or(Path::new(""));
+    Ok(parse_cue(&read_cue(cue)?)
+        .into_iter()
+        .map(|name| dir.join(name))
+        .collect())
+}
+
+fn read_cue(cue: &Path) -> Result<String, LibraryError> {
     let file = open_regular(cue)?;
     let mut bytes = Vec::new();
     file.take(MAX_CUE_SIZE + 1)
@@ -202,11 +210,27 @@ pub fn cue_references(cue: &Path) -> Result<Vec<PathBuf>, LibraryError> {
             path: cue.to_path_buf(),
         });
     }
-    let dir = cue.parent().unwrap_or(Path::new(""));
-    Ok(parse_cue(&decode(&bytes))
-        .into_iter()
-        .map(|name| dir.join(name))
-        .collect())
+    Ok(decode(&bytes))
+}
+
+/// Every `FILE` name of a `.cue` as written (at most 99, without duplicates), with whether it is a plain file name
+/// of the cue's folder (the only kind [`cue_references`] keeps): the ROM tidying blocks a cue whose references
+/// are absolute or leave its folder instead of ignoring them.
+pub(crate) fn cue_file_names(cue: &Path) -> Result<Vec<(String, bool)>, LibraryError> {
+    let text = read_cue(cue)?;
+    let mut names: Vec<(String, bool)> = Vec::new();
+    for line in text.lines() {
+        let Some(name) = file_line_name(line) else {
+            continue;
+        };
+        if !names.iter().any(|(n, _)| n == name) {
+            names.push((name.to_owned(), is_plain_name(name)));
+            if names.len() == MAX_CUE_REFERENCES {
+                break;
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// Reads up to `len` bytes from the start of `path`.

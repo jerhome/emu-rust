@@ -30,6 +30,9 @@ pub enum LibraryError {
     /// The journal was written for another ROM root: never replayed, nothing touched.
     #[error("{journal} : journal de rangement d'un autre dossier des ROMs, ignoré")]
     TidyRootMismatch { journal: PathBuf },
+    /// `TidyPlan::choose_system`: unknown unit, unit without a choice, or a system it does not list.
+    #[error("rangement : « {system} » n'est pas un choix possible pour l'élément {unit}")]
+    TidyChoice { unit: u32, system: String },
     /// Unreadable, malformed or too large tidy journal (French message, never its raw content).
     #[error("{path} : journal de rangement illisible : {message}")]
     Journal { path: PathBuf, message: String },
