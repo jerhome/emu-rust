@@ -40,5 +40,6 @@
 | Windows | Zelda Link's Awakening DX (GBC), gambatte | ✅ **impeccable** : image, son, sauvegarde (reprise après relance) |
 | Windows | Final Fight (SNES), snes9x — non-régression | ✅ **impeccable** : son et manette PS4 |
 | Windows | Skate or Die (NES), mesen — non-régression, fichier à la racine de `roms/` | ✅ **impeccable** : son et manette PS4 |
+| Windows | Alex Kidd (Master System), Sonic 2 (Game Gear), Super Mario Land (Game Boy), Mouse Trap (Atari ST) — non-régression | ✅ **tous OK** (« tous les tests ok sur tous les jeux sur la 6 ») |
 
-Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
+Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Windows (jeux de la liste de l'utilisateur). Défauts trouvés : zip CPC (corrigé pour la 7.0), zip 32X (symptôme à préciser), IPF/capsimg (mis de côté), index buildbot VICE (externe). Restent : Docker WSLg ; PS1 et 3DO avec la 7.0.
