@@ -1,0 +1,2 @@
+# picodrive, free homebrews, no BIOS (built into the core); core sha256 fd4010afa91f69d3c61be49c95e14a5c37117c4d0899d3e593ccc4339c1417d5
+hexgl32x-title frame=300 fingerprint=a9081f88fcd65867

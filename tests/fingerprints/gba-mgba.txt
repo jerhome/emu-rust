@@ -1,0 +1,3 @@
+# mgba, free homebrews, no BIOS (built into the core); core sha256 c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc
+240pee_mb.gba frame=300 fingerprint=08173d7ed2eabd24
+hello.gba frame=300 fingerprint=82e4da3ca21f4a20
