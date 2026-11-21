@@ -40,7 +40,7 @@ fn parse_inner(inner: &str) -> Option<(u32, Option<u32>)> {
         };
         return words.next().is_none().then_some((n, None));
     }
-    if first != "disk" && first != "disc" {
+    if first != "disk" && first != "disc" && first != "tape" {
         return None;
     }
     let number: u32 = words.next()?.parse().ok()?;

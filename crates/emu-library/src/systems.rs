@@ -171,6 +171,16 @@ struct RawSystem {
     folder_extensions: Vec<String>,
     #[serde(default)]
     folder_games: bool,
+    #[serde(default)]
+    default_input: RawInput,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum RawInput {
+    #[default]
+    Keyboard,
+    Joystick,
 }
 
 /// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database,
@@ -242,8 +252,10 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             dats,
             folder_extensions: s.folder_extensions,
             folder_games: s.folder_games,
-            // CB1: `default_input` key of `systems.toml`.
-            default_input: InputDefault::Keyboard,
+            default_input: match s.default_input {
+                RawInput::Keyboard => InputDefault::Keyboard,
+                RawInput::Joystick => InputDefault::Joystick,
+            },
         });
     }
     Ok(out)
@@ -348,7 +360,9 @@ mod tests {
                 "atarist",
                 "megacd",
                 "amiga",
-                "dos"
+                "dos",
+                "cpc",
+                "c64"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -380,7 +394,7 @@ mod tests {
             assert!(!s.folder_games, "{}", s.id);
         }
         let m3u: Vec<_> = systems_for_extension("m3u").iter().map(|s| &s.id).collect();
-        assert_eq!(m3u, ["atarist", "amiga", "dos"]);
+        assert_eq!(m3u, ["atarist", "amiga", "dos", "cpc", "c64"]);
         let m3u8: Vec<_> = systems_for_extension("m3u8")
             .iter()
             .map(|s| &s.id)
@@ -473,15 +487,55 @@ mod tests {
         assert_eq!(ids(attribute("cue", &f(&["roms", "dos"]))), "folder:dos");
         assert_eq!(ids(attribute("exe", &[])), "unclassified");
         assert_eq!(ids(attribute("ima", &[])), "candidates:dos");
-        assert_eq!(ids(attribute("m3u", &[])), "dat:atarist,amiga,dos");
+        assert_eq!(ids(attribute("m3u", &[])), "dat:atarist,amiga,dos,cpc,c64");
         assert_eq!(ids(attribute("m3u8", &[])), "candidates:dos");
         assert_eq!(ids(attribute("lha", &f(&["atarist"]))), "unclassified");
         assert_eq!(
             ids(attribute("hdf", &f(&["roms", "amiga", "whd"]))),
             "folder:amiga"
         );
+        // CPC / C64 (design v5.0 §3.4): `.tap` is a C64 tape unless under `cpc/`.
+        assert_eq!(ids(attribute("tap", &[])), "candidates:c64");
+        assert_eq!(ids(attribute("tap", &f(&["roms", "cpc"]))), "folder:cpc");
+        assert_eq!(ids(attribute("sna", &[])), "unclassified");
+        assert_eq!(ids(attribute("sna", &f(&["cpc"]))), "folder:cpc");
+        assert_eq!(ids(attribute("voc", &[])), "unclassified");
+        assert_eq!(ids(attribute("dsk", &[])), "candidates:cpc");
+        assert_eq!(ids(attribute("cdt", &[])), "candidates:cpc");
+        assert_eq!(ids(attribute("d64", &[])), "candidates:c64");
+        assert_eq!(ids(attribute("prg", &[])), "candidates:c64");
         // Exact folder names, as in 1.0.
         assert_eq!(ids(attribute("hdf", &f(&["Amiga"]))), "unclassified");
+    }
+
+    #[test]
+    fn cpc_and_c64_are_joystick_computers_and_the_others_keyboard() {
+        let cpc = system("cpc").unwrap();
+        assert_eq!(cpc.kind, SystemKind::Computer);
+        assert_eq!(cpc.database, "Amstrad - CPC");
+        assert_eq!(cpc.dats, [DatSource::Libretro, DatSource::Tosec]);
+        assert_eq!(cpc.folder_extensions, ["sna", "voc", "tap"]);
+        let c64 = system("c64").unwrap();
+        assert_eq!(c64.database, "Commodore - 64");
+        assert_eq!(c64.dats, [DatSource::NoIntro]);
+        assert!(c64.folder_extensions.is_empty());
+        for s in systems() {
+            let want = matches!(s.id.as_str(), "cpc" | "c64");
+            assert_eq!(s.default_input == InputDefault::Joystick, want, "{}", s.id);
+        }
+        let tap: Vec<_> = systems_for_extension("tap").iter().map(|s| &s.id).collect();
+        assert_eq!(tap, ["cpc", "c64"]);
+        let one = |extra: &str| {
+            parse_catalog(&format!(
+                "[[system]]\nid = \"a\"\nname = \"N\"\ndatabase = \"D\"\nextensions = [\"x\"]\n{extra}\n"
+            ))
+        };
+        assert_eq!(one("").unwrap()[0].default_input, InputDefault::Keyboard);
+        assert_eq!(
+            one("default_input = \"joystick\"").unwrap()[0].default_input,
+            InputDefault::Joystick
+        );
+        assert!(one("default_input = \"mouse\"").is_err());
     }
 
     #[test]

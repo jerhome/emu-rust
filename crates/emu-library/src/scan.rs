@@ -74,6 +74,8 @@ pub struct ScanReport {
     pub ignored_loose_executables: u64,
     /// Files referenced by a `.cue` and hidden from every system (CD tracks).
     pub hidden_tracks: u64,
+    /// Archives holding images of two different computers (`.dsk` and `.d64`): ignored (design v5.0 §3.4).
+    pub ignored_mixed_archives: u64,
 }
 
 /// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).
@@ -161,6 +163,8 @@ enum Failure {
     Empty,
     /// No system takes the file without a DAT match (folder-only extension outside its folder).
     Unclassified,
+    /// Archive with images of two computers: ignored and counted, not an error.
+    MixedArchive,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -869,6 +873,8 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let mut saw_program = false;
     let mut saw_disc = false;
     let mut dos_files = Vec::new();
+    // Computers owning, alone, the extension of a non-empty entry (`.dsk` = cpc, `.d64` = c64).
+    let mut computers: HashSet<&'static str> = HashSet::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_data(index)
@@ -893,11 +899,17 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         };
         saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
         saw_disc |= DISC_EXTENSIONS.contains(&ext.as_str());
+        let candidates = systems_for_extension(&ext);
+        if let [only] = candidates.as_slice()
+            && only.kind == SystemKind::Computer
+            && entry.size() > 0
+        {
+            computers.insert(only.id.as_str());
+        }
         if chosen.is_some() {
             // Kept walking to see the programs and discs listed after the chosen entry.
             continue;
         }
-        let candidates = systems_for_extension(&ext);
         if !candidates.is_empty() {
             if entry.size() == 0 {
                 continue;
@@ -924,6 +936,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             },
             stem: stem_of(&found.path),
         });
+    }
+    if computers.len() > 1 {
+        return Err(Failure::MixedArchive);
     }
     if saw_disc {
         return Err(
@@ -1519,6 +1534,10 @@ pub(crate) fn run(
                 }
                 Err(Failure::Unclassified) => {
                     unclassified.push((index, f.path.clone()));
+                    seen.remove(&f.key);
+                }
+                Err(Failure::MixedArchive) => {
+                    report.ignored_mixed_archives += 1;
                     seen.remove(&f.key);
                 }
                 Err(Failure::Empty) => {
