@@ -286,6 +286,11 @@ fn a_2_0_working_copy_folder_gives_its_name() {
     // The second game is launched first in 2.1: it still gets its own folder's name.
     let second = resolve(&media("Game", &b));
     assert_eq!((second.save_name.as_str(), second.index), ("Game (2)", 2));
+    // No entry 1 yet: the banner still comes once, naming the owner of `Game.disks`.
+    assert!(matches!(
+        &second.notice,
+        Some(IdentityNotice::Homonym { first, .. }) if *first == fs::canonicalize(&a).unwrap()
+    ));
     let first = resolve(&media("Game", &a));
     assert_eq!((first.save_name.as_str(), first.index), ("Game", 1));
 
@@ -323,9 +328,11 @@ fn unusable_registry_is_never_rewritten() {
                 })
                 .count()
         };
-        assert_eq!(copies(), 1);
+        // An oversized registry is left in place but not duplicated.
+        let expected = usize::from(content.len() <= MAX_REGISTRY_BYTES);
+        assert_eq!(copies(), expected);
         fx.resolve(&rom);
-        assert_eq!(copies(), 1, "one copy, not one per launch");
+        assert_eq!(copies(), expected, "one copy, not one per launch");
     }
 }
 
@@ -530,4 +537,45 @@ fn missing_primary_is_an_error() {
         Err(RuntimeError::Io { .. })
     ));
     assert!(!fx.saves().join(REGISTRY_NAME).exists());
+}
+
+#[test]
+fn the_owner_of_a_2_0_folder_keeps_the_bare_name_after_a_new_homonym() {
+    let fx = Fx::new();
+    let owner = fx.rom("A/G.st", b"disk of a");
+    rc2_manifest(&fx.saves().join("G.disks"), &owner, b"disk of a");
+    fs::write(fx.saves().join("G.srm"), b"shared").unwrap();
+    let newcomer = fx.rom("B/G.st", b"disk of b");
+    let (saves, states) = (fx.saves(), fx.states());
+    let resolve = |image: &Path| {
+        let spec = media("G", image);
+        resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap()
+    };
+    // B, never played, is launched first: `G.disks` holds A's copies, so B does not take `G`.
+    let b = resolve(&newcomer);
+    assert_eq!((b.save_name.as_str(), b.index), ("G (2)", 2));
+    assert!(matches!(
+        &b.notice,
+        Some(IdentityNotice::Homonym { first, sram_copied: true, .. })
+            if *first == fs::canonicalize(&owner).unwrap()
+    ));
+    let a = resolve(&owner);
+    assert_eq!((a.save_name.as_str(), a.index), ("G", 1));
+    assert_eq!(resolve(&newcomer).save_name, "G (2)");
+
+    // A folder made by `choose_work_dir` for a replaced image (`G (3).disks`, A's old copies) is never taken by
+    // a later homonym either.
+    rc2_manifest(&fx.saves().join("G (3).disks"), &owner, b"disk of a");
+    let third = fx.rom("C/G.st", b"disk of c");
+    assert_eq!(resolve(&third).save_name, "G (4)");
+    // A folder without present set copies (emptied) does not hold the name.
+    let fx = Fx::new();
+    let gone = fx.rom("old/H.st", b"h");
+    rc2_manifest(&fx.saves().join("H.disks"), &gone, b"h");
+    fs::remove_file(fx.saves().join("H.disks/Game.st")).unwrap();
+    let h = fx.rom("new/H.st", b"other h");
+    let (saves, states) = (fx.saves(), fx.states());
+    let spec = media("H", &h);
+    let id = resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap();
+    assert_eq!(id.save_name, "H");
 }

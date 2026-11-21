@@ -382,3 +382,33 @@ fn orphans_are_listed_and_only_removed_on_request() {
     );
     assert_eq!(after.len(), before.len() - 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn the_owner_of_game_disks_keeps_its_name_after_a_new_homonym() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fx = Fixture::new("owner-after-newcomer", "2.0");
+    let before = snapshot(&fx.root);
+    // A third `Game.st`, never played, is launched before the two 2.0 owners.
+    let newcomer = fx.rom("st3/Game.st");
+    fs::create_dir_all(newcomer.parent().unwrap()).unwrap();
+    fs::write(&newcomer, b"a disk never played").unwrap();
+    let id = fx.identity(&fx.disk_spec("Game", "st3/Game.st"));
+    assert_eq!(
+        id.save_name, "Game (3)",
+        "Game.disks and Game (2).disks are taken"
+    );
+    let owner = fx.identity(&fx.disk_spec("Game", "st/Game.st"));
+    assert_eq!(owner.save_name, "Game");
+    let second = fx.identity(&fx.disk_spec("Game", "st2/Game.st"));
+    assert_eq!(second.save_name, "Game (2)");
+    // The owner gets its copies (with their progress) back.
+    let mut emu = fx.open(fx.disk_spec("Game", "st/Game.st"));
+    assert_eq!(
+        emu.prepared_media().unwrap().work_dir.as_deref(),
+        Some(fx.saves().join("Game.disks").as_path())
+    );
+    emu.run_frame(&mut NullInput, &mut NullSink).unwrap();
+    drop(emu);
+    assert_nothing_lost(&before, &snapshot(&fx.root));
+}

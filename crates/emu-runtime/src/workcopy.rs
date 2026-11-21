@@ -444,7 +444,8 @@ pub(crate) fn is_regular_file(path: &Path) -> Result<bool, RuntimeError> {
     }
 }
 
-/// Atomic, and only when the content changes.
+/// Atomic, and only when the content changes. No inter-process lock: two instances running the same game at once
+/// are not guarded (the last write wins; copies are never deleted here).
 pub(crate) fn write(dir: &Path, entries: &[ManifestEntry]) -> Result<(), RuntimeError> {
     let path = dir.join(MANIFEST_NAME);
     let bytes = encode(entries);

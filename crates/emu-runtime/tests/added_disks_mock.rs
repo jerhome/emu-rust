@@ -111,6 +111,7 @@ fn added_disks_on_mock_core() {
     beyond_what_the_core_takes(&lib);
     without_disk_interface(&lib);
     file_session(&lib);
+    basic_interface_never_deletes_a_possibly_inserted_copy(&lib);
     set_disk(None);
 }
 
@@ -290,4 +291,30 @@ fn file_session(lib: &Path) {
     let added = emu.disks().unwrap().added();
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].copy, copy);
+}
+
+fn basic_interface_never_deletes_a_possibly_inserted_copy(lib: &Path) {
+    set_disk(Some("basic"));
+    let env = Env::new(lib, "basic");
+    let rom = env.file("Desk.st", b"desk");
+    let extra = env.file("Data.st", b"data");
+    let mut emu = env.open(ContentSpec::File(rom), true);
+    let mut disks = emu.disks().unwrap();
+    let index = disks.add(&extra).unwrap();
+    disks.insert(index).unwrap();
+    let copy = env.saves().join("Desk.disks/Data.st");
+    let added = disks.added();
+    assert_eq!(
+        (added.len(), added[0].index),
+        (1, None),
+        "no paths from a basic interface"
+    );
+    assert!(matches!(
+        disks.forget_added(&copy, true),
+        Err(RuntimeError::DiskInserted)
+    ));
+    assert!(copy.is_file());
+    disks.eject().unwrap();
+    disks.forget_added(&copy, true).unwrap();
+    assert!(!copy.exists());
 }

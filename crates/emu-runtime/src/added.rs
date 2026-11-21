@@ -12,6 +12,7 @@ use crate::content::io_error;
 use crate::emulator::Emulator;
 use crate::error::RuntimeError;
 use crate::media::{Disks, MediaPolicy, has_ext, is_disk_file_name, list_full};
+use crate::saves::read_bounded;
 use crate::workcopy::{self, DirState, MANIFEST_NAME, ManifestEntry, Origin, is_regular_file};
 
 /// One disk added from the menu (manifest entry `Origin::Added`) of the running game's working-copy folder.
@@ -114,10 +115,22 @@ pub(crate) fn restore_added(emu: &mut Emulator) {
 }
 
 impl Disks<'_> {
+    /// Index of `copy` in the core's list, comparing paths as given, then canonical (a core may report the path
+    /// spelled otherwise).
     fn index_of(&mut self, copy: &Path) -> Option<u32> {
-        self.slots()
-            .into_iter()
-            .find(|s| s.path.as_deref() == Some(copy))
+        let slots = self.slots();
+        if let Some(s) = slots.iter().find(|s| s.path.as_deref() == Some(copy)) {
+            return Some(s.index);
+        }
+        let wanted = fs::canonicalize(copy).ok()?;
+        slots
+            .iter()
+            .find(|s| {
+                s.path
+                    .as_deref()
+                    .and_then(|p| fs::canonicalize(p).ok())
+                    .is_some_and(|p| p == wanted)
+            })
             .map(|s| s.index)
     }
 
@@ -182,7 +195,13 @@ impl Disks<'_> {
                 Err(e) => return Err(io_error(copy, e)),
             }
         }
-        if let Some(index) = self.index_of(copy) {
+        let index = self.index_of(copy);
+        // Not identifiable in the core's list (basic interface without paths in a `File` / `NoGame` session):
+        // the inserted disk may be this copy, so its file is not deleted while a disk is in the drive.
+        if index.is_none() && delete_copy && self.current().is_some() {
+            return Err(RuntimeError::DiskInserted);
+        }
+        if let Some(index) = index {
             if self.current() == Some(index) {
                 return Err(RuntimeError::DiskInserted);
             }
@@ -280,6 +299,59 @@ fn check_work_dir(saves_core_dir: &Path, work_dir: &Path) -> Result<(), RuntimeE
     Ok(())
 }
 
+/// A generated playlist larger than this is not ours (same bound as user playlists).
+const MAX_PLAYLIST_BYTES: usize = 64 * 1024;
+
+/// Files of a folder the manifest references (the manifest itself included). Names are compared case-insensitively
+/// and, on Unix, by file identity too: a file system that hands names back in another Unicode form (NFD on HFS+ or
+/// SMB) must not make a referenced copy look unreferenced, hence removable.
+struct Referenced {
+    names: HashSet<String>,
+    #[cfg(unix)]
+    ids: HashSet<(u64, u64)>,
+}
+
+impl Referenced {
+    fn new(dir: &Path, entries: &[ManifestEntry]) -> Self {
+        let mut names: HashSet<String> = entries.iter().map(|e| e.copy.to_lowercase()).collect();
+        names.insert(MANIFEST_NAME.to_lowercase());
+        #[cfg(unix)]
+        let ids = {
+            use std::os::unix::fs::MetadataExt;
+            entries
+                .iter()
+                .map(|e| e.copy.as_str())
+                .chain([MANIFEST_NAME])
+                .filter_map(|copy| fs::symlink_metadata(dir.join(copy)).ok())
+                .map(|m| (m.dev(), m.ino()))
+                .collect()
+        };
+        #[cfg(not(unix))]
+        let _ = dir;
+        Self {
+            names,
+            #[cfg(unix)]
+            ids,
+        }
+    }
+
+    fn contains(&self, name: &str, meta: &fs::Metadata) -> bool {
+        if self.names.contains(&name.to_lowercase()) {
+            return true;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            self.ids.contains(&(meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            false
+        }
+    }
+}
+
 fn is_temp(name: &str) -> bool {
     name.starts_with('.') && name.contains(".tmp-")
 }
@@ -311,8 +383,7 @@ fn scan(
     let Some(entries) = manifest_entries(work_dir)? else {
         return Ok(Vec::new());
     };
-    let mut referenced: HashSet<String> = entries.iter().map(|e| e.copy.to_lowercase()).collect();
-    referenced.insert(MANIFEST_NAME.to_lowercase());
+    let referenced = Referenced::new(work_dir, &entries);
     let now = SystemTime::now();
     let mut out = Vec::new();
     for item in fs::read_dir(work_dir).map_err(|e| io_error(work_dir, e))? {
@@ -323,7 +394,7 @@ fn scan(
             continue;
         };
         let meta = fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
-        if !meta.is_file() || referenced.contains(&name.to_lowercase()) {
+        if !meta.is_file() || referenced.contains(&name, &meta) {
             continue;
         }
         let modified = meta.modified().ok();
@@ -374,7 +445,13 @@ fn current_playlist(dir: &Path, entries: &[ManifestEntry], files: &[OrphanCopy])
         .iter()
         .filter(|o| o.kind == OrphanKind::StalePlaylist)
         .filter(|o| {
-            let Ok(text) = fs::read_to_string(dir.join(&o.name)) else {
+            let Ok(bytes) = read_bounded(&dir.join(&o.name), MAX_PLAYLIST_BYTES) else {
+                return false;
+            };
+            if bytes.len() > MAX_PLAYLIST_BYTES {
+                return false;
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
                 return false;
             };
             let lines: Vec<&str> = text
@@ -407,11 +484,8 @@ pub fn remove_orphan_copies(
 ) -> Result<u64, RuntimeError> {
     check_work_dir(saves_core_dir, work_dir)?;
     let orphans = scan(saves_core_dir, work_dir, false)?;
-    let referenced: HashSet<String> = manifest_entries(work_dir)?
-        .unwrap_or_default()
-        .iter()
-        .map(|e| e.copy.to_lowercase())
-        .collect();
+    let entries = manifest_entries(work_dir)?.unwrap_or_default();
+    let referenced = Referenced::new(work_dir, &entries);
     // Every name is checked before the first deletion.
     let mut selected = Vec::with_capacity(names.len());
     for name in names {
@@ -425,13 +499,16 @@ pub fn remove_orphan_copies(
         if name.eq_ignore_ascii_case(MANIFEST_NAME) {
             return Err(refused(&path, "the manifest is never deleted"));
         }
-        if referenced.contains(&name.to_lowercase()) {
+        // By name first: a referenced name is refused even when absent (case-insensitive file systems).
+        if referenced.names.contains(&name.to_lowercase()) {
             return Err(refused(&path, "referenced by the manifest"));
         }
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => return Err(refused(&path, "a link")),
-            Ok(_) => {}
-            Err(e) => return Err(io_error(&path, e)),
+        let meta = fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
+        if meta.file_type().is_symlink() {
+            return Err(refused(&path, "a link"));
+        }
+        if referenced.contains(name, &meta) {
+            return Err(refused(&path, "referenced by the manifest"));
         }
         let orphan = orphans
             .iter()

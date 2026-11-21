@@ -203,3 +203,42 @@ fn only_old_temporary_files_go_automatically() {
     // The rest of the folder is untouched by the listing.
     assert!(work.join("02 X.st").is_file() && work.join("Game.m3u").is_file());
 }
+
+/// A referenced copy whose name comes back in another form (NFD on HFS+ / SMB) is recognised by file identity;
+/// simulated here with a hard link.
+#[cfg(unix)]
+#[test]
+fn a_referenced_file_under_another_name_is_never_an_orphan() {
+    let fx = Fx::new();
+    let work = fx.work();
+    fs::hard_link(work.join("Game.st"), work.join("Game-alias.st")).unwrap();
+    assert!(!fx.names().iter().any(|(n, _)| n == "Game-alias.st"));
+    assert!(matches!(
+        remove_orphan_copies(&fx.saves(), &work, &["Game-alias.st".to_owned()]),
+        Err(RuntimeError::RemovalRefused { .. })
+    ));
+    assert!(work.join("Game-alias.st").is_file());
+}
+
+#[test]
+fn an_oversized_playlist_is_never_current() {
+    let fx = Fx::new();
+    let work = fx.saves().join("P.disks");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(
+        work.join(MANIFEST_NAME),
+        "emu-rust working copies 1\n\
+         set\tA.st\t\t1\t-\t00000001\t/r/A.st\n\
+         set\tB.st\t\t1\t-\t00000001\t/r/B.st\n",
+    )
+    .unwrap();
+    let mut big = b"A.st\nB.st\n".to_vec();
+    big.extend(std::iter::repeat_n(b'#', MAX_PLAYLIST_BYTES));
+    fs::write(work.join("P.m3u"), big).unwrap();
+    let names: Vec<String> = orphan_copies(&fx.saves(), &work)
+        .unwrap()
+        .into_iter()
+        .map(|o| o.name)
+        .collect();
+    assert_eq!(names, ["P.m3u"]);
+}

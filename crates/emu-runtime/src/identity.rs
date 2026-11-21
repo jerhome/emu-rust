@@ -208,7 +208,7 @@ pub fn resolve_game_identity(req: &IdentityRequest<'_>) -> Result<GameIdentity, 
             // Rule 3: a 2.0 working-copy folder recorded copies of this source.
             Some(found) => found,
             // Rule 4: bare name if free in the registry (adopting 1.0 / 2.0 files), else the first free suffix.
-            None => attribute(&entries, &existing, &base)?,
+            None => attribute(&entries, &existing, saves, &base)?,
         };
         let fp = source.fingerprint()?;
         let legacy = index == 1 && existing.contains_stem(&base);
@@ -226,17 +226,19 @@ pub fn resolve_game_identity(req: &IdentityRequest<'_>) -> Result<GameIdentity, 
             let first = entries.iter().find(|e| same_name(&e.save_name, &base));
             // Without an entry 1, the bare-name files predate the registry: they were shared in 2.0.
             let legacy_base = first.map_or_else(|| existing.contains_stem(&base), |e| e.legacy);
-            let first_path = first.map(|e| path_from_key(&e.path));
+            // Not registered yet: the owner of `<base>.disks` (2.0), else unknown (empty path).
+            let first = first
+                .map(|e| path_from_key(&e.path))
+                .or_else(|| disks_owner(saves, &base))
+                .unwrap_or_default();
             inherits_legacy = legacy_base;
             let sram_copied = legacy_base && inherit_sram(saves, &base, &save_name);
             let legacy_states = legacy_base && has_states(req.states_core_dir, &base);
-            if let Some(first) = first_path {
-                notice = Some(IdentityNotice::Homonym {
-                    first,
-                    sram_copied,
-                    legacy_states,
-                });
-            }
+            notice = Some(IdentityNotice::Homonym {
+                first,
+                sram_copied,
+                legacy_states,
+            });
             tracing::info!(%save_name, sram_copied, "homonym separated from `{base}`");
         }
         entries.len() - 1
@@ -496,13 +498,19 @@ fn rule_disks_folder(
 }
 
 /// Rule 4.
+///
+/// Called only when rule 3 found no folder of this source: a `<base>.disks` whose manifest holds present `Set`
+/// copies therefore belongs to another game (the 2.0 owner of the bare name, not launched in 2.1 yet), which must
+/// keep `<base>` when it comes (design §2.2). Suffixed candidates already skip any existing `<base> (n).*`, which
+/// covers the `<save_name> (n).disks` folders made by `choose_work_dir` for a replaced image.
 fn attribute(
     entries: &[Entry],
     existing: &Radicals,
+    saves: &Path,
     base: &str,
 ) -> Result<(String, u32), RuntimeError> {
     let in_registry = |name: &str| entries.iter().any(|e| same_name(&e.save_name, name));
-    if !in_registry(base) {
+    if !in_registry(base) && disks_owner(saves, base).is_none() {
         return Ok((base.to_owned(), 1));
     }
     (2..=MAX_SUFFIX)
@@ -511,6 +519,23 @@ fn attribute(
         .ok_or_else(|| {
             RuntimeError::InvalidMediaSet(format!("no free save name left for `{base}`"))
         })
+}
+
+/// Source of the first present `Set` copy recorded in `<name>.disks` (readable manifest only): that folder belongs
+/// to the game made from it.
+fn disks_owner(saves: &Path, name: &str) -> Option<PathBuf> {
+    fn any_name(name: &str) -> bool {
+        !name.is_empty() && !name.contains(['/', '\\'])
+    }
+    let dir = saves.join(format!("{name}.disks"));
+    let DirState::Manifest(recorded) = workcopy::inspect(&dir, any_name).ok()? else {
+        return None;
+    };
+    recorded
+        .iter()
+        .filter(|e| e.origin == Origin::Set)
+        .find(|e| workcopy::is_regular_file(&dir.join(&e.copy)).unwrap_or(false))
+        .map(|e| e.source_path().unwrap_or_default())
 }
 
 /// Lower-cased names of `<saves>/<core_id>/` and `<states>/<core_id>/`, listed once.
@@ -576,7 +601,9 @@ fn has_states(states: &Path, base: &str) -> bool {
 }
 
 /// Exclusive lock on `.emu-rust-games.lock`, released on drop. A file system without locks (some network
-/// mounts) works unprotected rather than not at all, as for `cores/.lock`.
+/// mounts) works unprotected rather than not at all, as for `cores/.lock`: two launches at the same instant may
+/// then both attribute a name (the last registry write wins; nothing is deleted). The working-copy manifests
+/// (`workcopy::write`) take no inter-process lock either: two instances of the same game are not guarded.
 struct RegistryLock {
     _file: Option<File>,
 }
@@ -632,6 +659,14 @@ fn keep_corrupt_copy(path: &Path) {
         return;
     };
     if !meta.is_file() {
+        return;
+    }
+    // The original stays in place anyway: an oversized file is not duplicated.
+    if meta.len() > MAX_REGISTRY_BYTES as u64 {
+        tracing::warn!(
+            "{} is larger than 8 MiB: left in place, not copied",
+            path.display()
+        );
         return;
     }
     let Some(dir) = path.parent() else { return };
