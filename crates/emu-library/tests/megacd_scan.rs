@@ -251,3 +251,53 @@ fn orphan_track_is_ignored_and_cartridges_still_hashed() {
     );
     assert!(lib.games().unwrap().iter().all(|g| g.sha1.is_some()));
 }
+
+/// Stores `entries` (name, source file) in a zip, with the interpreter in isolated mode.
+fn zip_files(out: &Path, entries: &[(&str, &Path)]) {
+    let code = "import sys, zipfile\n\
+        z = zipfile.ZipFile(sys.argv[1], 'w')\n\
+        for i in range(2, len(sys.argv), 2):\n\
+        \x20   z.write(sys.argv[i + 1], sys.argv[i])\n\
+        z.close()\n";
+    let mut cmd = Command::new("python3");
+    cmd.args(["-I", "-c", code]).arg(out);
+    for (name, path) in entries {
+        cmd.arg(name).arg(path);
+    }
+    assert!(cmd.status().expect("python3").success());
+}
+
+/// A zipped Sega CD track is ignored with the same message as a loose one; zipped cartridges are still listed.
+#[test]
+fn zipped_orphan_track_is_ignored_and_zipped_cartridges_are_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    let root = tmp.path().join("roms");
+    fs::create_dir_all(&work).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    let track = work.join("Lost Track 01.bin");
+    mkcd(&["orphan", track.to_str().unwrap()]);
+    zip_files(&root.join("Lost.zip"), &[("Lost Track 01.bin", &track)]);
+    let md = work.join("Sonic.bin");
+    fs::write(&md, cartridge()).unwrap();
+    zip_files(&root.join("Sonic.zip"), &[("Sonic.bin", &md)]);
+    let x32 = work.join("Star.bin");
+    let mut rom = cartridge();
+    rom[0x100..0x108].copy_from_slice(b"SEGA 32X");
+    fs::write(&x32, rom).unwrap();
+    zip_files(&root.join("Star.zip"), &[("Star.bin", &x32)]);
+
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan(&mut lib, &root);
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|(p, m)| p.ends_with("Lost.zip") && m.contains("sans fichier .cue")),
+        "{report:?}"
+    );
+    assert_eq!(
+        listed(&lib, &root),
+        BTreeSet::from([pair("megadrive", "Sonic.zip"), pair("32x", "Star.zip")])
+    );
+}

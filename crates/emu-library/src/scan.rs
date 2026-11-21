@@ -1036,10 +1036,17 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             .take(BIN_PROBE_LEN as u64)
             .read_to_end(&mut head)
             .map_err(|e| format!("archive illisible : {e}"))?;
-        if bin_kind(&head) == BinKind::Sega32x
-            && let Some(r) = rule_32x(found)
-        {
-            rule = r;
+        match bin_kind(&head) {
+            // Same rule as a track outside a zip (2.1): never a Mega Drive ROM.
+            BinKind::SegaCdTrack => {
+                return Err("piste de CD sans fichier .cue : ignorée".to_owned().into());
+            }
+            BinKind::Sega32x => {
+                if let Some(r) = rule_32x(found) {
+                    rule = r;
+                }
+            }
+            BinKind::MegaDrive | BinKind::Unknown => {}
         }
     }
     let hashes = if declared > max {
