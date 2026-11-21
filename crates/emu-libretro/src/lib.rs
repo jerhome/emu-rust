@@ -4,6 +4,7 @@
 #![allow(unsafe_code)]
 
 mod callbacks;
+mod controllers;
 mod core;
 mod disk;
 mod error;

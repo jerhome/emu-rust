@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use libloading::Library;
 
 use crate::callbacks::{self, EnvInstall, ProcessGuard};
+use crate::controllers;
 use crate::error::LibretroError;
 use crate::log;
 use crate::resident::{self, CopyFile};
@@ -110,6 +111,8 @@ pub struct Core {
     /// Paths handed to the disk control interface (`replace_image_index`, `set_initial_image`). libretro.h does
     /// not say whether the core copies them, so they are kept until `retro_unload_game` / drop.
     disk_paths: Vec<CString>,
+    /// Copy of the last `SET_CONTROLLER_INFO`, refreshed after every call into the core that may send it.
+    controllers: Vec<Vec<ControllerType>>,
     /// Registry key of the library given to `load` (ADR 0022); journals and `GET_LIBRETRO_PATH` use the
     /// original path, never the copy.
     origin: PathBuf,
@@ -326,6 +329,7 @@ impl Core {
         );
 
         Ok(Core {
+            controllers: callbacks::take_controller_types().unwrap_or_default(),
             api,
             library: Some(library),
             env: Some(env),
@@ -379,6 +383,7 @@ impl Core {
         let (events, panicked) = installed.finish();
         let events = std::mem::take(&mut self.pending_events).merged(events);
         self.frames_run = self.frames_run.saturating_add(1);
+        self.sync_controllers();
 
         if self.av_info.is_some() {
             self.av_info = callbacks::av_info();
@@ -434,6 +439,7 @@ impl Core {
         // `self.game` (heap contents do not move) and kept until retro_unload_game.
         let loaded = unsafe { (self.api.load_game)(&raw const info) } != 0;
         let core_error = log::end_load_error_capture();
+        self.sync_controllers();
         if !loaded {
             return Err(LibretroError::LoadGameFailed {
                 path: rom,
@@ -460,6 +466,7 @@ impl Core {
         // owning thread.
         let loaded = unsafe { (self.api.load_game)(std::ptr::null()) } != 0;
         let core_error = log::end_load_error_capture();
+        self.sync_controllers();
         if !loaded {
             return Err(LibretroError::LoadGameFailed {
                 path: PathBuf::new(),
@@ -472,19 +479,37 @@ impl Core {
         }))
     }
 
-    /// Device types declared by the core for `port` (`SET_CONTROLLER_INFO`). Empty: none declared, or port out
-    /// of range. Today the command is not read yet (PF1), so the slice is always empty.
+    /// Device types declared by the core for `port` (`SET_CONTROLLER_INFO`; at most 8 ports and 32 types, entries
+    /// without a description skipped). Empty: none declared, or port out of range. A redeclaration replaces the
+    /// list; it is picked up after the call into the core that sent it (`load`, `load_game*`, `run`,
+    /// `reset_with`, `set_controller_device`).
     pub fn controller_types(&self, port: u32) -> &[ControllerType] {
-        let _ = port;
-        todo!("PF1: read SET_CONTROLLER_INFO (bounded: 8 ports, 32 types, 64 characters)")
+        controllers::types_for(&self.controllers, port)
     }
 
-    /// `retro_set_controller_port_device`. Accepted: `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD`, or an id the
-    /// core declared for this port. Requires a loaded game ([`LibretroError::NoGame`] otherwise); an other id is
-    /// [`LibretroError::UnknownControllerDevice`].
+    /// `retro_set_controller_port_device`. Accepted on ports 0 to 7: `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD`,
+    /// or an id the core declared for this port. Requires a loaded game ([`LibretroError::NoGame`] otherwise); an
+    /// other id or port is [`LibretroError::UnknownControllerDevice`].
     pub fn set_controller_device(&mut self, port: u32, id: u32) -> Result<(), LibretroError> {
-        let _ = (port, id);
-        todo!("PF1: validate against controller_types, then call set_controller_port_device")
+        if self.game.is_none() {
+            return Err(LibretroError::NoGame);
+        }
+        self.sync_controllers();
+        if !controllers::device_allowed(&self.controllers, port, id) {
+            return Err(LibretroError::UnknownControllerDevice { port, id });
+        }
+        // SAFETY: a game is loaded; owning thread (`Core` is !Send); `id` is NONE, JOYPAD or declared by the core
+        // for `port`, which is below the 8 ports read from SET_CONTROLLER_INFO.
+        unsafe { (self.api.set_controller_port_device)(port, id) };
+        self.sync_controllers();
+        Ok(())
+    }
+
+    /// Picks up a `SET_CONTROLLER_INFO` sent since the last sync (no allocation when nothing changed).
+    fn sync_controllers(&mut self) {
+        if let Some(ports) = callbacks::take_controller_types() {
+            self.controllers = ports;
+        }
     }
 
     /// `SET_SUPPORT_NO_GAME` was received with `true`.
@@ -525,6 +550,7 @@ impl Core {
             // SAFETY: valid after retro_load_game; RETRO_DEVICE_JOYPAD is supported by every core.
             unsafe { (self.api.set_controller_port_device)(port, sys::RETRO_DEVICE_JOYPAD) };
         }
+        self.sync_controllers();
         av_info
     }
 
@@ -710,6 +736,7 @@ impl Core {
         unsafe { (self.api.reset)() };
         let (events, panicked) = installed.finish();
         self.pending_events = self.pending_events.merged(events);
+        self.sync_controllers();
         if self.av_info.is_some() {
             self.av_info = callbacks::av_info();
         }

@@ -23,6 +23,7 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::controllers;
 use crate::core::{CoreConfig, FrontendHandler, RunEvents};
 use crate::disk::DiskControlKind;
 use crate::error::LibretroError;
@@ -30,8 +31,9 @@ use crate::log;
 use crate::options::{self, OptionStore};
 use crate::sys;
 use crate::types::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride, GameGeometry,
-    InputDevice, InputQuery, LogLevel, PixelFormat, SerializationQuirks, SystemTiming, VideoFrame,
+    AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride,
+    GameGeometry, InputDevice, InputQuery, LogLevel, PixelFormat, SerializationQuirks,
+    SystemTiming, VideoFrame,
 };
 use crate::vfs;
 
@@ -121,6 +123,10 @@ struct EnvState {
     ff_state: Option<FastForwardOverride>,
     /// A request arrived while no handler was installed (loading): reported by the next handler installation.
     ff_pending: bool,
+    /// Last `SET_CONTROLLER_INFO` (35), bounded copy; a new declaration replaces it.
+    controllers: Vec<Vec<ControllerType>>,
+    /// `controllers` changed since `Core` last took it.
+    controllers_changed: bool,
 }
 
 /// Disk control callbacks as registered; the basic interface leaves the extended entries `None`.
@@ -158,6 +164,8 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         fastforward_override: config.fastforward_override,
         ff_state: None,
         ff_pending: false,
+        controllers: Vec::new(),
+        controllers_changed: false,
     };
     ENV.with(|env| *env.borrow_mut() = Some(state));
     HOT.with(|hot| {
@@ -261,6 +269,14 @@ pub(crate) fn keyboard_callback() -> Option<sys::retro_keyboard_event_t> {
 /// To be called outside `with_env` (see the module documentation).
 pub(crate) fn disk_interface() -> Option<DiskInterface> {
     with_env(|env| env.disk).flatten()
+}
+
+/// The controller types declared since the previous call, if the core (re)declared them.
+pub(crate) fn take_controller_types() -> Option<Vec<Vec<ControllerType>>> {
+    with_env(|env| {
+        std::mem::take(&mut env.controllers_changed).then(|| std::mem::take(&mut env.controllers))
+    })
+    .flatten()
 }
 
 pub(crate) fn supports_no_game() -> bool {
@@ -872,8 +888,16 @@ impl EnvState {
                 // SAFETY: `unsigned *`.
                 unsafe { write_out::<c_uint>(data, 1) }
             }
+            sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO => {
+                // SAFETY: `const struct retro_controller_info *`, terminated by an entry with null `types`; read
+                // within the bounds of `copy_controller_info` and copied before returning.
+                self.controllers = unsafe {
+                    controllers::copy_controller_info(data.cast_const().cast())
+                };
+                self.controllers_changed = true;
+                true
+            }
             sys::RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
-            | sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO
             | sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL
             | sys::RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS
             | sys::RETRO_ENVIRONMENT_SET_MEMORY_MAPS
@@ -924,7 +948,12 @@ impl EnvState {
             | sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE
             | sys::RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK
             | sys::RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY
-            | sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT => {
+            | sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT
+            // Design v7.0 §3.1: no rumble, no direct software framebuffer, no hardware renderer preference (the
+            // cores fall back to their own buffer / software rendering).
+            | sys::RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE
+            | sys::RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER
+            | sys::RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER => {
                 self.log_declined(cmd);
                 false
             }
@@ -1364,6 +1393,76 @@ mod tests {
         let got = fastforward_override().expect("stored");
         assert!(got.fastforward && got.notification && !got.inhibit_toggle);
         assert_eq!(std::mem::size_of::<sys::retro_fastforwarding_override>(), 8);
+    }
+
+    #[test]
+    fn controller_info_and_declined_7_0_commands() {
+        let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
+        assert_eq!(take_controller_types(), None);
+
+        // Null data: accepted, empty declaration.
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO,
+            std::ptr::null_mut()
+        ));
+        assert_eq!(take_controller_types(), Some(Vec::new()));
+        assert_eq!(take_controller_types(), None);
+
+        let types = [
+            sys::retro_controller_description {
+                desc: c"Pad".as_ptr(),
+                id: 1,
+            },
+            sys::retro_controller_description {
+                desc: c"Analog\n".as_ptr(),
+                id: 517,
+            },
+        ];
+        let mut info = [
+            sys::retro_controller_info {
+                types: types.as_ptr(),
+                num_types: 2,
+            },
+            sys::retro_controller_info {
+                types: std::ptr::null(),
+                num_types: 0,
+            },
+        ];
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO,
+            info.as_mut_ptr().cast()
+        ));
+        // A redeclaration replaces the previous one.
+        info[0].num_types = 1;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_CONTROLLER_INFO,
+            info.as_mut_ptr().cast()
+        ));
+        let ports = take_controller_types().unwrap();
+        assert_eq!(
+            ports,
+            [vec![ControllerType {
+                description: "Pad".into(),
+                id: 1
+            }]]
+        );
+
+        let mut out = [0u8; 64];
+        for cmd in [
+            sys::RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE,
+            sys::RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER,
+            sys::RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER,
+        ] {
+            assert!(!env(cmd, out.as_mut_ptr().cast()), "{cmd}");
+            assert!(!env(cmd, std::ptr::null_mut()), "{cmd}");
+        }
+        assert_eq!(out, [0u8; 64], "declined commands write nothing");
+        assert_eq!(sys::RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, 23);
+        assert_eq!(
+            sys::RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER & 0xffff,
+            40
+        );
+        assert_eq!(sys::RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, 56);
     }
 
     #[test]
