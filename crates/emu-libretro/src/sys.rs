@@ -302,6 +302,102 @@ pub struct retro_disk_control_ext_callback {
     pub get_image_label: Option<retro_get_image_label_t>,
 }
 
+pub const RETRO_VFS_FILE_ACCESS_READ: c_uint = 1 << 0;
+pub const RETRO_VFS_FILE_ACCESS_WRITE: c_uint = 1 << 1;
+pub const RETRO_VFS_FILE_ACCESS_READ_WRITE: c_uint =
+    RETRO_VFS_FILE_ACCESS_READ | RETRO_VFS_FILE_ACCESS_WRITE;
+pub const RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING: c_uint = 1 << 2;
+
+pub const RETRO_VFS_SEEK_POSITION_START: c_int = 0;
+pub const RETRO_VFS_SEEK_POSITION_CURRENT: c_int = 1;
+pub const RETRO_VFS_SEEK_POSITION_END: c_int = 2;
+
+pub const RETRO_VFS_STAT_IS_VALID: c_int = 1 << 0;
+pub const RETRO_VFS_STAT_IS_DIRECTORY: c_int = 1 << 1;
+pub const RETRO_VFS_STAT_IS_CHARACTER_SPECIAL: c_int = 1 << 2;
+
+/// Opaque to the core; the frontend defines it (`vfs::VfsFile`).
+#[repr(C)]
+pub struct retro_vfs_file_handle {
+    _private: [u8; 0],
+}
+
+/// Opaque to the core; the frontend defines it (`vfs::VfsDir`).
+#[repr(C)]
+pub struct retro_vfs_dir_handle {
+    _private: [u8; 0],
+}
+
+pub type retro_vfs_get_path_t =
+    unsafe extern "C" fn(stream: *mut retro_vfs_file_handle) -> *const c_char;
+pub type retro_vfs_open_t = unsafe extern "C" fn(
+    path: *const c_char,
+    mode: c_uint,
+    hints: c_uint,
+) -> *mut retro_vfs_file_handle;
+pub type retro_vfs_close_t = unsafe extern "C" fn(stream: *mut retro_vfs_file_handle) -> c_int;
+pub type retro_vfs_size_t = unsafe extern "C" fn(stream: *mut retro_vfs_file_handle) -> i64;
+pub type retro_vfs_truncate_t =
+    unsafe extern "C" fn(stream: *mut retro_vfs_file_handle, length: i64) -> i64;
+pub type retro_vfs_tell_t = unsafe extern "C" fn(stream: *mut retro_vfs_file_handle) -> i64;
+pub type retro_vfs_seek_t = unsafe extern "C" fn(
+    stream: *mut retro_vfs_file_handle,
+    offset: i64,
+    seek_position: c_int,
+) -> i64;
+pub type retro_vfs_read_t =
+    unsafe extern "C" fn(stream: *mut retro_vfs_file_handle, s: *mut c_void, len: u64) -> i64;
+pub type retro_vfs_write_t =
+    unsafe extern "C" fn(stream: *mut retro_vfs_file_handle, s: *const c_void, len: u64) -> i64;
+pub type retro_vfs_flush_t = unsafe extern "C" fn(stream: *mut retro_vfs_file_handle) -> c_int;
+pub type retro_vfs_remove_t = unsafe extern "C" fn(path: *const c_char) -> c_int;
+pub type retro_vfs_rename_t =
+    unsafe extern "C" fn(old_path: *const c_char, new_path: *const c_char) -> c_int;
+pub type retro_vfs_stat_t = unsafe extern "C" fn(path: *const c_char, size: *mut i32) -> c_int;
+pub type retro_vfs_mkdir_t = unsafe extern "C" fn(dir: *const c_char) -> c_int;
+/// `include_hidden` is a C `bool`, taken as `u8` so a non-0/1 byte is not an invalid Rust `bool`.
+pub type retro_vfs_opendir_t =
+    unsafe extern "C" fn(dir: *const c_char, include_hidden: u8) -> *mut retro_vfs_dir_handle;
+pub type retro_vfs_readdir_t = unsafe extern "C" fn(dirstream: *mut retro_vfs_dir_handle) -> bool;
+pub type retro_vfs_dirent_get_name_t =
+    unsafe extern "C" fn(dirstream: *mut retro_vfs_dir_handle) -> *const c_char;
+pub type retro_vfs_dirent_is_dir_t =
+    unsafe extern "C" fn(dirstream: *mut retro_vfs_dir_handle) -> bool;
+pub type retro_vfs_closedir_t = unsafe extern "C" fn(dirstream: *mut retro_vfs_dir_handle) -> c_int;
+
+/// `struct retro_vfs_interface`, version 3 layout (v1 up to `rename`, v2 adds `truncate`, v3 the rest).
+#[repr(C)]
+pub struct retro_vfs_interface {
+    pub get_path: retro_vfs_get_path_t,
+    pub open: retro_vfs_open_t,
+    pub close: retro_vfs_close_t,
+    pub size: retro_vfs_size_t,
+    pub tell: retro_vfs_tell_t,
+    pub seek: retro_vfs_seek_t,
+    pub read: retro_vfs_read_t,
+    pub write: retro_vfs_write_t,
+    pub flush: retro_vfs_flush_t,
+    pub remove: retro_vfs_remove_t,
+    pub rename: retro_vfs_rename_t,
+    pub truncate: retro_vfs_truncate_t,
+    pub stat: retro_vfs_stat_t,
+    pub mkdir: retro_vfs_mkdir_t,
+    pub opendir: retro_vfs_opendir_t,
+    pub readdir: retro_vfs_readdir_t,
+    pub dirent_get_name: retro_vfs_dirent_get_name_t,
+    pub dirent_is_dir: retro_vfs_dirent_is_dir_t,
+    pub closedir: retro_vfs_closedir_t,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct retro_vfs_interface_info {
+    /// In: version the core needs. Out: version the frontend provides.
+    pub required_interface_version: u32,
+    /// Out: the frontend's table (the core must not write through it).
+    pub iface: *mut retro_vfs_interface,
+}
+
 pub type retro_environment_t = unsafe extern "C" fn(cmd: c_uint, data: *mut c_void) -> bool;
 pub type retro_video_refresh_t =
     unsafe extern "C" fn(data: *const c_void, width: c_uint, height: c_uint, pitch: usize);

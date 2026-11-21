@@ -1,19 +1,971 @@
 //! `retro_vfs_interface` v3 over `std::fs`, answered to `GET_VFS_INTERFACE` (45) only when
-//! `CoreConfig::provide_vfs` is set (ADR 0018, design v4.0 §3.1). Filled by DF1.
+//! `CoreConfig::provide_vfs` is set (ADR 0018, design v4.0 §3.1).
 //!
-//! Contract for DF1:
-//! - 19 `unsafe extern "C"` functions in a `static` table: `get_path`, `open`, `close`, `size`, `tell`, `seek`,
-//!   `read`, `write`, `flush`, `remove`, `rename`, `truncate`, `stat`, `mkdir`, `opendir`, `readdir`,
-//!   `dirent_get_name`, `dirent_is_dir`, `closedir`.
-//! - `required_interface_version > 3` ⇒ the environment call answers `false`; otherwise version 3 is written.
-//! - No thread-local state and no `with_env`: the core may call these from its own threads. Handles are
-//!   `Box<VfsFile { file, path: CString }>` / `Box<VfsDir { iter, current: Option<(CString, bool)> }>`, freed by
-//!   `close` / `closedir`.
-//! - Paths must be UTF-8 (else `NULL` / `-1`); no `panic` crosses the boundary (`catch_unwind` ⇒ error value);
-//!   access modes and `stat` flags as in `libretro.h`; `mkdir`: 0, -2 if it exists, -1 otherwise;
-//!   `dirent_get_name` valid until the next `readdir`; `opendir(include_hidden = false)` skips names starting
-//!   with `.`.
+//! - `required_interface_version > 3` ⇒ the environment call answers `false`; otherwise version 3 and a pointer to
+//!   the `static` table are written.
+//! - No thread-local state and no `with_env`: the core may call these from any thread (dosbox_pure does, from its
+//!   emulation thread). The only state is the handle itself: `Box<VfsFile>` / `Box<VfsDir>`, created by
+//!   `open` / `opendir`, freed by `close` / `closedir`. As with `FILE *` / `DIR *`, the core must not use a handle
+//!   after closing it, nor a directory handle from two threads at once; file handles are only ever borrowed
+//!   shared (`&File` implements `Read` / `Write` / `Seek`), so concurrent use of one file handle is a logic error
+//!   of the core but not undefined behaviour here.
+//! - Paths: UTF-8 only (else `NULL` / `-1`), not restricted to any directory. This grants no new privilege: the
+//!   core is native code that can already `fopen` anything the process can (design v4.0 §3.1).
+//! - No `panic` crosses the boundary (`catch_unwind` ⇒ the function's error value). Errors are not logged: cores
+//!   probe for missing files routinely.
+//! - Access modes as RetroArch's reference implementation: `READ` (must exist), `WRITE` / `READ_WRITE` (create,
+//!   truncate), `WRITE | UPDATE_EXISTING` / `READ_WRITE | UPDATE_EXISTING` (read-write, must exist, kept);
+//!   anything else fails. Hints are ignored. I/O is unbuffered, so `flush` has nothing to do.
+
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
+use std::fs::{File, OpenOptions, ReadDir};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::Path;
+use std::ptr;
+
+use crate::sys;
 
 /// Interface version written back to the core.
-#[allow(dead_code)] // DF1 wires the table into `callbacks.rs`.
 pub(crate) const VFS_INTERFACE_VERSION: u32 = 3;
+
+/// `read` zeroes the core's buffer this many bytes at a time before handing it to `File::read` as `&mut [u8]`
+/// (the buffer may be uninitialised), so a large request near the end of a file costs at most one chunk.
+const READ_CHUNK: usize = 64 * 1024;
+
+const UPDATE_WRITE: c_uint =
+    sys::RETRO_VFS_FILE_ACCESS_WRITE | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
+const UPDATE_READ_WRITE: c_uint =
+    sys::RETRO_VFS_FILE_ACCESS_READ_WRITE | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
+
+/// Behind `*mut retro_vfs_file_handle`.
+struct VfsFile {
+    file: File,
+    /// Exactly the path given to `open` (`get_path` contract); lives as long as the handle.
+    path: CString,
+}
+
+/// Behind `*mut retro_vfs_dir_handle`.
+struct VfsDir {
+    iter: ReadDir,
+    include_hidden: bool,
+    /// Last entry read: name (returned by `dirent_get_name`, valid until the next `readdir` / `closedir`) and
+    /// whether it is a directory (symbolic links followed).
+    current: Option<(CString, bool)>,
+}
+
+/// The table handed to the core. The core receives a `*mut` (C signature) but must not write through it.
+static VFS_INTERFACE: sys::retro_vfs_interface = sys::retro_vfs_interface {
+    get_path: vfs_get_path,
+    open: vfs_open,
+    close: vfs_close,
+    size: vfs_size,
+    tell: vfs_tell,
+    seek: vfs_seek,
+    read: vfs_read,
+    write: vfs_write,
+    flush: vfs_flush,
+    remove: vfs_remove,
+    rename: vfs_rename,
+    truncate: vfs_truncate,
+    stat: vfs_stat,
+    mkdir: vfs_mkdir,
+    opendir: vfs_opendir,
+    readdir: vfs_readdir,
+    dirent_get_name: vfs_dirent_get_name,
+    dirent_is_dir: vfs_dirent_is_dir,
+    closedir: vfs_closedir,
+};
+
+/// Answers `GET_VFS_INTERFACE`: `false` (nothing written) for a null pointer or a version above 3.
+///
+/// # Safety
+/// `data` is null or points to a `retro_vfs_interface_info` valid for reads and writes for the call.
+pub(crate) unsafe fn answer(data: *mut c_void) -> bool {
+    let info = data.cast::<sys::retro_vfs_interface_info>();
+    if info.is_null() {
+        return false;
+    }
+    // SAFETY: non-null and valid for reads per this function's contract; the field is a plain `u32`.
+    let required = unsafe { (&raw const (*info).required_interface_version).read() };
+    if required > VFS_INTERFACE_VERSION {
+        tracing::debug!(
+            required,
+            provided = VFS_INTERFACE_VERSION,
+            "core requires a newer VFS interface; declined"
+        );
+        return false;
+    }
+    // SAFETY: valid for writes per this function's contract. The table is a `static`: the pointer stays valid
+    // for the whole process, on every thread.
+    unsafe {
+        info.write(sys::retro_vfs_interface_info {
+            required_interface_version: VFS_INTERFACE_VERSION,
+            iface: (&raw const VFS_INTERFACE).cast_mut(),
+        });
+    }
+    true
+}
+
+/// Runs `f` without letting a panic cross the C boundary.
+fn guard<R>(error: R, f: impl FnOnce() -> R) -> R {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or(error)
+}
+
+/// Borrows a C path argument; `None` for null, empty or non-UTF-8.
+///
+/// # Safety
+/// `path` is null or a NUL-terminated string that stays valid and unmodified for `'a`.
+unsafe fn path_arg<'a>(path: *const c_char) -> Option<&'a Path> {
+    if path.is_null() {
+        return None;
+    }
+    // SAFETY: non-null NUL-terminated string valid for `'a` per this function's contract.
+    let path = unsafe { CStr::from_ptr(path) }.to_str().ok()?;
+    (!path.is_empty()).then(|| Path::new(path))
+}
+
+/// # Safety
+/// `stream` is null or a pointer returned by `vfs_open` and not yet passed to `vfs_close`, for `'a`.
+unsafe fn file_ref<'a>(stream: *mut sys::retro_vfs_file_handle) -> Option<&'a VfsFile> {
+    // SAFETY: per this function's contract the pointer comes from `Box::<VfsFile>::into_raw` and the box is still
+    // alive; only shared references are formed, so concurrent calls on one handle do not alias a `&mut`.
+    unsafe { stream.cast::<VfsFile>().cast_const().as_ref() }
+}
+
+/// # Safety
+/// `dir` is null or a pointer returned by `vfs_opendir` and not yet passed to `vfs_closedir`, for `'a`, and not
+/// used concurrently by another call (libretro contract, as for `DIR *`).
+unsafe fn dir_mut<'a>(dir: *mut sys::retro_vfs_dir_handle) -> Option<&'a mut VfsDir> {
+    // SAFETY: per this function's contract the pointer comes from `Box::<VfsDir>::into_raw`, the box is alive and
+    // no other reference to it exists during this call.
+    unsafe { dir.cast::<VfsDir>().as_mut() }
+}
+
+fn to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(-1)
+}
+
+/// A byte count accepted from the core: at most `isize::MAX` (slice limit); `None` above (a core bug).
+fn byte_len(len: u64) -> Option<usize> {
+    usize::try_from(len)
+        .ok()
+        .filter(|len| isize::try_from(*len).is_ok())
+}
+
+/// `get_path`: the path given to `open`, valid until `close`; `NULL` for a null handle.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_get_path(stream: *mut sys::retro_vfs_file_handle) -> *const c_char {
+    guard(ptr::null(), || {
+        // SAFETY: forwarded from this function's contract. The returned pointer is owned by the handle and lives
+        // until `vfs_close`, as libretro.h requires.
+        unsafe { file_ref(stream) }.map_or(ptr::null(), |h| h.path.as_ptr())
+    })
+}
+
+/// `open`: a new handle, or `NULL` (missing file for `READ`, directory, unknown mode, bad path…).
+///
+/// # Safety
+/// `path` is null or a NUL-terminated string valid for the call.
+unsafe extern "C" fn vfs_open(
+    path: *const c_char,
+    mode: c_uint,
+    _hints: c_uint,
+) -> *mut sys::retro_vfs_file_handle {
+    guard(ptr::null_mut(), || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let Some(p) = (unsafe { path_arg(path) }) else {
+            return ptr::null_mut();
+        };
+        let mut options = OpenOptions::new();
+        match mode {
+            sys::RETRO_VFS_FILE_ACCESS_READ => options.read(true),
+            sys::RETRO_VFS_FILE_ACCESS_WRITE => options.write(true).create(true).truncate(true),
+            sys::RETRO_VFS_FILE_ACCESS_READ_WRITE => {
+                options.read(true).write(true).create(true).truncate(true)
+            }
+            UPDATE_WRITE | UPDATE_READ_WRITE => options.read(true).write(true),
+            _ => return ptr::null_mut(),
+        };
+        let Ok(file) = options.open(p) else {
+            return ptr::null_mut();
+        };
+        // A read-only open of a directory succeeds on Unix; libretro.h says it must fail.
+        if !file.metadata().is_ok_and(|m| !m.is_dir()) {
+            return ptr::null_mut();
+        }
+        // SAFETY: `path` was checked non-null and NUL-terminated by `path_arg`; copied before returning.
+        let path = unsafe { CStr::from_ptr(path) }.to_owned();
+        Box::into_raw(Box::new(VfsFile { file, path })).cast()
+    })
+}
+
+/// `close`: 0, or -1 for a null handle. The handle is invalid afterwards either way.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`, not used again afterwards.
+unsafe extern "C" fn vfs_close(stream: *mut sys::retro_vfs_file_handle) -> c_int {
+    guard(-1, || {
+        if stream.is_null() {
+            return -1;
+        }
+        // SAFETY: per this function's contract the pointer comes from `Box::<VfsFile>::into_raw` in `vfs_open`
+        // and is released exactly once, here.
+        drop(unsafe { Box::from_raw(stream.cast::<VfsFile>()) });
+        0
+    })
+}
+
+/// `size`: file size in bytes, -1 on error.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_size(stream: *mut sys::retro_vfs_file_handle) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        h.file.metadata().map_or(-1, |m| to_i64(m.len()))
+    })
+}
+
+/// `tell`: current position, -1 on error.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_tell(stream: *mut sys::retro_vfs_file_handle) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let mut file = &h.file;
+        file.stream_position().map_or(-1, to_i64)
+    })
+}
+
+/// `seek`: the new position, -1 on error (unknown origin, negative absolute position…).
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_seek(
+    stream: *mut sys::retro_vfs_file_handle,
+    offset: i64,
+    seek_position: c_int,
+) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let target = match seek_position {
+            sys::RETRO_VFS_SEEK_POSITION_START => match u64::try_from(offset) {
+                Ok(offset) => SeekFrom::Start(offset),
+                Err(_) => return -1,
+            },
+            sys::RETRO_VFS_SEEK_POSITION_CURRENT => SeekFrom::Current(offset),
+            sys::RETRO_VFS_SEEK_POSITION_END => SeekFrom::End(offset),
+            _ => return -1,
+        };
+        let mut file = &h.file;
+        file.seek(target).map_or(-1, to_i64)
+    })
+}
+
+/// `read`: bytes read (fewer than `len` only at end of file or on an error after some bytes), -1 on error.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`; `s` is valid for writes of `len` bytes for the call.
+unsafe extern "C" fn vfs_read(
+    stream: *mut sys::retro_vfs_file_handle,
+    s: *mut c_void,
+    len: u64,
+) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let Some(len) = byte_len(len) else {
+            return -1;
+        };
+        if len == 0 {
+            return 0;
+        }
+        if s.is_null() {
+            return -1;
+        }
+        let base = s.cast::<u8>();
+        let mut file = &h.file;
+        let mut total = 0usize;
+        while total < len {
+            let chunk = (len - total).min(READ_CHUNK);
+            // SAFETY: `total + chunk <= len` and the core's buffer is valid for writes of `len` bytes (contract),
+            // so the range is in bounds; zeroing it first makes it initialised, as `&mut [u8]` requires. The
+            // slice does not outlive this iteration and no other Rust reference to the buffer exists.
+            let buf = unsafe {
+                let start = base.add(total);
+                ptr::write_bytes(start, 0, chunk);
+                std::slice::from_raw_parts_mut(start, chunk)
+            };
+            match file.read(buf) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(_) if total > 0 => break,
+                Err(_) => return -1,
+            }
+        }
+        to_i64(total as u64)
+    })
+}
+
+/// `write`: bytes written (fewer than `len` only on an error after some bytes), -1 on error.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`; `s` is valid for reads of `len` initialised bytes for the
+/// call.
+unsafe extern "C" fn vfs_write(
+    stream: *mut sys::retro_vfs_file_handle,
+    s: *const c_void,
+    len: u64,
+) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let Some(len) = byte_len(len) else {
+            return -1;
+        };
+        if len == 0 {
+            return 0;
+        }
+        if s.is_null() {
+            return -1;
+        }
+        // SAFETY: non-null, `len <= isize::MAX` (checked), readable and initialised for `len` bytes per this
+        // function's contract; `u8` has no alignment requirement; the slice does not outlive the call.
+        let data = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), len) };
+        let mut file = &h.file;
+        let mut total = 0usize;
+        while total < len {
+            match file.write(&data[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(_) if total > 0 => break,
+                Err(_) => return -1,
+            }
+        }
+        to_i64(total as u64)
+    })
+}
+
+/// `flush`: 0 (I/O is unbuffered), -1 for a null handle.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_flush(stream: *mut sys::retro_vfs_file_handle) -> c_int {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let mut file = &h.file;
+        if file.flush().is_ok() { 0 } else { -1 }
+    })
+}
+
+/// `remove`: 0 on success, -1 otherwise. Removes a file or an empty directory (as C `remove`); a symbolic link
+/// is removed itself, never its target.
+///
+/// # Safety
+/// `path` is null or a NUL-terminated string valid for the call.
+unsafe extern "C" fn vfs_remove(path: *const c_char) -> c_int {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let Some(p) = (unsafe { path_arg(path) }) else {
+            return -1;
+        };
+        let result = match std::fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir(p),
+            Ok(_) => std::fs::remove_file(p),
+            Err(e) => Err(e),
+        };
+        if result.is_ok() { 0 } else { -1 }
+    })
+}
+
+/// `rename`: 0 on success, -1 otherwise.
+///
+/// # Safety
+/// `old_path` and `new_path` are null or NUL-terminated strings valid for the call.
+unsafe extern "C" fn vfs_rename(old_path: *const c_char, new_path: *const c_char) -> c_int {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let (Some(from), Some(to)) = (unsafe { (path_arg(old_path), path_arg(new_path)) }) else {
+            return -1;
+        };
+        if std::fs::rename(from, to).is_ok() {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// `truncate`: 0 on success, -1 otherwise (negative length included). Sets the size, extending with zeros.
+///
+/// # Safety
+/// `stream` is null or a live handle from `vfs_open`.
+unsafe extern "C" fn vfs_truncate(stream: *mut sys::retro_vfs_file_handle, length: i64) -> i64 {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(h) = (unsafe { file_ref(stream) }) else {
+            return -1;
+        };
+        let Ok(length) = u64::try_from(length) else {
+            return -1;
+        };
+        if h.file.set_len(length).is_ok() {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// `stat`: `RETRO_VFS_STAT_*` flags (0 if the path is not valid); symbolic links followed. The size is stored
+/// in `*size` (saturated to `i32::MAX`) when the path is valid and `size` is non-null.
+///
+/// # Safety
+/// `path` is null or a NUL-terminated string valid for the call; `size` is null or valid for a write of `i32`.
+unsafe extern "C" fn vfs_stat(path: *const c_char, size: *mut i32) -> c_int {
+    guard(0, || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let Some(p) = (unsafe { path_arg(path) }) else {
+            return 0;
+        };
+        let Ok(meta) = std::fs::metadata(p) else {
+            return 0;
+        };
+        let mut flags = sys::RETRO_VFS_STAT_IS_VALID;
+        if meta.is_dir() {
+            flags |= sys::RETRO_VFS_STAT_IS_DIRECTORY;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if meta.file_type().is_char_device() {
+                flags |= sys::RETRO_VFS_STAT_IS_CHARACTER_SPECIAL;
+            }
+        }
+        if !size.is_null() {
+            let len = i32::try_from(meta.len()).unwrap_or(i32::MAX);
+            // SAFETY: non-null and valid for a write of `i32` per this function's contract; `write_unaligned`
+            // assumes nothing about the core's alignment.
+            unsafe { size.write_unaligned(len) };
+        }
+        flags
+    })
+}
+
+/// `mkdir` (parent must exist): 0 on success, -2 if the path already exists, -1 otherwise.
+///
+/// # Safety
+/// `dir` is null or a NUL-terminated string valid for the call.
+unsafe extern "C" fn vfs_mkdir(dir: *const c_char) -> c_int {
+    guard(-1, || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let Some(p) = (unsafe { path_arg(dir) }) else {
+            return -1;
+        };
+        match std::fs::create_dir(p) {
+            Ok(()) => 0,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => -2,
+            Err(_) => -1,
+        }
+    })
+}
+
+/// `opendir`: a new handle, or `NULL`. With `include_hidden == 0`, names starting with `.` are skipped; `.` and
+/// `..` are never listed.
+///
+/// # Safety
+/// `dir` is null or a NUL-terminated string valid for the call.
+unsafe extern "C" fn vfs_opendir(
+    dir: *const c_char,
+    include_hidden: u8,
+) -> *mut sys::retro_vfs_dir_handle {
+    guard(ptr::null_mut(), || {
+        // SAFETY: forwarded from this function's contract; only used during the call.
+        let Some(p) = (unsafe { path_arg(dir) }) else {
+            return ptr::null_mut();
+        };
+        let Ok(iter) = std::fs::read_dir(p) else {
+            return ptr::null_mut();
+        };
+        Box::into_raw(Box::new(VfsDir {
+            iter,
+            include_hidden: include_hidden != 0,
+            current: None,
+        }))
+        .cast()
+    })
+}
+
+/// `readdir`: moves to the next entry; `false` at the end, on an error or for a null handle. Entries whose name
+/// is not UTF-8 are skipped (the core could not name them back through this interface).
+///
+/// # Safety
+/// `dirstream` is null or a live handle from `vfs_opendir`, not used concurrently by another call.
+unsafe extern "C" fn vfs_readdir(dirstream: *mut sys::retro_vfs_dir_handle) -> bool {
+    guard(false, || {
+        // SAFETY: forwarded from this function's contract.
+        let Some(d) = (unsafe { dir_mut(dirstream) }) else {
+            return false;
+        };
+        // Reuses the previous name's allocation.
+        let mut buf = d
+            .current
+            .take()
+            .map(|(name, _)| name.into_bytes())
+            .unwrap_or_default();
+        loop {
+            let entry = match d.iter.next() {
+                Some(Ok(entry)) => entry,
+                // An error may repeat forever: stop listing.
+                Some(Err(_)) | None => return false,
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !d.include_hidden && name.starts_with('.') {
+                continue;
+            }
+            buf.clear();
+            buf.extend_from_slice(name.as_bytes());
+            // File names cannot contain NUL; should one do, it is skipped (the buffer is lost, not the listing).
+            let Ok(name) = CString::new(std::mem::take(&mut buf)) else {
+                continue;
+            };
+            let is_dir = match entry.file_type() {
+                Ok(t) if t.is_symlink() => {
+                    std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir())
+                }
+                Ok(t) => t.is_dir(),
+                Err(_) => false,
+            };
+            d.current = Some((name, is_dir));
+            return true;
+        }
+    })
+}
+
+/// `dirent_get_name`: name of the last entry read, valid until the next `readdir` / `closedir`; `NULL` before
+/// the first `readdir`, after the end, or for a null handle.
+///
+/// # Safety
+/// `dirstream` is null or a live handle from `vfs_opendir`, not used concurrently by another call.
+unsafe extern "C" fn vfs_dirent_get_name(
+    dirstream: *mut sys::retro_vfs_dir_handle,
+) -> *const c_char {
+    guard(ptr::null(), || {
+        // SAFETY: forwarded from this function's contract. The name is owned by the handle and only replaced or
+        // freed by `vfs_readdir` / `vfs_closedir`, matching the lifetime libretro.h documents.
+        unsafe { dir_mut(dirstream) }
+            .and_then(|d| d.current.as_ref())
+            .map_or(ptr::null(), |(name, _)| name.as_ptr())
+    })
+}
+
+/// `dirent_is_dir`: whether the last entry read is a directory (`false` otherwise or on error).
+///
+/// # Safety
+/// `dirstream` is null or a live handle from `vfs_opendir`, not used concurrently by another call.
+unsafe extern "C" fn vfs_dirent_is_dir(dirstream: *mut sys::retro_vfs_dir_handle) -> bool {
+    guard(false, || {
+        // SAFETY: forwarded from this function's contract.
+        unsafe { dir_mut(dirstream) }
+            .and_then(|d| d.current.as_ref())
+            .is_some_and(|(_, is_dir)| *is_dir)
+    })
+}
+
+/// `closedir`: 0, or -1 for a null handle. The handle is invalid afterwards either way.
+///
+/// # Safety
+/// `dirstream` is null or a live handle from `vfs_opendir`, not used again afterwards.
+unsafe extern "C" fn vfs_closedir(dirstream: *mut sys::retro_vfs_dir_handle) -> c_int {
+    guard(-1, || {
+        if dirstream.is_null() {
+            return -1;
+        }
+        // SAFETY: per this function's contract the pointer comes from `Box::<VfsDir>::into_raw` in `vfs_opendir`
+        // and is released exactly once, here.
+        drop(unsafe { Box::from_raw(dirstream.cast::<VfsDir>()) });
+        0
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const T: &sys::retro_vfs_interface = &VFS_INTERFACE;
+    const R: c_uint = sys::RETRO_VFS_FILE_ACCESS_READ;
+    const W: c_uint = sys::RETRO_VFS_FILE_ACCESS_WRITE;
+    const RW: c_uint = sys::RETRO_VFS_FILE_ACCESS_READ_WRITE;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("emu-libretro-vfs-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn c(path: &Path) -> CString {
+        CString::new(path.to_str().unwrap()).unwrap()
+    }
+
+    type FileP = *mut sys::retro_vfs_file_handle;
+
+    // Thin wrappers: every pointer passed below is a live handle, a valid C string or a buffer of the stated size.
+    fn open(path: &Path, mode: c_uint) -> FileP {
+        let path = c(path);
+        // SAFETY: valid C string for the call.
+        unsafe { (T.open)(path.as_ptr(), mode, 0) }
+    }
+    fn write(h: FileP, data: &[u8]) -> i64 {
+        // SAFETY: live handle; `data` readable for its length.
+        unsafe { (T.write)(h, data.as_ptr().cast(), data.len() as u64) }
+    }
+    fn read(h: FileP, len: usize) -> (i64, Vec<u8>) {
+        let mut buf = vec![0xAAu8; len];
+        // SAFETY: live handle; `buf` writable for `len` bytes.
+        let n = unsafe { (T.read)(h, buf.as_mut_ptr().cast(), len as u64) };
+        buf.truncate(usize::try_from(n).unwrap_or(0));
+        (n, buf)
+    }
+    fn close(h: FileP) -> c_int {
+        // SAFETY: live handle, not used afterwards.
+        unsafe { (T.close)(h) }
+    }
+    fn stat(path: &Path) -> (c_int, i32) {
+        let path = c(path);
+        let mut size = -7;
+        // SAFETY: valid C string and `i32` out-pointer.
+        let flags = unsafe { (T.stat)(path.as_ptr(), &raw mut size) };
+        (flags, size)
+    }
+    fn list(dir: &Path, hidden: bool) -> Vec<(String, bool)> {
+        let path = c(dir);
+        // SAFETY: valid C string for the call.
+        let d = unsafe { (T.opendir)(path.as_ptr(), u8::from(hidden)) };
+        assert!(!d.is_null());
+        // SAFETY: live directory handle; no `readdir` yet.
+        assert!(unsafe { (T.dirent_get_name)(d) }.is_null());
+        let mut out = Vec::new();
+        // SAFETY: live directory handle, single thread; the name is copied before the next `readdir`.
+        unsafe {
+            while (T.readdir)(d) {
+                let name = CStr::from_ptr((T.dirent_get_name)(d)).to_str().unwrap();
+                out.push((name.to_owned(), (T.dirent_is_dir)(d)));
+            }
+            assert!(!(T.readdir)(d), "stays at the end");
+            assert!((T.dirent_get_name)(d).is_null());
+            assert_eq!((T.closedir)(d), 0);
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn answer_writes_version_3_and_static_table() {
+        let mut info = sys::retro_vfs_interface_info {
+            required_interface_version: 3,
+            iface: ptr::null_mut(),
+        };
+        // SAFETY: valid in/out struct.
+        assert!(unsafe { answer((&raw mut info).cast()) });
+        assert_eq!(info.required_interface_version, 3);
+        assert!(ptr::eq(info.iface, &VFS_INTERFACE));
+        info.required_interface_version = 4;
+        info.iface = ptr::null_mut();
+        // SAFETY: as above.
+        assert!(!unsafe { answer((&raw mut info).cast()) });
+        assert!(info.iface.is_null());
+        // SAFETY: null is allowed.
+        assert!(!unsafe { answer(ptr::null_mut()) });
+    }
+
+    #[test]
+    fn open_modes_follow_the_reference_implementation() {
+        let dir = temp_dir("modes");
+        let f = dir.join("f.bin");
+        assert!(open(&f, R).is_null(), "READ needs an existing file");
+        assert!(open(&f, W | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING).is_null());
+        for mode in [
+            0,
+            sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING,
+            R | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING,
+            8,
+        ] {
+            assert!(open(&f, mode).is_null(), "mode {mode}");
+        }
+        assert!(!f.exists());
+
+        let h = open(&f, W);
+        assert!(!h.is_null());
+        // SAFETY: live handle; the path string lives until `close`.
+        let p = unsafe { CStr::from_ptr((T.get_path)(h)) };
+        assert_eq!(p.to_str().unwrap(), f.to_str().unwrap());
+        assert_eq!(write(h, b"hello"), 5);
+        assert_eq!(read(h, 4).0, -1, "write-only handle");
+        assert_eq!(close(h), 0);
+
+        // UPDATE_EXISTING keeps the content and can read.
+        let h = open(&f, RW | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING);
+        assert_eq!(read(h, 16), (5, b"hello".to_vec()));
+        assert_eq!(write(h, b"!"), 1);
+        assert_eq!(close(h), 0);
+        assert_eq!(std::fs::read(&f).unwrap(), b"hello!");
+        let h = open(&f, W | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING);
+        assert_eq!(write(h, b"J"), 1);
+        assert_eq!(close(h), 0);
+        assert_eq!(std::fs::read(&f).unwrap(), b"Jello!");
+
+        // READ_WRITE truncates.
+        let h = open(&f, RW);
+        // SAFETY: live handle.
+        assert_eq!(unsafe { (T.size)(h) }, 0);
+        assert_eq!(write(h, b"abc"), 3);
+        assert_eq!(
+            // SAFETY: live handle.
+            unsafe { (T.seek)(h, 0, sys::RETRO_VFS_SEEK_POSITION_START) },
+            0
+        );
+        assert_eq!(read(h, 3), (3, b"abc".to_vec()));
+        assert_eq!(close(h), 0);
+
+        // READ is read-only.
+        let h = open(&f, R);
+        assert_eq!(write(h, b"x"), -1);
+        assert_eq!(close(h), 0);
+
+        assert!(open(&dir, R).is_null(), "a directory cannot be opened");
+        assert!(open(&dir, W).is_null());
+        assert!(open(Path::new(""), R).is_null());
+        // SAFETY: null path is allowed.
+        assert!(unsafe { (T.open)(ptr::null(), R, 0) }.is_null());
+        #[cfg(unix)]
+        {
+            let bad = CString::new(b"/tmp/\xff".to_vec()).unwrap();
+            // SAFETY: valid (non-UTF-8) C string.
+            assert!(unsafe { (T.open)(bad.as_ptr(), W, 0) }.is_null());
+            // SAFETY: as above.
+            assert_eq!(unsafe { (T.stat)(bad.as_ptr(), ptr::null_mut()) }, 0);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn seek_tell_read_truncate() {
+        let dir = temp_dir("seek");
+        let f = dir.join("big.bin");
+        // Larger than one read chunk, not a multiple of it.
+        let data: Vec<u8> = (0..(2 * READ_CHUNK + 123))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        std::fs::write(&f, &data).unwrap();
+        let h = open(&f, R);
+        let len = data.len() as i64;
+        // SAFETY: `h` is a live handle until `close` (whole block).
+        unsafe {
+            assert_eq!((T.size)(h), len);
+            assert_eq!((T.tell)(h), 0);
+            assert_eq!(
+                read(h, data.len() + 1000),
+                (len, data.clone()),
+                "short read at EOF"
+            );
+            assert_eq!((T.tell)(h), len);
+            assert_eq!(read(h, 10), (0, Vec::new()));
+            assert_eq!((T.seek)(h, -3, sys::RETRO_VFS_SEEK_POSITION_END), len - 3);
+            assert_eq!(read(h, 3).1, data[data.len() - 3..]);
+            assert_eq!((T.seek)(h, 10, sys::RETRO_VFS_SEEK_POSITION_START), 10);
+            assert_eq!((T.seek)(h, 5, sys::RETRO_VFS_SEEK_POSITION_CURRENT), 15);
+            assert_eq!(read(h, 2).1, data[15..17]);
+            assert_eq!((T.seek)(h, -1, sys::RETRO_VFS_SEEK_POSITION_START), -1);
+            assert_eq!((T.seek)(h, 0, 3), -1);
+            assert_eq!((T.read)(h, ptr::null_mut(), 0), 0);
+            assert_eq!((T.read)(h, ptr::null_mut(), 1), -1);
+            assert_eq!((T.read)(h, ptr::null_mut(), u64::MAX), -1);
+            assert_eq!((T.write)(h, ptr::null(), u64::MAX), -1);
+            assert_eq!((T.flush)(h), 0);
+            assert_eq!(close(h), 0);
+        }
+
+        let h = open(&f, W | sys::RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING);
+        // SAFETY: live handle.
+        unsafe {
+            assert_eq!((T.truncate)(h, 4), 0);
+            assert_eq!((T.size)(h), 4);
+            assert_eq!((T.truncate)(h, 8), 0, "extends with zeros");
+            assert_eq!((T.truncate)(h, -1), -1);
+        }
+        assert_eq!(close(h), 0);
+        assert_eq!(std::fs::read(&f).unwrap(), [0, 1, 2, 3, 0, 0, 0, 0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn null_handles_are_errors() {
+        let null: FileP = ptr::null_mut();
+        let dnull: *mut sys::retro_vfs_dir_handle = ptr::null_mut();
+        let mut byte = 0u8;
+        // SAFETY: every function accepts a null handle.
+        unsafe {
+            assert!((T.get_path)(null).is_null());
+            assert_eq!((T.close)(null), -1);
+            assert_eq!((T.size)(null), -1);
+            assert_eq!((T.tell)(null), -1);
+            assert_eq!((T.seek)(null, 0, 0), -1);
+            assert_eq!((T.read)(null, (&raw mut byte).cast(), 1), -1);
+            assert_eq!((T.write)(null, (&raw const byte).cast(), 1), -1);
+            assert_eq!((T.flush)(null), -1);
+            assert_eq!((T.truncate)(null, 0), -1);
+            assert!(!(T.readdir)(dnull));
+            assert!((T.dirent_get_name)(dnull).is_null());
+            assert!(!(T.dirent_is_dir)(dnull));
+            assert_eq!((T.closedir)(dnull), -1);
+            assert_eq!((T.remove)(ptr::null()), -1);
+            assert_eq!((T.rename)(ptr::null(), ptr::null()), -1);
+            assert_eq!((T.mkdir)(ptr::null()), -1);
+            assert!((T.opendir)(ptr::null(), 1).is_null());
+            assert_eq!((T.stat)(ptr::null(), ptr::null_mut()), 0);
+        }
+    }
+
+    #[test]
+    fn stat_mkdir_remove_rename() {
+        let dir = temp_dir("fs");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, b"123456").unwrap();
+        assert_eq!(stat(&f), (sys::RETRO_VFS_STAT_IS_VALID, 6));
+        let (flags, _) = stat(&dir);
+        assert_eq!(
+            flags,
+            sys::RETRO_VFS_STAT_IS_VALID | sys::RETRO_VFS_STAT_IS_DIRECTORY
+        );
+        assert_eq!(stat(&dir.join("missing")), (0, -7), "size untouched");
+        #[cfg(unix)]
+        assert_eq!(
+            stat(Path::new("/dev/null")).0,
+            sys::RETRO_VFS_STAT_IS_VALID | sys::RETRO_VFS_STAT_IS_CHARACTER_SPECIAL
+        );
+
+        let sub = c(&dir.join("sub"));
+        let deep = c(&dir.join("no/such"));
+        let (from, to) = (c(&f), c(&dir.join("sub/b.txt")));
+        let missing = c(&dir.join("missing"));
+        // SAFETY: valid C strings for each call.
+        unsafe {
+            assert_eq!((T.mkdir)(sub.as_ptr()), 0);
+            assert_eq!((T.mkdir)(sub.as_ptr()), -2);
+            assert_eq!((T.mkdir)(from.as_ptr()), -2, "exists as a file");
+            assert_eq!((T.mkdir)(deep.as_ptr()), -1);
+            assert_eq!((T.rename)(from.as_ptr(), to.as_ptr()), 0);
+            assert_eq!((T.rename)(from.as_ptr(), to.as_ptr()), -1);
+            assert_eq!((T.remove)(sub.as_ptr()), -1, "not empty");
+            assert_eq!((T.remove)(to.as_ptr()), 0);
+            assert_eq!((T.remove)(sub.as_ptr()), 0);
+            assert_eq!((T.remove)(missing.as_ptr()), -1);
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn directory_listing() {
+        let dir = temp_dir("list");
+        std::fs::write(dir.join("a.bin"), b"a").unwrap();
+        std::fs::write(dir.join(".hidden"), b"h").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::create_dir(dir.join(".git")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
+            std::os::unix::fs::symlink(dir.join("gone"), dir.join("dangling")).unwrap();
+            // Not UTF-8: skipped.
+            use std::os::unix::ffi::OsStrExt;
+            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"\xff.bin")), b"x").unwrap();
+        }
+        let mut visible = vec![("a.bin".to_owned(), false), ("sub".to_owned(), true)];
+        #[cfg(unix)]
+        visible.extend([("dangling".to_owned(), false), ("link".to_owned(), true)]);
+        visible.sort();
+        assert_eq!(list(&dir, false), visible);
+        let mut all = visible.clone();
+        all.extend([(".git".to_owned(), true), (".hidden".to_owned(), false)]);
+        all.sort();
+        assert_eq!(list(&dir, true), all);
+        assert!(open(&dir.join("missing"), R).is_null());
+        let missing = c(&dir.join("missing"));
+        // SAFETY: valid C string.
+        assert!(unsafe { (T.opendir)(missing.as_ptr(), 0) }.is_null());
+        let file = c(&dir.join("a.bin"));
+        // SAFETY: valid C string.
+        assert!(unsafe { (T.opendir)(file.as_ptr(), 0) }.is_null());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The table needs no thread-local state: handles opened on one thread work on another.
+    #[test]
+    fn usable_from_other_threads() {
+        let dir = temp_dir("threads");
+        let workers: Vec<_> = (0..4)
+            .map(|i| {
+                let path = dir.join(format!("t{i}.bin"));
+                std::thread::spawn(move || {
+                    let payload = format!("thread {i}");
+                    let h = open(&path, RW);
+                    assert_eq!(write(h, payload.as_bytes()), payload.len() as i64);
+                    assert_eq!(
+                        // SAFETY: live handle.
+                        unsafe { (T.seek)(h, 0, sys::RETRO_VFS_SEEK_POSITION_START) },
+                        0
+                    );
+                    assert_eq!(read(h, 64).1, payload.as_bytes());
+                    assert_eq!(close(h), 0);
+                    assert_eq!(
+                        stat(&path),
+                        (sys::RETRO_VFS_STAT_IS_VALID, payload.len() as i32)
+                    );
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        let h = open(&dir.join("t0.bin"), R) as usize;
+        let n = std::thread::spawn(move || {
+            let (n, data) = read(h as FileP, 64);
+            assert_eq!(data, b"thread 0");
+            n
+        })
+        .join()
+        .unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(close(h as FileP), 0);
+        assert_eq!(list(&dir, false).len(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

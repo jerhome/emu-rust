@@ -53,6 +53,17 @@ pub struct RunEvents {
     pub options_changed: bool,
 }
 
+impl RunEvents {
+    /// Field-wise "or".
+    fn merged(self, other: Self) -> Self {
+        Self {
+            av_info_changed: self.av_info_changed || other.av_info_changed,
+            shutdown_requested: self.shutdown_requested || other.shutdown_requested,
+            options_changed: self.options_changed || other.options_changed,
+        }
+    }
+}
+
 /// A loaded libretro core. At most one per process; bound to the thread that loaded it (ADR 0008).
 ///
 /// Drop order: `retro_unload_game` (if a game is loaded), `retro_deinit`, library unload, then the
@@ -69,6 +80,8 @@ pub struct Core {
     game: Option<LoadedGame>,
     /// `retro_run` calls since the game was loaded (`MUST_INITIALIZE` quirk).
     frames_run: u64,
+    /// Events raised during `reset_with`, reported by the next `run` (installing a handler clears them).
+    pending_events: RunEvents,
     /// Paths handed to the disk control interface (`replace_image_index`, `set_initial_image`). libretro.h does
     /// not say whether the core copies them, so they are kept until `retro_unload_game` / drop.
     disk_paths: Vec<CString>,
@@ -242,6 +255,7 @@ impl Core {
             pixel_format: callbacks::pixel_format(),
             game: None,
             frames_run: 0,
+            pending_events: RunEvents::default(),
             disk_paths: Vec::new(),
             _guard: guard,
             _not_send: PhantomData,
@@ -280,6 +294,7 @@ impl Core {
         // `handler` through the guard, which outlives this call.
         unsafe { (self.api.run)() };
         let (events, panicked) = installed.finish();
+        let events = std::mem::take(&mut self.pending_events).merged(events);
         self.frames_run = self.frames_run.saturating_add(1);
 
         if self.av_info.is_some() {
@@ -565,9 +580,29 @@ impl Core {
     /// guard, a `panic` of the handler is contained, handler removed on every path): input polled by the core
     /// inside `retro_reset` (dosbox_pure reads Shift to force its start menu) reaches `handler`. No-op without a
     /// game. [`Core::reset`] is unchanged (no handler: input reads as 0).
+    ///
+    /// Environment events raised during the reset (geometry, options…) are reported by the next [`Core::run`].
+    /// A `panic` of `handler` is logged; the following `run` starts with a clean handler state.
     pub fn reset_with(&mut self, handler: &mut dyn FrontendHandler) {
-        let _ = handler;
-        todo!("DF1: install_handler around retro_reset (design v4.0 §3.1)")
+        if self.game.is_none() {
+            return;
+        }
+        let mut slot: &mut dyn FrontendHandler = handler;
+        let installed = callbacks::install_handler(&mut slot);
+        // SAFETY: a game is loaded and we are on the loading thread (`Core` is !Send). Callbacks reach `handler`
+        // through the guard, which outlives this call and uninstalls it on drop, unwinding included.
+        unsafe { (self.api.reset)() };
+        let (events, panicked) = installed.finish();
+        self.pending_events = self.pending_events.merged(events);
+        if self.av_info.is_some() {
+            self.av_info = callbacks::av_info();
+        }
+        self.pixel_format = callbacks::pixel_format();
+        if panicked {
+            tracing::warn!(
+                "frontend handler panicked during retro_reset; later callbacks of the reset ignored"
+            );
+        }
     }
 
     pub fn reset(&mut self) {
@@ -587,6 +622,7 @@ impl Core {
         self.game = None;
         self.disk_paths.clear();
         self.frames_run = 0;
+        self.pending_events = RunEvents::default();
         self.av_info = None;
         callbacks::set_av_info(None);
     }

@@ -3,10 +3,10 @@
 // `std::env::set_var` is `unsafe` (edition 2024) and the raw host below calls the core's C entry points.
 #![allow(unsafe_code)]
 //! Behaviours the mock core gained ahead of the 4.0 - 6.0 frontends (header of `tests/mock-core/mock_core.c`,
-//! "Future-version protocol"). Part 1 drives the core through `Core` (what the current frontend can do: the
-//! requests it does not implement yet are declined, and the dumps say so). Part 2 is a tiny raw libretro host
-//! written here, because the frontend side of VFS (DF1) and of `retro_reset` with keys (DF1) does not exist yet:
-//! it provides the VFS, the keyboard and the analog inputs itself and checks what the core does with them.
+//! "Future-version protocol"). Part 1 drives the core through `Core`: requests the frontend declines (the dumps
+//! say so) and, since DF1, the VFS v3 table (`CoreConfig::provide_vfs`) and `Core::reset_with`. Part 2 is a tiny
+//! raw libretro host written here before DF1: it provides the VFS, the keyboard and the analog inputs itself and
+//! checks what the core does with them (it validates the mock core independently of the frontend).
 //! `MOCK_*` variables are process-global: a single test runs every scenario in sequence.
 
 #[path = "../../../tests/support/mock_core.rs"]
@@ -129,7 +129,9 @@ fn future_modes_on_mock_core() {
     directories_visible(&lib);
     native_rate_and_hot_change(&lib);
     reset_without_handler(&lib);
+    reset_with_handler(&lib);
     vfs_declined(&lib);
+    vfs_provided(&lib);
     raw::vfs(&lib);
     raw::reset_keys(&lib);
     raw::analog(&lib);
@@ -289,7 +291,7 @@ fn native_rate_and_hot_change(lib: &Path) {
     assert_eq!(probe.samples, 737 * 2);
 }
 
-/// `Core::reset` has no input handler (until `reset_with`, DF1): the core sees no key during the reset.
+/// `Core::reset` has no input handler (`reset_with` has one): the core sees no key during the reset.
 fn reset_without_handler(lib: &Path) {
     set_protocol(&[("MOCK_RESET_KEYS", "1"), ("MOCK_KEYBOARD", "poll")]);
     let dir = out_dir("reset-plain");
@@ -305,7 +307,7 @@ fn reset_without_handler(lib: &Path) {
     assert_eq!(read(&dir, "mock-reset.txt"), "resets=1\nshift=0\ndown=\n");
 }
 
-/// The current frontend declines 45 (F3); DF1 makes it opt-in per core, so this stays the default case.
+/// `provide_vfs = false` (the default, F3 behaviour): 45 is declined.
 fn vfs_declined(lib: &Path) {
     set_protocol(&[("MOCK_VFS", "1")]);
     let dir = out_dir("vfs-declined");
@@ -314,6 +316,105 @@ fn vfs_declined(lib: &Path) {
     assert_eq!(
         read(&dir, "mock-vfs.txt"),
         "version=0\nopendir=unsupported\n"
+    );
+}
+
+/// `Core::reset_with`: the handler answers input polled inside `retro_reset`, a handler panic is contained and
+/// the handler is gone afterwards (plain `reset`), and nothing happens without a game.
+fn reset_with_handler(lib: &Path) {
+    set_protocol(&[("MOCK_RESET_KEYS", "1")]);
+    let dir = out_dir("reset-with");
+    let mut core = Core::load(lib, config(&dir)).unwrap();
+    let mut probe = Probe {
+        shift_down: true,
+        ..Probe::default()
+    };
+    core.reset_with(&mut probe);
+    assert!(
+        !dir.join("saves/mock-reset.txt").exists(),
+        "no game: no retro_reset"
+    );
+    core.load_game(&dir.join("game.mock")).unwrap();
+    core.reset_with(&mut probe);
+    assert_eq!(
+        read(&dir, "mock-reset.txt"),
+        "resets=1\nshift=1\ndown=304\n"
+    );
+    probe.shift_down = false;
+    core.reset_with(&mut probe);
+    assert_eq!(read(&dir, "mock-reset.txt"), "resets=2\nshift=0\ndown=\n");
+    probe.shift_down = true;
+    core.reset();
+    assert_eq!(
+        read(&dir, "mock-reset.txt"),
+        "resets=3\nshift=0\ndown=\n",
+        "handler removed after reset_with"
+    );
+
+    struct Panics;
+    impl FrontendHandler for Panics {
+        fn video_refresh(&mut self, _: Option<VideoFrame<'_>>) {}
+        fn audio_samples(&mut self, _: &[i16]) {}
+        fn input_poll(&mut self) {
+            panic!("handler panic during reset (expected by test)");
+        }
+        fn input_state(&mut self, _: InputQuery) -> i16 {
+            1
+        }
+    }
+    core.reset_with(&mut Panics);
+    assert_eq!(
+        read(&dir, "mock-reset.txt"),
+        "resets=4\nshift=0\ndown=\n",
+        "after the panic every read is neutral"
+    );
+    core.run(&mut probe).expect("the next run starts clean");
+    core.reset_with(&mut probe);
+    assert_eq!(
+        read(&dir, "mock-reset.txt"),
+        "resets=5\nshift=1\ndown=304\n"
+    );
+}
+
+/// `provide_vfs = true`: the core gets VFS v3 and uses it for everything (listing without hidden entries, write,
+/// read, size, stat), including a `stat` from a thread of its own.
+fn vfs_provided(lib: &Path) {
+    set_protocol(&[("MOCK_VFS", "thread")]);
+    let dir = out_dir("vfs-provided");
+    std::fs::write(dir.join("system/a.bin"), b"abc").unwrap();
+    std::fs::write(dir.join("system/.hidden"), b"h").unwrap();
+    std::fs::create_dir(dir.join("system/sub")).unwrap();
+    let mut core = Core::load(
+        lib,
+        CoreConfig {
+            provide_vfs: true,
+            ..config(&dir)
+        },
+    )
+    .unwrap();
+    core.load_game(&dir.join("game.mock")).unwrap();
+    let dump = read(&dir, "mock-vfs.txt");
+    let mut lines: Vec<&str> = dump.lines().collect();
+    assert_eq!(&lines[..2], ["version=3", "opendir=ok"], "{dump}");
+    let tail = lines.split_off(2);
+    let (mut entries, rest): (Vec<&str>, Vec<&str>) =
+        tail.iter().partition(|l| l.starts_with("entry="));
+    entries.sort_unstable();
+    assert_eq!(entries, ["entry=a.bin|f", "entry=sub|d"], "{dump}");
+    assert_eq!(
+        rest,
+        [
+            "write=6",
+            "size=6",
+            "read=vfs-ok",
+            "stat=1:6",
+            "thread_stat=1:6"
+        ],
+        "{dump}"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("system/mock-vfs-out.bin")).unwrap(),
+        b"vfs-ok"
     );
 }
 

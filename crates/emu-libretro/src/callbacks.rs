@@ -4,6 +4,8 @@
 //! loaded the core. `Core` is `!Send`, hence every `retro_*` call, and every callback a well-behaved core makes
 //! from inside it, happens on that thread. A callback arriving on another thread finds empty thread-locals and
 //! gets a neutral answer (logged once). The process-wide `CORE_LOADED` flag enforces "one core per process".
+//! The VFS table answered to `GET_VFS_INTERFACE` (`vfs.rs`) is the exception: it uses no thread-local state and
+//! may be called from any thread.
 //!
 //! Lifetimes:
 //! - `EnvState` (directories, options, geometry, messages, events): installed by `EnvInstall` from `Core::load` until
@@ -31,6 +33,7 @@ use crate::types::{
     AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameGeometry, InputDevice, InputQuery,
     LogLevel, PixelFormat, SerializationQuirks, SystemTiming, VideoFrame,
 };
+use crate::vfs;
 
 /// Players advertised through `GET_INPUT_MAX_USERS`.
 const MAX_USERS: c_uint = 2;
@@ -110,6 +113,8 @@ struct EnvState {
     keyboard: Option<sys::retro_keyboard_event_t>,
     disk: Option<DiskInterface>,
     support_no_game: bool,
+    /// `CoreConfig::provide_vfs`: answer `GET_VFS_INTERFACE` with `vfs::answer`.
+    provide_vfs: bool,
 }
 
 /// Disk control callbacks as registered; the basic interface leaves the extended entries `None`.
@@ -143,6 +148,7 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         keyboard: None,
         disk: None,
         support_no_game: false,
+        provide_vfs: config.provide_vfs,
     };
     ENV.with(|env| *env.borrow_mut() = Some(state));
     HOT.with(|hot| {
@@ -859,6 +865,12 @@ impl EnvState {
             sys::RETRO_ENVIRONMENT_SET_HW_RENDER => {
                 self.log_unhandled(cmd);
                 false
+            }
+            // Opt-in per core (ADR 0018). The table is thread-safe and needs no `EnvState`.
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE if self.provide_vfs => {
+                // SAFETY: `struct retro_vfs_interface_info *` (in/out), valid for the call per this function's
+                // contract.
+                unsafe { vfs::answer(data) }
             }
             // Optional interfaces some cores (puae) probe at startup: declined on purpose, so they are not
             // reported as unhandled. The core falls back to its own implementation.
@@ -1762,5 +1774,49 @@ mod tests {
                 (InputDevice::Mouse, crate::mouse_id::LEFT),
             ]
         );
+    }
+
+    #[test]
+    fn vfs_interface_is_opt_in() {
+        let mut cfg = config(Vec::new());
+        cfg.provide_vfs = true;
+        let _install = install_env(&cfg, Path::new("/cores/dosbox_pure_libretro.so"));
+        let mut info = sys::retro_vfs_interface_info {
+            required_interface_version: 3,
+            iface: std::ptr::null_mut(),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
+            (&raw mut info).cast()
+        ));
+        assert_eq!(info.required_interface_version, 3);
+        assert!(!info.iface.is_null());
+        // An older version is served with the v3 table (prefix-compatible layout).
+        let mut old = sys::retro_vfs_interface_info {
+            required_interface_version: 1,
+            iface: std::ptr::null_mut(),
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
+            (&raw mut old).cast()
+        ));
+        assert_eq!((old.required_interface_version, old.iface), (3, info.iface));
+        // Newer than 3: refused, nothing written.
+        let mut newer = sys::retro_vfs_interface_info {
+            required_interface_version: 4,
+            iface: std::ptr::null_mut(),
+        };
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
+            (&raw mut newer).cast()
+        ));
+        assert_eq!(newer.required_interface_version, 4);
+        assert!(newer.iface.is_null());
+        assert!(!env(
+            sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
+            std::ptr::null_mut()
+        ));
+        // The base number without the EXPERIMENTAL bit is not the libretro.h command.
+        assert!(!env(45, (&raw mut newer).cast()));
     }
 }
