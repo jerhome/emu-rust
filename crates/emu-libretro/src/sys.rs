@@ -113,6 +113,16 @@ pub struct retro_game_geometry {
     pub aspect_ratio: f32,
 }
 
+/// `struct retro_fastforwarding_override`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct retro_fastforwarding_override {
+    pub ratio: f32,
+    pub fastforward: bool,
+    pub notification: bool,
+    pub inhibit_toggle: bool,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct retro_system_timing {

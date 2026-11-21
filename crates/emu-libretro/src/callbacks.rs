@@ -30,8 +30,8 @@ use crate::log;
 use crate::options::{self, OptionStore};
 use crate::sys;
 use crate::types::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, GameGeometry, InputDevice, InputQuery,
-    LogLevel, PixelFormat, SerializationQuirks, SystemTiming, VideoFrame,
+    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride, GameGeometry,
+    InputDevice, InputQuery, LogLevel, PixelFormat, SerializationQuirks, SystemTiming, VideoFrame,
 };
 use crate::vfs;
 
@@ -115,6 +115,12 @@ struct EnvState {
     support_no_game: bool,
     /// `CoreConfig::provide_vfs`: answer `GET_VFS_INTERFACE` with `vfs::answer`.
     provide_vfs: bool,
+    /// `CoreConfig::fastforward_override`: answer `SET_FASTFORWARDING_OVERRIDE`.
+    fastforward_override: bool,
+    /// Last request of the core (kept across runs).
+    ff_state: Option<FastForwardOverride>,
+    /// A request arrived while no handler was installed (loading): reported by the next handler installation.
+    ff_pending: bool,
 }
 
 /// Disk control callbacks as registered; the basic interface leaves the extended entries `None`.
@@ -149,6 +155,9 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         disk: None,
         support_no_game: false,
         provide_vfs: config.provide_vfs,
+        fastforward_override: config.fastforward_override,
+        ff_state: None,
+        ff_pending: false,
     };
     ENV.with(|env| *env.borrow_mut() = Some(state));
     HOT.with(|hot| {
@@ -229,6 +238,10 @@ pub(crate) fn set_fast_forwarding(enabled: bool) {
     with_env(|env| env.fast_forwarding = enabled);
 }
 
+pub(crate) fn fastforward_override() -> Option<FastForwardOverride> {
+    with_env(|env| env.ff_state).flatten()
+}
+
 pub(crate) fn take_messages() -> Vec<CoreMessage> {
     with_env(|env| std::mem::take(&mut env.messages)).unwrap_or_default()
 }
@@ -282,7 +295,12 @@ pub(crate) fn install_handler<'a>(slot: &'a mut &mut dyn FrontendHandler) -> Han
         hot.handler.set(Some(ptr));
         hot.panicked.set(false);
     });
-    with_env(|env| env.events = RunEvents::default());
+    with_env(|env| {
+        env.events = RunEvents::default();
+        if std::mem::take(&mut env.ff_pending) {
+            env.events.fastforward = env.ff_state;
+        }
+    });
     HandlerGuard { _slot: PhantomData }
 }
 
@@ -872,6 +890,31 @@ impl EnvState {
                 // contract.
                 unsafe { vfs::answer(data) }
             }
+            // Opt-in per core (design v5.0 §3.1). `NULL` is the support probe.
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE if self.fastforward_override => {
+                // SAFETY: `const struct retro_fastforwarding_override *` or `NULL`; read once, copied.
+                if let Some(raw) = unsafe { read_in::<sys::retro_fastforwarding_override>(data) } {
+                    let request = FastForwardOverride {
+                        ratio: if raw.ratio.is_finite() && raw.ratio >= 0.0 {
+                            raw.ratio
+                        } else {
+                            0.0
+                        },
+                        fastforward: raw.fastforward,
+                        notification: raw.notification,
+                        inhibit_toggle: raw.inhibit_toggle,
+                    };
+                    self.ff_state = Some(request);
+                    self.events.fastforward = Some(request);
+                    if HOT
+                        .try_with(|hot| hot.handler.get().is_none())
+                        .unwrap_or(true)
+                    {
+                        self.ff_pending = true;
+                    }
+                }
+                true
+            }
             // Optional interfaces some cores (puae) probe at startup: declined on purpose, so they are not
             // reported as unhandled. The core falls back to its own implementation.
             sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE
@@ -1241,6 +1284,64 @@ mod tests {
     }
 
     #[test]
+    fn fastforward_override_opt_in() {
+        let mut cfg = config(Vec::new());
+        cfg.fastforward_override = true;
+        let _install = install_env(&cfg, Path::new("/cores/x_libretro.so"));
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            std::ptr::null_mut()
+        ));
+        assert_eq!(fastforward_override(), None);
+        // Request outside a run (loading): kept and reported by the next handler installation.
+        let mut req = sys::retro_fastforwarding_override {
+            ratio: f32::NAN,
+            fastforward: true,
+            notification: true,
+            inhibit_toggle: false,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            (&raw mut req).cast()
+        ));
+        let expected = FastForwardOverride {
+            ratio: 0.0,
+            fastforward: true,
+            notification: true,
+            inhibit_toggle: false,
+        };
+        assert_eq!(fastforward_override(), Some(expected));
+        let mut handler = Recorder::default();
+        let mut slot: &mut dyn FrontendHandler = &mut handler;
+        let guard = install_handler(&mut slot);
+        assert_eq!(guard.finish().0.fastforward, Some(expected));
+        // Second run: nothing new, state kept.
+        let mut slot: &mut dyn FrontendHandler = &mut handler;
+        let guard = install_handler(&mut slot);
+        req.ratio = -3.0;
+        req.fastforward = false;
+        req.notification = false;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            (&raw mut req).cast()
+        ));
+        let events = guard.finish().0;
+        assert_eq!(events.fastforward.map(|f| f.fastforward), Some(false));
+        req.ratio = 4.0;
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            (&raw mut req).cast()
+        ));
+        assert_eq!(fastforward_override().map(|f| f.ratio), Some(4.0));
+        let mut slot: &mut dyn FrontendHandler = &mut handler;
+        assert_eq!(
+            install_handler(&mut slot).finish().0.fastforward,
+            Some(fastforward_override().unwrap()),
+            "request outside a run after a run is pending again"
+        );
+    }
+
+    #[test]
     fn phase2_environment_commands() {
         let _install = install_env(&config(Vec::new()), Path::new("/cores/x_libretro.so"));
         set_av_info(Some(AvInfo {
@@ -1297,7 +1398,7 @@ mod tests {
             sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE,
             sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
             sys::RETRO_ENVIRONMENT_GET_LED_INTERFACE,
-            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE, // `false` case: opt-in off
         ] {
             assert!(!env(cmd, scratch.as_mut_ptr().cast()), "{cmd}");
             assert!(!env(cmd, std::ptr::null_mut()), "{cmd} null");

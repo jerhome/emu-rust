@@ -102,6 +102,8 @@ pub struct Core {
     frames_run: u64,
     /// Events raised during `reset_with`, reported by the next `run` (installing a handler clears them).
     pending_events: RunEvents,
+    /// `CoreConfig::variable_state_size`.
+    variable_state_size: bool,
     /// Paths handed to the disk control interface (`replace_image_index`, `set_initial_image`). libretro.h does
     /// not say whether the core copies them, so they are kept until `retro_unload_game` / drop.
     disk_paths: Vec<CString>,
@@ -330,6 +332,7 @@ impl Core {
             game: None,
             frames_run: 0,
             pending_events: RunEvents::default(),
+            variable_state_size: config.variable_state_size,
             disk_paths: Vec::new(),
             origin,
             loaded_from,
@@ -558,9 +561,10 @@ impl Core {
             return Err(LibretroError::UnserializeFailed);
         }
         // A fixed-size core reads `serialize_size()` bytes whatever `size` says.
-        if !self
-            .serialization_quirks()
-            .contains(SerializationQuirks::CORE_VARIABLE_SIZE)
+        if !self.variable_state_size
+            && !self
+                .serialization_quirks()
+                .contains(SerializationQuirks::CORE_VARIABLE_SIZE)
             && data.len() < self.serialize_size()
         {
             return Err(LibretroError::UnserializeFailed);
@@ -651,7 +655,7 @@ impl Core {
     /// Current `SET_FASTFORWARDING_OVERRIDE` state of the core (last request, including one sent outside
     /// `run`); `None` if it never sent one or `CoreConfig::fastforward_override` is off (design v5.0 §3.1, CF1).
     pub fn fastforward_override(&self) -> Option<FastForwardOverride> {
-        todo!("CF1: env 64 opt-in (design v5.0 §3.1)")
+        callbacks::fastforward_override()
     }
 
     /// Drains the OSD messages received since the last call (`SET_MESSAGE`, `SET_MESSAGE_EXT`).

@@ -15,8 +15,8 @@ mod mock_core;
 use std::path::{Path, PathBuf};
 
 use emu_libretro::{
-    Core, CoreConfig, FrontendHandler, InputDevice, InputQuery, LibretroError, SerializationQuirks,
-    VideoFrame,
+    Core, CoreConfig, FastForwardOverride, FrontendHandler, InputDevice, InputQuery, LibretroError,
+    SerializationQuirks, VideoFrame,
 };
 
 const VARS: [&str; 14] = [
@@ -127,6 +127,7 @@ fn future_modes_on_mock_core() {
     let lib = mock_core::build(mock_core::Variant::Default);
     defaults_unchanged(&lib);
     fastforward_declined(&lib);
+    fastforward_opt_in(&lib);
     variable_state_size(&lib);
     load_error(&lib);
     directories_visible(&lib);
@@ -165,8 +166,7 @@ fn defaults_unchanged(lib: &Path) {
     assert_eq!(files, ["mock-was-here.txt"]);
 }
 
-/// 64 is declined by the current frontend (F3): the core sees `false` for NULL and for a struct. CF1 turns the
-/// opt-in on, after which `null`, `load`, `run_on` and `run_off` become 1 for a core that opts in.
+/// Opt-in off (default): the core sees `false` for NULL and for a struct.
 fn fastforward_declined(lib: &Path) {
     set_protocol(&[
         ("MOCK_FASTFORWARD", "null,load,run,get"),
@@ -194,6 +194,39 @@ fn fastforward_declined(lib: &Path) {
     assert_eq!(
         read(&dir, "mock-ff.txt"),
         "null=0\nload=0\nrun_on=0\nrun_off=0\nget=1\n"
+    );
+}
+
+/// Opt-in on: everything is accepted, the request made while loading is reported by the first run, then the
+/// requests of frames 5 (on) and 10 (off) by the runs that see them; the ratio -1 becomes 0.0.
+fn fastforward_opt_in(lib: &Path) {
+    set_protocol(&[
+        ("MOCK_FASTFORWARD", "null,load,run,get"),
+        ("MOCK_FF_RATIO", "-1"),
+    ]);
+    let dir = out_dir("ff-on");
+    let mut cfg = config(&dir);
+    cfg.fastforward_override = true;
+    let mut core = Core::load(lib, cfg).unwrap();
+    core.load_game(&dir.join("game.mock")).unwrap();
+    let mut on = FastForwardOverride::default();
+    on.fastforward = true;
+    assert_eq!(core.fastforward_override(), Some(on));
+    let mut probe = Probe::default();
+    let first = core.run(&mut probe).unwrap();
+    assert_eq!(first.fastforward, Some(on), "load-time request reported");
+    let mut seen = Vec::new();
+    for _ in 0..12 {
+        seen.push(core.run(&mut probe).unwrap().fastforward);
+    }
+    assert!(seen.iter().filter(|e| e.is_some()).count() >= 1, "{seen:?}");
+    let mut off = on;
+    off.fastforward = false;
+    assert_eq!(seen.iter().flatten().last(), Some(&off), "{seen:?}");
+    assert_eq!(core.fastforward_override(), Some(off));
+    assert_eq!(
+        read(&dir, "mock-ff.txt"),
+        "null=1\nload=1\nrun_on=1\nrun_off=1\nget=0\n"
     );
 }
 
