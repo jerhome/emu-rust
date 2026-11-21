@@ -116,14 +116,15 @@ pub struct retro_game_geometry {
     pub aspect_ratio: f32,
 }
 
-/// `struct retro_fastforwarding_override`.
+/// `struct retro_fastforwarding_override` (C `bool` flags). Flags are `u8`, not `bool`: a core may write
+/// any byte and a Rust `bool` other than 0/1 is undefined behaviour. Convert with `!= 0`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct retro_fastforwarding_override {
     pub ratio: f32,
-    pub fastforward: bool,
-    pub notification: bool,
-    pub inhibit_toggle: bool,
+    pub fastforward: u8,
+    pub notification: u8,
+    pub inhibit_toggle: u8,
 }
 
 #[repr(C)]

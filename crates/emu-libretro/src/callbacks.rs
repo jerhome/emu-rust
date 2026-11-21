@@ -892,7 +892,8 @@ impl EnvState {
             }
             // Opt-in per core (design v5.0 §3.1). `NULL` is the support probe.
             sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE if self.fastforward_override => {
-                // SAFETY: `const struct retro_fastforwarding_override *` or `NULL`; read once, copied.
+                // SAFETY: `const struct retro_fastforwarding_override *` or `NULL`; read once, copied. Flags are `u8`
+                // (any byte value is valid, unlike `bool`) and converted with `!= 0`.
                 if let Some(raw) = unsafe { read_in::<sys::retro_fastforwarding_override>(data) } {
                     let request = FastForwardOverride {
                         ratio: if raw.ratio.is_finite() && raw.ratio >= 0.0 {
@@ -900,9 +901,9 @@ impl EnvState {
                         } else {
                             0.0
                         },
-                        fastforward: raw.fastforward,
-                        notification: raw.notification,
-                        inhibit_toggle: raw.inhibit_toggle,
+                        fastforward: raw.fastforward != 0,
+                        notification: raw.notification != 0,
+                        inhibit_toggle: raw.inhibit_toggle != 0,
                     };
                     self.ff_state = Some(request);
                     self.events.fastforward = Some(request);
@@ -1299,9 +1300,9 @@ mod tests {
         // Request outside a run (loading): kept and reported by the next handler installation.
         let mut req = sys::retro_fastforwarding_override {
             ratio: f32::NAN,
-            fastforward: true,
-            notification: true,
-            inhibit_toggle: false,
+            fastforward: 1,
+            notification: 1,
+            inhibit_toggle: 0,
         };
         assert!(env(
             sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
@@ -1322,8 +1323,8 @@ mod tests {
         let mut slot: &mut dyn FrontendHandler = &mut handler;
         let guard = install_handler(&mut slot);
         req.ratio = -3.0;
-        req.fastforward = false;
-        req.notification = false;
+        req.fastforward = 0;
+        req.notification = 0;
         assert!(env(
             sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
             (&raw mut req).cast()
@@ -1342,6 +1343,27 @@ mod tests {
             Some(fastforward_override().unwrap()),
             "request outside a run after a run is pending again"
         );
+    }
+
+    #[test]
+    fn fastforward_override_arbitrary_flag_bytes() {
+        let mut cfg = config(Vec::new());
+        cfg.fastforward_override = true;
+        let _install = install_env(&cfg, Path::new("/cores/x_libretro.so"));
+        // Same layout as the C struct, with bytes that are not valid Rust `bool`s.
+        let mut raw = sys::retro_fastforwarding_override {
+            ratio: 2.0,
+            fastforward: 2,
+            notification: 255,
+            inhibit_toggle: 0,
+        };
+        assert!(env(
+            sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+            (&raw mut raw).cast()
+        ));
+        let got = fastforward_override().expect("stored");
+        assert!(got.fastforward && got.notification && !got.inhibit_toggle);
+        assert_eq!(std::mem::size_of::<sys::retro_fastforwarding_override>(), 8);
     }
 
     #[test]
