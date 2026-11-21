@@ -1,0 +1,2 @@
+# pcsx_rearmed, free test data, no BIOS (built into the core); core sha256 a989f7ba6c570a061cc6af8508cde49e88dd212987b1a4c73eec091badb34de9
+240p-menu frame=1500 fingerprint=79f9cfcc1f42869a

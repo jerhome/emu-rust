@@ -1,0 +1,2 @@
+# mednafen_psx, free test data, no BIOS (built into the core); core sha256 d4b51ac966085636780f0efe66ed2d3b1dd28df9f15a374d81f11263c1da1627
+240p-menu frame=1500 fingerprint=173b8220fdd87a4a

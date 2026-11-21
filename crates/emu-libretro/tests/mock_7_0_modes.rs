@@ -59,6 +59,11 @@ fn controller_info_and_device_log() {
     unsafe { std::env::remove_var("MOCK_CONTROLLERS") };
     let dir = out_dir("default");
     let mut core = Core::load(&lib, config(&dir)).unwrap();
+    // Without a game the call is refused (the cores only honour it between `retro_load_game` and unload).
+    assert!(matches!(
+        core.set_controller_device(0, 1),
+        Err(emu_libretro::LibretroError::NoGame)
+    ));
     core.load_game(&dir.join("game.mock")).unwrap();
     assert!(core.controller_types(0).is_empty());
     assert_eq!(log(&dir), "");

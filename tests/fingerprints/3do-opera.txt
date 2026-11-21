@@ -1,0 +1,2 @@
+# opera, free test data, no BIOS (built into the core); core sha256 e4515a13431238edc6c8f6b2fc532833136a1ae56ab1b39c77c1e03befdc9740
+opera-boot frame=600 fingerprint=0ffaa0912312850f

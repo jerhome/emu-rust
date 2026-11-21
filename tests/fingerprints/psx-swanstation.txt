@@ -1,0 +1,2 @@
+# swanstation, free test data, no BIOS (built into the core); core sha256 fc65bb2d662c3ad762b611a62ac578f78efd260431d3b8c090f0eb40887a77ea
+240p-menu frame=1500 fingerprint=79f9cfcc1f42869a

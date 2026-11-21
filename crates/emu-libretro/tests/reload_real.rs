@@ -63,6 +63,10 @@ fn cases() -> Vec<Case> {
         case("mgba", "gba/hello.gba"),
         case("sameboy", "cgb-acid2-1.1.gbc"),
         case("picodrive", "240pSuite-1.21.bin"),
+        // 7.0: no BIOS, OpenBIOS / HLE built into the cores (`--with-7.0`); opera has no free disc (see psx_3do_real).
+        case("pcsx_rearmed", "psx/240pTestSuitePS1-EMU.cue"),
+        case("swanstation", "psx/240pTestSuitePS1-EMU.cue"),
+        case("mednafen_psx", "psx/240pTestSuitePS1-EMU.cue"),
         Case {
             tos: true,
             ..case("hatari", "nova-defense.st")
