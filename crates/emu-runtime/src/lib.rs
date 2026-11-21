@@ -8,6 +8,7 @@ mod audio_out;
 mod audio_reopen;
 mod audio_ring;
 mod content;
+mod diskorder;
 mod emulator;
 mod error;
 mod frame;
