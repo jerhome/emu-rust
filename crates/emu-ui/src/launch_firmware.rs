@@ -310,9 +310,13 @@ pub(crate) fn check_launch_firmware(
 
 /// [`decide`] after the gate of the library (design v6.0 §2.2): an unknown region with another file of the table
 /// present launches without notice, as in 2.1. Used by the library dialog and `App::build` (OSD notice).
-pub(crate) fn decide_launch(lf: &LaunchFirmware, aros_acknowledged: bool) -> FirmwareDecision {
+pub(crate) fn decide_launch(
+    lf: &LaunchFirmware,
+    core: &str,
+    aros_acknowledged: bool,
+) -> FirmwareDecision {
     use crate::library::firmware_gate::{FirmwareGate, firmware_gate};
-    if firmware_gate(&lf.check, lf.variant_known) == FirmwareGate::Launch {
+    if firmware_gate(&lf.check, lf.variant_known, core) == FirmwareGate::Launch {
         return FirmwareDecision::Launch;
     }
     decide(&lf.check, aros_acknowledged)
@@ -468,7 +472,7 @@ pub(crate) fn firmware_setup_for(
         locale: &locale,
         extension: &extension,
     });
-    let decision = decide_launch(&lf, game.input.aros_acknowledged);
+    let decision = decide_launch(&lf, core_id, game.input.aros_acknowledged);
     let acknowledged_now = matches!(decision, FirmwareDecision::FallbackFirstTime { .. });
     if acknowledged_now {
         // Warned once per game (design v3.0 §9 q.3): the library dialog already did it, or this OSD (CLI).
@@ -889,9 +893,16 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(decide_launch(&lf(None), false), FirmwareDecision::Launch);
         assert_eq!(
-            decide_launch(&lf(Some(emu_library::DiscRegion::Usa)), false),
+            decide_launch(&lf(None), "genesis_plus_gx", false),
+            FirmwareDecision::Launch
+        );
+        assert_eq!(
+            decide_launch(
+                &lf(Some(emu_library::DiscRegion::Usa)),
+                "genesis_plus_gx",
+                false
+            ),
             FirmwareDecision::Missing {
                 wanted: "bios_CD_U.bin".into()
             }

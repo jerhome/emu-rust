@@ -302,6 +302,14 @@ pub(crate) fn game_key(identity: &GameIdentity) -> &str {
     &identity.save_name
 }
 
+/// Marker `<saves>/<core>/<save_name>.no-adopt`: written by « Réinitialiser les sauvegardes » for a core of a
+/// `save_family`, it keeps `adopt_memory_card` from bringing back another core's card for this game and core.
+pub(crate) fn no_adopt_marker(saves_dir: &Path, core: &CoreId, save_name: &str) -> PathBuf {
+    saves_dir
+        .join(core.as_str())
+        .join(format!("{save_name}.no-adopt"))
+}
+
 /// Memory card of a game for a core of a `save_family` (design v7.0 §2.3): when `<saves>/<core>/<save_name>.srm`
 /// does not exist, the newest card of another core of the family is copied (never overwritten). Returns the
 /// source core for the OSD. Called before the core is loaded; an error is logged and the game starts without.
@@ -312,6 +320,9 @@ pub(crate) fn adopt_memory_card(
     save_name: &str,
 ) -> Option<String> {
     let family = prefs.save_family(core)?;
+    if no_adopt_marker(saves_dir, core, save_name).exists() {
+        return None;
+    }
     let cores: Vec<String> = prefs
         .save_family_cores(&family)
         .iter()
@@ -707,6 +718,15 @@ mod tests {
         assert_eq!(adopt_memory_card(&prefs, &swan, saves, "GTA"), None);
         let opera = CoreId::new("opera").unwrap();
         assert_eq!(adopt_memory_card(&prefs, &opera, saves, "GTA"), None);
+        // A reset leaves the marker: no adoption for this game and core, other games unaffected.
+        std::fs::write(saves.join("pcsx_rearmed/Other.srm"), [1u8; 128]).unwrap();
+        std::fs::write(saves.join("pcsx_rearmed/GTA2.srm"), [2u8; 128]).unwrap();
+        let marker = no_adopt_marker(saves, &swan, "GTA2");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"").unwrap();
+        assert_eq!(adopt_memory_card(&prefs, &swan, saves, "GTA2"), None);
+        assert!(!saves.join("swanstation/GTA2.srm").exists());
+        assert!(adopt_memory_card(&prefs, &swan, saves, "Other").is_some());
         assert!(!saves.join("opera").exists());
     }
 

@@ -133,6 +133,7 @@ Dossiers : `%APPDATA%\emu-rust\data\` (`roms\psx`, `roms\3do`, `system\`). Essay
 - `.chd` et `.pbp` reconnus par leur nom seulement ; jeux 3DO à plusieurs CD non regroupés.
 - Pas de vibration ; cartes mémoire **copiées** (une fois) d'un core à l'autre, pas synchronisées.
 - La seconde carte mémoire est désactivée par défaut (option du core).
+- « Réinitialiser les sauvegardes » d'un jeu PlayStation pose `saves/<core>/<jeu>.no-adopt` : la carte d'un autre core n'est plus reprise pour ce jeu et ce core (supprimez ce fichier pour réactiver la reprise).
 
 ## En cas de problème
 

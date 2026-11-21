@@ -779,7 +779,7 @@ impl LibraryUi {
             &global,
             &loaded.options.core_options,
         )?;
-        let decision = decide_launch(&lf, loaded.options.input.aros_acknowledged);
+        let decision = decide_launch(&lf, core.as_str(), loaded.options.input.aros_acknowledged);
         let info = firmware_info(prefs, core, &lf);
         Some(GatedFirmware {
             system: lf.system,

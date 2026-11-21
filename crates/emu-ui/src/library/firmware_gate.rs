@@ -18,19 +18,29 @@ pub(crate) enum FirmwareGate {
     Ask,
 }
 
+/// Cores that choose a BIOS file of any region by content (ADR 0021 table).
+const CONTENT_DETECTING_CORES: &[&str] = &["pcsx_rearmed"];
+
 /// `variant_known`: the variant comes from the game (`Game::region`, else the header probe, else the name tag);
 /// `false` when the table's default was used. Unknown variant + wanted file absent + `others_present` not empty
 /// ⇒ `Launch` (design v6.0 §2.2: a `.chd` without tag, playable in 2.1 with the one BIOS present); the same for
 /// `CoreFallback` (7.0: a PlayStation `.chd` without tag and the user's BIOS of one region).
-pub(crate) fn firmware_gate(check: &FirmwareCheck, variant_known: bool) -> FirmwareGate {
+pub(crate) fn firmware_gate(
+    check: &FirmwareCheck,
+    variant_known: bool,
+    core: &str,
+) -> FirmwareGate {
     match &check.state {
         FirmwareState::Ok
         | FirmwareState::Free { .. }
         | FirmwareState::Unverified
         | FirmwareState::Builtin { .. } => FirmwareGate::Launch,
-        // The core picks a present file of another region by itself when the game's region is unknown (7.0).
+        // Only pcsx_rearmed picks a present file of another region by content when the region is unknown (ADR 0021);
+        // swanstation and mednafen_psx read `scph550x.bin` per region and fall back on OpenBIOS: one warning.
         FirmwareState::CoreFallback { .. }
-            if !variant_known && !check.others_present.is_empty() =>
+            if !variant_known
+                && !check.others_present.is_empty()
+                && CONTENT_DETECTING_CORES.contains(&core) =>
         {
             FirmwareGate::Launch
         }
@@ -88,7 +98,7 @@ mod tests {
 
     fn gate(system_dir: &Path, region: Option<DiscRegion>) -> FirmwareGate {
         let (check, known) = mega_cd(system_dir, region);
-        firmware_gate(&check, known)
+        firmware_gate(&check, known, "genesis_plus_gx")
     }
 
     #[test]
@@ -114,7 +124,7 @@ mod tests {
             FirmwareState::Builtin { label: "x".into() },
         ] {
             assert_eq!(
-                firmware_gate(&check(state, &[]), true),
+                firmware_gate(&check(state, &[]), true, "genesis_plus_gx"),
                 FirmwareGate::Launch
             );
         }
@@ -130,7 +140,11 @@ mod tests {
     #[test]
     fn wrong_hash_asks_and_is_not_missing() {
         assert_eq!(
-            firmware_gate(&check(FirmwareState::WrongHash { md5: [0; 16] }, &[]), true),
+            firmware_gate(
+                &check(FirmwareState::WrongHash { md5: [0; 16] }, &[]),
+                true,
+                "genesis_plus_gx"
+            ),
             FirmwareGate::Ask
         );
         // A fake file under the exact name is a different revision (or unverifiable), never « absent ».
@@ -154,11 +168,15 @@ mod tests {
         assert_eq!(c.state, FirmwareState::Missing);
         assert_eq!(c.others_present, vec!["bios_CD_U.bin".to_owned()]);
         // Region known: another region's BIOS does not launch the game (the core would refuse it).
-        assert_eq!(firmware_gate(&c, known), FirmwareGate::Ask);
+        assert_eq!(
+            firmware_gate(&c, known, "genesis_plus_gx"),
+            FirmwareGate::Ask
+        );
         assert_eq!(
             firmware_gate(
                 &check(FirmwareState::Unreadable("denied".into()), &[]),
-                true
+                true,
+                "genesis_plus_gx"
             ),
             FirmwareGate::Ask
         );
@@ -171,11 +189,19 @@ mod tests {
         std::fs::write(dir.path().join("bios_CD_J.bin"), b"bios").unwrap();
         assert_eq!(gate(dir.path(), None), FirmwareGate::Launch);
         assert_eq!(
-            firmware_gate(&check(FirmwareState::Missing, &["bios_CD_J.bin"]), false),
+            firmware_gate(
+                &check(FirmwareState::Missing, &["bios_CD_J.bin"]),
+                false,
+                "genesis_plus_gx"
+            ),
             FirmwareGate::Launch
         );
         assert_eq!(
-            firmware_gate(&check(FirmwareState::Missing, &[]), false),
+            firmware_gate(
+                &check(FirmwareState::Missing, &[]),
+                false,
+                "genesis_plus_gx"
+            ),
             FirmwareGate::Ask
         );
     }
@@ -190,7 +216,8 @@ mod tests {
                     },
                     &[]
                 ),
-                true
+                true,
+                "genesis_plus_gx"
             ),
             FirmwareGate::WarnOnce
         );
@@ -222,12 +249,12 @@ mod tests {
             let l = lf(core, Some(DiscRegion::Europe));
             assert_eq!(l.check.wanted.as_deref(), Some("scph5502.bin"), "{core}");
             assert_eq!(
-                firmware_gate(&l.check, l.variant_known),
+                firmware_gate(&l.check, l.variant_known, core),
                 FirmwareGate::WarnOnce
             );
             let l = lf(core, None);
             assert_eq!(
-                firmware_gate(&l.check, l.variant_known),
+                firmware_gate(&l.check, l.variant_known, core),
                 FirmwareGate::WarnOnce
             );
         }
@@ -237,13 +264,23 @@ mod tests {
         let l = lf("pcsx_rearmed", None);
         assert!(matches!(l.check.state, FirmwareState::CoreFallback { .. }));
         assert_eq!(
-            firmware_gate(&l.check, l.variant_known),
+            firmware_gate(&l.check, l.variant_known, "pcsx_rearmed"),
             FirmwareGate::Launch
         );
+        // swanstation / mednafen_psx read the file per region: unknown region + another region's BIOS = one warning.
+        for core in ["swanstation", "mednafen_psx"] {
+            let l = lf(core, None);
+            assert_eq!(l.check.others_present, ["scph5502.bin"]);
+            assert_eq!(
+                firmware_gate(&l.check, l.variant_known, core),
+                FirmwareGate::WarnOnce,
+                "{core}"
+            );
+        }
         let l = lf("pcsx_rearmed", Some(DiscRegion::Japan));
         assert_eq!(l.check.others_present, ["scph5502.bin"]);
         assert_eq!(
-            firmware_gate(&l.check, l.variant_known),
+            firmware_gate(&l.check, l.variant_known, "pcsx_rearmed"),
             FirmwareGate::WarnOnce
         );
     }
@@ -269,7 +306,7 @@ mod tests {
         assert_eq!(l.check.wanted.as_deref(), Some("panafz10.bin"));
         assert!(matches!(l.check.state, FirmwareState::CoreFallback { .. }));
         assert_eq!(
-            firmware_gate(&l.check, l.variant_known),
+            firmware_gate(&l.check, l.variant_known, "opera"),
             FirmwareGate::WarnOnce
         );
     }

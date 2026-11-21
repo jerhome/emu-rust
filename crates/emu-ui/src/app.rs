@@ -95,6 +95,9 @@ pub(crate) struct CoreGameFiles {
     pub dir: PathBuf,
     pub content_name: String,
     pub patterns: Vec<String>,
+    /// Marker written by the reset when the core has a `save_family`, so that the next launch does not adopt
+    /// another core's memory card again (`content::no_adopt_marker`).
+    pub adopt_marker: Option<PathBuf>,
 }
 
 impl Restart {
@@ -121,6 +124,14 @@ impl Restart {
                 };
                 for path in files.as_deref().unwrap_or_default() {
                     tracing::info!("sauvegarde du core supprimée : {}", path.display());
+                }
+                if let Some(marker) = core_files.as_ref().and_then(|f| f.adopt_marker.as_ref()) {
+                    if let Some(parent) = marker.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(e) = std::fs::write(marker, b"") {
+                        tracing::warn!("marqueur de non-reprise non écrit : {e}");
+                    }
                 }
                 let deleted_files = !files?.is_empty();
                 Ok(copies? || deleted_files)
@@ -575,10 +586,18 @@ impl App {
         let core_files = typed_id.as_ref().and_then(|id| {
             let patterns = prefs.game_save_patterns(id);
             let content_name = emulator.content_name()?.to_owned();
-            (!patterns.is_empty()).then(|| CoreGameFiles {
+            let adopt_marker = prefs.save_family(id).map(|_| {
+                crate::content::no_adopt_marker(
+                    &options.dirs.saves,
+                    id,
+                    &emulator.identity().save_name,
+                )
+            });
+            (!patterns.is_empty() || adopt_marker.is_some()).then(|| CoreGameFiles {
                 dir: emulator.identity().core_save_dir.clone(),
                 content_name,
                 patterns,
+                adopt_marker,
             })
         });
         let audio = if options.audio && options.config.audio.enabled {
@@ -2801,6 +2820,7 @@ mod tests {
                 dir: core.clone(),
                 content_name: "disk1".to_owned(),
                 patterns: vec!["{game}.save*.adf".to_owned()],
+                adopt_marker: None,
             }),
         };
         assert!(restart.apply().unwrap());
