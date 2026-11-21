@@ -176,6 +176,29 @@ téléchargés à la demande et gardent leur licence. Aucune ROM de jeu n'est da
   et les ROM de sauvegarde `sram`/`flash64`/`flash128`/`none` de jsmolka/gba-tests (MIT), 240p Test Suite mini (GPL-2.0),
   hexgl32x (MIT), 240p Test Suite Sega CD (GPL-2.0). Aucune ROM ni BIOS commercial.
 
+## PlayStation et 3DO (7.0, en développement)
+
+Rendu logiciel seulement. Cores installés depuis l'écran Cores (buildbot libretro) : `pcsx_rearmed` (GPL-2.0, par
+défaut), `swanstation` (GPL-3.0) et `mednafen_psx` (GPL-2.0) pour la PlayStation, au choix dans « Core utilisé » ; `opera`
+pour la 3DO (licence LGPL modifiée, **usage non commercial**). Aucun core, jeu ni BIOS n'est dans l'image.
+Contenus : PlayStation `.cue` (+ pistes), `.chd`, `.iso`, `.pbp`, `.m3u` dans `/data/roms/psx/` ; 3DO `.cue`, `.chd`, `.iso`
+dans `/data/roms/3do/` (rangez-les dans ces dossiers : un titre existe souvent sur plusieurs machines).
+
+**BIOS facultatifs, fournis par vous, jamais téléchargés**, vérifiés par empreinte dans `/data/system/` :
+`scph5500.bin` (Japon), `scph5501.bin` (USA), `scph5502.bin` (Europe) ; `panafz10.bin` (3DO). Sans eux, le core utilise
+son remplaçant intégré (HLE de pcsx_rearmed ; OpenBIOS pour swanstation et mednafen_psx ; Opera Boot, GPL-2.0-only, pour
+opera), avec un avertissement unique et une compatibilité réduite.
+
+```sh
+docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/bios:/in:ro" --entrypoint bash emu-wslg \
+  -c 'mkdir -p /data/system && cp /in/scph550*.bin /in/panafz10.bin /data/system/'
+```
+
+Cartes mémoire : `/data/saves/<core>/<jeu>.srm` (une par jeu, reprise d'un core PlayStation à l'autre) ; NVRAM 3DO :
+`/data/saves/opera/opera/per_game/`. Pad numérique par défaut, mode DualShock réglable par jeu.
+Données de test (non embarquées, `scripts/fetch-test-assets.sh --with-7.0`, SHA256 épinglés) : ps1-tests (MIT), 240p Test
+Suite PS1 (GPL-2.0). Aucune ROM ni BIOS commercial.
+
 ## Manette (2.1)
 
 Le clavier fonctionne toujours. Pour une manette PS4 :

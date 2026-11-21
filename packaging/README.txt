@@ -93,6 +93,23 @@ Licences non embarquées (rien de plus dans THIRD-PARTY-DATA.txt) : mgba MPL-2.0
 Données de test libres (outils de développement seulement, jamais distribuées) : gba-tests de jsmolka (MIT), 240p Test Suite
   mini et Sega CD (GPL-2.0), hexgl32x (MIT).
 
+PlayStation et 3DO (7.0, en développement) : rendu logiciel seulement (pas d'OpenGL ni Vulkan).
+  Cores (écran Cores, buildbot libretro, HTTPS, vérifiés) : PlayStation = pcsx_rearmed (GPL-2.0, par défaut, rapide),
+  swanstation (GPL-3.0, rendu logiciel) et mednafen_psx / Beetle PSX (GPL-2.0, précis, plus lent), au choix dans
+  « Core utilisé » ; 3DO = opera (licence LGPL modifiée, usage NON COMMERCIAL ; téléchargé à la demande, jamais redistribué).
+  Contenus : PlayStation .cue (+ pistes) .chd .iso .pbp .m3u ; 3DO .cue .chd .iso. Rangez vos CD dans roms/psx/ et roms/3do/
+  (un titre existe souvent sur plusieurs machines : un .chd hors dossier peut rester « non classé »). Pas de CD dans un zip.
+  BIOS FACULTATIFS, fournis par vous, JAMAIS téléchargés, vérifiés par empreinte (écran Cores, « Importer un BIOS... »,
+  dossier system/) : scph5500.bin (Japon), scph5501.bin (USA), scph5502.bin (Europe) pour la PlayStation ; panafz10.bin pour
+  la 3DO. S'ils sont présents, ils sont préférés ; sinon le core utilise son remplaçant intégré, avec un avertissement
+  unique et une compatibilité réduite : HLE de pcsx_rearmed (GPL-2.0), OpenBIOS (swanstation, mednafen_psx ; licence
+  à confirmer), Opera Boot (core opera, GPL-2.0-only). Rien n'est extrait ni copié par emu-rust.
+  Cartes mémoire : une par jeu (saves/<core>/<jeu>.srm), reprise automatique d'un core PlayStation à l'autre.
+  Manette : pad numérique par défaut ; mode DualShock (sticks) réglable par jeu.
+Licences non embarquées (rien de plus dans THIRD-PARTY-DATA.txt que les empreintes de BIOS) : DAT Redump téléchargé à la
+  demande, il garde sa licence. Données de test libres (outils de développement seulement, jamais distribuées) :
+  ps1-tests de JaCzekanski (MIT), 240p Test Suite PS1 (GPL-2.0). Aucun jeu ni BIOS commercial.
+
 1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :

@@ -13,7 +13,8 @@ Firmware reference hashes (crates/emu-assets/data/firmware.toml, embedded in the
   Sections of System.dat used: Atari - ST; Commodore - Amiga; Commodore - C128 (JiffyDOS files only); DOS
   (MT-32 / CM-32L ROMs only); Nintendo - Famicom Disk System, Game Boy, Game Boy Advance, Game Boy Color,
   Satellaview, SuFami Turbo, Super Game Boy; Sega - Game Gear, Master System - Mark III, Mega CD - Sega CD,
-  Mega Drive - Genesis.
+  Mega Drive - Genesis; Sony - PlayStation; 3DO Company, The - 3DO (7.0: md5 of the BIOS files that the user may
+  import; none is downloaded or shipped).
 
   Changes: only the md5 checksums (and, for some entries, the file size in bytes) of firmware (BIOS) files were
   extracted and reorganised into a TOML table keyed by file name. No firmware file is included.
