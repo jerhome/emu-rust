@@ -1,6 +1,6 @@
 //! No-Intro and TOSEC DAT files from libretro-database (ADR 0014 §2, ADR 0015 §1): downloaded at run time,
 //! never shipped. The caller picks the base from the system's DAT source (`emu_library::DatSource`: No-Intro,
-//! TOSEC or libretro `dat/`; all are clrmamepro DAT files).
+//! TOSEC, Redump or libretro `dat/`; all are clrmamepro DAT files).
 
 use std::io::Write;
 use std::path::Path;
@@ -20,6 +20,10 @@ pub const DAT_TOSEC_BASE_URL: &str =
 /// folder per source.
 pub const DAT_LIBRETRO_BASE_URL: &str =
     "https://raw.githubusercontent.com/libretro/libretro-database/master/dat/";
+/// Redump DAT files (`Sega - Mega-CD - Sega CD`: track 01 only, `size` / `crc` / `serial`;
+/// `emu_library::DatSource::Redump`, design v6.0 §3.3). Same host and rules as the other DAT files.
+pub const DAT_REDUMP_BASE_URL: &str =
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/";
 /// Same bound as `emu_library::MAX_DAT_SIZE` (the crates do not depend on each other).
 pub const MAX_DAT_BYTES: u64 = 64 * 1024 * 1024;
 

@@ -34,6 +34,8 @@ pub enum DatSource {
     Tosec,
     /// Top-level `dat/` (WHDLoad `.lha` sets of `Commodore - Amiga.dat`: crc + sha1, no md5).
     Libretro,
+    /// `metadat/redump/` (Mega CD, design v6.0 §3.4: track 01 only, `size` / `crc` / `serial`).
+    Redump,
 }
 
 impl DatSource {
@@ -45,13 +47,19 @@ impl DatSource {
             DatSource::NoIntro => "no-intro",
             DatSource::Tosec => "tosec",
             DatSource::Libretro => "libretro",
+            DatSource::Redump => "redump",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        [DatSource::NoIntro, DatSource::Tosec, DatSource::Libretro]
-            .into_iter()
-            .find(|s| s.id() == id)
+        [
+            DatSource::NoIntro,
+            DatSource::Tosec,
+            DatSource::Libretro,
+            DatSource::Redump,
+        ]
+        .into_iter()
+        .find(|s| s.id() == id)
     }
 
     /// Folder of the DAT in the libretro-database repository.
@@ -60,6 +68,7 @@ impl DatSource {
             DatSource::NoIntro => "metadat/no-intro",
             DatSource::Tosec => "metadat/tosec",
             DatSource::Libretro => "dat",
+            DatSource::Redump => "metadat/redump",
         }
     }
 }
@@ -90,6 +99,9 @@ pub struct SystemInfo {
     /// Keyboard mode of a game of this system when neither the game nor `[computer] keyboard_mode` chooses
     /// (design v5.0 §3.4; `systems.toml` `default_input`, default `"keyboard"`; `cpc`, `c64`: `"joystick"`).
     pub default_input: InputDefault,
+    /// CD system (design v6.0 §3.4; `systems.toml` `disc`, default `false`; `megacd`): game named after its
+    /// `.cue` / `.chd` / `.iso` / `.m3u`, Redump identification, region of the game, « CD » label in the UI.
+    pub disc: bool,
 }
 
 /// `systems.toml` `default_input` (user decision of 2026-11-21: Joystick for CPC and C64).
@@ -244,6 +256,8 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             folder_games: s.folder_games,
             // CB1: `default_input` key of `systems.toml`.
             default_input: InputDefault::Keyboard,
+            // GB1: `disc` key of `systems.toml`.
+            disc: false,
         });
     }
     Ok(out)
@@ -407,10 +421,16 @@ mod tests {
         let ipf: Vec<_> = systems_for_extension("ipf").iter().map(|s| &s.id).collect();
         assert_eq!(ipf, ["atarist", "amiga"]);
         assert_eq!(DatSource::Libretro.repo_dir(), "dat");
-        for d in [DatSource::NoIntro, DatSource::Tosec, DatSource::Libretro] {
+        for d in [
+            DatSource::NoIntro,
+            DatSource::Tosec,
+            DatSource::Libretro,
+            DatSource::Redump,
+        ] {
             assert_eq!(DatSource::from_id(d.id()), Some(d));
         }
-        assert_eq!(DatSource::from_id("redump"), None);
+        assert_eq!(DatSource::Redump.repo_dir(), "metadat/redump");
+        assert_eq!(DatSource::from_id("trurip"), None);
     }
 
     #[test]

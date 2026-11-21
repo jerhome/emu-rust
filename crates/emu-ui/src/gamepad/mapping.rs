@@ -168,6 +168,8 @@ impl PadMap {
                 (P::Select, J::Select),
                 (P::Start, J::Start),
             ],
+            // GU1: ADR 0016 GBA column (Cross = B, Circle = A, L1 / R1 = L / R, Share = Select, Options = Start).
+            PadStyle::Gba => todo!("GU1: gamepad mapping of PadStyle::Gba"),
             PadStyle::Generic => &[
                 (P::West, J::Y),
                 (P::North, J::X),

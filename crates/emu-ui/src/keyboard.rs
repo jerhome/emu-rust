@@ -15,6 +15,9 @@ pub enum PadStyle {
     Snes,
     GameBoy,
     Nes,
+    /// Game Boy Advance (design v6.0 §3.5): SNES pad without X / Y. Produced by `from_core_id("mgba")` and
+    /// `from_extension("gba")` once GU1 wires it.
+    Gba,
     Generic,
 }
 
@@ -91,6 +94,7 @@ impl PadStyle {
             Self::Snes => "snes",
             Self::GameBoy => "gb",
             Self::Nes => "nes",
+            Self::Gba => "gba",
             Self::Generic => "generic",
         }
     }
@@ -173,6 +177,18 @@ impl PadStyle {
                 B::B,
                 B::X,
                 B::Y,
+                B::L,
+                B::R,
+            ],
+            Self::Gba => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::A,
+                B::B,
                 B::L,
                 B::R,
             ],
@@ -284,6 +300,7 @@ impl KeyMap {
             PadStyle::MasterSystem | PadStyle::GameGear => Self::sega_8bit_default(),
             PadStyle::GameBoy | PadStyle::Nes => Self::nintendo_8bit_default(),
             PadStyle::Snes => Self::snes_default(),
+            PadStyle::Gba => Self::gba_default(),
             PadStyle::Generic => Self::generic_default(),
         }
     }
@@ -372,6 +389,12 @@ impl KeyMap {
                 (K::KeyL, B::R),
             ],
         )
+    }
+
+    /// Port 0, Game Boy Advance layout (mgba; design v6.0 §3.5): the SNES layout without X / Y — J = B, K = A,
+    /// O = L, L = R, Enter = Start, Right Shift = Select, WASD (ZQSD on AZERTY) + arrows.
+    pub fn gba_default() -> Self {
+        todo!("GU1: gba_default (design v6.0 §3.5)")
     }
 
     /// Built-in layout of a keyboard profile: computer cores (joystick mode) get [`KeyMap::computer_default`],

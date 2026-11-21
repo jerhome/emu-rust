@@ -4,6 +4,7 @@
 
 mod covers;
 mod dos;
+mod firmware_gate;
 mod grid;
 mod home;
 mod host;

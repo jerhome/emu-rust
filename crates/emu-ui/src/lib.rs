@@ -41,7 +41,9 @@ pub use crate::config_gamepad::{GamepadConfig, GamepadDeviceConfig, HotkeyButton
 pub use crate::config_library::{
     CoresConfig, CoversConfig, CredentialsConfig, IgdbConfig, LibraryConfig, ScreenScraperConfig,
 };
-pub use crate::content::{GameContent, content_spec, media_set_name};
+pub use crate::content::{
+    GameContent, LaunchRefusal, content_spec, media_set_name, plan_disc_launch,
+};
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
 pub use crate::dos_launch::{
     clear_dos_cache, dos_cli_content, invalidate_core_caches, prepare_dos_snapshot,

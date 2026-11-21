@@ -24,6 +24,12 @@ impl DiscRegion {
             DiscRegion::Japan => "japan",
         }
     }
+
+    /// Inverse of [`DiscRegion::key`] (column `game.region`, schema v6); `None` for anything else.
+    pub fn from_key(key: &str) -> Option<Self> {
+        let _ = key;
+        todo!("GB1: game.region column (design v6.0 §3.4)")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +277,36 @@ pub fn region_from_name(stem: &str) -> Option<DiscRegion> {
         rest = &after[close + 1..];
     }
     None
+}
+
+/// What a `.bin` holds, from its first bytes (design v6.0 §3.4; scan of `.bin` files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinKind {
+    /// No other header: the 1.0 rule applies (Mega Drive ROM).
+    MegaDrive,
+    /// `SEGA 32X` at 0x100: system `32x`.
+    Sega32x,
+    /// `SEGADISCSYSTEM` at 0 or 0x10 ([`disc_info`]): a CD track, never a ROM (orphan ⇒ ignored, 2.1 rule).
+    SegaCdTrack,
+    /// Too short to hold a header, or unreadable as such.
+    Unknown,
+}
+
+/// Header probe of a `.bin` (GB1): reads at most 0x220 bytes; `SegaCdTrack` as [`disc_info`] sees it, `Sega32x`
+/// for `SEGA 32X` at 0x100, else `MegaDrive` (`Unknown` for a file too short to tell). Same untrusted-input rules
+/// as the rest of this module (regular file only, bounded read, no panic).
+pub fn probe_bin(path: &Path) -> Result<BinKind, LibraryError> {
+    let _ = path;
+    todo!("GB1: probe_bin (design v6.0 §3.4)")
+}
+
+/// Serial number in the disc header (GB1; generic: one probe per [`DiscFormat`]). `SegaCd`: MD-style header at
+/// 0x100 of sector 0, serial at 0x180 (`T-93175`, `GM 00-2501-14`), trimmed; of a `.cue` (its first track, kept in
+/// the cue's folder) or a `.iso`. `Ok(None)`: no header or blank serial, and always for a `.chd` (never read).
+/// Bounded reads (64 KiB of cue, one sector of track).
+pub fn disc_serial(path: &Path, format: DiscFormat) -> Result<Option<String>, LibraryError> {
+    let _ = (path, format);
+    todo!("GB1: disc_serial (design v6.0 §3.4)")
 }
 
 #[cfg(test)]

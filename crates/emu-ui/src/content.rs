@@ -149,6 +149,38 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
     }
 }
 
+/// Why a disc game is not launched (design v6.0 §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LaunchRefusal {
+    /// A CD image inside a zip (never extracted: 300-700 MB, above `MAX_CONTENT_SIZE`).
+    ArchivedDisc,
+}
+
+impl LaunchRefusal {
+    /// User-facing message (French).
+    pub fn message(self) -> &'static str {
+        match self {
+            LaunchRefusal::ArchivedDisc => {
+                "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
+            }
+        }
+    }
+}
+
+/// Content of a game of a `disc = true` system (design v6.0 §2.1, GU1): one disc ⇒ `ContentSpec::File` (cue, chd,
+/// iso or the user's `.m3u`, handed over in place); several (`Game::media`) ⇒ `ContentSpec::Media` with the
+/// core's `MediaRules` (`Direct`, `media_direct` = cue / chd / iso: `.m3u` of absolute paths generated in the
+/// private temporary folder, nothing copied); a zip ⇒ [`LaunchRefusal::ArchivedDisc`].
+pub fn plan_disc_launch(
+    game: &emu_library::Game,
+    core: &CoreId,
+    prefs: &CorePreferences,
+) -> Result<ContentSpec, LaunchRefusal> {
+    let _ = (game, core, prefs);
+    todo!("GU1: plan_disc_launch (design v6.0 §2.1)")
+}
+
 /// Key of the game's options file (design v2.1-identite-disques §3.2): `GameIdentity::save_name`, the same name as
 /// its SRAM, states and working copies.
 pub(crate) fn game_key(identity: &GameIdentity) -> &str {

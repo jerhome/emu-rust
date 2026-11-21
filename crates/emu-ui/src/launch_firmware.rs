@@ -69,6 +69,32 @@ pub(crate) fn firmware_system(prefs: &CorePreferences, core: &CoreId) -> Option<
         .map(|s| (*s).to_owned())
 }
 
+/// System whose `required_firmware` table and `featured_options` apply to a game (design v6.0 §3.5, GU1):
+/// `game_database` when the core lists that system (a Mega Drive game with genesis_plus_gx gets no Mega CD table
+/// nor « Mega CD » section; a 32X game with picodrive gets its `Builtin`, not the Mega CD table), else
+/// [`firmware_system`] (no game: computer desktop, CLI without library).
+#[allow(dead_code)] // GU1 (replaces `firmware_system` in `check_launch_firmware`, `App::build`)
+pub(crate) fn firmware_system_for(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    game_database: Option<&str>,
+) -> Option<String> {
+    let _ = (prefs, core, game_database);
+    todo!("GU1: firmware system of the game (design v6.0 §3.5)")
+}
+
+/// Variant key of a `variant = "region"` table (design v6.0 §2.2, GU1): `region` (`Game::region`) when known,
+/// else the header probe of `first_file` (`emu_library::disc_info`: base not rescanned since v5), else its name tag
+/// (`region_from_name`); `None` = unknown (the table's default applies and `variant_known` is `false`).
+#[allow(dead_code)] // GU1 (arm `FirmwareVariant::Region` of `launch_variant`)
+pub(crate) fn region_variant(
+    region: Option<emu_library::DiscRegion>,
+    first_file: Option<&Path>,
+) -> Option<&'static str> {
+    let _ = (region, first_file);
+    todo!("GU1: region variant (design v6.0 §2.2)")
+}
+
 /// Effective value of a core option before the computed layer: game > config > `cores.toml` > `default`.
 fn option_value<'a>(
     key: &str,

@@ -49,6 +49,32 @@ pub(crate) fn emit(level: LogLevel, message: &str, truncated: bool) {
     tests::record(level, message, truncated);
 }
 
+/// Longest `LibretroError::LoadGameFailed::core_error`, in characters (design v6.0 §3.1).
+#[allow(dead_code)] // GF1
+pub(crate) const MAX_CORE_ERROR_CHARS: usize = 512;
+
+/// GF1: starts recording the last `RETRO_LOG_ERROR` line, right before `retro_load_game` (lines logged before are
+/// not kept). Process-global like the other callbacks state (ADR 0008); cores may log from their own threads.
+#[allow(dead_code)] // GF1
+pub(crate) fn begin_load_error_capture() {
+    todo!("GF1: last ERROR line during retro_load_game (design v6.0 §3.1)")
+}
+
+/// GF1: stops the recording started by [`begin_load_error_capture`] and returns the last ERROR line, cleaned by
+/// [`clean_core_error`]; `None` when the core logged none (or only blank lines). Lines logged after are ignored.
+#[allow(dead_code)] // GF1
+pub(crate) fn end_load_error_capture() -> Option<String> {
+    todo!("GF1: last ERROR line during retro_load_game (design v6.0 §3.1)")
+}
+
+/// GF1: control characters removed, trimmed, truncated to [`MAX_CORE_ERROR_CHARS`] characters (on a char
+/// boundary); paths are kept as is (local log only, never a secret).
+#[allow(dead_code)] // GF1
+pub(crate) fn clean_core_error(line: &str) -> String {
+    let _ = line;
+    todo!("GF1: core_error cleaning (design v6.0 §3.1)")
+}
+
 /// Called by the C shim only.
 ///
 /// # Safety

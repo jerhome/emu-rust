@@ -12,8 +12,8 @@ use rusqlite::{
 
 use crate::systems::{Attribution, attribute};
 use crate::{
-    Dat, DatSource, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport, SystemInfo,
-    normalize_title, systems_for_extension,
+    Dat, DatSource, DiscRegion, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport,
+    SystemInfo, normalize_title, systems_for_extension,
 };
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
@@ -55,6 +55,10 @@ pub struct Game {
     pub media: Vec<PathBuf>,
     /// Unpacked game folder (DOS, design v4.0 §3.4): `path` is the folder. Column `game.is_dir` (schema v5).
     pub is_dir: bool,
+    /// Region of a game of a `disc = true` system (design v6.0 §2.2): disc header, else Redump DAT, else name
+    /// tag; `None` = unknown or not a disc system. Column `game.region` (schema v6, `DiscRegion::key`), filled by
+    /// the scan; `None` until GB1 adds the migration.
+    pub region: Option<DiscRegion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -306,6 +310,8 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
         play_count: u32::try_from(row.get::<_, i64>(11)?.max(0)).unwrap_or(u32::MAX),
         media: Vec::new(),
         is_dir: row.get::<_, i64>(12)? != 0,
+        // GB1: column `game.region` (schema v6).
+        region: None,
     })
 }
 

@@ -279,7 +279,10 @@ fn load_error(lib: &Path) {
     let dir = out_dir("load-error");
     let mut core = Core::load(lib, config(&dir)).unwrap();
     let err = core.load_game(&dir.join("game.mock")).unwrap_err();
-    assert!(matches!(err, LibretroError::LoadGameFailed(_)), "{err:?}");
+    assert!(
+        matches!(err, LibretroError::LoadGameFailed { .. }),
+        "{err:?}"
+    );
     assert!(core.av_info().is_none());
     drop(core);
     // The refusal does not leak into the next load.

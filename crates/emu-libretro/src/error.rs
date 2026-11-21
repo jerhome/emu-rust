@@ -24,8 +24,14 @@ pub enum LibretroError {
         #[source]
         source: std::io::Error,
     },
-    #[error("core rejected game {0}")]
-    LoadGameFailed(PathBuf),
+    /// `retro_load_game` returned false. `path` is empty for `load_no_game`. `core_error`: last `RETRO_LOG_ERROR`
+    /// line logged by the core during that call (« Unable to open CD BIOS: … »), at most 512 characters, control
+    /// characters removed; `None` when it logged none (design v6.0 §3.1, filled by GF1).
+    #[error("core rejected game {}", path.display())]
+    LoadGameFailed {
+        path: PathBuf,
+        core_error: Option<String>,
+    },
     #[error("no game is loaded")]
     NoGame,
     #[error("a game is already loaded")]
@@ -66,4 +72,14 @@ pub enum LibretroError {
         #[source]
         source: std::io::Error,
     },
+}
+
+impl LibretroError {
+    /// `core_error` of [`LibretroError::LoadGameFailed`] when there is one: shown instead of the generic hint.
+    pub fn core_error(&self) -> Option<&str> {
+        match self {
+            LibretroError::LoadGameFailed { core_error, .. } => core_error.as_deref(),
+            _ => None,
+        }
+    }
 }

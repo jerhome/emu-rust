@@ -123,6 +123,7 @@ mod tests {
             play_count: 0,
             media: Vec::new(),
             is_dir: false,
+            region: None,
         }
     }
 

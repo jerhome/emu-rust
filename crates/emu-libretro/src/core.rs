@@ -430,7 +430,11 @@ impl Core {
         // `self.game` (heap contents do not move) and kept until retro_unload_game.
         let loaded = unsafe { (self.api.load_game)(&raw const info) } != 0;
         if !loaded {
-            return Err(LibretroError::LoadGameFailed(rom));
+            // GF1: `core_error` = last ERROR line captured during the call (log.rs).
+            return Err(LibretroError::LoadGameFailed {
+                path: rom,
+                core_error: None,
+            });
         }
         Ok(self.after_load(LoadedGame {
             _path: Some(path),
@@ -451,7 +455,10 @@ impl Core {
         // owning thread.
         let loaded = unsafe { (self.api.load_game)(std::ptr::null()) } != 0;
         if !loaded {
-            return Err(LibretroError::LoadGameFailed(PathBuf::new()));
+            return Err(LibretroError::LoadGameFailed {
+                path: PathBuf::new(),
+                core_error: None,
+            });
         }
         Ok(self.after_load(LoadedGame {
             _path: None,

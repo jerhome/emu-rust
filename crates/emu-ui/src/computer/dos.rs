@@ -270,6 +270,7 @@ mod tests {
             play_count: 0,
             media,
             is_dir,
+            region: None,
         }
     }
 
