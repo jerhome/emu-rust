@@ -30,6 +30,6 @@
 | idem | son | **OK** après `libasound2-plugins` + `~/.asoundrc` (configuration de l'hôte, documentée) |
 | idem | manette | non vue : WSL2 ne voit pas l'USB sans `usbipd-win` (attendu) |
 | Windows | Dune (Mega CD), BIOS européen | ✅ **parfait** : image, son, **manette PS4** OK (première validation réelle du Mega CD et de la manette) |
-| Windows | Storm Master (PC-DOS, jeu-dossier, START.EXE) | ✅ **succès** : son et capture de la souris OK (première validation réelle du DOS) |
+| Windows | Storm Master (PC-DOS, jeu-dossier, START.EXE) | ✅ **succès** : son et capture de la souris OK ; lancer → retour bibliothèque → relancer OK (copie privée du core, ADR 0022, validée en réel) |
 
 Suites : essais Windows prévus par l'utilisateur (C64 Maniac Mansion, Mega CD Dune, Amiga Hunter, DOS Storm Master, manette) ; essai Docker WSLg à faire. PS1 non disponible (7.0 non commencée).
