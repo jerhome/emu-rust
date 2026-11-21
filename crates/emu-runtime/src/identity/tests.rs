@@ -718,3 +718,57 @@ fn unreadable_playlist_entry_is_no_match_not_an_error() {
     // The failure is remembered: no second read attempt.
     assert_eq!(file.crc(), None);
 }
+
+fn folder_spec(dir: &Path, name: &str, start: Option<&str>) -> ContentSpec {
+    ContentSpec::Folder {
+        dir: dir.to_path_buf(),
+        name: name.into(),
+        start: start.map(str::to_owned),
+    }
+}
+
+#[test]
+fn game_folders_are_identified_by_their_folder() {
+    let fx = Fx::new();
+    let (saves, states) = (fx.saves(), fx.states());
+    let a = fx.tmp.path().join("roms/A/GAME");
+    let b = fx.tmp.path().join("roms/B/GAME");
+    fx.rom("A/GAME/GAME.EXE", b"MZ a");
+    fx.rom("A/GAME/DATA/LEVEL.DAT", b"level");
+    fx.rom("B/GAME/GAME.EXE", b"MZ b");
+
+    // Named after the folder (`name` may already be a save name), primary = the folder; `start` plays no part.
+    let spec = folder_spec(&b, "GAME (2)", Some("GAME.EXE"));
+    let req = identity_request_for(&spec, &saves, &states);
+    assert_eq!(req.base_name, "GAME");
+    assert_eq!(req.primary, Some(b.as_path()));
+
+    let resolve = |dir: &Path, start: Option<&str>| {
+        let spec = folder_spec(dir, "ignored", start);
+        resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap()
+    };
+    let first = resolve(&a, None);
+    assert_eq!((first.save_name.as_str(), first.index), ("GAME", 1));
+    let second = resolve(&b, None);
+    assert_eq!((second.save_name.as_str(), second.index), ("GAME (2)", 2));
+    assert_eq!(second.core_save_dir, saves.join("GAME (2)"));
+    assert!(matches!(
+        second.notice,
+        Some(IdentityNotice::Homonym { .. })
+    ));
+    assert_eq!(resolve(&b, Some("GAME.EXE")).save_name, "GAME (2)");
+    assert_eq!(resolve(&a, None).save_name, "GAME");
+    // Fingerprint of the file list: size total + CRC32 (state headers).
+    let (size, crc) = folder_fingerprint(&a, &SnapshotLimits::DEFAULT).unwrap();
+    assert_eq!(first.game_fp(), Some(format!("{size}:{crc:08x}")));
+
+    // Moved folder (same file list): saves follow. A changed folder at the same path keeps its identity.
+    let moved = fx.tmp.path().join("roms/C/GAME");
+    fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    fs::rename(&a, &moved).unwrap();
+    assert_eq!(resolve(&moved, None).save_name, "GAME");
+    fx.rom("B/GAME/NEW.TXT", b"new");
+    let changed = resolve(&b, None);
+    assert_eq!(changed.save_name, "GAME (2)");
+    assert_ne!(changed.game_fp(), second.game_fp());
+}

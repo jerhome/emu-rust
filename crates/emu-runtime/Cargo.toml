@@ -20,6 +20,8 @@ glutin = { workspace = true }
 glutin-winit = { workspace = true }
 png = { workspace = true }
 rtrb = { workspace = true }
+# Folder snapshot manifest (design v4.0 §3.2); same version as emu-assets.
+sha2 = "0.10"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

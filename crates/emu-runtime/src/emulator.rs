@@ -9,16 +9,19 @@ use emu_libretro::{
     SystemInfo, VideoFrame, mouse_id,
 };
 
-use crate::audio::AudioSink;
+use crate::audio::{AudioSink, NullSink};
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
 use crate::identity::{GameIdentity, identity_request_for, resolve_game_identity};
-use crate::input::{InputBackend, InputFrame, MouseState};
+use crate::input::{AnalogStick, InputBackend, InputFrame, KeyboardState, MouseState};
 use crate::media::{ContentSpec, Disks, MediaRules, PreparedMedia, prepare_media_with};
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, StateOrigin, core_id_from_path,
     decode_state, encode_state, read_bounded, read_state_header, write_atomic,
+};
+use crate::snapshot::{
+    SnapshotLimits, SnapshotStatus, snapshot_folder, snapshot_path, snapshot_status, validate_start,
 };
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
@@ -210,6 +213,7 @@ impl Emulator {
         let mut content_dir = None;
         let mut prepared = None;
         let mut media_rules = None;
+        let mut folder_content_name = None;
         let source = match spec {
             ContentSpec::File(rom) => {
                 let content = content::prepare(&rom, core.system_info(), limits)?;
@@ -228,14 +232,22 @@ impl Emulator {
                 Some(source)
             }
             ContentSpec::NoGame => None,
-            ContentSpec::Folder { .. } => todo!("DR1: GameSource::Path(<snapshot>.zip[#START])"),
+            ContentSpec::Folder { dir, start, .. } => {
+                let snapshot = snapshot_path(&options.cache_dir.join(&core_id), &game_name);
+                let path = prepare_folder(&dir, &snapshot, start.as_deref())?;
+                folder_content_name = snapshot
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned());
+                Some(GameSource::Path(path))
+            }
         };
-        let content_name = match &source {
+        // A folder's path ends with `.zip#START.EXE`: its stem is the snapshot's, not the path's.
+        let content_name = folder_content_name.or_else(|| match &source {
             Some(GameSource::Path(path)) => {
                 path.file_stem().map(|s| s.to_string_lossy().into_owned())
             }
             _ => None,
-        };
+        });
         let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
         let loaded = match source {
             Some(source) => core.load_game_from(source),
@@ -394,12 +406,30 @@ impl Emulator {
         self.core.reset();
     }
 
-    /// Resets through `Core::reset_with`: `held` keys read as pressed by `input_state(KEYBOARD)` during
-    /// `retro_reset` only (keyboard state restored afterwards, no `send_key_event`). dosbox_pure: `LSHIFT` forces
-    /// its start menu (« Changer de programme de démarrage », design v4.0 §2.2).
+    /// Resets through `Core::reset_with`: exactly the `held` keys read as pressed by `input_state(KEYBOARD)`
+    /// during `retro_reset` (no pad, no mouse, no `send_key_event`); the frame input is untouched. Video reaches
+    /// `frame()` as usual, audio is dropped. dosbox_pure: `LSHIFT` forces its start menu (« Changer de programme
+    /// de démarrage », design v4.0 §2.2).
     pub fn reset_with_keys(&mut self, held: &[RetroKey]) {
-        let _ = held;
-        todo!("DR1: handler with `held` in its keyboard state, then Core::reset_with")
+        let mut keyboard = KeyboardState::default();
+        for &key in held {
+            keyboard.set(key, true);
+        }
+        let input = InputFrame {
+            keyboard,
+            ..InputFrame::default()
+        };
+        let mut audio = NullSink;
+        let mut bridge = Bridge {
+            input: &input,
+            audio: &mut audio,
+            frame: &mut self.frame,
+            video_updated: false,
+            polled: Polled::default(),
+        };
+        self.core.reset_with(&mut bridge);
+        self.keyboard_polled |= bridge.polled.keyboard;
+        self.mouse_polled |= bridge.polled.mouse;
     }
 
     // ---- Phase 2 (docs/design/phase2-frontend.md §2.2). Contract for `Emulator::load` from phase 2:
@@ -588,6 +618,32 @@ impl Emulator {
     }
 }
 
+/// Path handed to the core for a game folder: the snapshot (built first unless `Current`, default limits, no
+/// progress), followed by `#START.EXE` when a start program is given (validated against `dir` first).
+fn prepare_folder(
+    dir: &Path,
+    snapshot: &Path,
+    start: Option<&str>,
+) -> Result<PathBuf, RuntimeError> {
+    let start = start.map(|s| validate_start(dir, s)).transpose()?;
+    if snapshot_status(dir, snapshot)? != SnapshotStatus::Current {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        snapshot_folder(
+            dir,
+            snapshot,
+            &SnapshotLimits::DEFAULT,
+            &mut |_, _| {},
+            &cancel,
+        )?;
+    }
+    let mut path = snapshot.as_os_str().to_owned();
+    if let Some(start) = start {
+        path.push("#");
+        path.push(start);
+    }
+    Ok(PathBuf::from(path))
+}
+
 impl Drop for Emulator {
     fn drop(&mut self) {
         if let Err(e) = self.flush_sram() {
@@ -652,6 +708,39 @@ fn input_state(input: &InputFrame, query: InputQuery) -> i16 {
             .map_or(0, |key| i16::from(input.keyboard.is_pressed(key))),
         // Computers have a single mouse, on port 0.
         InputDevice::Mouse if query.port == 0 => mouse_state(&input.mouse, query.id),
+        InputDevice::Analog => analog_state(input, query),
+        _ => 0,
+    }
+}
+
+/// `RETRO_DEVICE_INDEX_ANALOG_BUTTON`.
+const INDEX_ANALOG_BUTTON: u32 = 2;
+const ANALOG_ID_X: u32 = 0;
+const ANALOG_ID_Y: u32 = 1;
+
+/// Sticks of the port's `PadState` (0 unless a gamepad backend set them: keyboard only ⇒ 0) and analog buttons
+/// derived from the digital ones (0x7FFF when pressed).
+fn analog_state(input: &InputFrame, query: InputQuery) -> i16 {
+    let Some(pad) = usize::try_from(query.port)
+        .ok()
+        .and_then(|port| input.pads.get(port))
+    else {
+        return 0;
+    };
+    if query.index == INDEX_ANALOG_BUTTON {
+        return if query.id < 16 && pad.bits() & (1 << query.id) != 0 {
+            i16::MAX
+        } else {
+            0
+        };
+    }
+    let Some(stick) = AnalogStick::from_index(query.index) else {
+        return 0;
+    };
+    let (x, y) = pad.analog(stick);
+    match query.id {
+        ANALOG_ID_X => x,
+        ANALOG_ID_Y => y,
         _ => 0,
     }
 }
@@ -762,6 +851,41 @@ mod tests {
         assert_eq!(mouse(0, mouse_id::HORIZ_WHEEL_UP), 1);
         assert_eq!(mouse(0, 99), 0);
         assert_eq!(mouse(1, mouse_id::Y), 0, "one mouse, port 0");
+    }
+
+    #[test]
+    fn input_state_analog() {
+        let mut input = InputFrame::default();
+        let q = |port, index, id| InputQuery {
+            port,
+            device: InputDevice::Analog,
+            index,
+            id,
+        };
+        assert_eq!(
+            input_state(&input, q(0, 0, ANALOG_ID_X)),
+            0,
+            "keyboard only"
+        );
+        input.pads[1].set_analog(AnalogStick::Left, -5, 6);
+        input.pads[1].set_analog(AnalogStick::Right, i16::MIN, i16::MAX);
+        input.pads[1].set(JoypadButton::L2, true);
+        assert_eq!(input_state(&input, q(1, 0, ANALOG_ID_X)), -5);
+        assert_eq!(input_state(&input, q(1, 0, ANALOG_ID_Y)), 6);
+        assert_eq!(input_state(&input, q(1, 1, ANALOG_ID_X)), i16::MIN);
+        assert_eq!(input_state(&input, q(1, 1, ANALOG_ID_Y)), i16::MAX);
+        assert_eq!(input_state(&input, q(1, 0, 2)), 0, "unknown axis");
+        assert_eq!(input_state(&input, q(1, 3, 0)), 0, "unknown index");
+        let l2 = JoypadButton::L2.id();
+        assert_eq!(input_state(&input, q(1, INDEX_ANALOG_BUTTON, l2)), i16::MAX);
+        assert_eq!(input_state(&input, q(1, INDEX_ANALOG_BUTTON, 0)), 0);
+        assert_eq!(input_state(&input, q(1, INDEX_ANALOG_BUTTON, 16)), 0);
+        assert_eq!(
+            input_state(&input, q(0, 0, ANALOG_ID_X)),
+            0,
+            "port 0 untouched"
+        );
+        assert_eq!(input_state(&input, q(2, 0, ANALOG_ID_X)), 0, "no such port");
     }
 
     #[test]

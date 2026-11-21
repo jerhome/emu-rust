@@ -9,6 +9,8 @@ pub const MAX_PORTS: usize = 2;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PadState {
     buttons: u16,
+    /// Left X, left Y, right X, right Y (`RETRO_DEVICE_ANALOG`, -0x8000..=0x7FFF, 0 = centred).
+    analog: [i16; 4],
 }
 
 impl PadState {
@@ -33,14 +35,15 @@ impl PadState {
     /// Stick position answered to `input_state(ANALOG, index, X / Y)` (cores with `analog = true` only; others
     /// keep 0 and the stick → D-pad conversion, ADR 0016 amended). Design v4.0 §3.2.
     pub fn set_analog(&mut self, stick: AnalogStick, x: i16, y: i16) {
-        let _ = (stick, x, y);
-        todo!("DR1: four i16 fields (derives kept: Copy, Eq)")
+        let i = stick.offset();
+        self.analog[i] = x;
+        self.analog[i + 1] = y;
     }
 
     /// `(x, y)`, `(0, 0)` unless set.
     pub fn analog(&self, stick: AnalogStick) -> (i16, i16) {
-        let _ = stick;
-        todo!("DR1")
+        let i = stick.offset();
+        (self.analog[i], self.analog[i + 1])
     }
 }
 
@@ -49,6 +52,25 @@ impl PadState {
 pub enum AnalogStick {
     Left,
     Right,
+}
+
+impl AnalogStick {
+    /// `RETRO_DEVICE_INDEX_ANALOG_LEFT` (0) / `_RIGHT` (1); `None` for any other index (2 = analog buttons).
+    pub(crate) fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Left),
+            1 => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// Index of the X axis in `PadState::analog`.
+    fn offset(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 2,
+        }
+    }
 }
 
 /// Snapshot of every virtual device for one emulated frame. Will grow (analog sticks, keyboard, mouse) without
@@ -267,6 +289,26 @@ mod tests {
         assert!(!pad.is_pressed(JoypadButton::Start));
         pad.set(JoypadButton::A, false);
         assert_eq!(pad.bits(), 1 | (1 << 15));
+    }
+
+    #[test]
+    fn analog_sticks_are_independent_of_buttons() {
+        let mut pad = PadState::default();
+        assert_eq!(pad.analog(AnalogStick::Left), (0, 0));
+        pad.set_analog(AnalogStick::Left, i16::MIN, 1234);
+        pad.set_analog(AnalogStick::Right, -1, i16::MAX);
+        assert_eq!(pad.analog(AnalogStick::Left), (i16::MIN, 1234));
+        assert_eq!(pad.analog(AnalogStick::Right), (-1, i16::MAX));
+        assert_eq!(pad.bits(), 0);
+        pad.set(JoypadButton::Start, true);
+        assert_eq!(pad.analog(AnalogStick::Left), (i16::MIN, 1234));
+        let mut frame = InputFrame::default();
+        frame.pads[1] = pad;
+        frame.clear();
+        assert_eq!(frame.pads[1], PadState::default(), "cleared every frame");
+        assert_eq!(AnalogStick::from_index(0), Some(AnalogStick::Left));
+        assert_eq!(AnalogStick::from_index(1), Some(AnalogStick::Right));
+        assert_eq!(AnalogStick::from_index(2), None);
     }
 
     #[test]

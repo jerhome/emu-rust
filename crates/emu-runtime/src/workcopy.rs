@@ -223,7 +223,7 @@ pub(crate) struct Plan {
 pub(crate) fn zip_entry_accepted(exts: &[String], name: &str) -> bool {
     match name.rsplit_once('.') {
         Some((_, ext)) => {
-            !["m3u", "zip", "7z"]
+            !["m3u", "m3u8", "zip", "7z"]
                 .iter()
                 .any(|x| ext.eq_ignore_ascii_case(x))
                 && accepts_ext(exts, ext)

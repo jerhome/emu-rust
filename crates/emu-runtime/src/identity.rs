@@ -13,11 +13,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::content::io_error;
 use crate::error::RuntimeError;
-use crate::media::{ContentSpec, NO_GAME_NAME, has_ext, parse_playlist};
+use crate::media::{ContentSpec, NO_GAME_NAME, is_playlist, parse_playlist};
 use crate::saves::{
     FileMode, STATE_SLOTS, game_name_from_path, game_name_from_str, read_bounded, write_atomic,
     write_atomic_with,
 };
+use crate::snapshot::{SnapshotLimits, folder_fingerprint};
 use crate::workcopy::{self, DirState, Origin, escape, path_from_key, path_key, unescape};
 
 /// Who this game is for saves: resolved before loading (the UI needs it for per-game options), then handed to
@@ -72,7 +73,8 @@ pub struct IdentityRequest<'a> {
     pub states_core_dir: &'a Path,
     /// Owned: derived from a file stem for `ContentSpec::File`.
     pub base_name: String,
-    /// User `.m3u`, else first image, else the file (the archive for a zip); a CD's `.cue` / `.chd` / `.iso`.
+    /// User `.m3u`, else first image, else the file (the archive for a zip); a CD's `.cue` / `.chd` / `.iso`; the
+    /// folder of a game folder (fingerprinted by its file list, design v4.0 §10 n° 4).
     pub primary: Option<&'a Path>,
 }
 
@@ -130,9 +132,16 @@ pub fn identity_request_for<'a>(
                 .or(set.images.first().map(PathBuf::as_path)),
         ),
         ContentSpec::NoGame => (NO_GAME_NAME.to_owned(), None),
-        // 4.0 folder game: named after `name`. No primary source yet, so two folder games of the same name
-        // share one identity until DR1 feeds the registry with `folder_fingerprint` (design v4.0 §3.2).
-        ContentSpec::Folder { name, .. } => (game_name_from_str(name), None),
+        // 4.0 game folder (design v4.0 §10 n° 4): named after the folder itself (`name` may already be a
+        // `save_name` such as `G (2)`), identified by it: two folders of the same name are two games. `start`
+        // plays no part (`--rom dir/START.EXE` is the same game as `dir`).
+        ContentSpec::Folder { dir, name, .. } => (
+            dir.file_name().map_or_else(
+                || game_name_from_str(name),
+                |n| game_name_from_str(&n.to_string_lossy()),
+            ),
+            Some(dir.as_path()),
+        ),
     };
     IdentityRequest {
         saves_core_dir,
@@ -305,9 +314,12 @@ fn suffixed(base: &str, n: u32) -> String {
     }
 }
 
-/// The user's primary source, `stat`ed once; read only when a fingerprint is needed.
+/// The user's primary source, `stat`ed once; read only when a fingerprint is needed. A game folder is
+/// fingerprinted at once by its file list ([`folder_fingerprint`]: listing and `stat` only, no file read).
 struct Primary {
     path: PathBuf,
+    /// A game folder: rule 3 (2.0 working copies) never applies, `size` is the total of its files.
+    is_dir: bool,
     /// `path_key` of the canonical path (what the registry stores).
     raw_key: Vec<u8>,
     /// [`registry_key`] of `raw_key` (what is compared).
@@ -320,16 +332,30 @@ struct Primary {
 impl Primary {
     fn open(path: &Path) -> Result<Self, RuntimeError> {
         let meta = fs::metadata(path).map_err(|e| io_error(path, e))?;
+        let canonical = canonical(path);
+        let raw_key = path_key(&canonical);
+        if meta.is_dir() {
+            // A folder's own mtime misses changes deeper down: no mtime, the list is the fingerprint.
+            let (size, crc32) = folder_fingerprint(path, &SnapshotLimits::DEFAULT)?;
+            return Ok(Self {
+                path: path.to_path_buf(),
+                is_dir: true,
+                key: registry_key(&raw_key),
+                raw_key,
+                size,
+                mtime: None,
+                fingerprint: Some(Fingerprint { size, crc32 }),
+            });
+        }
         if !meta.is_file() {
             return Err(RuntimeError::InvalidMediaSet(format!(
                 "{} is not a file",
                 path.display()
             )));
         }
-        let canonical = canonical(path);
-        let raw_key = path_key(&canonical);
         Ok(Self {
             path: path.to_path_buf(),
+            is_dir: false,
             key: registry_key(&raw_key),
             raw_key,
             size: meta.len(),
@@ -455,9 +481,13 @@ fn rule_disks_folder(
     saves: &Path,
     base: &str,
 ) -> Result<Option<(String, u32)>, RuntimeError> {
+    // No 2.0 working-copy folder was ever made for a game folder (4.0).
+    if source.is_dir {
+        return Ok(None);
+    }
     // A user playlist is not copied: its entries are, so they are what the manifest recorded (path, or size +
     // CRC32 of the whole file for an entry of at most `FP_WHOLE_MAX`: a moved folder).
-    let mut files: Vec<SetFile> = if has_ext(&source.path, "m3u") {
+    let mut files: Vec<SetFile> = if is_playlist(&source.path) {
         parse_playlist(&source.path)
             .unwrap_or_default()
             .iter()

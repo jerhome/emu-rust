@@ -250,7 +250,7 @@ fn prepare_media_inner(
         .playlist
         .clone()
         .or_else(|| match set.images.as_slice() {
-            [only] if has_ext(only, "m3u") => Some(only.clone()),
+            [only] if is_playlist(only) => Some(only.clone()),
             _ => None,
         });
     if playlist.is_none() && set.images.is_empty() {
@@ -582,6 +582,11 @@ pub(crate) fn too_many() -> RuntimeError {
 pub(crate) fn has_ext(path: &Path, ext: &str) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// A user playlist: `.m3u`, or `.m3u8` (same format, UTF-8 by definition; DOS, design v4.0 §10 n° 14).
+pub(crate) fn is_playlist(path: &Path) -> bool {
+    has_ext(path, "m3u") || has_ext(path, "m3u8")
 }
 
 pub(crate) fn accepts_ext(exts: &[String], ext: &str) -> bool {
@@ -2467,6 +2472,12 @@ mod tests {
                 .unwrap(),
             p
         );
+        // `.m3u8` (DOS) is the same format.
+        let m3u8 = f.file("Game.m3u8", b"#EXTM3U\nsub/a.st|Disk A\n\nsub/b.st\n");
+        let p8 = f
+            .prepare(&set("Game", vec![m3u8.clone()]), MediaPolicy::Direct)
+            .unwrap();
+        assert_eq!((p8.content, p8.images), (m3u8, p.images));
     }
 
     #[test]
