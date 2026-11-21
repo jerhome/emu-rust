@@ -21,3 +21,13 @@
 | 1 | 2026-11-21 | Windows (clavier 60 %) | — / hatari | ❌ « core hatari : CRC32 x au lieu de y » : catalogue en cache plus vieux que le nightly reconstruit ; contournement « Vérifier les mises à jour » | corrigé (bf6801c) |
 | 2 | 2026-11-21 | Windows | Mouse Trap (ST), hatari + EmuTOS 1.4 fr | ✅ Installation EmuTOS, bureau GEM, `MOUSE.TOS` lancé depuis la fenêtre A, mode joystick (Hôte+J), démarrage par **Espace** : le jeu tourne bien | OK |
 | 3 | 2026-11-21 | Windows | idem | Ergonomie : l'utilisateur a pris `MOUSE.TOS` pour un pilote et ne savait pas lancer un programme depuis le bureau → ajouter au guide d'essai et à l'aide un mot sur « lancer un .PRG/.TOS depuis le bureau GEM » | à améliorer |
+
+## Essais 6.0.0-rc.1 (2026-11-21)
+
+| Hôte | Jeu | Résultat |
+|---|---|---|
+| Linux sous WSL2 (binaire Linux, WSLg) | Dune II (Mega Drive), clavier | **OK**, impeccable |
+| idem | son | absent : ALSA non redirigé vers PulseAudio WSLg (`libasound2-plugins` + `~/.asoundrc`), configuration de l'hôte |
+| idem | manette | non vue : WSL2 ne voit pas l'USB sans `usbipd-win` (attendu) |
+
+Suites : rendre le conseil son WSL visible au démarrage quand aucune sortie audio n'est trouvée ; essai Docker WSLg à faire ; Dune Mega CD sur Mac à faire.
