@@ -246,6 +246,16 @@ impl CoresUi {
     }
 
     /// Installs that finished (or failed) since the last call, for the library launch flow.
+    /// Core of the game being played, if any.
+    pub(crate) fn in_use(&self) -> Option<&CoreId> {
+        self.in_use.as_ref()
+    }
+
+    /// A core install is running (a download).
+    pub(crate) fn installing(&self) -> bool {
+        !self.installs.is_empty()
+    }
+
     pub(crate) fn take_completed(&mut self) -> Vec<(CoreId, bool)> {
         std::mem::take(&mut self.completed)
     }
@@ -484,9 +494,17 @@ impl CoresUi {
                 None => {}
             }
         }
+        let infos = manager.infos();
+        let ids: Vec<CoreId> = installed.iter().map(|c| c.id.clone()).collect();
+        checks.enhancements = crate::firmware_hints::installed_enhancements(
+            &ids,
+            &infos,
+            &self.prefs,
+            &self.system_dir,
+        );
         self.snapshot = Some(Snapshot {
             installed,
-            infos: manager.infos(),
+            infos,
             catalog: manager.catalog(),
             checks,
         });
@@ -761,6 +779,61 @@ impl CoresUi {
         });
     }
 
+    /// `Optional` original files of an installed core (ADR 0023 §5): state, benefit and « Importer un BIOS… » when
+    /// the file is not verified. `Fallback` files are already on the 3.0 line (`required_line`).
+    fn enhancement_lines(&mut self, ui: &mut Ui, id: &CoreId) {
+        use crate::firmware_hints::{HintState, hint_state, system_name};
+        use emu_assets::cores::EnhancementKind;
+        let Some(list) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.checks.enhancements.get(id))
+        else {
+            return;
+        };
+        let lines: Vec<(String, String, HintState)> = list
+            .iter()
+            .filter(|e| e.enhancement.kind == EnhancementKind::Optional)
+            .map(|e| {
+                let f = &e.enhancement;
+                (
+                    f.file.clone(),
+                    text::enhancement_line(
+                        &f.file,
+                        &system_name(&e.database),
+                        hint_state(&f.state),
+                        &f.benefit,
+                    ),
+                    hint_state(&f.state),
+                )
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        ui.label(RichText::new(text::ENHANCED_BY).small());
+        let mut import = None;
+        for (file, line, state) in &lines {
+            ui.horizontal_wrapped(|ui| {
+                let label = RichText::new(line).small();
+                if *state == HintState::Present {
+                    ui.label(label.weak());
+                } else {
+                    ui.colored_label(INFO, label);
+                    if ui.small_button(text::IMPORT_BUTTON).clicked() {
+                        import = Some(file.clone());
+                    }
+                }
+            });
+        }
+        if lines.iter().any(|(_, _, s)| *s != HintState::Present) {
+            ui.label(RichText::new(text::NEVER_DOWNLOADED).small().weak());
+        }
+        if let Some(file) = import {
+            self.import.start(Some(file));
+        }
+    }
+
     /// « Core utilisé » for each system with several cores (design v3.0 §3.3). Writes nothing itself: the library
     /// saves `[cores.preferred]`. A core that is not installed can be chosen; its row offers « Installer ».
     fn core_choice(&mut self, ui: &mut Ui) -> Option<CoresEvent> {
@@ -930,6 +1003,7 @@ impl CoresUi {
                 let files = region_files(&self.prefs, &row.id);
                 self.required_line(ui, check, notice.as_deref(), &files);
             }
+            self.enhancement_lines(ui, &row.id);
             if let Some(e) = self.errors.get(&row.id) {
                 ui.colored_label(ERROR, e);
             }

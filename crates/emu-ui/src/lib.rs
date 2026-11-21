@@ -12,6 +12,7 @@ mod cores_ui;
 mod dos_launch;
 mod egui_layer;
 mod file_picker;
+mod firmware_hints;
 mod game_identity;
 mod game_options;
 mod gamepad;
@@ -182,6 +183,8 @@ pub enum LibraryScreen {
     Cores,
     /// « Journal » panel (`--screen library-log`).
     Log,
+    /// « Ranger les ROMs… » preview (`--screen library-tidy`): read-only analysis of `roms/`, nothing moved.
+    Tidy,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

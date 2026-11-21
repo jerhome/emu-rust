@@ -608,3 +608,21 @@ pub fn dos_cache_button(size: Option<u64>) -> String {
 pub fn dos_cache_failed(e: &str) -> String {
     format!("Cache DOS non vidé : {e}")
 }
+
+// ---- Original files (7.1, ADR 0023 §5) ------------------------------------------------------------------------
+
+pub const HINT_CLOSE: &str = "Compris";
+pub const HINT_NEVER_DOWNLOADED: &str =
+    "emu-rust ne télécharge jamais ce fichier ; il doit provenir de votre propre machine.";
+
+/// One line of the banner: « gba_bios.bin améliore mgba (Game Boy Advance) : écran de démarrage… ».
+pub fn optional_hint(file: &str, core: &str, system: &str, benefit: &str) -> String {
+    format!("Fichier d'origine facultatif : {file} améliore {core} ({system}) : {benefit}.")
+}
+
+// ---- Interface (7.1, ADR 0023 §3) -----------------------------------------------------------------------------
+
+pub const INTERFACE_SECTION: &str = "Interface";
+pub const CONSOLE_SETTING: &str = "Afficher la console (après redémarrage)";
+pub const CONSOLE_NOTE: &str = "Ouvre une fenêtre de console avec les messages techniques au prochain démarrage \
+                                d'emu-rust. Le panneau « Journal » (en bas de l'écran) les montre aussi.";

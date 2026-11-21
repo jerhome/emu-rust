@@ -185,8 +185,8 @@ fn row(r: &LogRecord) -> RichText {
         r.level.label(),
         r.message
     ))
+    // Normal size: the small style was hard to read (FU1 feedback).
     .monospace()
-    .small()
     .color(color)
 }
 

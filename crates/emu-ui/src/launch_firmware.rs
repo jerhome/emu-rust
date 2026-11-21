@@ -472,7 +472,14 @@ pub(crate) fn firmware_setup_for(
         locale: &locale,
         extension: &extension,
     });
-    let decision = decide_launch(&lf, core_id, game.input.aros_acknowledged);
+    // Read only here (CLI, `App::build`): the library records the (core, file) key when its dialog is answered.
+    let acknowledged = crate::firmware_hints::fallback_seen(
+        &config.interface.firmware_hints_seen,
+        core_id,
+        lf.check.wanted.as_deref(),
+        game.input.aros_acknowledged,
+    );
+    let decision = decide_launch(&lf, core_id, acknowledged);
     let acknowledged_now = matches!(decision, FirmwareDecision::FallbackFirstTime { .. });
     if acknowledged_now {
         // Warned once per game (design v3.0 §9 q.3): the library dialog already did it, or this OSD (CLI).

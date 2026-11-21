@@ -157,6 +157,30 @@ pub fn required_problem(wanted: &str, state: &FirmwareState) -> String {
     format!("{wanted} : {}", firmware_state(state))
 }
 
+// ---- Original files (7.1, ADR 0023 §5) ------------------------------------------------------------------------
+
+pub const ENHANCED_BY: &str = "Peut être amélioré par un fichier d'origine :";
+pub const NEVER_DOWNLOADED: &str =
+    "emu-rust ne télécharge jamais ce fichier ; il doit provenir de votre propre machine.";
+
+/// « gba_bios.bin (Game Boy Advance) — absent · écran de démarrage… ». `file`, `system` and `benefit` come from
+/// `cores.toml` and the catalogue (trusted, embedded).
+pub fn enhancement_line(
+    file: &str,
+    system: &str,
+    state: crate::firmware_hints::HintState,
+    benefit: &str,
+) -> String {
+    use crate::firmware_hints::HintState;
+    let state = match state {
+        HintState::Present => "présent et vérifié",
+        HintState::Missing => "absent",
+        HintState::WrongHash => "présent, md5 inattendu",
+        HintState::Unverified => "présent, non vérifiable",
+    };
+    format!("{file} ({system}) — {state} · {benefit}")
+}
+
 // ---- « Importer un BIOS… » (design v3.0 §2.2) -------------------------------------------------------------
 
 pub const IMPORT_BUTTON: &str = "Importer un BIOS…";

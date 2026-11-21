@@ -26,6 +26,8 @@ const CAPTURE_PASSES: u32 = 4;
 const LAUNCH_CAPTURE_FRAMES: u64 = 90;
 /// A `--screen` capture waits this long at most for cached covers to be decoded.
 const CAPTURE_COVER_WAIT: Duration = Duration::from_secs(5);
+/// Longest wait for the tidy analysis of `--screen library-tidy`.
+const CAPTURE_TIDY_WAIT: Duration = Duration::from_secs(8);
 
 /// Wakes the event loop from another thread.
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +68,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         Some(LibraryScreen::Settings) => library.set_page(Page::Settings),
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
         Some(LibraryScreen::Log) => library.open_log(),
+        Some(LibraryScreen::Tidy) => library.open_tidy_on_first_frame(),
         _ => {}
     }
     let mut host = Host {
@@ -316,6 +319,9 @@ impl Host {
             if self.dump_window.is_some() && self.screen.is_some() && self.game.is_none() {
                 let waiting_covers =
                     self.library.covers_busy() && self.started.elapsed() < CAPTURE_COVER_WAIT;
+                let waiting_tidy =
+                    self.library.tidy_busy() && self.started.elapsed() < CAPTURE_TIDY_WAIT;
+                let waiting_covers = waiting_covers || waiting_tidy;
                 if !waiting_covers {
                     self.passes_left = self.passes_left.saturating_sub(1);
                 }

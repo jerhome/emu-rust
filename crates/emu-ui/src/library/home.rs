@@ -150,6 +150,7 @@ impl LibraryUi {
         egui::Panel::bottom("library-status").show(ui, |ui| {
             ui.add_space(2.0);
             self.status_line(ui);
+            self.firmware_banner(ui);
             if !self.unclassified.is_empty() && ui.small_button(text::UNCLASSIFIED_SHOW).clicked() {
                 let list = self.unclassified.clone();
                 self.open_dialog(super::Dialog::Unclassified(list));

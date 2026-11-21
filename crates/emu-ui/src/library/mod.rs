@@ -11,6 +11,7 @@ mod host;
 mod pad_settings;
 mod settings;
 pub(crate) mod text;
+mod tidy;
 mod worker;
 
 use std::path::PathBuf;
@@ -47,6 +48,8 @@ pub(crate) enum Page {
     Home,
     Settings,
     Cores,
+    /// « Ranger les ROMs… » (ADR 0023 §4): analysis and preview.
+    Tidy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -200,6 +203,8 @@ struct GatedFirmware {
     decision: FirmwareDecision,
     options_path: PathBuf,
     info: FirmwareInfo,
+    /// 7.0 per-game acknowledgement carried over to its (core, file) key (ADR 0023 §5).
+    hint_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +281,9 @@ pub(crate) struct LibraryUi {
     /// « Lancer un autre programme… » of a DOS folder game.
     programs: Option<dos::ProgramsDialog>,
     dos_cache: dos::DosCache,
+    /// `Optional` original files absent for installed cores, not announced yet (ADR 0023 §5).
+    firmware_hints: Vec<crate::firmware_hints::OptionalHint>,
+    tidy: tidy::TidyUi,
 }
 
 fn now_unix() -> i64 {
@@ -349,8 +357,11 @@ impl LibraryUi {
             snapshot: None,
             programs: None,
             dos_cache: dos::DosCache::default(),
+            firmware_hints: Vec::new(),
+            tidy: tidy::TidyUi::default(),
         };
         ui.reload_games();
+        ui.refresh_firmware_hints();
         ui
     }
 
@@ -588,6 +599,75 @@ impl LibraryUi {
     }
 
     /// Writes `config.toml` (0600, atomic). Locked file or capture: nothing written.
+    /// Recomputes the banner of `Optional` original files (installed cores, `.info`, system folder: a few files).
+    fn refresh_firmware_hints(&mut self) {
+        let Some(manager) = self.cores.manager() else {
+            self.firmware_hints.clear();
+            return;
+        };
+        let ids: Vec<CoreId> = manager.installed().into_iter().map(|c| c.id).collect();
+        let prefs = cores_ui::preferences(&self.config.cores);
+        let all = crate::firmware_hints::installed_enhancements(
+            &ids,
+            &manager.infos(),
+            &prefs,
+            &self.dirs.system,
+        );
+        self.firmware_hints =
+            crate::firmware_hints::pending_hints(&all, &self.config.interface.firmware_hints_seen);
+    }
+
+    /// Closable information banner (home page): each line once per (core, file), recorded when closed.
+    fn firmware_banner(&mut self, ui: &mut Ui) {
+        if self.firmware_hints.is_empty() {
+            return;
+        }
+        let mut close = false;
+        let mut import = None;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            for h in &self.firmware_hints {
+                ui.label(text::optional_hint(
+                    &h.file,
+                    h.core.as_str(),
+                    &h.system,
+                    &h.benefit,
+                ));
+            }
+            weak(ui, text::HINT_NEVER_DOWNLOADED);
+            ui.horizontal(|ui| {
+                if ui.button(cores_ui::text::IMPORT_BUTTON).clicked() {
+                    import = self.firmware_hints.first().map(|h| h.file.clone());
+                }
+                if ui.button(text::HINT_CLOSE).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if let Some(file) = import {
+            self.cores.import.start(Some(file));
+        }
+        if close {
+            let keys: Vec<String> = self.firmware_hints.iter().map(|h| h.key()).collect();
+            self.firmware_hints.clear();
+            self.record_hint_keys(keys);
+        }
+    }
+
+    /// Adds `"<core>/<file>"` keys to `[interface] firmware_hints_seen` and saves quietly (no status line: it
+    /// happens during a launch). Capture mode: nothing written.
+    fn record_hint_keys(&mut self, keys: impl IntoIterator<Item = String>) {
+        let mut changed = false;
+        for key in keys {
+            changed |= self.config.interface.firmware_hints_seen.insert(key);
+        }
+        if !changed || self.capture {
+            return;
+        }
+        if let Err(e) = self.config.save(&self.dirs.config_file) {
+            tracing::warn!("réglages non enregistrés (fichiers d'origine déjà annoncés) : {e}");
+        }
+    }
+
     fn save_config(&mut self) {
         if self.capture {
             return;
@@ -790,13 +870,20 @@ impl LibraryUi {
             &global,
             &loaded.options.core_options,
         )?;
-        let decision = decide_launch(&lf, core.as_str(), loaded.options.input.aros_acknowledged);
+        let seen = &self.config.interface.firmware_hints_seen;
+        let game_ack = loaded.options.input.aros_acknowledged;
+        let wanted = lf.check.wanted.as_deref();
+        let acknowledged =
+            crate::firmware_hints::fallback_seen(seen, core.as_str(), wanted, game_ack);
+        let decision = decide_launch(&lf, core.as_str(), acknowledged);
+        let hint_key = crate::firmware_hints::key_to_record(seen, core.as_str(), wanted, game_ack);
         let info = firmware_info(prefs, core, &lf);
         Some(GatedFirmware {
             system: lf.system,
             decision,
             options_path: resolved.options_path,
             info,
+            hint_key,
         })
     }
 
@@ -821,6 +908,9 @@ impl LibraryUi {
             return Some(check);
         };
         tracing::info!("BIOS de {id} avant lancement : {:?}", gated.decision);
+        if let Some(key) = gated.hint_key.clone() {
+            self.record_hint_keys([key]);
+        }
         if gated.decision == FirmwareDecision::Launch {
             return Some(LaunchCheck::Ready {
                 id,
@@ -956,6 +1046,7 @@ impl LibraryUi {
     fn import_closed(&mut self, installed: bool) {
         if installed {
             self.cores.mark_dirty();
+            self.refresh_firmware_hints();
         }
         if !matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
             return;
@@ -1000,7 +1091,11 @@ impl LibraryUi {
 
     /// An install requested by a launch dialog finished: relaunch that game (success) or forget it.
     fn relaunch_after_install(&mut self) {
-        for (core, ok) in self.cores.take_completed() {
+        let completed = self.cores.take_completed();
+        if completed.iter().any(|(_, ok)| *ok) {
+            self.refresh_firmware_hints();
+        }
+        for (core, ok) in completed {
             let Some((wanted, game_id)) = self.awaiting_core.clone() else {
                 continue;
             };
@@ -1103,6 +1198,9 @@ impl LibraryUi {
             // The install keeps running behind the other pages; its result is still needed.
             self.cores.poll(&ctx);
         }
+        if std::mem::take(&mut self.tidy.pending) {
+            self.start_tidy(&ctx);
+        }
         self.relaunch_after_install();
         self.bios_completed();
         self.poll_folder();
@@ -1142,6 +1240,7 @@ impl LibraryUi {
         match self.page {
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
+            Page::Tidy => self.tidy_page(ui),
             Page::Cores => {
                 self.cores.set_modal_open(self.dialog.is_some());
                 let mut event = None;
@@ -1576,13 +1675,24 @@ impl LibraryUi {
                 request,
                 options_path,
                 fallback,
+                decision,
                 ..
             }) = self.dialog.take()
             else {
                 return;
             };
+            let acknowledged_file = match decision {
+                FirmwareDecision::FallbackFirstTime { wanted, .. } if !wanted.is_empty() => {
+                    Some(wanted)
+                }
+                _ => None,
+            };
             if cont {
                 self.update_game_options(&options_path, |o| o.input.aros_acknowledged = true);
+                if let Some(wanted) = &acknowledged_file {
+                    let key = crate::firmware_hints::hint_key(request.core.as_str(), wanted);
+                    self.record_hint_keys([key]);
+                }
             } else if use_fallback && let Some((option, value)) = fallback {
                 self.update_game_options(&options_path, |o| {
                     o.core_options.insert(option, value);
@@ -1702,6 +1812,11 @@ impl LibraryUi {
     /// Covers on screen still being read (captures wait for them).
     pub(crate) fn covers_busy(&self) -> bool {
         self.covers.busy()
+    }
+
+    /// `--screen library-tidy`: the analysis starts on the first frame (it needs the egui context).
+    pub(crate) fn open_tidy_on_first_frame(&mut self) {
+        self.tidy.pending = true;
     }
 
     pub(crate) fn wants_launch_capture(&mut self) {

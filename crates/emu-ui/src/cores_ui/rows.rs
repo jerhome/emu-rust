@@ -42,6 +42,8 @@ pub(crate) struct Checks {
     /// The 3.0 check (`check_core_firmware`, default variant) of cores that have a `required_firmware` table or
     /// a built-in ROM: it replaces the `.info` summary of their row.
     pub required: BTreeMap<CoreId, FirmwareCheck>,
+    /// Original files that improve each installed core (7.1, ADR 0023 §5).
+    pub enhancements: BTreeMap<CoreId, Vec<crate::firmware_hints::CoreEnhancement>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

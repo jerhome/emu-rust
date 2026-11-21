@@ -210,6 +210,10 @@ impl LibraryUi {
                     self.computers_section(ui);
                     ui.separator();
                     self.dos_cache_section(ui);
+                    if cfg!(windows) {
+                        ui.separator();
+                        self.interface_section(ui);
+                    }
                 });
         });
         if escape {
@@ -224,6 +228,18 @@ impl LibraryUi {
         }
     }
 
+    /// Windows only (ADR 0023 §3): `emu-rust.exe` relaunches `emu-rust-cli.exe` at the next start.
+    fn interface_section(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(text::INTERFACE_SECTION).strong());
+        if ui
+            .checkbox(&mut self.config.interface.console, text::CONSOLE_SETTING)
+            .changed()
+        {
+            self.settings.dirty = true;
+        }
+        weak(ui, text::CONSOLE_NOTE);
+    }
+
     fn roots_section(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         ui.label(RichText::new(text::ROOTS).strong());
         let fixed = self.dirs.root.join("roms");
@@ -231,6 +247,21 @@ impl LibraryUi {
             ui.label(RichText::new(fixed.display().to_string()).monospace());
             weak(ui, text::ROOT_FIXED);
         });
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    !self.capture,
+                    Button::new(super::tidy::text::CREATE_FOLDERS),
+                )
+                .clicked()
+            {
+                self.create_system_folders();
+            }
+            if ui.button(super::tidy::text::OPEN_TIDY).clicked() {
+                self.start_tidy(ctx);
+            }
+        });
+        weak(ui, super::tidy::text::TIDY_SETTINGS_NOTE);
         let mut remove = None;
         for (i, root) in self.config.library.roots.iter().enumerate() {
             ui.horizontal(|ui| {
