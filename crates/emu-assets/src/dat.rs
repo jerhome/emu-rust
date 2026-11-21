@@ -145,6 +145,10 @@ mod tests {
             dat_url(DAT_LIBRETRO_BASE_URL, "Commodore - Amiga"),
             "https://raw.githubusercontent.com/libretro/libretro-database/master/dat/Commodore%20-%20Amiga.dat"
         );
+        assert_eq!(
+            dat_url(DAT_REDUMP_BASE_URL, "Sega - Mega-CD - Sega CD"),
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Sega%20-%20Mega-CD%20-%20Sega%20CD.dat"
+        );
         assert_ne!(
             dat_url(DAT_TOSEC_BASE_URL, "Commodore - Amiga"),
             dat_url(DAT_LIBRETRO_BASE_URL, "Commodore - Amiga")

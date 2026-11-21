@@ -20,6 +20,12 @@ cores = ["gambatte", "sameboy", "mgba"]           # GPLv2, MIT, MPL-2.0
 [systems."Nintendo - Game Boy Color"]
 cores = ["gambatte", "sameboy", "mgba"]
 
+[systems."Nintendo - Game Boy Advance"]
+cores = ["mgba", "gpsp", "vbam"]                  # MPL-2.0, GPLv2, GPLv2 (design v6.0 §3.3)
+
+[systems."Sega - 32X"]
+cores = ["picodrive"]                             # Non-commercial, MAME licence (non-commercial)
+
 [systems."Nintendo - Nintendo Entertainment System"]
 cores = ["mesen", "nestopia", "fceumm"]           # GPLv3, GPLv2, GPLv2
 
@@ -57,6 +63,42 @@ media = "direct"                                  # writes modified floppies to 
 
 [cores.genesis_plus_gx]
 options = { genesis_plus_gx_system_bram = "per game" }   # Mega CD only: one internal backup RAM file per game
+game_saves = ["{game}.brm"]                       # internal RAM per game; `cart.brm` (shared cartridge RAM) is never deleted
+media_direct = ["cue", "chd", "iso"]              # discs handed over in place (the core is already `direct`)
+
+[cores.genesis_plus_gx.featured_options]
+"Sega - Mega-CD - Sega CD" = ["genesis_plus_gx_system_bram", "genesis_plus_gx_cart_bram", "genesis_plus_gx_cart_size", "genesis_plus_gx_cdda_volume"]
+
+# Mega CD BIOS by disc region (design v6.0 §2.2). Only for the Mega CD system: a Mega Drive game must never be
+# asked for a CD BIOS (the launch code picks the table by the game's system, `firmware_system_for`).
+[cores.genesis_plus_gx.required_firmware."Sega - Mega-CD - Sega CD"]
+variant = "region"
+default = "usa"
+
+[cores.genesis_plus_gx.required_firmware."Sega - Mega-CD - Sega CD".files]
+europe = "bios_CD_E.bin"
+usa = "bios_CD_U.bin"
+japan = "bios_CD_J.bin"
+
+[cores.picodrive]
+media_direct = ["cue", "chd", "iso"]
+builtin_firmware = { label = "BIOS 32X intégrés au core picodrive", notice = "BIOS 32X fournis par le core picodrive ; origine et licence à vérifier (ADR 0020 §2)." }
+
+[cores.picodrive.featured_options]
+"Sega - 32X" = ["picodrive_input1", "picodrive_drc", "picodrive_region", "picodrive_aspect"]
+
+# For the Mega CD the table wins over `builtin_firmware` (which only covers 32X).
+[cores.picodrive.required_firmware."Sega - Mega-CD - Sega CD"]
+variant = "region"
+default = "usa"
+
+[cores.picodrive.required_firmware."Sega - Mega-CD - Sega CD".files]
+europe = "bios_CD_E.bin"
+usa = "bios_CD_U.bin"
+japan = "bios_CD_J.bin"
+
+[cores.mgba.featured_options]
+"Nintendo - Game Boy Advance" = ["mgba_use_bios", "mgba_skip_bios", "mgba_color_correction", "mgba_interframe_blending", "mgba_solar_sensor_level"]
 
 [cores.puae]
 media = "working_copy"                            # writes into the floppy images (puae_floppy_write_redirect off)

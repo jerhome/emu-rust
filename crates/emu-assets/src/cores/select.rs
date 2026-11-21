@@ -977,8 +977,8 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0), CPC and C64 (5.0).
-        assert_eq!(prefs.systems().count(), 13);
+        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0), CPC and C64 (5.0), GBA and 32X (6.0).
+        assert_eq!(prefs.systems().count(), 15);
         let dos: Vec<String> = prefs
             .for_system("DOS")
             .iter()
@@ -1387,6 +1387,65 @@ mod tests {
         assert_eq!(ours, databases);
         assert!(ours.contains("DOS"));
         assert!(prefs.systems().all(|(_, cores)| !cores.is_empty()));
+    }
+
+    #[test]
+    fn six_zero_keys_of_the_real_file() {
+        let prefs = CorePreferences::builtin();
+        assert_eq!(
+            prefs.for_system("Nintendo - Game Boy Advance"),
+            [id("mgba"), id("gpsp"), id("vbam")]
+        );
+        assert_eq!(prefs.for_system("Sega - 32X"), [id("picodrive")]);
+        assert_eq!(
+            prefs.for_system("Sega - Mega-CD - Sega CD"),
+            [id("genesis_plus_gx"), id("picodrive")]
+        );
+        let gpgx = id("genesis_plus_gx");
+        assert_eq!(prefs.game_save_patterns(&gpgx), ["{game}.brm"]);
+        assert_eq!(prefs.media_direct(&gpgx), ["cue", "chd", "iso"]);
+        assert_eq!(prefs.media_direct(&id("picodrive")), ["cue", "chd", "iso"]);
+        assert_eq!(prefs.media_policy(&gpgx), CoreMediaPolicy::Direct);
+        let mcd = "Sega - Mega-CD - Sega CD";
+        for core in [&gpgx, &id("picodrive")] {
+            let req = prefs.required_firmware(core, mcd).unwrap();
+            assert_eq!(req.variant, FirmwareVariant::Region);
+            assert_eq!(req.default, "usa");
+            assert_eq!(req.files["europe"], "bios_CD_E.bin");
+            assert_eq!(req.files["usa"], "bios_CD_U.bin");
+            assert_eq!(req.files["japan"], "bios_CD_J.bin");
+            assert!(req.fallback.is_none());
+            // Never a CD BIOS table for the other systems of the same cores.
+            assert!(
+                prefs
+                    .required_firmware(core, "Sega - Mega Drive - Genesis")
+                    .is_none()
+            );
+            assert!(prefs.required_firmware(core, "Sega - 32X").is_none());
+        }
+        assert!(
+            prefs
+                .required_firmware(&id("mgba"), "Nintendo - Game Boy Advance")
+                .is_none()
+        );
+        assert!(prefs.builtin_firmware(&id("picodrive")).is_some());
+        assert!(prefs.builtin_firmware(&gpgx).is_none());
+        assert_eq!(prefs.featured_options(&gpgx, mcd).len(), 4);
+        assert!(
+            prefs
+                .featured_options(&gpgx, "Sega - Mega Drive - Genesis")
+                .is_empty()
+        );
+        assert_eq!(
+            prefs.featured_options(&id("picodrive"), "Sega - 32X").len(),
+            4
+        );
+        assert_eq!(
+            prefs
+                .featured_options(&id("mgba"), "Nintendo - Game Boy Advance")
+                .len(),
+            5
+        );
     }
 
     #[test]
