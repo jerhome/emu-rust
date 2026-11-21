@@ -60,7 +60,6 @@ pub use crate::gamepad::{
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
-pub use crate::library::megacd_cli_hint;
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
@@ -112,6 +111,14 @@ pub struct LaunchOptions {
     /// `false` (`--no-auto-fast-load`): the core's fast-forward requests are refused for this run, whatever
     /// `[computer] auto_fast_load` says.
     pub auto_fast_load: bool,
+    /// libretro database name of the game's system (library entry); `None` (CLI): found from the content's
+    /// extension and header. Chooses the firmware table, the « Réglages » section and the « CD » menu.
+    pub game_system: Option<String>,
+    /// Region of the game (`Game::region`); `None`: probed from the disc header, then the file name.
+    pub region: Option<emu_library::DiscRegion>,
+    /// Content already planned by the library (`plan_disc_launch`: several discs of a `disc = true` system);
+    /// `None`: built from `content`.
+    pub spec: Option<emu_runtime::ContentSpec>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +136,18 @@ pub enum UiError {
     /// program). The message is in French, ready to show.
     #[error("{0}")]
     Content(String),
+}
+
+impl UiError {
+    /// Last error the core logged while refusing the game (`LibretroError::core_error`, design v6.0 §2.1): shown
+    /// instead of the generic advice (« Unable to open CD BIOS: …/bios_CD_U.bin »). Untrusted text: clean it
+    /// before display (`launch_error` does).
+    pub fn core_error(&self) -> Option<&str> {
+        match self {
+            UiError::Runtime(emu_runtime::RuntimeError::Libretro(e)) => e.core_error(),
+            _ => None,
+        }
+    }
 }
 
 /// Screen to capture in library mode (`--screen library|library-settings`, Xvfb).

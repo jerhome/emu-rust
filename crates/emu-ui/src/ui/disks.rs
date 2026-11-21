@@ -17,7 +17,8 @@ pub(super) fn show(
     data: &UiData<'_>,
     actions: &mut Vec<UiAction>,
 ) {
-    screen_window(ctx, text::DISKS_TITLE, |ui, max_height| {
+    let disc = data.disks.is_some_and(|d| d.disc);
+    screen_window(ctx, text::disks_title(disc), |ui, max_height| {
         let w = ui.available_width();
         let row = |ui: &mut egui::Ui, label: String, focus: &mut bool| {
             let resp = ui.add(Button::new(label).min_size([w, ROW_HEIGHT].into()));
@@ -70,7 +71,7 @@ pub(super) fn show(
                 .iter()
                 .find(|s| s.index == i)
                 .map_or_else(String::new, |s| {
-                    text::disk_inserted(i, disks.slots.len(), &s.label)
+                    text::media_inserted(disc, i, disks.slots.len(), &s.label)
                 }),
         };
         ui.label(RichText::new(status).strong());
@@ -78,7 +79,7 @@ pub(super) fn show(
             .max_height((max_height - 220.0).max(80.0))
             .show(ui, |ui| {
                 if disks.slots.is_empty() {
-                    ui.label(text::DISKS_NONE);
+                    ui.label(text::disks_none(disc));
                 }
                 for slot in &disks.slots {
                     let mark = if disks.current == Some(slot.index) {
@@ -154,7 +155,7 @@ pub(super) fn show(
             overlay.disk_forget = open_forget;
             overlay.focus_first = true;
         }
-        ui.label(RichText::new(text::DISKS_HINT).small().weak());
+        ui.label(RichText::new(text::disks_hint(disc)).small().weak());
     });
 }
 

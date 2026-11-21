@@ -100,6 +100,40 @@ pub(crate) fn firmware_system_for(
     }
 }
 
+/// libretro database name of the system of `first_file` for `core` when no library entry says it (CLI
+/// `--core/--rom`): the systems accepting its extension that list the core; a disc header (`disc_info`) picks a
+/// `disc = true` system, otherwise the first cartridge system. `None`: nothing matches (the core's table system
+/// applies, [`firmware_system`]).
+pub(crate) fn content_database(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    first_file: Option<&Path>,
+) -> Option<String> {
+    let path = first_file?;
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let candidates: Vec<&emu_library::SystemInfo> = emu_library::systems_for_extension(&ext)
+        .into_iter()
+        .filter(|s| {
+            prefs
+                .systems()
+                .any(|(db, cores)| db == s.database && cores.contains(core))
+        })
+        .collect();
+    let chosen = match candidates.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        several => {
+            let disc = matches!(emu_library::disc_info(path), Ok(Some(_)));
+            several
+                .iter()
+                .find(|s| s.disc == disc)
+                .or_else(|| several.first())
+                .copied()
+        }
+    };
+    chosen.map(|s| s.database.clone())
+}
+
 /// Variant key of a `variant = "region"` table (design v6.0 §2.2, GU1): `region` (`Game::region`) when known,
 /// else the header probe of `first_file` (`emu_library::disc_info`: base not rescanned since v5), else its name tag
 /// (`region_from_name`); `None` = unknown (the table's default applies and `variant_known` is `false`).
@@ -203,6 +237,16 @@ pub(crate) fn check_launch_firmware(
     }
 }
 
+/// [`decide`] after the gate of the library (design v6.0 §2.2): an unknown region with another file of the table
+/// present launches without notice, as in 2.1. Used by the library dialog and `App::build` (OSD notice).
+pub(crate) fn decide_launch(lf: &LaunchFirmware, aros_acknowledged: bool) -> FirmwareDecision {
+    use crate::library::firmware_gate::{FirmwareGate, firmware_gate};
+    if firmware_gate(&lf.check, lf.variant_known) == FirmwareGate::Launch {
+        return FirmwareDecision::Launch;
+    }
+    decide(&lf.check, aros_acknowledged)
+}
+
 /// `aros_acknowledged`: the fallback warning was already shown for this game (`GameInput::aros_acknowledged`).
 pub(crate) fn decide(check: &FirmwareCheck, aros_acknowledged: bool) -> FirmwareDecision {
     let wanted = check.wanted.clone().unwrap_or_default();
@@ -277,7 +321,7 @@ pub(crate) fn firmware_setup(
 }
 
 /// [`firmware_setup`] for a game whose system and region are known (`GameFacts`): a Mega Drive game under
-/// genesis_plus_gx gets no Mega CD table. `App::build` switches to it in GU2.
+/// genesis_plus_gx gets no Mega CD table. Used by `App::build`.
 pub(crate) fn firmware_setup_for(
     core_id: &str,
     first_file: Option<&Path>,
@@ -338,7 +382,7 @@ pub(crate) fn firmware_setup_for(
         locale: &locale,
         extension: &extension,
     });
-    let decision = decide(&lf.check, game.input.aros_acknowledged);
+    let decision = decide_launch(&lf, game.input.aros_acknowledged);
     let acknowledged_now = matches!(decision, FirmwareDecision::FallbackFirstTime { .. });
     if acknowledged_now {
         // Warned once per game (design v3.0 §9 q.3): the library dialog already did it, or this OSD (CLI).
@@ -684,5 +728,105 @@ mod tests {
             None
         );
         assert_eq!(region_variant(None, None), None);
+    }
+
+    #[test]
+    fn header_wins_over_a_contradicting_name_tag() {
+        // Ported from the 2.1 `megacd::region_of`: the core reads the header, so does the check.
+        use emu_library::DiscRegion as R;
+        let dir = tempfile::tempdir().unwrap();
+        let iso = |name: &str, byte: u8| {
+            let mut data = vec![0u8; 0x800];
+            data[..14].copy_from_slice(b"SEGADISCSYSTEM");
+            data[0x20B] = byte;
+            let path = dir.path().join(name);
+            std::fs::write(&path, data).unwrap();
+            path
+        };
+        assert_eq!(
+            region_variant(None, Some(&iso("Jeu (USA).iso", 0x64))),
+            Some(R::Europe.key())
+        );
+        assert_eq!(
+            region_variant(None, Some(&iso("Jeu.iso", 0xA1))),
+            Some(R::Japan.key())
+        );
+        let chd = dir.path().join("Dune.chd");
+        std::fs::write(&chd, b"MComprHD").unwrap();
+        assert_eq!(region_variant(None, Some(&chd)), None);
+    }
+
+    #[test]
+    fn unknown_region_with_another_bios_launches_without_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(tmp.path());
+        std::fs::create_dir_all(&dirs.system).unwrap();
+        std::fs::write(dirs.system.join("bios_CD_E.bin"), b"bios").unwrap();
+        let prefs = CorePreferences::builtin();
+        let none = BTreeMap::new();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let disc = Some(Path::new("/nonexistent/Dune.chd"));
+        let facts = |region| GameFacts {
+            database: Some(MEGA_CD),
+            region,
+        };
+        let lf = |region| {
+            check_launch_firmware(
+                &dirs.system,
+                &prefs,
+                &gpgx,
+                disc,
+                facts(region),
+                &none,
+                &none,
+            )
+            .unwrap()
+        };
+        assert_eq!(decide_launch(&lf(None), false), FirmwareDecision::Launch);
+        assert_eq!(
+            decide_launch(&lf(Some(emu_library::DiscRegion::Usa)), false),
+            FirmwareDecision::Missing {
+                wanted: "bios_CD_U.bin".into()
+            }
+        );
+        // `App::build` gives no « BIOS manquant » notice for the unknown region either.
+        let mut options = GameOptions::default();
+        let setup = firmware_setup_for(
+            "genesis_plus_gx",
+            disc,
+            facts(None),
+            &dirs,
+            &Config::default(),
+            &prefs,
+            &mut options,
+        );
+        assert_eq!(setup.notice, None);
+        let setup = firmware_setup_for(
+            "genesis_plus_gx",
+            disc,
+            facts(Some(emu_library::DiscRegion::Japan)),
+            &dirs,
+            &Config::default(),
+            &prefs,
+            &mut options,
+        );
+        assert!(setup.notice.is_some_and(|n| n.contains("bios_CD_J.bin")));
+    }
+
+    #[test]
+    fn cli_content_finds_the_system_of_the_file() {
+        let prefs = CorePreferences::builtin();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let pico = CoreId::new("picodrive").unwrap();
+        let db = |core, path: &str| content_database(&prefs, core, Some(Path::new(path)));
+        assert_eq!(db(&gpgx, "/r/Sonic.md").as_deref(), Some(MEGA_DRIVE));
+        assert_eq!(db(&gpgx, "/r/Dune.cue").as_deref(), Some(MEGA_CD));
+        assert_eq!(db(&gpgx, "/r/Dune.CHD").as_deref(), Some(MEGA_CD));
+        assert_eq!(db(&pico, "/r/Doom.32x").as_deref(), Some("Sega - 32X"));
+        assert_eq!(db(&gpgx, "/r/x.zzz"), None);
+        assert_eq!(content_database(&prefs, &gpgx, None), None);
+        // A `.bin` cartridge stays a cartridge (never the Mega CD table).
+        let bin = db(&gpgx, "/nonexistent/Sonic.bin");
+        assert_ne!(bin.as_deref(), Some(MEGA_CD));
     }
 }

@@ -705,6 +705,7 @@ dependencies = [
  "ctrlc",
  "directories",
  "emu-ui",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

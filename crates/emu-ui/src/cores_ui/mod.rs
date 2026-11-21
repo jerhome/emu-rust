@@ -471,7 +471,9 @@ impl CoresUi {
         let known = KnownFirmware::builtin();
         let wanted: BTreeSet<&CoreId> = self.prefs.systems().flat_map(|(_, c)| c.iter()).collect();
         for id in wanted {
-            let Some(system) = crate::launch_firmware::firmware_system(&self.prefs, id) else {
+            // No game here: the system of the core's table (Mega CD for genesis_plus_gx), default variant.
+            let Some(system) = crate::launch_firmware::firmware_system_for(&self.prefs, id, None)
+            else {
                 continue;
             };
             match check_core_firmware(&self.system_dir, &self.prefs, id, &system, None, &known) {

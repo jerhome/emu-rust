@@ -32,6 +32,24 @@ pub fn check_core(core: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Printed after a runtime error: the core's own explanation when it refused the game and said why (design v6.0
+/// §2.1: « Unable to open CD BIOS: …/bios_CD_U.bin »), the generic advice otherwise.
+pub fn failure_hint(core_error: Option<&str>) -> String {
+    match core_error.map(clean_line).filter(|e| !e.is_empty()) {
+        Some(e) => format!("Le core a refusé le jeu : {e}"),
+        None => load_failure_hint(),
+    }
+}
+
+/// Control characters of an untrusted core message removed (one terminal line).
+fn clean_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 /// Appended to a runtime error (the core exists but could not be loaded or started).
 pub fn load_failure_hint() -> String {
     format!(
@@ -43,6 +61,17 @@ pub fn load_failure_hint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_error_replaces_the_generic_advice() {
+        let hint = failure_hint(Some("Unable to open CD BIOS: /s/bios_CD_U.bin\u{1b}[2J"));
+        assert_eq!(
+            hint,
+            "Le core a refusé le jeu : Unable to open CD BIOS: /s/bios_CD_U.bin [2J"
+        );
+        assert_eq!(failure_hint(None), load_failure_hint());
+        assert_eq!(failure_hint(Some(" \n")), load_failure_hint());
+    }
 
     #[test]
     fn missing_core_names_the_extension() {

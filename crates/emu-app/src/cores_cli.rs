@@ -12,7 +12,7 @@ use emu_ui::assets::bios::{
 use emu_ui::assets::bios::{ReplacePolicy as ImportPolicy, TargetState};
 use emu_ui::assets::cores::{
     CoreId, CoreManager, CorePreferences, FirmwareCheck, FirmwareState, FirmwareStatus,
-    KnownFirmware, Origin, check_core_firmware,
+    FirmwareVariant, KnownFirmware, Origin, check_core_firmware,
 };
 use emu_ui::assets::http::{CancelToken, Progress};
 use emu_ui::{BiosIdentified, ROM_KEY_NAME};
@@ -168,26 +168,61 @@ fn table_system(prefs: &CorePreferences, id: &CoreId) -> Option<String> {
         .map(|s| (*s).to_owned())
 }
 
-/// The single 3.0 check (`check_core_firmware`, default variant), when the core has a table or a built-in ROM.
-fn required_check(dirs: &DataDirs, prefs: &CorePreferences, id: &CoreId) -> Option<FirmwareCheck> {
-    let system = table_system(prefs, id)?;
-    match check_core_firmware(
-        &dirs.system,
-        prefs,
-        id,
-        &system,
-        None,
-        &KnownFirmware::builtin(),
-    )? {
-        Ok(check) => Some(check),
-        Err(e) => {
-            eprintln!("{id} : {e}");
-            None
+/// One line of `--check-bios` for a core with a table or a built-in ROM: the variant it was checked for
+/// (`None`: the table's default), and the result.
+struct RequiredLine {
+    region: Option<String>,
+    check: FirmwareCheck,
+}
+
+/// The single 3.0 check (`check_core_firmware`), when the core has a table or a built-in ROM: once per region for a
+/// `variant = "region"` table (Mega CD: the BIOS of each region, design v6.0 §3.5), the default variant otherwise.
+fn required_checks(dirs: &DataDirs, prefs: &CorePreferences, id: &CoreId) -> Vec<RequiredLine> {
+    let Some(system) = table_system(prefs, id) else {
+        return Vec::new();
+    };
+    let regions: Vec<Option<String>> = match prefs.required_firmware(id, &system) {
+        Some(req) if req.variant == FirmwareVariant::Region => {
+            let mut keys: Vec<String> = req.files.keys().cloned().collect();
+            keys.sort_by_key(|k| region_order(k));
+            keys.into_iter().map(Some).collect()
         }
+        _ => vec![None],
+    };
+    let known = KnownFirmware::builtin();
+    let mut out = Vec::new();
+    for region in regions {
+        match check_core_firmware(&dirs.system, prefs, id, &system, region.as_deref(), &known) {
+            Some(Ok(check)) => out.push(RequiredLine { region, check }),
+            Some(Err(e)) => {
+                eprintln!("{id} : {e}");
+                return Vec::new();
+            }
+            None => return Vec::new(),
+        }
+    }
+    out
+}
+
+/// Europe, USA, Japon, then the rest (same order as the library dialog).
+fn region_order(key: &str) -> usize {
+    ["europe", "usa", "japan"]
+        .iter()
+        .position(|k| *k == key)
+        .unwrap_or(usize::MAX)
+}
+
+fn region_label(key: &str) -> &str {
+    match key {
+        "europe" => "Europe",
+        "usa" => "USA",
+        "japan" => "Japon",
+        other => other,
     }
 }
 
-fn describe_required(check: &FirmwareCheck) -> String {
+fn describe_required(line: &RequiredLine) -> String {
+    let check = &line.check;
     let wanted = check.wanted.as_deref().unwrap_or("-");
     let state = match &check.state {
         FirmwareState::Ok => "présent".to_owned(),
@@ -199,14 +234,27 @@ fn describe_required(check: &FirmwareCheck) -> String {
         FirmwareState::CoreFallback { label } => fallback_text(label),
         FirmwareState::Builtin { label } => return format!("  ROM intégrée au core : {label}"),
     };
-    format!("  modèle par défaut : {wanted} : {state}")
+    match &line.region {
+        Some(region) => format!("  région {} : {wanted} : {state}", region_label(region)),
+        None => format!("  modèle par défaut : {wanted} : {state}"),
+    }
 }
 
-fn required_is_problem(check: &FirmwareCheck) -> bool {
-    matches!(
+fn usable(check: &FirmwareCheck) -> bool {
+    !matches!(
         check.state,
         FirmwareState::Missing | FirmwareState::WrongHash { .. } | FirmwareState::Unreadable(_)
     )
+}
+
+/// A region table is a problem only when no region's file is usable (a game of an unknown region launches with
+/// any of them, design v6.0 §2.2); any other table when its file is not.
+fn required_is_problem(lines: &[RequiredLine]) -> bool {
+    if lines.iter().any(|l| l.region.is_some()) {
+        !lines.iter().any(|l| usable(&l.check))
+    } else {
+        lines.iter().any(|l| !usable(&l.check))
+    }
 }
 
 fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Result<bool, String> {
@@ -220,19 +268,19 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
     for id in ids {
         let statuses = manager.firmware_status(&id);
         // A core with a 3.0 table is judged by it (design v3.0 §3.5.5); its `.info` list is informative.
-        let required = required_check(dirs, &prefs, &id);
-        if statuses.is_empty() && required.is_none() {
+        let required = required_checks(dirs, &prefs, &id);
+        if statuses.is_empty() && required.is_empty() {
             println!("{id} : aucun BIOS déclaré.");
             continue;
         }
         println!("{id} :");
-        if let Some(check) = &required {
-            println!("{}", describe_required(check));
-            required_problem |= required_is_problem(check);
+        for line in &required {
+            println!("{}", describe_required(line));
         }
+        required_problem |= required_is_problem(&required);
         for status in &statuses {
             println!("{}", describe(status));
-            required_problem |= required.is_none()
+            required_problem |= required.is_empty()
                 && !status.spec.optional
                 && !matches!(
                     status.state,
@@ -306,8 +354,13 @@ fn list_required(dirs: &DataDirs) {
                 .filter(|c| prefs.required_firmware(c, system).is_some())
                 .map(CoreId::as_str)
                 .collect();
+            let per = if req.variant == FirmwareVariant::Region {
+                "région"
+            } else {
+                "modèle"
+            };
             println!(
-                "{system} ({}) : fichiers attendus par modèle",
+                "{system} ({}) : fichiers attendus par {per}",
                 cores_list.join(", ")
             );
             for (file, models) in by_file {
@@ -591,4 +644,61 @@ pub fn managed_core_path(
     manager
         .verified_path(&id)
         .map_err(|e| format!("{e}\nInstaller le core : emu-rust --install-core {id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dirs() -> (tempfile::TempDir, DataDirs) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(tmp.path());
+        std::fs::create_dir_all(&dirs.system).unwrap();
+        (tmp, dirs)
+    }
+
+    #[test]
+    fn mega_cd_bios_are_checked_per_region() {
+        let (_tmp, dirs) = dirs();
+        let prefs = CorePreferences::builtin();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let lines = required_checks(&dirs, &prefs, &gpgx);
+        let wanted: Vec<_> = lines
+            .iter()
+            .map(|l| (l.region.as_deref(), l.check.wanted.as_deref()))
+            .collect();
+        assert_eq!(
+            wanted,
+            vec![
+                (Some("europe"), Some("bios_CD_E.bin")),
+                (Some("usa"), Some("bios_CD_U.bin")),
+                (Some("japan"), Some("bios_CD_J.bin")),
+            ]
+        );
+        assert_eq!(
+            describe_required(&lines[0]),
+            "  région Europe : bios_CD_E.bin : absent"
+        );
+        assert!(required_is_problem(&lines));
+        // One region present is enough (a game of an unknown region launches with it).
+        std::fs::write(dirs.system.join("bios_CD_J.bin"), b"x").unwrap();
+        let lines = required_checks(&dirs, &prefs, &gpgx);
+        let japan = lines.iter().find(|l| l.region.as_deref() == Some("japan"));
+        // A fake file has an unexpected md5: still no usable BIOS.
+        assert!(japan.is_some_and(|l| !usable(&l.check)));
+        assert!(required_is_problem(&lines));
+    }
+
+    #[test]
+    fn model_tables_keep_the_default_line() {
+        let (_tmp, dirs) = dirs();
+        let prefs = CorePreferences::builtin();
+        let lines = required_checks(&dirs, &prefs, &CoreId::new("puae").unwrap());
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].region.is_none());
+        assert!(describe_required(&lines[0]).starts_with("  modèle par défaut : kick"));
+        // AROS fallback: not a problem.
+        assert!(!required_is_problem(&lines));
+        assert!(required_checks(&dirs, &prefs, &CoreId::new("gambatte").unwrap()).is_empty());
+    }
 }

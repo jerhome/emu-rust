@@ -5,8 +5,8 @@
 //! `cargo test -p emu-ui --test megacd -- --ignored --test-threads=1`.
 //! No commercial BIOS is ever shipped or downloaded: without one, the core must refuse the disc and name the BIOS
 //! file it wants. `EMU_TEST_MEGACD_BIOS=<dir>` (the user's own `bios_CD_*.bin`) enables the real boot test.
-//! The "BIOS missing" dialog and its `failure_hint` live in the library window (no scripted path from here):
-//! they are covered by the unit tests of `emu-ui/src/library`.
+//! The generic "BIOS manquant" dialog (6.0) lives in the library window (no scripted path from here): it is
+//! covered by the unit tests of `emu-ui/src/library`; the core's error shown on a refusal by `core_error_ui.rs`.
 
 use std::collections::BTreeMap;
 use std::fs;

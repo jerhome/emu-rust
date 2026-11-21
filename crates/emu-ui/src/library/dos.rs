@@ -364,7 +364,7 @@ impl LibraryUi {
                 }
                 self.focus = Some(Focus::Grid);
                 let game = d.game;
-                self.launch(
+                self.launch(super::LaunchArgs::new(
                     Some(game.id),
                     game.title.clone(),
                     &game.system,
@@ -374,7 +374,7 @@ impl LibraryUi {
                         start: Some(start),
                     },
                     true,
-                );
+                ));
             }
         }
     }

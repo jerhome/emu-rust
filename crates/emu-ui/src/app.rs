@@ -40,7 +40,7 @@ use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
-use crate::launch_firmware::firmware_setup;
+use crate::launch_firmware::{GameFacts, firmware_setup_for};
 use crate::shutdown;
 use crate::ui::{
     self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, EightBitView,
@@ -247,6 +247,8 @@ pub(crate) struct App {
     analog: bool,
     featured: Option<Featured>,
     soundfont_hint: bool,
+    /// System of CDs (`disc = true`): the disk menu and its messages say « CD ».
+    disc: bool,
     /// Keys of the « Cassette » menu (`cores.toml` `actions`).
     tape_actions: CoreActions,
     /// CPC / C64 entries of the menus.
@@ -402,11 +404,24 @@ impl App {
         let core_id = core_id_from_path(&options.core);
         let prefs = crate::cores_ui::preferences(&options.config.cores);
         let typed_id = CoreId::new(&core_id);
-        let spec = match &typed_id {
-            Some(id) => {
+        let spec = match (&options.spec, &typed_id) {
+            // Planned by the library (`plan_disc_launch`: the discs of a CD game).
+            (Some(spec), _) => spec.clone(),
+            (None, Some(id)) => {
                 dos::spec_for_content(&options.content, &prefs, id).map_err(UiError::Content)?
             }
-            None => content_spec(&core_id, &options.content, &prefs),
+            (None, None) => content_spec(&core_id, &options.content, &prefs),
+        };
+        // The game's system (library entry, else the content's extension and header for the CLI): firmware
+        // table, « Réglages » section, default input mode and « CD » menu (design v6.0 §3.5).
+        let game_database = options.game_system.clone().or_else(|| {
+            typed_id.as_ref().and_then(|id| {
+                crate::launch_firmware::content_database(&prefs, id, options.content.first())
+            })
+        });
+        let facts = GameFacts {
+            database: game_database.as_deref(),
+            region: options.region,
         };
         let no_game = spec == ContentSpec::NoGame;
         let working_copy = matches!(
@@ -445,9 +460,10 @@ impl App {
             .get(&core_id)
             .cloned()
             .unwrap_or_default();
-        let firmware = firmware_setup(
+        let firmware = firmware_setup_for(
             &core_id,
             options.content.first(),
+            facts,
             &options.dirs,
             &options.config,
             &prefs,
@@ -491,8 +507,11 @@ impl App {
         let dos_core = typed_id
             .as_ref()
             .is_some_and(|id| prefs.folder_policy(id).is_some());
+        let table_system = typed_id.as_ref().and_then(|id| {
+            crate::launch_firmware::firmware_system_for(&prefs, id, game_database.as_deref())
+        });
         let featured = typed_id.as_ref().and_then(|id| {
-            let system = crate::launch_firmware::firmware_system(&prefs, id)?;
+            let system = table_system.clone()?;
             let keys = prefs.featured_options(id, &system);
             (!keys.is_empty()).then(|| Featured {
                 title: text::featured_title(&system),
@@ -537,15 +556,13 @@ impl App {
         }
         let now = Instant::now();
         let mut overlay = Overlay::default();
-        let system_input = typed_id
-            .as_ref()
-            .and_then(|id| crate::launch_firmware::firmware_system(&prefs, id))
-            .and_then(|database| {
-                emu_library::systems()
-                    .iter()
-                    .find(|s| s.database == database)
-            })
-            .map_or(InputDefault::Keyboard, |s| s.default_input);
+        let system_info = table_system.as_deref().and_then(|database| {
+            emu_library::systems()
+                .iter()
+                .find(|s| s.database == database)
+        });
+        let system_input = system_info.map_or(InputDefault::Keyboard, |s| s.default_input);
+        let disc = system_info.is_some_and(|s| s.disc);
         let computer = (options.computer || is_computer_profile(&core_id)).then(|| {
             let input = &game_options.options.input;
             let mode = initial_keyboard_mode(
@@ -725,6 +742,7 @@ impl App {
             analog: typed_id.as_ref().is_some_and(|id| prefs.analog(id)),
             featured,
             soundfont_hint,
+            disc,
             tape_actions,
             eightbit,
             fast_load_inhibit: false,
@@ -949,6 +967,7 @@ impl App {
                 can_reset,
                 added,
                 orphans,
+                disc: self.disc,
             }
         });
     }
@@ -1064,7 +1083,7 @@ impl App {
                     .map_or(String::new(), |s| s.label.clone());
                 self.overlay
                     .osd
-                    .info(text::disk_inserted(i, slots.len(), &label), now);
+                    .info(text::media_inserted(self.disc, i, slots.len(), &label), now);
                 if self.game_options.options.media.last_disk != Some(i) {
                     self.game_options.options.media.last_disk = Some(i);
                     self.game_options_dirty = true;

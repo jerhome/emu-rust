@@ -4,12 +4,10 @@
 
 mod covers;
 mod dos;
-mod firmware_gate;
+pub(crate) mod firmware_gate;
 mod grid;
 mod home;
 mod host;
-mod megacd;
-pub use megacd::cli_failure_hint as megacd_cli_hint;
 mod pad_settings;
 mod settings;
 pub(crate) mod text;
@@ -20,11 +18,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use egui::{Color32, Key, RichText, Ui};
+use emu_assets::cores::FirmwareVariant;
 use emu_assets::cores::{CoreId, FirmwareStatus};
 use emu_library::{
-    Game, GameFilter, GameId, Library, OpenOutcome, ScanProgress, SortOrder, SystemKind,
-    filter_games, systems,
+    DiscRegion, Game, GameFilter, GameId, Library, OpenOutcome, ScanProgress, SortOrder,
+    SystemKind, filter_games, systems,
 };
+use emu_runtime::ContentSpec;
 
 use self::covers::{CoverProvider, Covers, Placeholder};
 pub(crate) use self::host::run;
@@ -33,7 +33,8 @@ use crate::GameContent;
 use crate::config::{Config, DataDirs};
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
 use crate::launch_firmware::{
-    FirmwareDecision, GameFacts, check_launch_firmware, decide, fallback_option,
+    FirmwareDecision, GameFacts, LaunchFirmware, check_launch_firmware, decide_launch,
+    fallback_option,
 };
 use crate::platform::{FolderOutcome, FolderPlan, plan_open_folder, spawn_open_folder};
 
@@ -69,8 +70,13 @@ pub(crate) struct LaunchRequest {
     pub computer: bool,
     /// Shown in the game's OSD (optional BIOS missing…).
     pub warnings: Vec<String>,
-    /// Replaces the generic message when the core refuses the game (Mega CD: BIOS names and folder).
-    pub failure_hint: Option<String>,
+    /// libretro database name of the game's system: firmware table, « Réglages » section and « CD » menu of
+    /// `App::build` (a Mega Drive game under genesis_plus_gx gets no Mega CD table). `None`: from the content.
+    pub system: Option<String>,
+    /// `Game::region` (Mega CD BIOS of the region).
+    pub region: Option<DiscRegion>,
+    /// Content planned by the library (`plan_disc_launch` for a `disc = true` system); `None`: from `content`.
+    pub spec: Option<ContentSpec>,
 }
 
 #[derive(Debug)]
@@ -103,16 +109,6 @@ enum Dialog {
         game_id: GameId,
     },
     Message(String),
-    /// Mega CD disc without its BIOS (or with another revision): exact name, region, `system/` folder.
-    MegaCdBios {
-        request: LaunchRequest,
-        verdict: megacd::BiosVerdict,
-        region: Option<emu_library::DiscRegion>,
-        /// « Réessayer » found nothing new.
-        retried: bool,
-        /// « Copier le chemin » was used.
-        copied: bool,
-    },
     /// First scan without any DAT: offer the download (ADR 0014 design §1).
     OfferDat,
     /// 3.0 firmware check (design v3.0 §2.1): fallback warned once per game, wrong or missing file.
@@ -125,6 +121,12 @@ enum Dialog {
         options_path: PathBuf,
         /// `(option, value)` that selects the core's built-in ROM, when declared.
         fallback: Option<(String, String)>,
+        /// System, region and other files of the table (generic « BIOS manquant » dialog, design v6.0 §2.1).
+        info: Box<FirmwareInfo>,
+        /// « Réessayer » found nothing new.
+        retried: bool,
+        /// « Copier le chemin » was used.
+        copied: bool,
     },
     /// Several ROM folders: which one to open.
     ChooseFolder(Vec<PathBuf>),
@@ -148,6 +150,55 @@ pub(crate) struct LaunchArgs {
     ext: Option<String>,
     content: GameContent,
     computer: bool,
+    /// `Game::region`.
+    region: Option<DiscRegion>,
+    /// The library entry of a `disc = true` system: its content is planned by `plan_disc_launch` once the core
+    /// is known (several discs, zip refused).
+    disc: Option<Box<Game>>,
+}
+
+impl LaunchArgs {
+    fn new(
+        game_id: Option<GameId>,
+        title: String,
+        system_id: &str,
+        ext: Option<&str>,
+        content: GameContent,
+        computer: bool,
+    ) -> Self {
+        Self {
+            game_id,
+            title,
+            system_id: system_id.to_owned(),
+            ext: ext.map(str::to_owned),
+            content,
+            computer,
+            region: None,
+            disc: None,
+        }
+    }
+}
+
+/// What the generic firmware dialog says besides the decision (design v6.0 §2.1): « BIOS manquant :
+/// bios_CD_U.bin (Mega CD / Sega CD, USA) », « bios_CD_E.bin est présent, mais ce jeu est USA ».
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FirmwareInfo {
+    /// Name of the system of the table (« Mega CD / Sega CD »).
+    system: Option<String>,
+    /// Region of the game (« Europe »); `None` for a table that is not keyed by region, or a region unknown.
+    region: Option<&'static str>,
+    /// Region table and unknown region: every file of the table with its region, any of them will do.
+    alternatives: Vec<String>,
+    /// Other files of the table present in `system/`.
+    others_present: Vec<String>,
+}
+
+/// Result of the firmware check of one launch (library dialog, « Réessayer »).
+struct GatedFirmware {
+    system: String,
+    decision: FirmwareDecision,
+    options_path: PathBuf,
+    info: FirmwareInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -554,14 +605,7 @@ impl LibraryUi {
 
     /// Starts again a launch that stopped on a BIOS dialog (after an import).
     fn relaunch(&mut self, args: LaunchArgs) {
-        self.launch(
-            args.game_id,
-            args.title,
-            &args.system_id,
-            args.ext.as_deref(),
-            args.content,
-            args.computer,
-        );
+        self.launch(args);
     }
 
     fn launch_game(&mut self, game: Game) {
@@ -570,7 +614,7 @@ impl LibraryUi {
         // A DOS zip is `path` (never `entry`); a folder game is `Folder` (`[dos] start` applied by `App::build`).
         let content = crate::computer::dos::game_content(&game, computer, None);
         let ext = grid::launch_extension(&game);
-        self.launch(
+        let mut args = LaunchArgs::new(
             Some(game.id),
             game.title.clone(),
             &game.system,
@@ -578,6 +622,11 @@ impl LibraryUi {
             content,
             computer,
         );
+        args.region = game.region;
+        if system.is_some_and(|s| s.disc) {
+            args.disc = Some(Box::new(game));
+        }
+        self.launch(args);
     }
 
     /// « Bureau Atari ST »: the machine without a disk (`ContentSpec::NoGame`), keyboard mode.
@@ -586,59 +635,63 @@ impl LibraryUi {
             || system_id.to_owned(),
             |s| text::desktop_title(system_id, &s.name),
         );
-        self.launch(None, title, system_id, None, GameContent::NoGame, true);
+        self.launch(LaunchArgs::new(
+            None,
+            title,
+            system_id,
+            None,
+            GameContent::NoGame,
+            true,
+        ));
     }
 
-    fn launch(
-        &mut self,
-        game_id: Option<GameId>,
-        title: String,
-        system_id: &str,
-        ext: Option<&str>,
-        content: GameContent,
-        computer: bool,
-    ) {
+    fn launch(&mut self, args: LaunchArgs) {
         let Some(manager) = self.cores.manager().cloned() else {
             self.open_dialog(Dialog::Message(text::NO_MANAGER.to_owned()));
             return;
         };
         let prefs = cores_ui::preferences(&self.config.cores);
-        let database = emu_library::system(system_id).map(|s| s.database.as_str());
-        let check = cores_ui::plan_launch(&manager, &prefs, database, ext);
-        let megacd_region = (system_id == megacd::SYSTEM_ID).then(|| match &content {
-            GameContent::Files(files) => files.first().and_then(|p| megacd::region_of(p)),
-            GameContent::NoGame | GameContent::Folder { .. } => None,
-        });
-        let failure_hint = megacd_region.map(|region| {
-            let names = region.map_or(megacd::BIOS_NAMES.to_vec(), |r| vec![megacd::bios_name(r)]);
-            text::megacd_load_failed(&title, &names, &self.dirs.system)
-        });
+        let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
+        let check =
+            cores_ui::plan_launch(&manager, &prefs, database.as_deref(), args.ext.as_deref());
+        // Disc systems (design v6.0 §2.1): the discs of the game for this core, a zip refused before anything.
+        let core = match &check {
+            LaunchCheck::Ready { id, .. }
+            | LaunchCheck::FirmwareMissing { id, .. }
+            | LaunchCheck::NeedsInstall(id) => Some(id.clone()),
+            _ => None,
+        };
+        let spec = match (&args.disc, core) {
+            (Some(game), Some(core)) => match crate::content::plan_disc_launch(game, &core, &prefs)
+            {
+                Ok(spec) => Some(spec),
+                Err(refusal) => {
+                    if !matches!(check, LaunchCheck::NeedsInstall(_)) {
+                        // `prepare_launch` marked the core in use.
+                        cores_ui::release(&manager);
+                    }
+                    let msg = text::game_failed(&args.title, refusal.message());
+                    self.open_dialog(Dialog::Message(msg));
+                    return;
+                }
+            },
+            _ => None,
+        };
+        let title = args.title.clone();
+        let game_id = args.game_id;
         let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
-            game: game_id,
-            title: title.clone(),
+            game: args.game_id,
+            title: args.title.clone(),
             core,
             core_path,
-            content: content.clone(),
-            computer,
+            content: args.content.clone(),
+            computer: args.computer,
             warnings,
-            failure_hint: failure_hint.clone(),
+            system: database.clone(),
+            region: args.region,
+            spec: spec.clone(),
         };
-        let check = match megacd_region {
-            Some(region) => match self.megacd_gate(&manager, check, region, &request) {
-                Some(check) => check,
-                None => return,
-            },
-            None => check,
-        };
-        let args = LaunchArgs {
-            game_id,
-            title: title.clone(),
-            system_id: system_id.to_owned(),
-            ext: ext.map(str::to_owned),
-            content: content.clone(),
-            computer,
-        };
-        let Some(check) = self.firmware_gate(&prefs, check, args, &request) else {
+        let Some(check) = self.gate_firmware(&prefs, check, &args, spec.as_ref(), &request) else {
             return;
         };
         match check {
@@ -662,7 +715,9 @@ impl LibraryUi {
                 None => self.open_dialog(Dialog::Message(text::desktop_needs_core(core.as_str()))),
             },
             LaunchCheck::FirmwareMissing { id, path, missing } => {
-                let free = database.and_then(|db| self.cores.bios.for_missing(db, &missing));
+                let free = database
+                    .as_deref()
+                    .and_then(|db| self.cores.bios.for_missing(db, &missing));
                 let request = request(id, path, Vec::new());
                 match free {
                     Some(bios) => self.open_dialog(Dialog::FreeBios {
@@ -690,13 +745,58 @@ impl LibraryUi {
         }
     }
 
+    /// The single 3.0 check of `core` for this launch (design v3.0 §3.5.5, v6.0 §2.2), gated as in 2.1 (unknown
+    /// region + another BIOS present ⇒ launch). `None`: the core has neither a table nor a built-in ROM.
+    fn firmware_decision(
+        &self,
+        prefs: &emu_assets::cores::CorePreferences,
+        core: &CoreId,
+        args: &LaunchArgs,
+        spec: Option<&ContentSpec>,
+    ) -> Option<GatedFirmware> {
+        // Same options path and layers as `App::build`: `resolve_game` gives the per-game options file.
+        let spec = spec
+            .cloned()
+            .unwrap_or_else(|| crate::content::content_spec(core.as_str(), &args.content, prefs));
+        let resolved = crate::game_identity::resolve_game(core.as_str(), spec, &self.dirs);
+        let loaded = crate::game_options::GameOptions::load(&resolved.options_path);
+        let global = self
+            .config
+            .core_options
+            .get(core.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let database = emu_library::system(&args.system_id).map(|s| s.database.as_str());
+        let lf = check_launch_firmware(
+            &self.dirs.system,
+            prefs,
+            core,
+            args.content.first(),
+            GameFacts {
+                database,
+                region: args.region,
+            },
+            &global,
+            &loaded.options.core_options,
+        )?;
+        let decision = decide_launch(&lf, loaded.options.input.aros_acknowledged);
+        let info = firmware_info(prefs, core, &lf);
+        Some(GatedFirmware {
+            system: lf.system,
+            decision,
+            options_path: resolved.options_path,
+            info,
+        })
+    }
+
     /// Cores with a `required_firmware` table or a built-in ROM (design v3.0 §2.1, §3.5.5): the single 3.0 check
     /// replaces the `.info` one. `None`: a dialog took over (the core stays marked in use until it is closed).
-    fn firmware_gate(
+    fn gate_firmware(
         &mut self,
         prefs: &emu_assets::cores::CorePreferences,
         check: LaunchCheck,
-        args: LaunchArgs,
+        args: &LaunchArgs,
+        spec: Option<&ContentSpec>,
         request: &dyn Fn(CoreId, PathBuf, Vec<String>) -> LaunchRequest,
     ) -> Option<LaunchCheck> {
         let (id, path) = match &check {
@@ -705,47 +805,65 @@ impl LibraryUi {
             }
             _ => return Some(check),
         };
-        // Same options path and layers as `App::build`: `resolve_game` gives the per-game options file.
-        let spec = crate::content::content_spec(id.as_str(), &args.content, prefs);
-        let resolved = crate::game_identity::resolve_game(id.as_str(), spec, &self.dirs);
-        let loaded = crate::game_options::GameOptions::load(&resolved.options_path);
-        let global = self
-            .config
-            .core_options
-            .get(id.as_str())
-            .cloned()
-            .unwrap_or_default();
-        let Some(lf) = check_launch_firmware(
-            &self.dirs.system,
-            prefs,
-            &id,
-            args.content.first(),
-            // GU2: thread the game's system and region from the library entry.
-            GameFacts::default(),
-            &global,
-            &loaded.options.core_options,
-        ) else {
+        let Some(gated) = self.firmware_decision(prefs, &id, args, spec) else {
             // Neither a table nor a built-in ROM: the 1.0 `.info` check stands.
             return Some(check);
         };
-        let decision = decide(&lf.check, loaded.options.input.aros_acknowledged);
-        tracing::info!("BIOS de {id} avant lancement : {decision:?}");
-        if decision == FirmwareDecision::Launch {
+        tracing::info!("BIOS de {id} avant lancement : {:?}", gated.decision);
+        if gated.decision == FirmwareDecision::Launch {
             return Some(LaunchCheck::Ready {
                 id,
                 path,
                 warnings: Vec::new(),
             });
         }
-        let fallback = fallback_option(prefs, &id, &lf.system);
+        let fallback = fallback_option(prefs, &id, &gated.system);
         self.open_dialog(Dialog::Firmware3 {
             request: request(id, path, Vec::new()),
-            args: Box::new(args),
-            decision,
-            options_path: resolved.options_path,
+            args: Box::new(args.clone()),
+            decision: gated.decision,
+            options_path: gated.options_path,
             fallback,
+            info: Box::new(gated.info),
+            retried: false,
+            copied: false,
         });
         None
+    }
+
+    /// « Réessayer » of the firmware dialog: the same check again; the game starts as soon as it passes.
+    fn firmware_retry(&mut self) {
+        let Some(Dialog::Firmware3 { request, args, .. }) = &self.dialog else {
+            return;
+        };
+        let (core, args, spec) = (request.core.clone(), (**args).clone(), request.spec.clone());
+        let prefs = cores_ui::preferences(&self.config.cores);
+        let fresh = self.firmware_decision(&prefs, &core, &args, spec.as_ref());
+        let launch = fresh
+            .as_ref()
+            .is_none_or(|g| g.decision == FirmwareDecision::Launch);
+        if launch {
+            if let Some(Dialog::Firmware3 { request, .. }) = self.dialog.take() {
+                self.focus = Some(Focus::Grid);
+                self.events.push(LibraryEvent::Launch(Box::new(request)));
+            }
+            return;
+        }
+        let Some(fresh) = fresh else {
+            return;
+        };
+        if let Some(Dialog::Firmware3 {
+            decision,
+            info,
+            retried,
+            ..
+        }) = &mut self.dialog
+        {
+            *retried = *decision == fresh.decision && **info == fresh.info;
+            *decision = fresh.decision;
+            **info = fresh.info;
+        }
+        self.focus_dialog = true;
     }
 
     /// Writes one change to a game's options file (« Continuer avec AROS », « Utiliser AROS »). Capture mode: no.
@@ -867,175 +985,6 @@ impl LibraryUi {
         self.save_config();
         self.cores
             .set_preferences(cores_ui::preferences(&self.config.cores));
-    }
-
-    /// Mega CD (design v2.1-megacd-express §2.3): checks the BIOS of the disc's region. `None`: a dialog took
-    /// over (the core stays marked in use until it is closed). Otherwise the check to carry on with, without the
-    /// `bios_CD_*` names (handled here, never in the generic BIOS warning).
-    fn megacd_gate(
-        &mut self,
-        manager: &emu_assets::cores::CoreManager,
-        check: LaunchCheck,
-        region: Option<emu_library::DiscRegion>,
-        request: &dyn Fn(CoreId, PathBuf, Vec<String>) -> LaunchRequest,
-    ) -> Option<LaunchCheck> {
-        let (id, path, others, required) = match check {
-            LaunchCheck::Ready { id, path, warnings } => (id, path, warnings, false),
-            LaunchCheck::FirmwareMissing { id, path, missing } => (id, path, missing, true),
-            other => return Some(other),
-        };
-        let others: Vec<FirmwareStatus> = others
-            .into_iter()
-            .filter(|f| !megacd::is_bios_name(&f.spec.path))
-            .collect();
-        let verdict =
-            megacd::bios_verdict(region, &manager.firmware_status(&id), &self.dirs.system);
-        if verdict == megacd::BiosVerdict::Ready {
-            return Some(if required && !others.is_empty() {
-                LaunchCheck::FirmwareMissing {
-                    id,
-                    path,
-                    missing: others,
-                }
-            } else {
-                LaunchCheck::Ready {
-                    id,
-                    path,
-                    warnings: if required { Vec::new() } else { others },
-                }
-            });
-        }
-        let names = firmware_names(&others);
-        let warnings = if names.is_empty() {
-            Vec::new()
-        } else {
-            vec![text::firmware_warning(&names)]
-        };
-        tracing::info!("BIOS Mega CD : {verdict:?} (région {region:?})");
-        self.open_dialog(Dialog::MegaCdBios {
-            request: request(id, path, warnings),
-            verdict,
-            region,
-            retried: false,
-            copied: false,
-        });
-        None
-    }
-
-    /// « Réessayer »: the same check again; the game starts as soon as the BIOS is there.
-    fn megacd_retry(&mut self) {
-        let manager = self.cores.manager().cloned();
-        let Some(Dialog::MegaCdBios {
-            request,
-            verdict,
-            region,
-            retried,
-            ..
-        }) = &mut self.dialog
-        else {
-            return;
-        };
-        let statuses = manager
-            .map(|m| m.firmware_status(&request.core))
-            .unwrap_or_default();
-        let fresh = megacd::bios_verdict(*region, &statuses, &self.dirs.system);
-        if fresh == megacd::BiosVerdict::Ready {
-            if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
-                self.focus = Some(Focus::Grid);
-                self.events.push(LibraryEvent::Launch(Box::new(request)));
-            }
-            return;
-        }
-        *retried = fresh == *verdict;
-        *verdict = fresh;
-        self.focus_dialog = true;
-    }
-
-    fn megacd_dialog(&mut self, ctx: &egui::Context) {
-        let Some(Dialog::MegaCdBios {
-            request,
-            verdict,
-            region,
-            retried,
-            copied,
-        }) = &self.dialog
-        else {
-            return;
-        };
-        let escape = ctx.input(|i| i.key_pressed(Key::Escape));
-        let focus = std::mem::take(&mut self.focus_dialog);
-        let dir = text::megacd_system_dir(&self.dirs.system);
-        let region_name = region.map(megacd::region_name);
-        let (title, body, missing) = match verdict {
-            megacd::BiosVerdict::Missing {
-                wanted,
-                others_present,
-            } => (
-                text::megacd_missing_title(wanted, region.map(megacd::region_label)),
-                text::megacd_missing_body(&request.title, region_name, wanted, others_present),
-                true,
-            ),
-            megacd::BiosVerdict::Different { name } => (
-                text::MEGACD_DIFFERENT_TITLE.to_owned(),
-                text::megacd_different_body(&request.title, name),
-                false,
-            ),
-            megacd::BiosVerdict::Ready => (String::new(), String::new(), false),
-        };
-        let (retried, copied) = (*retried, *copied);
-        let (mut retry, mut copy, mut cancel, mut anyway) = (false, false, escape, false);
-        egui::Modal::new(egui::Id::unique("library-megacd-dialog")).show(ctx, |ui| {
-            ui.set_max_width(600.0);
-            ui.heading(&title);
-            ui.label(&body);
-            if missing {
-                ui.add_space(6.0);
-                // Selectable: the path can also be copied with the mouse or Ctrl+C.
-                ui.add(egui::Label::new(RichText::new(&dir).monospace()).selectable(true));
-                if retried {
-                    ui.colored_label(WARNING, text::MEGACD_STILL_MISSING);
-                }
-                if copied {
-                    weak(ui, text::MEGACD_PATH_COPIED);
-                }
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                // Safe default first: « Réessayer » (or « Annuler »), never the launch.
-                let first = missing.then(|| {
-                    let r = ui.button(text::MEGACD_RETRY);
-                    retry = r.clicked();
-                    copy = ui.button(text::MEGACD_COPY_PATH).clicked();
-                    r
-                });
-                let c = ui.button(text::LAUNCH_CANCEL);
-                cancel |= c.clicked();
-                anyway = ui.button(text::LAUNCH_ANYWAY).clicked();
-                if focus {
-                    first.unwrap_or(c).request_focus();
-                }
-            });
-        });
-        if copy {
-            ctx.copy_text(self.dirs.system.display().to_string());
-            if let Some(Dialog::MegaCdBios { copied, .. }) = &mut self.dialog {
-                *copied = true;
-            }
-        } else if retry {
-            self.megacd_retry();
-        } else if anyway {
-            if let Some(Dialog::MegaCdBios { request, .. }) = self.dialog.take() {
-                self.focus = Some(Focus::Grid);
-                self.events.push(LibraryEvent::Launch(Box::new(request)));
-            }
-        } else if cancel {
-            self.dialog = None;
-            self.focus = Some(Focus::Grid);
-            // The core was marked in use by `prepare_launch`.
-            if let Some(m) = self.cores.manager() {
-                cores_ui::release(m);
-            }
-        }
     }
 
     /// An install requested by a launch dialog finished: relaunch that game (success) or forget it.
@@ -1330,9 +1279,6 @@ impl LibraryUi {
         if matches!(self.dialog, Some(Dialog::FreeBios { .. })) {
             return self.free_bios_dialog(ctx);
         }
-        if matches!(self.dialog, Some(Dialog::MegaCdBios { .. })) {
-            return self.megacd_dialog(ctx);
-        }
         if matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
             return self.firmware3_dialog(ctx);
         }
@@ -1381,7 +1327,6 @@ impl LibraryUi {
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
                 Dialog::FreeBios { .. }
-                | Dialog::MegaCdBios { .. }
                 | Dialog::Firmware3 { .. }
                 | Dialog::ChooseFolder(_)
                 | Dialog::FolderPath { .. }
@@ -1417,7 +1362,6 @@ impl LibraryUi {
                     Dialog::Firmware { .. }
                     | Dialog::Message(_)
                     | Dialog::FreeBios { .. }
-                    | Dialog::MegaCdBios { .. }
                     | Dialog::Firmware3 { .. }
                     | Dialog::ChooseFolder(_)
                     | Dialog::FolderPath { .. }
@@ -1471,12 +1415,16 @@ impl LibraryUi {
         }
     }
 
-    /// 3.0 firmware dialog (design v3.0 §2.1). Safe default first: « Importer… », never the launch.
+    /// Firmware dialog (design v3.0 §2.1, generic since v6.0 §2.1: exact name, region, `system/` folder). Safe
+    /// default first: « Réessayer » for a missing file (2.1), « Importer… » otherwise; never the launch.
     fn firmware3_dialog(&mut self, ctx: &egui::Context) {
         let Some(Dialog::Firmware3 {
             request,
             decision,
             fallback,
+            info,
+            retried,
+            copied,
             ..
         }) = &self.dialog
         else {
@@ -1496,8 +1444,19 @@ impl LibraryUi {
                 wanted.clone(),
             ),
             FirmwareDecision::Missing { wanted } => (
-                text::LAUNCH_FIRMWARE_TITLE.to_owned(),
-                text::firmware_question(&request.title, std::slice::from_ref(wanted)),
+                text::firmware_missing_title(
+                    wanted,
+                    info.system.as_deref(),
+                    info.region,
+                    !info.alternatives.is_empty(),
+                ),
+                text::firmware_missing_body(
+                    &request.title,
+                    info.region,
+                    wanted,
+                    &info.alternatives,
+                    &info.others_present,
+                ),
                 wanted.clone(),
             ),
             FirmwareDecision::Unreadable { wanted, error } => (
@@ -1508,17 +1467,28 @@ impl LibraryUi {
             FirmwareDecision::Launch => (String::new(), String::new(), String::new()),
         };
         let first_time = matches!(decision, FirmwareDecision::FallbackFirstTime { .. });
+        let missing = matches!(decision, FirmwareDecision::Missing { .. });
         let wrong = matches!(decision, FirmwareDecision::WrongHash { .. });
         let can_fallback = wrong && fallback.is_some();
         let kickstart = wanted.to_ascii_lowercase().starts_with("kick");
-        let dir = text::megacd_system_dir(&self.dirs.system);
+        let dir = text::system_dir_text(&self.dirs.system);
+        let (retried, copied) = (*retried, *copied);
         let (mut import, mut cont, mut cancel, mut anyway, mut use_fallback) =
             (false, false, escape, false, false);
+        let (mut retry, mut copy) = (false, false);
         egui::Modal::new(egui::Id::unique("library-firmware3-dialog")).show(ctx, |ui| {
             ui.set_max_width(600.0);
             ui.heading(&title);
             ui.label(&body);
+            ui.add_space(6.0);
+            // Selectable: the path can also be copied with the mouse or Ctrl+C.
             ui.add(egui::Label::new(RichText::new(&dir).monospace()).selectable(true));
+            if retried {
+                ui.colored_label(WARNING, text::FIRMWARE_STILL_MISSING);
+            }
+            if copied {
+                weak(ui, text::PATH_COPIED);
+            }
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 let label = if kickstart {
@@ -1528,6 +1498,15 @@ impl LibraryUi {
                 };
                 let first = ui.button(label);
                 import = first.clicked();
+                let mut default = first;
+                if !first_time {
+                    let r = ui.button(text::FIRMWARE_RETRY);
+                    retry = r.clicked();
+                    copy = ui.button(text::COPY_PATH).clicked();
+                    if missing {
+                        default = r;
+                    }
+                }
                 if first_time {
                     cont = ui.button(text::FALLBACK_CONTINUE).clicked();
                 }
@@ -1539,15 +1518,24 @@ impl LibraryUi {
                     use_fallback = ui.button(text::USE_FALLBACK).clicked();
                 }
                 if focus {
-                    first.request_focus();
+                    default.request_focus();
                 }
             });
             if first_time {
                 weak(ui, text::FALLBACK_NOTE);
+            } else {
+                weak(ui, text::FIRMWARE_NO_DOWNLOAD);
             }
         });
         if import {
             self.cores.import.start(Some(wanted));
+        } else if copy {
+            ctx.copy_text(self.dirs.system.display().to_string());
+            if let Some(Dialog::Firmware3 { copied, .. }) = &mut self.dialog {
+                *copied = true;
+            }
+        } else if retry {
+            self.firmware_retry();
         } else if cont || anyway || use_fallback {
             let Some(Dialog::Firmware3 {
                 request,
@@ -1625,7 +1613,7 @@ impl LibraryUi {
                         };
                     }
                     if *copied {
-                        weak(ui, text::MEGACD_PATH_COPIED);
+                        weak(ui, text::PATH_COPIED);
                     }
                     ui.horizontal(|ui| {
                         let ok = ui.button(text::OK);
@@ -1633,7 +1621,7 @@ impl LibraryUi {
                             ok.request_focus();
                         }
                         close |= ok.clicked();
-                        if ui.button(text::MEGACD_COPY_PATH).clicked() {
+                        if ui.button(text::COPY_PATH).clicked() {
                             copy = Some(path.display().to_string());
                         }
                     });
@@ -1683,6 +1671,41 @@ impl LibraryUi {
 
     pub(crate) fn wants_launch_capture(&mut self) {
         self.launch_selected();
+    }
+}
+
+/// [`FirmwareInfo`] of a check: system name, region of the game (region tables), every file of the table when
+/// the region is unknown, other files present.
+fn firmware_info(
+    prefs: &emu_assets::cores::CorePreferences,
+    core: &CoreId,
+    lf: &LaunchFirmware,
+) -> FirmwareInfo {
+    let table = prefs
+        .required_firmware(core, &lf.system)
+        .filter(|t| t.variant == FirmwareVariant::Region);
+    let region = table
+        .and(lf.variant.as_deref())
+        .and_then(DiscRegion::from_key)
+        .map(text::region_name);
+    let mut alternatives: Vec<(&String, &String)> = match table {
+        Some(t) if !lf.variant_known => t.files.iter().collect(),
+        _ => Vec::new(),
+    };
+    alternatives.sort_by_key(|(key, _)| text::region_order(key));
+    FirmwareInfo {
+        system: emu_library::systems()
+            .iter()
+            .find(|s| s.database == lf.system)
+            .map(|s| s.name.clone()),
+        region,
+        alternatives: alternatives
+            .into_iter()
+            .map(|(key, file)| {
+                text::file_with_region(file, DiscRegion::from_key(key).map(text::region_name))
+            })
+            .collect(),
+        others_present: lf.check.others_present.clone(),
     }
 }
 

@@ -392,42 +392,88 @@ pub fn desktop_needs_core(core: &str) -> String {
     format!("Le core {core} n'est pas installé : l'installer depuis l'écran « Cores ».")
 }
 
-// ---- Mega CD (design v2.1-megacd-express §2.4) ----------------------------------------------------------
+// ---- BIOS manquant, générique (design v6.0 §2.1 ; repris du dialogue Mega CD de la 2.1) ----------------
 
-pub const MEGACD_RETRY: &str = "Réessayer";
-pub const MEGACD_COPY_PATH: &str = "Copier le chemin";
-pub const MEGACD_PATH_COPIED: &str = "Chemin copié dans le presse-papiers.";
-pub const MEGACD_DIFFERENT_TITLE: &str = "BIOS Mega CD différent de la référence";
-pub const MEGACD_NO_DOWNLOAD: &str = "emu-rust ne télécharge jamais de BIOS commercial.";
-pub const MEGACD_STILL_MISSING: &str = "Toujours absent : vérifiez le nom exact et le dossier.";
+pub const FIRMWARE_RETRY: &str = "Réessayer";
+pub const COPY_PATH: &str = "Copier le chemin";
+pub const PATH_COPIED: &str = "Chemin copié dans le presse-papiers.";
+pub const FIRMWARE_NO_DOWNLOAD: &str = "emu-rust ne télécharge jamais de BIOS commercial.";
+pub const FIRMWARE_STILL_MISSING: &str = "Rien de nouveau : vérifiez le nom exact et le dossier.";
 
-/// Dialog title: `BIOS Mega CD manquant : bios_CD_E.bin (Mega CD, Europe)`, or the three names.
-pub fn megacd_missing_title(wanted: &[&str], label: Option<&str>) -> String {
-    match (wanted, label) {
-        ([name], Some(label)) => format!("BIOS Mega CD manquant : {name} ({label})"),
-        _ => "BIOS Mega CD manquant".to_owned(),
+/// Region of a game, as in « un jeu Europe ».
+pub fn region_name(region: emu_library::DiscRegion) -> &'static str {
+    match region {
+        emu_library::DiscRegion::Europe => "Europe",
+        emu_library::DiscRegion::Usa => "USA",
+        emu_library::DiscRegion::Japan => "Japon",
     }
 }
 
-/// Dialog body. `region`: « Europe », « USA », « Japon » (`None`: unknown, any of the three names).
-pub fn megacd_missing_body(
+/// Order of the region keys of a table in the messages (Europe, USA, Japon, then the rest).
+pub fn region_order(key: &str) -> usize {
+    ["europe", "usa", "japan"]
+        .iter()
+        .position(|k| *k == key)
+        .unwrap_or(usize::MAX)
+}
+
+/// « bios_CD_E.bin (Europe) ».
+pub fn file_with_region(file: &str, region: Option<&str>) -> String {
+    match region {
+        Some(r) => format!("{} ({r})", clean(file)),
+        None => clean(file),
+    }
+}
+
+/// `BIOS manquant : bios_CD_E.bin (Mega CD / Sega CD, Europe)`; `any_of`: the region is unknown, any file of the
+/// table will do (no single name in the title).
+pub fn firmware_missing_title(
+    wanted: &str,
+    system: Option<&str>,
+    region: Option<&str>,
+    any_of: bool,
+) -> String {
+    let wanted = clean(wanted);
+    match (any_of, system, region) {
+        (true, Some(system), _) => format!("BIOS manquant ({})", clean(system)),
+        (true, None, _) => "BIOS manquant".to_owned(),
+        (false, Some(system), Some(region)) => {
+            format!("BIOS manquant : {wanted} ({}, {region})", clean(system))
+        }
+        (false, Some(system), None) => format!("BIOS manquant : {wanted} ({})", clean(system)),
+        (false, None, Some(region)) => format!("BIOS manquant : {wanted} ({region})"),
+        (false, None, None) => format!("BIOS manquant : {wanted}"),
+    }
+}
+
+/// Dialog body: the exact name (or every name of the table when the region is unknown), the other files present.
+pub fn firmware_missing_body(
     game: &str,
     region: Option<&str>,
-    wanted: &[&str],
-    others_present: &[&str],
+    wanted: &str,
+    alternatives: &[String],
+    others_present: &[String],
 ) -> String {
     let game = clean(game);
-    let mut s = match (region, wanted) {
-        (Some(region), [name]) => format!(
-            "« {game} » est un disque {region}. Copiez votre BIOS Mega CD dans le dossier ci-dessous, \
-             sous le nom exact {name} (majuscules et minuscules comprises), puis choisissez « Réessayer »."
-        ),
-        _ => format!(
-            "La région de « {game} » n'a pas pu être lue. Copiez votre BIOS Mega CD dans le dossier \
-             ci-dessous, sous l'un des noms exacts {} (majuscules et minuscules comprises), puis \
-             choisissez « Réessayer ».",
-            megacd_names_with_regions(wanted)
-        ),
+    let wanted = clean(wanted);
+    let then =
+        "puis choisissez « Réessayer » (ou « Importer un BIOS… » pour le choisir et le vérifier).";
+    let mut s = if !alternatives.is_empty() {
+        format!(
+            "La région de « {game} » n'a pas pu être lue. Copiez votre BIOS dans le dossier ci-dessous, sous \
+             l'un des noms exacts {} (majuscules et minuscules comprises), {then}",
+            or_list(alternatives)
+        )
+    } else if let Some(region) = region {
+        format!(
+            "« {game} » est un jeu {region}. Copiez votre BIOS dans le dossier ci-dessous, sous le nom exact \
+             {wanted} (majuscules et minuscules comprises), {then}"
+        )
+    } else {
+        format!(
+            "« {game} » a besoin du fichier {wanted}. Copiez-le dans le dossier ci-dessous, sous ce nom exact \
+             (majuscules et minuscules comprises), {then}"
+        )
     };
     if let (Some(region), false) = (region, others_present.is_empty()) {
         let verb = if others_present.len() == 1 {
@@ -435,55 +481,26 @@ pub fn megacd_missing_body(
         } else {
             "sont présents"
         };
+        let others: Vec<String> = others_present.iter().map(|o| clean(o)).collect();
         s.push_str(&format!(
-            "\n{} {verb}, mais ce disque est {region}.",
-            others_present.join(", ")
+            "\n{} {verb}, mais ce jeu est {region}.",
+            others.join(", ")
         ));
     }
-    s.push('\n');
-    s.push_str(MEGACD_NO_DOWNLOAD);
     s
 }
 
-fn megacd_names_with_regions(names: &[&str]) -> String {
-    let named: Vec<String> = names
-        .iter()
-        .map(|n| match *n {
-            "bios_CD_E.bin" => format!("{n} (Europe)"),
-            "bios_CD_U.bin" => format!("{n} (USA)"),
-            "bios_CD_J.bin" => format!("{n} (Japon)"),
-            other => other.to_owned(),
-        })
-        .collect();
-    match named.split_last() {
+/// « a, b ou c ».
+fn or_list(items: &[String]) -> String {
+    match items.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} ou {last}", rest.join(", ")),
-        _ => named.join(""),
+        _ => items.join(""),
     }
 }
 
-pub fn megacd_different_body(game: &str, name: &str) -> String {
-    format!(
-        "{name} est présent mais différent de la référence connue (autre révision du BIOS ?). \
-         « {} » peut quand même démarrer.",
-        clean(game)
-    )
-}
-
 /// The system folder, shown selectable (absolute path, local only).
-pub fn megacd_system_dir(dir: &Path) -> String {
+pub fn system_dir_text(dir: &Path) -> String {
     clean(&dir.display().to_string())
-}
-
-/// Replaces the generic advice when `retro_load_game` refuses a Mega CD disc.
-pub fn megacd_load_failed(game: &str, names: &[&str], system_dir: &Path) -> String {
-    format!(
-        "« {} » n'a pas démarré : le core a refusé le disque. Le Mega CD a besoin de son BIOS ({}) dans \
-         le dossier {}, sous le nom exact. Vérifiez aussi que le .cue et tous ses fichiers de pistes sont \
-         dans le même dossier, avec leurs noms d'origine.",
-        clean(game),
-        megacd_names_with_regions(names),
-        megacd_system_dir(system_dir)
-    )
 }
 
 pub const PAD_TITLE: &str = "Manette";

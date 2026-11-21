@@ -305,6 +305,8 @@ pub struct DisksView {
     pub added: Vec<AddedDiskView>,
     /// Unreferenced files of the working-copy folder; `None` without such a folder.
     pub orphans: Option<Vec<OrphanCopy>>,
+    /// CDs (`disc = true` system): « CD » instead of « Disquettes » (design v6.0 §3.5).
+    pub disc: bool,
 }
 
 /// One added disk of the disk menu.

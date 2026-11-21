@@ -273,7 +273,9 @@ fn game_over_returns_home_and_records_history() {
         content: crate::GameContent::Files(vec![g.path.clone()]),
         computer: false,
         warnings: Vec::new(),
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     };
     h.ui.game_started(&request);
     let mut config = h.ui.config.clone();
@@ -521,7 +523,9 @@ fn captures_never_record_history() {
         content: crate::GameContent::Files(vec![g.path.clone()]),
         computer: false,
         warnings: Vec::new(),
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     };
     h.ui.game_started(&request);
     let played = h.ui.db.as_ref().unwrap().game(g.id).unwrap().unwrap();
@@ -560,124 +564,221 @@ fn starting_a_game_forgets_the_waiting_install() {
         content: crate::GameContent::NoGame,
         computer: false,
         warnings: Vec::new(),
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     };
     h.ui.game_started(&request);
     assert!(h.ui.awaiting_core.is_none());
 }
 
-// ---- Mega CD (design v2.1-megacd-express §5) ------------------------------------------------------------
+// ---- BIOS manquant générique, socle Mega CD de la 2.1 porté (design v6.0 §2.1, §2.2, §10) ----------------
 
-fn megacd_request(title: &str, path: &Path) -> LaunchRequest {
-    LaunchRequest {
-        game: None,
-        title: title.to_owned(),
-        core: emu_assets::cores::CoreId::new("genesis_plus_gx").unwrap(),
-        core_path: "/x".into(),
-        content: crate::GameContent::Files(vec![path.to_path_buf()]),
-        computer: false,
-        warnings: Vec::new(),
-        failure_hint: Some("indice".into()),
-    }
+const MEGA_CD_DB: &str = "Sega - Mega-CD - Sega CD";
+
+fn megacd_args(h: &Harness, file: &str, region: Option<DiscRegion>) -> LaunchArgs {
+    let path = h._tmp.path().join(file);
+    let mut args = LaunchArgs::new(
+        None,
+        "Dune".into(),
+        "megacd",
+        Some("cue"),
+        crate::GameContent::Files(vec![path]),
+        false,
+    );
+    args.region = region;
+    args
 }
 
-fn open_megacd_dialog(h: &mut Harness, region: Option<emu_library::DiscRegion>) {
-    let system = h.ui.dirs.system.clone();
-    let statuses = Vec::new();
-    let verdict = megacd::bios_verdict(region, &statuses, &system);
-    let path = h._tmp.path().join("Dune (Europe).cue");
-    h.ui.open_dialog(Dialog::MegaCdBios {
-        request: megacd_request("Dune", &path),
-        verdict,
+/// The dialog the launch opens for genesis_plus_gx (the real check on the harness's empty `system/`).
+fn open_megacd_dialog(h: &mut Harness, file: &str, region: Option<DiscRegion>) {
+    let args = megacd_args(h, file, region);
+    let prefs = cores_ui::preferences(&h.ui.config.cores);
+    let core = CoreId::new("genesis_plus_gx").unwrap();
+    let gated =
+        h.ui.firmware_decision(&prefs, &core, &args, None)
+            .expect("genesis_plus_gx has a Mega CD table");
+    assert_ne!(gated.decision, FirmwareDecision::Launch, "no BIOS yet");
+    let request = LaunchRequest {
+        game: None,
+        title: args.title.clone(),
+        core,
+        core_path: "/x".into(),
+        content: args.content.clone(),
+        computer: false,
+        warnings: Vec::new(),
+        system: Some(MEGA_CD_DB.into()),
         region,
+        spec: None,
+    };
+    h.ui.open_dialog(Dialog::Firmware3 {
+        request,
+        args: Box::new(args),
+        decision: gated.decision,
+        options_path: gated.options_path,
+        fallback: None,
+        info: Box::new(gated.info),
         retried: false,
         copied: false,
     });
 }
 
-#[test]
-fn megacd_texts_name_the_file_the_region_and_the_folder() {
-    let dir = Path::new("/Users/moi/Library/Application Support/emu-rust/system");
-    let title = text::megacd_missing_title(&["bios_CD_E.bin"], Some("Mega CD, Europe"));
-    assert_eq!(
-        title,
-        "BIOS Mega CD manquant : bios_CD_E.bin (Mega CD, Europe)"
-    );
-    let body = text::megacd_missing_body("Dune", Some("Europe"), &["bios_CD_E.bin"], &[]);
-    assert!(body.contains("« Dune » est un disque Europe"), "{body}");
-    assert!(body.contains("nom exact bios_CD_E.bin"), "{body}");
-    assert!(body.contains("Réessayer"), "{body}");
-    assert!(body.contains(text::MEGACD_NO_DOWNLOAD));
-    assert!(!body.contains("présent"), "no other BIOS: {body}");
-    let body = text::megacd_missing_body(
-        "Dune",
-        Some("Europe"),
-        &["bios_CD_E.bin"],
-        &["bios_CD_U.bin"],
-    );
-    assert!(
-        body.contains("bios_CD_U.bin est présent, mais ce disque est Europe."),
-        "{body}"
-    );
-    let unknown = text::megacd_missing_body("X", None, &megacd::BIOS_NAMES, &[]);
-    assert!(
-        unknown.contains("bios_CD_E.bin (Europe), bios_CD_U.bin (USA) ou bios_CD_J.bin (Japon)"),
-        "{unknown}"
-    );
-    let failed = text::megacd_load_failed("Dune", &["bios_CD_E.bin"], dir);
-    assert!(failed.contains("bios_CD_E.bin (Europe)"), "{failed}");
-    assert!(failed.contains(&dir.display().to_string()), "{failed}");
-    // Never an offer to download a BIOS.
-    for t in [&body, &unknown, &failed] {
-        assert!(!t.contains("Télécharg"), "{t}");
+fn firmware_dialog(h: &Harness) -> (&FirmwareDecision, &FirmwareInfo, bool) {
+    match &h.ui.dialog {
+        Some(Dialog::Firmware3 {
+            decision,
+            info,
+            retried,
+            ..
+        }) => (decision, info, *retried),
+        other => panic!("firmware dialog expected: {}", other.is_some()),
     }
-    // Untrusted titles are cleaned.
-    let body = text::megacd_missing_body("A\u{1b}[2J", Some("USA"), &["bios_CD_U.bin"], &[]);
-    assert!(!body.contains('\u{1b}'));
 }
 
 #[test]
-fn megacd_dialog_retry_with_the_keyboard_launches_once_the_bios_is_there() {
+fn firmware_texts_name_the_file_the_region_and_the_system() {
+    let title = text::firmware_missing_title(
+        "bios_CD_E.bin",
+        Some("Mega CD / Sega CD"),
+        Some("Europe"),
+        false,
+    );
+    assert_eq!(
+        title,
+        "BIOS manquant : bios_CD_E.bin (Mega CD / Sega CD, Europe)"
+    );
+    let body = text::firmware_missing_body("Dune", Some("Europe"), "bios_CD_E.bin", &[], &[]);
+    assert!(body.contains("« Dune » est un jeu Europe"), "{body}");
+    assert!(body.contains("nom exact bios_CD_E.bin"), "{body}");
+    assert!(
+        body.contains("Réessayer") && body.contains("Importer un BIOS"),
+        "{body}"
+    );
+    assert!(!body.contains("présent"), "no other BIOS: {body}");
+    let body = text::firmware_missing_body(
+        "Dune",
+        Some("Europe"),
+        "bios_CD_E.bin",
+        &[],
+        &["bios_CD_U.bin".into()],
+    );
+    assert!(
+        body.contains("bios_CD_U.bin est présent, mais ce jeu est Europe."),
+        "{body}"
+    );
+    // Untrusted titles are cleaned; never an offer to download a BIOS.
+    let body = text::firmware_missing_body("A\u{1b}[2J", Some("USA"), "bios_CD_U.bin", &[], &[]);
+    assert!(!body.contains('\u{1b}'));
+    assert!(!body.contains("Télécharg") && !text::FIRMWARE_NO_DOWNLOAD.contains("Télécharg"));
+    let plain = text::firmware_missing_body("X", None, "scph5501.bin", &[], &[]);
+    assert!(
+        plain.contains("a besoin du fichier scph5501.bin"),
+        "{plain}"
+    );
+}
+
+#[test]
+fn firmware_info_gives_region_system_and_other_files() {
     let mut h = harness(true);
     h.frame(Vec::new());
-    open_megacd_dialog(&mut h, Some(emu_library::DiscRegion::Europe));
+    std::fs::write(h.ui.dirs.system.join("bios_CD_U.bin"), b"bios").unwrap();
+    open_megacd_dialog(&mut h, "Dune (Europe).cue", Some(DiscRegion::Europe));
+    let (decision, info, _) = firmware_dialog(&h);
+    assert_eq!(
+        decision,
+        &FirmwareDecision::Missing {
+            wanted: "bios_CD_E.bin".into()
+        }
+    );
+    assert_eq!(info.region, Some("Europe"));
+    assert_eq!(info.system.as_deref(), Some("Mega CD / Sega CD"));
+    assert_eq!(info.others_present, vec!["bios_CD_U.bin".to_owned()]);
+    assert!(info.alternatives.is_empty());
+    // Unknown region (a `.chd` without tag): the three names, in the order of the 2.1 message.
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, "Dune.chd", None);
+    let (_, info, _) = firmware_dialog(&h);
+    assert_eq!(info.region, None);
+    let body = text::firmware_missing_body("X", None, "bios_CD_U.bin", &info.alternatives, &[]);
+    assert!(
+        body.contains("bios_CD_E.bin (Europe), bios_CD_U.bin (USA) ou bios_CD_J.bin (Japon)"),
+        "{body}"
+    );
+    assert_eq!(
+        text::firmware_missing_title("bios_CD_U.bin", info.system.as_deref(), None, true),
+        "BIOS manquant (Mega CD / Sega CD)"
+    );
+}
+
+#[test]
+fn firmware_dialog_retry_with_the_keyboard_relaunches_the_check() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, "Dune (Europe).cue", Some(DiscRegion::Europe));
     h.frame(Vec::new());
     // Focus on « Réessayer »: Enter retries; still missing.
     assert!(h.key(Key::Enter).is_empty());
-    assert!(
-        matches!(
-            &h.ui.dialog,
-            Some(Dialog::MegaCdBios { retried: true, verdict: megacd::BiosVerdict::Missing { wanted, .. }, .. })
-                if wanted == &vec!["bios_CD_E.bin"]
-        ),
-        "dialog kept, marked as retried"
-    );
+    let (decision, _, retried) = firmware_dialog(&h);
+    assert!(retried, "dialog kept, marked as retried");
+    assert!(matches!(decision, FirmwareDecision::Missing { wanted } if wanted == "bios_CD_E.bin"));
+    // Another revision under the exact name: a warning, never a block (2.1 « Different »).
     std::fs::write(h.ui.dirs.system.join("bios_CD_E.bin"), b"bios").unwrap();
     h.frame(Vec::new());
+    assert!(h.key(Key::Enter).is_empty());
+    let (decision, _, retried) = firmware_dialog(&h);
+    assert!(
+        matches!(decision, FirmwareDecision::WrongHash { .. }),
+        "{decision:?}"
+    );
+    assert!(!retried);
+    h.frame(Vec::new());
+    // Focus back on « Importer un BIOS… »; « Lancer quand même » is the fifth button.
+    for _ in 0..4 {
+        h.key(Key::Tab);
+    }
     let events = h.key(Key::Enter);
     assert!(h.ui.dialog.is_none());
     let [LibraryEvent::Launch(request)] = events.as_slice() else {
         panic!("one launch expected: {events:?}");
     };
     assert_eq!(request.title, "Dune");
-    assert_eq!(request.failure_hint.as_deref(), Some("indice"));
 }
 
 #[test]
-fn megacd_dialog_escape_cancels_without_launch() {
+fn unknown_region_launches_once_any_bios_is_there() {
     let mut h = harness(true);
     h.frame(Vec::new());
-    open_megacd_dialog(&mut h, None);
+    open_megacd_dialog(&mut h, "Dune.chd", None);
+    h.frame(Vec::new());
+    assert!(h.key(Key::Enter).is_empty());
+    assert!(firmware_dialog(&h).2);
+    // 2.1 rule: the core picks among the BIOS present.
+    std::fs::write(h.ui.dirs.system.join("bios_CD_J.bin"), b"bios").unwrap();
+    h.frame(Vec::new());
+    let events = h.key(Key::Enter);
+    assert!(h.ui.dialog.is_none());
+    assert!(
+        matches!(events.as_slice(), [LibraryEvent::Launch(r)] if r.title == "Dune"),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn firmware_dialog_escape_cancels_without_launch() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, "Dune.chd", None);
     h.frame(Vec::new());
     assert!(h.key(Key::Escape).is_empty());
     assert!(h.ui.dialog.is_none());
 }
 
 #[test]
-fn megacd_dialog_launch_anyway_is_reachable_with_tab() {
+fn firmware_dialog_launch_anyway_is_reachable_with_tab() {
     let mut h = harness(true);
     h.frame(Vec::new());
-    open_megacd_dialog(&mut h, Some(emu_library::DiscRegion::Japan));
+    open_megacd_dialog(&mut h, "Dune (Japan).cue", Some(DiscRegion::Japan));
     h.frame(Vec::new());
     // Réessayer → Copier le chemin → Annuler → Lancer quand même.
     for _ in 0..3 {
@@ -691,7 +792,43 @@ fn megacd_dialog_launch_anyway_is_reachable_with_tab() {
 }
 
 #[test]
-fn dat_download_skips_megacd() {
+fn firmware_dialog_copies_the_system_path() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    open_megacd_dialog(&mut h, "Dune (Japan).cue", Some(DiscRegion::Japan));
+    h.frame(Vec::new());
+    h.key(Key::Tab);
+    assert!(h.key(Key::Enter).is_empty());
+    assert!(matches!(
+        h.ui.dialog,
+        Some(Dialog::Firmware3 { copied: true, .. })
+    ));
+}
+
+#[test]
+fn zipped_cd_is_refused_before_loading() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    let mut g = game(
+        99,
+        "megacd",
+        "/r/Dune (Europe).zip",
+        Some("Dune (Europe).cue"),
+    );
+    g.title = "Dune".into();
+    h.ui.launch_game(g);
+    match &h.ui.dialog {
+        Some(Dialog::Message(m)) => assert!(
+            m.contains(crate::LaunchRefusal::ArchivedDisc.message()),
+            "{m}"
+        ),
+        _ => panic!("refusal message expected"),
+    }
+    assert!(h.frame(Vec::new()).is_empty());
+}
+
+#[test]
+fn dat_download_fetches_megacd_from_redump() {
     use std::time::Duration;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -731,17 +868,20 @@ fn dat_download_skips_megacd() {
         &AtomicBool::new(false),
         &mut |p| seen.push(p),
     );
-    assert_eq!(seen.len(), 1, "megacd not even announced");
-    assert_eq!(
-        summary.failed.len(),
-        1,
-        "only the Game Boy 404: {summary:?}"
-    );
+    assert_eq!(seen.len(), 2, "megacd announced like the others");
+    assert_eq!(summary.failed.len(), 2, "both 404: {summary:?}");
     let requests = rt.block_on(server.received_requests()).unwrap();
-    assert_eq!(requests.len(), 1);
+    let paths: Vec<String> = requests.iter().map(|r| r.url.path().to_owned()).collect();
+    assert_eq!(paths.len(), 2, "{paths:?}");
     assert!(
-        requests.iter().all(|r| !r.url.path().contains("Mega-CD")),
-        "no request for the Mega CD DAT"
+        paths
+            .iter()
+            .any(|p| p.starts_with("/metadat/redump/") && p.contains("Mega-CD")),
+        "the Mega CD DAT comes from metadat/redump/: {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| p.starts_with("/metadat/no-intro/")),
+        "{paths:?}"
     );
 }
 
@@ -758,6 +898,10 @@ fn dat_repo_root_matches_the_asset_constants() {
     assert_eq!(
         format!("{}dat/", worker::DAT_REPO_ROOT),
         emu_assets::DAT_LIBRETRO_BASE_URL
+    );
+    assert_eq!(
+        format!("{}metadat/redump/", worker::DAT_REPO_ROOT),
+        emu_assets::DAT_REDUMP_BASE_URL
     );
 }
 
@@ -900,14 +1044,14 @@ fn missing_kickstart_warns_once_then_launches_with_aros() {
     std::fs::write(&game, vec![0u8; 1024]).unwrap();
     let prefs = cores_ui::preferences(&h.ui.config.cores);
     let puae = CoreId::new("puae").unwrap();
-    let args = LaunchArgs {
-        game_id: None,
-        title: "Game".into(),
-        system_id: "amiga".into(),
-        ext: Some("adf".into()),
-        content: GameContent::Files(vec![game.clone()]),
-        computer: true,
-    };
+    let args = LaunchArgs::new(
+        None,
+        "Game".into(),
+        "amiga",
+        Some("adf"),
+        GameContent::Files(vec![game.clone()]),
+        true,
+    );
     let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
         game: None,
         title: "Game".into(),
@@ -916,7 +1060,9 @@ fn missing_kickstart_warns_once_then_launches_with_aros() {
         content: GameContent::Files(vec![game.clone()]),
         computer: true,
         warnings,
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     };
     let ready = || LaunchCheck::Ready {
         id: puae.clone(),
@@ -924,7 +1070,7 @@ fn missing_kickstart_warns_once_then_launches_with_aros() {
         warnings: Vec::new(),
     };
     assert!(
-        h.ui.firmware_gate(&prefs, ready(), args.clone(), &request)
+        h.ui.gate_firmware(&prefs, ready(), &args, None, &request)
             .is_none()
     );
     let Some(Dialog::Firmware3 {
@@ -951,7 +1097,7 @@ fn missing_kickstart_warns_once_then_launches_with_aros() {
     let saved = crate::game_options::GameOptions::load(&options_path);
     assert!(saved.options.input.aros_acknowledged);
     // Second launch: no dialog.
-    let again = h.ui.firmware_gate(&prefs, ready(), args, &request);
+    let again = h.ui.gate_firmware(&prefs, ready(), &args, None, &request);
     assert!(matches!(again, Some(LaunchCheck::Ready { .. })));
     assert!(h.ui.dialog.is_none());
 }
@@ -960,14 +1106,14 @@ fn missing_kickstart_warns_once_then_launches_with_aros() {
 fn consoles_keep_the_info_check() {
     let mut h = harness(false);
     let prefs = cores_ui::preferences(&h.ui.config.cores);
-    let args = LaunchArgs {
-        game_id: None,
-        title: "G".into(),
-        system_id: "gb".into(),
-        ext: Some("gb".into()),
-        content: GameContent::Files(vec![PathBuf::from("/r/g.gb")]),
-        computer: false,
-    };
+    let args = LaunchArgs::new(
+        None,
+        "G".into(),
+        "gb",
+        Some("gb"),
+        GameContent::Files(vec![PathBuf::from("/r/g.gb")]),
+        false,
+    );
     let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
         game: None,
         title: "G".into(),
@@ -976,7 +1122,9 @@ fn consoles_keep_the_info_check() {
         content: GameContent::NoGame,
         computer: false,
         warnings,
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     };
     let check = LaunchCheck::FirmwareMissing {
         id: CoreId::new("gambatte").unwrap(),
@@ -984,7 +1132,7 @@ fn consoles_keep_the_info_check() {
         missing: Vec::new(),
     };
     assert!(matches!(
-        h.ui.firmware_gate(&prefs, check, args, &request),
+        h.ui.gate_firmware(&prefs, check, &args, None, &request),
         Some(LaunchCheck::FirmwareMissing { .. })
     ));
 }
@@ -1033,7 +1181,9 @@ fn dos_request(dir: &Path, start: Option<&str>) -> LaunchRequest {
         },
         computer: true,
         warnings: Vec::new(),
-        failure_hint: None,
+        system: None,
+        region: None,
+        spec: None,
     }
 }
 

@@ -144,6 +144,9 @@ impl Host {
             },
             launch: None,
             auto_fast_load: true,
+            game_system: request.system.clone(),
+            region: request.region,
+            spec: request.spec.clone(),
         };
         tracing::info!("lancement de « {} » avec {}", request.title, request.core);
         match App::build(options, true) {
@@ -167,9 +170,8 @@ impl Host {
             }
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
-                let msg = request.failure_hint.clone().unwrap_or_else(|| {
-                    text::game_failed(&request.title, &crate::ui::text::launch_error(&e))
-                });
+                // The core's own explanation when it gave one (design v6.0 §2.1), else the error itself.
+                let msg = text::game_failed(&request.title, &crate::ui::text::launch_error(&e));
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }

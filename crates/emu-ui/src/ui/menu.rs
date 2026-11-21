@@ -108,7 +108,9 @@ pub(super) fn show(
                 overlay.focus_first = true;
             }
         }
-        if data.disks.is_some() && button(ui, text::DISKS, true, &mut false) {
+        if let Some(disks) = data.disks
+            && button(ui, text::disks_menu(disks.disc), true, &mut false)
+        {
             actions.push(UiAction::Open(Screen::Disks));
         }
         if data.eightbit.tape {

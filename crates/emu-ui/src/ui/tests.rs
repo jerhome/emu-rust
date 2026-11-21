@@ -507,8 +507,40 @@ fn computer_fixture() -> Fixture {
         can_reset: true,
         added: Vec::new(),
         orphans: None,
+        disc: false,
     });
     f
+}
+
+#[test]
+fn disc_systems_say_cd() {
+    assert_eq!(text::disks_menu(true), "CD…");
+    assert_eq!(text::disks_menu(false), text::DISKS);
+    assert_eq!(text::disks_title(true), "CD");
+    assert_eq!(text::disks_none(true), "Aucun CD dans la liste.");
+    assert_eq!(
+        text::media_inserted(true, 1, 2, "Disc 2"),
+        "CD 2/2 : Disc 2"
+    );
+    assert_eq!(
+        text::media_inserted(false, 0, 1, "A"),
+        text::disk_inserted(0, 1, "A")
+    );
+    assert!(!text::disks_hint(true).contains("disquette"));
+}
+
+#[test]
+fn featured_sections_have_short_titles() {
+    assert_eq!(
+        text::featured_title("Sega - Mega-CD - Sega CD"),
+        "Réglages Mega CD"
+    );
+    assert_eq!(
+        text::featured_title("Nintendo - Game Boy Advance"),
+        "Réglages GBA"
+    );
+    assert_eq!(text::featured_title("Sega - 32X"), "Réglages 32X");
+    assert_eq!(text::featured_title("DOS"), "Réglages DOS");
 }
 
 #[test]

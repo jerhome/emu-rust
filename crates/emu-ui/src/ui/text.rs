@@ -302,6 +302,9 @@ pub fn featured_title(system: &str) -> String {
     let short = match system {
         "Amstrad - CPC" => "CPC",
         "Commodore - 64" => "C64",
+        "Sega - Mega-CD - Sega CD" => "Mega CD",
+        "Nintendo - Game Boy Advance" => "GBA",
+        "Sega - 32X" => "32X",
         other => other,
     };
     format!("Réglages {short}")
@@ -472,6 +475,38 @@ pub fn mouse_captured(host: KeyCode) -> String {
     format!("Souris capturée — {} pour libérer", key_label(host))
 }
 
+/// Disk menu entry: « CD… » for a system of CDs (design v6.0 §3.5).
+pub fn disks_menu(disc: bool) -> &'static str {
+    if disc { CDS } else { DISKS }
+}
+
+pub fn disks_title(disc: bool) -> &'static str {
+    if disc { CDS_TITLE } else { DISKS_TITLE }
+}
+
+pub fn disks_none(disc: bool) -> &'static str {
+    if disc { CDS_NONE } else { DISKS_NONE }
+}
+
+pub fn disks_hint(disc: bool) -> &'static str {
+    if disc { CDS_HINT } else { DISKS_HINT }
+}
+
+pub const CDS: &str = "CD…";
+pub const CDS_TITLE: &str = "CD";
+pub const CDS_NONE: &str = "Aucun CD dans la liste.";
+pub const CDS_HINT: &str = "Entrée sur un CD : l'insérer (« Éjecter » d'abord si le jeu demande d'ouvrir le \
+                            lecteur).";
+
+/// [`disk_inserted`], « CD 2/3 : … » for a system of CDs.
+pub fn media_inserted(disc: bool, index: u32, total: usize, label: &str) -> String {
+    if disc {
+        format!("CD {}/{total} : {}", index + 1, sanitize_core_text(label))
+    } else {
+        disk_inserted(index, total, label)
+    }
+}
+
 pub fn disk_inserted(index: u32, total: usize, label: &str) -> String {
     format!(
         "Disquette {}/{total} : {}",
@@ -531,6 +566,14 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
     }
 }
 
+/// `retro_load_game` refused, with the core's own explanation (design v6.0 §2.1).
+pub fn core_rejected(core_error: &str) -> String {
+    format!(
+        "le core a refusé le jeu : {}",
+        sanitize_core_text(core_error)
+    )
+}
+
 /// Error of a launch, with what to do for the cases the player can fix.
 /// A core that stays in memory (dosbox_pure) is reloaded from a private copy (ADR 0022); the copy failed.
 pub fn core_copy_failed(path: &std::path::Path, e: &dyn std::fmt::Display) -> String {
@@ -542,6 +585,9 @@ pub fn core_copy_failed(path: &std::path::Path, e: &dyn std::fmt::Display) -> St
 }
 
 pub fn launch_error(e: &crate::UiError) -> String {
+    if let Some(core_error) = e.core_error() {
+        return core_rejected(core_error);
+    }
     match e {
         crate::UiError::Runtime(emu_runtime::RuntimeError::DiskFull { path }) => format!(
             "Disque plein : la copie de travail ({}) n'a pas pu être écrite. Libérez de la place puis relancez.",
