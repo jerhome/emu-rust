@@ -1,10 +1,37 @@
 # emu-rust
 
-Frontend [libretro](https://www.libretro.com/) en Rust : Mega Drive, Super Nintendo, Game Boy, NES, Master System et
-Game Gear (1.0), Atari ST (2.0), Mega CD (2.1), puis Amiga, PC DOS. Manette PS4 (2.1) et clavier. Usage personnel.
+Frontend [libretro](https://www.libretro.com/) écrit en Rust. L'émulation est faite par des cores libretro existants ;
+emu-rust fournit l'image, le son, le clavier et la manette PS4, la bibliothèque de jeux avec jaquettes, le
+téléchargement des cores et des BIOS libres. Usage personnel.
 
-- Feuille de route : [docs/roadmap.md](docs/roadmap.md)
-- Décisions d'architecture : [docs/adr/](docs/adr/)
+**Version stable : 6.0.0** · **pré-release : 7.0.0-rc.1** ([releases](../../releases))
+
+## Systèmes pris en charge
+
+| Système | Core par défaut | Depuis |
+|---|---|---|
+| Mega Drive, Super Nintendo, NES, Game Boy / Color, Master System, Game Gear | genesis_plus_gx, snes9x, mesen, gambatte, genesis_plus_gx | 1.0 |
+| Atari ST (EmuTOS libre téléchargé) | hatari | 2.0 |
+| Mega CD (BIOS fourni par l'utilisateur) | genesis_plus_gx | 2.1, complété en 6.0 |
+| Amiga (AROS intégré, Kickstart de l'utilisateur facultatif) | puae | 3.0 |
+| PC MS-DOS (SoundFont libre GeneralUser GS sur action) | dosbox_pure | 4.0 |
+| Amstrad CPC, Commodore 64 | cap32, vice_x64 | 5.0 |
+| Game Boy Advance, 32X | mgba, picodrive | 6.0 |
+| PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 (pré-release) |
+
+Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1. Les jeux se rangent dans `roms/<système>/`.
+
+## Feuille de route
+
+| Version | Contenu | État |
+|---|---|---|
+| 7.1 | Finition de l'interface : pied de page (version, crédit), icône identique sur les 3 OS, terminal caché sous Windows avec panneau Journal, bouton « Ranger les ROMs » (aperçu et annulation), indication des BIOS d'origine qui améliorent un core | en développement |
+| 7.2 | Sega CD 32X (Night Trap 32X…), par picodrive | conçue |
+| 7.2.1 | Glisser-déposer de jeux dans la fenêtre depuis le gestionnaire de fichiers | étudiée |
+| 8.0 → 8.3 | Systèmes libretro non testés, ajoutés depuis l'application : consoles à cartouche (8.0), CD (8.1), ordinateurs (8.2), arcade (8.3) | étudiée |
+| 9.0 | Rendu matériel : OpenGL d'abord, puis DirectX ; Vulkan au second plan | prévue |
+
+Détails : [docs/roadmap.md](docs/roadmap.md). Décisions d'architecture : [docs/adr/](docs/adr/).
 
 ## Lancer avec Docker (depuis la racine du dépôt)
 
