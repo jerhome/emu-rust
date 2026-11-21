@@ -55,6 +55,30 @@ struct CoreEntry {
     featured_options: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     layout_option: Option<LayoutOptionEntry>,
+    // 5.0 keys (design v5.0 §3.3).
+    #[serde(default)]
+    save_scope: SaveScopePref,
+    #[serde(default)]
+    fastforward_override: bool,
+    #[serde(default)]
+    variable_state_size: bool,
+    #[serde(default)]
+    options_by_extension: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    m3u_launch: Option<M3uLaunchPref>,
+    #[serde(default)]
+    actions: Option<ActionsEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActionsEntry {
+    #[serde(default)]
+    tape_play: Option<String>,
+    #[serde(default)]
+    tape_stop: Option<String>,
+    #[serde(default)]
+    tape_rewind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +126,12 @@ struct CoreProps {
     system_caches: Vec<String>,
     featured_options: BTreeMap<String, Vec<String>>,
     layout_option: Option<LayoutOption>,
+    save_scope: SaveScopePref,
+    fastforward_override: bool,
+    variable_state_size: bool,
+    options_by_extension: BTreeMap<String, Vec<(String, String)>>,
+    m3u_launch: Option<M3uLaunchPref>,
+    actions: CoreActions,
 }
 
 /// Ordered core preferences per system, from the embedded `data/cores.toml`, plus user overrides
@@ -273,44 +303,46 @@ impl CorePreferences {
     /// `save_scope` of `data/cores.toml` (design v5.0 §3.3): `Game` ⇒ `emu_runtime::SaveScope::Game` (cap32).
     /// `Core` for cores without the key.
     pub fn save_scope(&self, core: &CoreId) -> SaveScopePref {
-        let _ = core;
-        todo!("CA1: cores.toml `save_scope`")
+        self.cores
+            .get(core)
+            .map_or_else(SaveScopePref::default, |p| p.save_scope)
     }
 
     /// `fastforward_override = true` of `data/cores.toml`: the core may request fast-forward (env 64,
     /// `CoreConfig::fastforward_override`). `false` without the key.
     pub fn fastforward_override(&self, core: &CoreId) -> bool {
-        let _ = core;
-        todo!("CA1: cores.toml `fastforward_override`")
+        self.cores.get(core).is_some_and(|p| p.fastforward_override)
     }
 
     /// `variable_state_size = true` of `data/cores.toml` (VICE): `CoreConfig::variable_state_size`. `false`
     /// without the key.
     pub fn variable_state_size(&self, core: &CoreId) -> bool {
-        let _ = core;
-        todo!("CA1: cores.toml `variable_state_size`")
+        self.cores.get(core).is_some_and(|p| p.variable_state_size)
     }
 
     /// `[cores.<core>.options_by_extension] <ext> = { key = "value" }` (cap32: `cpr` ⇒ `cap32_model = "6128+"`):
     /// third source of the computed defaults (design v3.0 §3.5.4). `extension`: case ignored, without the dot.
     /// Sorted by key; empty for an unknown core or extension.
     pub fn options_by_extension(&self, core: &CoreId, extension: &str) -> Vec<(String, String)> {
-        let _ = (core, extension);
-        todo!("CA1: cores.toml `options_by_extension`")
+        self.cores
+            .get(core)
+            .and_then(|p| p.options_by_extension.get(&extension.to_ascii_lowercase()))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// `m3u_launch` of `data/cores.toml` (`"command"` cap32, `"program"` VICE) ⇒ `emu_runtime::M3uLaunch`.
     /// `None` without the key (`M3uLaunch::None`).
     pub fn m3u_launch(&self, core: &CoreId) -> Option<M3uLaunchPref> {
-        let _ = core;
-        todo!("CA1: cores.toml `m3u_launch`")
+        self.cores.get(core)?.m3u_launch
     }
 
     /// `[cores.<core>.actions]` of `data/cores.toml`: keys pressed by the « Cassette » menu. Names checked when
     /// the file is parsed against the libretro key names. All `None` without the table.
     pub fn actions(&self, core: &CoreId) -> CoreActions {
-        let _ = core;
-        todo!("CA1: cores.toml `[actions]`")
+        self.cores
+            .get(core)
+            .map_or_else(CoreActions::default, |p| p.actions.clone())
     }
 
     /// Systems known to the preferences (for "install recommended cores").
@@ -464,6 +496,14 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
     if let Some(pattern) = entry.game_saves.iter().find(|p| !is_save_pattern(p)) {
         return Err(format!("game_saves invalide pour {core} : {pattern}"));
     }
+    // Without `{game}` the pattern would hit other games' files in a shared folder.
+    if entry.save_scope != SaveScopePref::Game
+        && let Some(pattern) = entry.game_saves.iter().find(|p| !p.contains("{game}"))
+    {
+        return Err(format!(
+            "game_saves sans {{game}} pour {core} : {pattern} (exige save_scope = \"game\")"
+        ));
+    }
     if let Some(b) = &entry.builtin_firmware
         && (b.label.trim().is_empty() || b.notice.trim().is_empty())
     {
@@ -521,6 +561,29 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         .layout_option
         .map(|l| layout_option(core, l))
         .transpose()?;
+    let mut options_by_extension = BTreeMap::new();
+    for (ext, options) in entry.options_by_extension {
+        if !is_extension(&ext) {
+            return Err(format!("options_by_extension invalide pour {core} : {ext}"));
+        }
+        if let Some((k, v)) = options
+            .iter()
+            .find(|(k, v)| !is_option_key(k) || !is_option_value(v))
+        {
+            return Err(format!(
+                "options_by_extension invalide pour {core} ({ext}) : {k} = {v}"
+            ));
+        }
+        options_by_extension.insert(ext, options.into_iter().collect());
+    }
+    let actions = match entry.actions {
+        None => CoreActions::default(),
+        Some(a) => CoreActions {
+            tape_play: action_name(core, "tape_play", a.tape_play)?,
+            tape_stop: action_name(core, "tape_stop", a.tape_stop)?,
+            tape_rewind: action_name(core, "tape_rewind", a.tape_rewind)?,
+        },
+    };
     Ok(CoreProps {
         media: entry.media.unwrap_or_default(),
         media_direct,
@@ -535,8 +598,188 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         system_caches,
         featured_options,
         layout_option,
+        save_scope: entry.save_scope,
+        fastforward_override: entry.fastforward_override,
+        variable_state_size: entry.variable_state_size,
+        options_by_extension,
+        m3u_launch: entry.m3u_launch,
+        actions,
     })
 }
+
+/// Validates a key name of `[cores.<core>.actions]` against [`RETROK_NAMES`]; stored upper-cased.
+fn action_name(core: &str, action: &str, name: Option<String>) -> Result<Option<String>, String> {
+    let Some(name) = name else { return Ok(None) };
+    let lower = name.to_ascii_lowercase();
+    if lower == "unknown" || !RETROK_NAMES.contains(&lower.as_str()) {
+        return Err(format!("actions.{action} invalide pour {core} : {name}"));
+    }
+    Ok(Some(name.to_ascii_uppercase()))
+}
+
+/// `enum retro_key` identifiers of libretro.h without `RETROK_`, lower-cased. Copied from
+/// `emu_libretro::keyboard` (this crate does not depend on it); the UI converts with `RetroKey::from_name`.
+const RETROK_NAMES: &[&str] = &[
+    "unknown",
+    "backspace",
+    "tab",
+    "clear",
+    "return",
+    "pause",
+    "escape",
+    "space",
+    "exclaim",
+    "quotedbl",
+    "hash",
+    "dollar",
+    "ampersand",
+    "quote",
+    "leftparen",
+    "rightparen",
+    "asterisk",
+    "plus",
+    "comma",
+    "minus",
+    "period",
+    "slash",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "colon",
+    "semicolon",
+    "less",
+    "equals",
+    "greater",
+    "question",
+    "at",
+    "leftbracket",
+    "backslash",
+    "rightbracket",
+    "caret",
+    "underscore",
+    "backquote",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "o",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "u",
+    "v",
+    "w",
+    "x",
+    "y",
+    "z",
+    "leftbrace",
+    "bar",
+    "rightbrace",
+    "tilde",
+    "delete",
+    "kp0",
+    "kp1",
+    "kp2",
+    "kp3",
+    "kp4",
+    "kp5",
+    "kp6",
+    "kp7",
+    "kp8",
+    "kp9",
+    "kp_period",
+    "kp_divide",
+    "kp_multiply",
+    "kp_minus",
+    "kp_plus",
+    "kp_enter",
+    "kp_equals",
+    "up",
+    "down",
+    "right",
+    "left",
+    "insert",
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "f13",
+    "f14",
+    "f15",
+    "numlock",
+    "capslock",
+    "scrollock",
+    "rshift",
+    "lshift",
+    "rctrl",
+    "lctrl",
+    "ralt",
+    "lalt",
+    "rmeta",
+    "lmeta",
+    "lsuper",
+    "rsuper",
+    "mode",
+    "compose",
+    "help",
+    "print",
+    "sysreq",
+    "break",
+    "menu",
+    "power",
+    "euro",
+    "undo",
+    "oem_102",
+    "browser_back",
+    "browser_forward",
+    "browser_refresh",
+    "browser_stop",
+    "browser_search",
+    "browser_favorites",
+    "browser_home",
+    "volume_mute",
+    "volume_down",
+    "volume_up",
+    "media_next",
+    "media_prev",
+    "media_stop",
+    "media_play_pause",
+    "launch_mail",
+    "launch_media",
+    "launch_app1",
+    "launch_app2",
+];
 
 fn layout_option(core: &str, entry: LayoutOptionEntry) -> Result<LayoutOption, String> {
     let context = format!("layout_option de {core}");
@@ -734,8 +977,8 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0).
-        assert_eq!(prefs.systems().count(), 11);
+        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0), CPC and C64 (5.0).
+        assert_eq!(prefs.systems().count(), 13);
         let dos: Vec<String> = prefs
             .for_system("DOS")
             .iter()
@@ -970,7 +1213,11 @@ mod tests {
         assert!(parse("media_direct = [\".ipf\"]\n").is_err());
         assert!(parse("media_direct = [\"\"]\n").is_err());
         // game_saves: file-name patterns only.
-        assert!(parse("game_saves = [\"{game}.brm\", \"*.sav\"]\n").is_ok());
+        assert!(parse("game_saves = [\"{game}.brm\"]\n").is_ok());
+        // A pattern without `{game}` needs save_scope = "game".
+        assert!(parse("game_saves = [\"*.sav\"]\n").is_err());
+        assert!(parse("save_scope = \"core\"\ngame_saves = [\"*.sav\"]\n").is_err());
+        assert!(parse("save_scope = \"game\"\ngame_saves = [\"*.sav\"]\n").is_ok());
         for bad in [
             "*",
             "a/b",
@@ -1140,5 +1387,108 @@ mod tests {
         assert_eq!(ours, databases);
         assert!(ours.contains("DOS"));
         assert!(prefs.systems().all(|(_, cores)| !cores.is_empty()));
+    }
+
+    #[test]
+    fn five_zero_keys_of_the_real_file() {
+        let prefs = CorePreferences::builtin();
+        let cap32 = id("cap32");
+        assert_eq!(
+            prefs.for_system("Amstrad - CPC"),
+            std::slice::from_ref(&cap32)
+        );
+        assert_eq!(
+            prefs.for_system("Commodore - 64"),
+            [id("vice_x64"), id("vice_x64sc")]
+        );
+        assert_eq!(prefs.save_scope(&cap32), SaveScopePref::Game);
+        assert_eq!(prefs.save_scope(&id("vice_x64")), SaveScopePref::Core);
+        assert_eq!(prefs.save_scope(&id("unknown")), SaveScopePref::Core);
+        assert_eq!(prefs.game_save_patterns(&cap32), ["*.sav"]);
+        assert_eq!(prefs.media_policy(&cap32), CoreMediaPolicy::Direct);
+        assert_eq!(prefs.m3u_launch(&cap32), Some(M3uLaunchPref::Command));
+        assert_eq!(
+            prefs.m3u_launch(&id("vice_x64")),
+            Some(M3uLaunchPref::Program)
+        );
+        assert_eq!(prefs.m3u_launch(&id("puae")), None);
+        assert!(prefs.fastforward_override(&cap32));
+        assert!(!prefs.fastforward_override(&id("puae")));
+        assert!(!prefs.variable_state_size(&cap32));
+        assert_eq!(
+            prefs.options_by_extension(&cap32, "CPR"),
+            [("cap32_model".to_owned(), "6128+".to_owned())]
+        );
+        assert!(prefs.options_by_extension(&cap32, "dsk").is_empty());
+        assert!(prefs.options_by_extension(&id("x"), "cpr").is_empty());
+        let actions = prefs.actions(&cap32);
+        assert_eq!(actions.tape_play.as_deref(), Some("HOME"));
+        assert_eq!(actions.tape_stop.as_deref(), Some("END"));
+        assert_eq!(actions.tape_rewind.as_deref(), Some("PAGEUP"));
+        assert!(!actions.is_empty());
+        assert!(prefs.actions(&id("puae")).is_empty());
+        let layout = prefs.layout_option(&cap32).unwrap();
+        assert_eq!(layout.option, "cap32_lang_layout");
+        assert_eq!(layout.value_for(Some("fr_FR.UTF-8")), "french");
+        assert_eq!(layout.value_for(Some("es-ES")), "spanish");
+        for locale in ["fr-BE", "en-GB", "de"] {
+            let expected = if locale == "fr-BE" {
+                "french"
+            } else {
+                "english"
+            };
+            assert_eq!(layout.value_for(Some(locale)), expected, "{locale}");
+        }
+        assert!(prefs.builtin_firmware(&cap32).is_some());
+        assert_eq!(
+            prefs
+                .featured_options(&cap32, "Amstrad - CPC")
+                .first()
+                .map(String::as_str),
+            Some("cap32_model")
+        );
+        // VICE: x64sc is a copy of x64.
+        let (x64, x64sc) = (id("vice_x64"), id("vice_x64sc"));
+        assert!(prefs.variable_state_size(&x64) && prefs.variable_state_size(&x64sc));
+        assert!(prefs.builtin_firmware(&x64).is_some());
+        assert_eq!(prefs.cores[&x64], prefs.cores[&x64sc]);
+        assert_eq!(prefs.actions(&x64).tape_play.as_deref(), Some("F13"));
+        assert_eq!(prefs.game_save_patterns(&x64), ["{game}.save*.d64"]);
+        assert_eq!(prefs.media_policy(&x64), CoreMediaPolicy::WorkingCopy);
+        assert!(prefs.frontend_options(&x64).contains(&(
+            "vice_mapper_datasette_start".to_owned(),
+            "RETROK_F13".to_owned()
+        )));
+        assert_eq!(prefs.featured_options(&x64, "Commodore - 64").len(), 7);
+    }
+
+    #[test]
+    fn five_zero_keys_validation() {
+        let parse = |body: &str| {
+            CorePreferences::parse(&format!("[systems.S]\ncores = [\"x\"]\n[cores.x]\n{body}"))
+        };
+        assert!(parse("[cores.x.actions]\ntape_play = \"f13\"\n").is_ok());
+        for bad in ["NOPE", "UNKNOWN", "RETROK_HOME", ""] {
+            assert!(
+                parse(&format!("[cores.x.actions]\ntape_play = \"{bad}\"\n")).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse("[cores.x.actions]\nplay = \"HOME\"\n").is_err());
+        assert!(parse("m3u_launch = \"other\"\n").is_err());
+        assert!(parse("save_scope = \"all\"\n").is_err());
+        assert!(parse("[cores.x.options_by_extension]\ncpr = { k = \"v\" }\n").is_ok());
+        for bad in [
+            "CPR = { k = \"v\" }",
+            "\".cpr\" = { k = \"v\" }",
+            "cpr = { \"a b\" = \"v\" }",
+            "cpr = { k = \"\" }",
+            "cpr = { k = \" v\" }",
+        ] {
+            assert!(
+                parse(&format!("[cores.x.options_by_extension]\n{bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

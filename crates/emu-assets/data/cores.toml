@@ -141,3 +141,71 @@ options = { dosbox_pure_midi = "disabled" }       # MIDI only once a SoundFont /
 
 [cores.dosbox_pure.featured_options]
 "DOS" = ["dosbox_pure_cycles", "dosbox_pure_memory_size", "dosbox_pure_cpu_type", "dosbox_pure_machine", "dosbox_pure_sblaster_type", "dosbox_pure_midi", "dosbox_pure_keyboard_layout", "dosbox_pure_mouse_speed_factor"]
+
+# 5.0 keys (design docs/design/v5.0-cpc-c64.md §3.3):
+# - save_scope: "core" (default) or "game" = <saves>/<core_id>/<save_name>/ for every game. A `game_saves`
+#   pattern without `{game}` (`*.sav`) is accepted only with "game".
+# - fastforward_override: the core may request fast-forward (env 64). variable_state_size: VICE savestates vary.
+# - m3u_launch: "command" (`#COMMAND:` first line, cap32) or "program" (`<image>:<launch>` first entry, VICE).
+# - options_by_extension.<ext>: computed defaults by content extension (lower-case, no dot).
+# - actions: libretro key names (without RETROK_) pressed by the « Cassette » menu.
+# ROMs built into cap32 and VICE: user decision of 2026-11-21 (ADR 0005 « Builtin » rule).
+[systems."Amstrad - CPC"]
+cores = ["cap32"]
+
+[systems."Commodore - 64"]
+cores = ["vice_x64", "vice_x64sc"]                # GPLv2, GPLv2; x64sc = accurate, heavier alternative
+
+[cores.cap32]
+media = "direct"                                  # the core never writes the image: <image>.sav differential
+save_scope = "game"
+game_saves = ["*.sav"]
+fastforward_override = true
+m3u_launch = "command"
+builtin_firmware = { label = "ROM Amstrad intégrées au core", notice = "Amstrad has kindly given its permission for its copyrighted material to be redistributed but Amstrad retains its copyright. Parts © Locomotive Software, CP/M © Digital Research." }
+layout_option = { option = "cap32_lang_layout", map = { fr = "french", es = "spanish" }, fallback = "english" }
+
+[cores.cap32.featured_options]
+"Amstrad - CPC" = ["cap32_model", "cap32_ram", "cap32_lang_layout", "cap32_autorun", "cap32_retrojoy0", "cap32_tape_fastload", "cap32_scr_tube"]
+
+[cores.cap32.options_by_extension]
+cpr = { cap32_model = "6128+" }
+
+[cores.cap32.actions]
+tape_play = "HOME"
+tape_stop = "END"
+tape_rewind = "PAGEUP"
+
+[cores.vice_x64]
+media = "working_copy"                            # VICE writes into d64 / crt; zips extracted by the frontend
+fastforward_override = true
+variable_state_size = true
+m3u_launch = "program"
+game_saves = ["{game}.save*.d64"]                 # #SAVEDISK: of the working .m3u (named after the game)
+builtin_firmware = { label = "ROM Commodore intégrées au core VICE", notice = "KERNAL, BASIC, CHARGEN et DOS 1541 © Commodore Business Machines, fournis par le core VICE ; statut de licence incertain (acceptées par l'utilisateur, usage personnel)." }
+options = { vice_mapper_joyport_switch = "---", vice_mapper_reset = "---", vice_mapper_select = "---", vice_mapper_statusbar = "---", vice_datasette_hotkeys = "enabled", vice_mapper_datasette_start = "RETROK_F13", vice_mapper_datasette_stop = "RETROK_F14", vice_mapper_datasette_rewind = "RETROK_F15", vice_mapper_datasette_forward = "---", vice_mapper_datasette_reset = "---", vice_autoloadwarp = "enabled" }
+
+[cores.vice_x64.featured_options]
+"Commodore - 64" = ["vice_c64_model", "vice_joyport", "vice_sid_model", "vice_autostart", "vice_drive_true_emulation", "vice_autoloadwarp", "vice_jiffydos"]
+
+[cores.vice_x64.actions]
+tape_play = "F13"
+tape_stop = "F14"
+tape_rewind = "F15"
+
+[cores.vice_x64sc]
+media = "working_copy"                            # VICE writes into d64 / crt; zips extracted by the frontend
+fastforward_override = true
+variable_state_size = true
+m3u_launch = "program"
+game_saves = ["{game}.save*.d64"]                 # #SAVEDISK: of the working .m3u (named after the game)
+builtin_firmware = { label = "ROM Commodore intégrées au core VICE", notice = "KERNAL, BASIC, CHARGEN et DOS 1541 © Commodore Business Machines, fournis par le core VICE ; statut de licence incertain (acceptées par l'utilisateur, usage personnel)." }
+options = { vice_mapper_joyport_switch = "---", vice_mapper_reset = "---", vice_mapper_select = "---", vice_mapper_statusbar = "---", vice_datasette_hotkeys = "enabled", vice_mapper_datasette_start = "RETROK_F13", vice_mapper_datasette_stop = "RETROK_F14", vice_mapper_datasette_rewind = "RETROK_F15", vice_mapper_datasette_forward = "---", vice_mapper_datasette_reset = "---", vice_autoloadwarp = "enabled" }
+
+[cores.vice_x64sc.featured_options]
+"Commodore - 64" = ["vice_c64_model", "vice_joyport", "vice_sid_model", "vice_autostart", "vice_drive_true_emulation", "vice_autoloadwarp", "vice_jiffydos"]
+
+[cores.vice_x64sc.actions]
+tape_play = "F13"
+tape_stop = "F14"
+tape_rewind = "F15"
