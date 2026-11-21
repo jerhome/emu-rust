@@ -11,7 +11,9 @@
 # size = <bytes> }` (`size` optional: quick reject at import and display; the md5 stays the only verification).
 # Sections added in 3.0 (one pass for 3.0 to 6.0, inert until a core asks for them): Atari - ST, Commodore -
 # Amiga, Commodore - C128 (JiffyDOS files only), DOS (MT-32 / CM-32L ROMs only, not the BASS libraries);
-# Sega - Mega CD - Sega CD gained its sizes. PlayStation and 3DO (7.0) are not added yet.
+# Sega - Mega CD - Sega CD gained its sizes. Sections added in 7.0 (ADR 0021): « Sony - PlayStation » and
+# « 3DO Company, The - 3DO » (exact section name in `System.dat`, not the database name of cores.toml); whole
+# sections, none of these files is ever required (cores fall back to their built-in BIOS).
 
 [firmware]
 # Atari - ST
@@ -89,3 +91,40 @@
 "ggenie.bin" = ["e8af7fe115a75c849f6aab3701e7799b"]
 "sk.bin" = ["4ea493ea4e9f6c9ebfccbdb15110367e"]
 "sk2chip.bin" = ["b4e76e416b887f4e7413ba76fa735f16"]
+# 3DO Company, The - 3DO
+"3do_arcade_saot.bin" = { md5 = "8970fc987ab89a7f64da9f8a8c4333ff", size = 524288 }
+"goldstar.bin" = { md5 = "8639fd5e549bd6238cfee79e3e749114", size = 1048576 }
+"panafz1-kanji.bin" = { md5 = "b8dc97f778a6245c58e064b0312e8281", size = 933636 }
+"panafz1.bin" = { md5 = "f47264dd47fe30f73ab3c010015c155b", size = 1048576 }
+"panafz10-norsa.bin" = { md5 = "1477bda80dc33731a65468c1f5bcbee9", size = 1048576 }
+"panafz10.bin" = { md5 = "51f2f43ae2f3508a14d9f56597e2d3ce", size = 1048576 }
+"panafz10e-anvil-norsa.bin" = { md5 = "cf11bbb5a16d7af9875cca9de9a15e09", size = 1048576 }
+"panafz10e-anvil.bin" = { md5 = "a48e6746bd7edec0f40cff078f0bb19f", size = 1048576 }
+"panafz10ja-anvil-kanji.bin" = { md5 = "428577250f43edc902ea239c50d2240d", size = 1048576 }
+"panafz1j-kanji.bin" = { md5 = "c23fb5d5e6bb1c240d02cf968972be37", size = 1048576 }
+"panafz1j-norsa.bin" = { md5 = "f6c71de7470d16abe4f71b1444883dc8", size = 1048576 }
+"panafz1j.bin" = { md5 = "a496cfdded3da562759be3561317b605", size = 1048576 }
+"sanyotry.bin" = { md5 = "35fa1a1ebaaeea286dc5cd15487c13ea", size = 1048576 }
+# Sony - PlayStation
+"scph1000.bin" = { md5 = "239665b1a3dade1b5a52c06338011044", size = 524288 }
+"scph1001.bin" = { md5 = "924e392ed05558ffdb115408c263dccf", size = 524288 }
+"scph1002.bin" = { md5 = "54847e693405ffeb0359c6287434cbef", size = 524288 }
+"scph100.bin" = { md5 = "8abc1b549a4a80954addc48ef02c4521", size = 524288 }
+"scph101.bin" = { md5 = "6e3735ff4c7dc899ee98981385f6f3d0", size = 524288 }
+"scph102A.bin" = { md5 = "b10f5e0e3d9eb60e5159690680b1e774", size = 524288 }
+"scph102B.bin" = { md5 = "de93caec13d1a141a40a79f5c86168d6", size = 524288 }
+"scph102C.bin" = { md5 = "de93caec13d1a141a40a79f5c86168d6", size = 524288 }
+"scph3000.bin" = { md5 = "849515939161e62f6b866f6853006780", size = 524288 }
+"scph3500.bin" = { md5 = "cba733ceeff5aef5c32254f1d617fa62", size = 524288 }
+"scph5000.bin" = { md5 = "eb201d2d98251a598af467d4347bb62f", size = 524288 }
+"scph5500.bin" = { md5 = "8dd7d5296a650fac7319bce665a6a53c", size = 524288 }
+"scph5501.bin" = { md5 = "490f666e1afb15b7362b406ed1cea246", size = 524288 }
+"scph5502.bin" = { md5 = "32736f17079d0b2b7024407c39bd3050", size = 524288 }
+"scph5552.bin" = { md5 = "32736f17079d0b2b7024407c39bd3050", size = 524288 }
+"scph7001.bin" = { md5 = "1e68c231d0896b7eadcad1d7d8e76129", size = 524288 }
+"scph7002.bin" = { md5 = "b9d9a0286c33dc6b7237bb13cd46fdee", size = 524288 }
+"scph7003.bin" = { md5 = "490f666e1afb15b7362b406ed1cea246", size = 524288 }
+"scph7502.bin" = { md5 = "b9d9a0286c33dc6b7237bb13cd46fdee", size = 524288 }
+"scph9002(7502).bin" = { md5 = "b9d9a0286c33dc6b7237bb13cd46fdee", size = 524288 }
+"psxonpsp660.bin" = { md5 = "c53ca5908936d412331790f4426c6c33", size = 524288 }
+"ps1_rom.bin" = { md5 = "81bbe60ba7a3d1cea1d48c14cbcc647b", size = 524288 }

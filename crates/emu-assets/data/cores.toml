@@ -252,3 +252,96 @@ options = { vice_mapper_joyport_switch = "---", vice_mapper_reset = "---", vice_
 tape_play = "F13"
 tape_stop = "F14"
 tape_rewind = "F15"
+
+# PlayStation and 3DO (ADR 0021, design docs/design/v7.0-ps1-3do.md §3.3). Core ids and option names read on the
+# nightly cores of 2026-11-21. BIOS files are never downloaded and never mandatory: every core below starts with
+# a built-in replacement (`fallback = "core"`), the user's BIOS stays preferred when present.
+[systems."Sony - PlayStation"]
+cores = ["pcsx_rearmed", "swanstation", "mednafen_psx"]   # GPLv2, GPLv3, GPLv2
+
+[systems."The 3DO Company - 3DO"]
+cores = ["opera"]                                          # modified LGPL, non-commercial
+
+# 7.0 keys (design v7.0 §3.3):
+# - pad_devices: RETRO_DEVICE id of each pad mode, as declared by the core (SET_CONTROLLER_INFO); `default` = mode
+#   used when neither the game nor the config chooses. "dualshock" = sticks passed, no stick -> D-pad conversion.
+#   Ids <= 0xFFFF; `default` must be a key of the table.
+# - save_family: cores whose SAVE_RAM files are interchangeable; a missing .srm is copied from another core.
+# - required_firmware.fallback = "core": the core falls back to its built-in BIOS by itself.
+# - game_saves may start with one literal sub-folder (`opera/per_game/{game}.*.srm`).
+[cores.pcsx_rearmed]
+media_direct = ["cue", "chd", "iso", "pbp", "bin"]
+options = { pcsx_rearmed_memcard2 = "none" }
+save_family = "psx-memcard"
+pad_devices = { digital = 1, dualshock = 517, default = "digital" }
+builtin_firmware = { label = "BIOS HLE (intégré au core)", notice = "BIOS HLE de PCSX-ReARMed (GPLv2), fourni par le core." }
+
+[cores.pcsx_rearmed.featured_options]
+"Sony - PlayStation" = ["pcsx_rearmed_region", "pcsx_rearmed_bios", "pcsx_rearmed_show_bios_bootlogo", "pcsx_rearmed_memcard2", "pcsx_rearmed_dithering", "pcsx_rearmed_frameskip_type", "pcsx_rearmed_drc"]
+
+[cores.pcsx_rearmed.required_firmware."Sony - PlayStation"]
+variant = "region"
+default = "usa"
+fallback = "core"
+[cores.pcsx_rearmed.required_firmware."Sony - PlayStation".files]
+japan = "scph5500.bin"
+usa = "scph5501.bin"
+europe = "scph5502.bin"
+
+[cores.swanstation]
+media_direct = ["cue", "chd", "iso", "pbp", "bin"]
+options = { swanstation_GPU_Renderer = "Software" }        # hardware rendering is out of scope (ADR 0021 §1)
+save_family = "psx-memcard"
+pad_devices = { digital = 1, dualshock = 261, default = "digital" }
+builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence à confirmer (ADR 0021)." }
+
+[cores.swanstation.featured_options]
+"Sony - PlayStation" = ["swanstation_Console_Region", "swanstation_BIOS_PatchFastBoot", "swanstation_MemoryCards_Card2Type", "swanstation_Controller1_AnalogDPadInDigitalMode", "swanstation_CPU_ExecutionMode"]
+
+[cores.swanstation.required_firmware."Sony - PlayStation"]
+variant = "region"
+default = "usa"
+fallback = "core"
+[cores.swanstation.required_firmware."Sony - PlayStation".files]
+japan = "scph5500.bin"
+usa = "scph5501.bin"
+europe = "scph5502.bin"
+
+[cores.mednafen_psx]
+media_direct = ["cue", "chd", "iso", "pbp", "bin"]        # `iso` accepted by the binary (absent from the `.info`)
+options = { beetle_psx_enable_memcard1 = "disabled" }
+game_saves = ["{game}.*.mcr"]
+save_family = "psx-memcard"
+pad_devices = { digital = 1, dualshock = 517, default = "digital" }
+builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence à confirmer (ADR 0021)." }
+
+[cores.mednafen_psx.featured_options]
+"Sony - PlayStation" = ["beetle_psx_region", "beetle_psx_skip_bios", "beetle_psx_enable_memcard1", "beetle_psx_cpu_dynarec", "beetle_psx_dither_mode"]
+
+[cores.mednafen_psx.required_firmware."Sony - PlayStation"]
+variant = "region"
+default = "usa"
+fallback = "core"
+[cores.mednafen_psx.required_firmware."Sony - PlayStation".files]
+japan = "scph5500.bin"
+usa = "scph5501.bin"
+europe = "scph5502.bin"
+
+[cores.opera]
+media_direct = ["cue", "chd", "iso", "bin"]
+options = { opera_bios = "panafz10.bin" }                  # the user's BIOS when present (option value = file name)
+game_saves = ["opera/per_game/{game}.*.srm"]
+builtin_firmware = { label = "Opera Boot (intégré au core)", notice = "Opera Boot — GPL-2.0-only, projet trapexit/opera-boot, fourni par le core opera." }
+
+[cores.opera.featured_options]
+"The 3DO Company - 3DO" = ["opera_bios", "opera_font", "opera_region", "opera_nvram_storage", "opera_cpu_overclock", "opera_high_resolution", "opera_active_devices"]
+
+[cores.opera.required_firmware."The 3DO Company - 3DO"]
+variant = "region"                                         # one file for every region (no region lock)
+default = "usa"
+fallback = { option = "opera_bios", value = "opera-boot-internal" }
+
+[cores.opera.required_firmware."The 3DO Company - 3DO".files]
+japan = "panafz10.bin"
+usa = "panafz10.bin"
+europe = "panafz10.bin"

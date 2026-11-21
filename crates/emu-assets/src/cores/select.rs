@@ -68,7 +68,18 @@ struct CoreEntry {
     m3u_launch: Option<M3uLaunchPref>,
     #[serde(default)]
     actions: Option<ActionsEntry>,
-    // 7.0 keys `pad_devices` / `save_family` (design v7.0 §3.3): added to this struct and to `CoreProps` by PA1.
+    // 7.0 keys (design v7.0 §3.3).
+    #[serde(default)]
+    pad_devices: Option<PadDevicesEntry>,
+    #[serde(default)]
+    save_family: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PadDevicesEntry {
+    default: String,
+    #[serde(flatten)]
+    modes: BTreeMap<String, u32>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +144,8 @@ struct CoreProps {
     options_by_extension: BTreeMap<String, Vec<(String, String)>>,
     m3u_launch: Option<M3uLaunchPref>,
     actions: CoreActions,
+    pad_devices: Option<PadDevices>,
+    save_family: Option<String>,
 }
 
 /// Identifier of each pad mode of a core (`RETRO_DEVICE_*` as declared through `SET_CONTROLLER_INFO`), from
@@ -350,20 +363,21 @@ impl CorePreferences {
 
     /// `pad_devices` of `data/cores.toml`: device id per pad mode; `None` for a core without the key.
     pub fn pad_devices(&self, core: &CoreId) -> Option<PadDevices> {
-        let _ = core;
-        todo!("PA1: parse `pad_devices` (default must be a key of modes, ids <= 0xFFFF)")
+        self.cores.get(core)?.pad_devices.clone()
     }
 
     /// `save_family` of `data/cores.toml`: cores of one family have interchangeable `SAVE_RAM` files.
     pub fn save_family(&self, core: &CoreId) -> Option<String> {
-        let _ = core;
-        todo!("PA1: parse `save_family`")
+        self.cores.get(core)?.save_family.clone()
     }
 
     /// Installed or not, every core declaring `save_family = family` (catalog order).
     pub fn save_family_cores(&self, family: &str) -> Vec<CoreId> {
-        let _ = family;
-        todo!("PA1: filter cores by save_family")
+        self.cores
+            .iter()
+            .filter(|(_, p)| p.save_family.as_deref() == Some(family))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// `[cores.<core>.actions]` of `data/cores.toml`: keys pressed by the « Cassette » menu. Names checked when
@@ -666,6 +680,15 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
             "m3u_launch = \"program\" exige media = \"working_copy\" pour {core}"
         ));
     }
+    let pad_devices = entry
+        .pad_devices
+        .map(|p| pad_devices(core, p))
+        .transpose()?;
+    if let Some(family) = &entry.save_family
+        && !is_family_name(family)
+    {
+        return Err(format!("save_family invalide pour {core} : {family}"));
+    }
     Ok(CoreProps {
         media: entry.media.unwrap_or_default(),
         media_direct,
@@ -686,7 +709,35 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         options_by_extension,
         m3u_launch: entry.m3u_launch,
         actions,
+        pad_devices,
+        save_family: entry.save_family,
     })
+}
+
+/// Pad mode keys are the frontend's (`digital`, `dualshock`); ids must fit a libretro device id.
+fn pad_devices(core: &str, entry: PadDevicesEntry) -> Result<PadDevices, String> {
+    if entry.modes.is_empty() || !entry.modes.contains_key(&entry.default) {
+        return Err(format!("pad_devices.default absent des modes pour {core}"));
+    }
+    if let Some((mode, id)) = entry
+        .modes
+        .iter()
+        .find(|(m, id)| !matches!(m.as_str(), "digital" | "dualshock") || **id > 0xFFFF)
+    {
+        return Err(format!("pad_devices invalide pour {core} : {mode} = {id}"));
+    }
+    Ok(PadDevices {
+        modes: entry.modes,
+        default: entry.default,
+    })
+}
+
+fn is_family_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// Validates a key name of `[cores.<core>.actions]` against [`RETROK_NAMES`]; stored upper-cased.
@@ -960,16 +1011,36 @@ fn is_extension(ext: &str) -> bool {
 /// A file-name pattern (design v3.0 §3.5.3): no separator, no `..`, at most one `*`, `{game}` the only
 /// placeholder; it must name something else than "every file" (`*` alone is refused).
 fn is_save_pattern(pattern: &str) -> bool {
-    let without_game = pattern.replace("{game}", "");
-    !pattern.is_empty()
-        && pattern != "*"
+    // Design v7.0 §3.2: up to two literal sub-folders (`opera/per_game/{game}.*.srm`); the last component is
+    // the file-name pattern, folders carry no wildcard nor placeholder.
+    let mut parts: Vec<&str> = pattern.split('/').collect();
+    let Some(file) = parts.pop() else {
+        return false;
+    };
+    if parts.len() > 2 || !parts.iter().all(|d| is_literal_folder(d)) {
+        return false;
+    }
+    let without_game = file.replace("{game}", "");
+    !file.is_empty()
+        && file != "*"
         && pattern.len() <= 128
-        && !pattern.contains(['/', '\\', ':', '\0'])
+        && !pattern.contains(['\\', ':', '\0'])
         && !pattern.contains("..")
-        && pattern.matches('*').count() <= 1
+        && file.matches('*').count() <= 1
         && !without_game.contains(['{', '}'])
-        && !pattern.starts_with(' ')
-        && !pattern.ends_with([' ', '.'])
+        && !file.starts_with(' ')
+        && !file.ends_with([' ', '.'])
+}
+
+fn is_literal_folder(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name != "."
+        && !name.starts_with(' ')
+        && !name.ends_with([' ', '.'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b' '))
 }
 
 /// libretro option keys are plain identifiers (`hatari_vkbd`).
@@ -1061,8 +1132,9 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0), CPC and C64 (5.0), GBA and 32X (6.0).
-        assert_eq!(prefs.systems().count(), 15);
+        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0), CPC and C64 (5.0), GBA and 32X (6.0),
+        // PlayStation and 3DO (7.0).
+        assert_eq!(prefs.systems().count(), 17);
         let dos: Vec<String> = prefs
             .for_system("DOS")
             .iter()
@@ -1637,5 +1709,132 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn pad_devices_and_save_family_validation() {
+        let parse = |t: &str| CorePreferences::parse(&format!("[systems]\n[cores.x]\n{t}"));
+        let p = parse(
+            "pad_devices = { digital = 1, dualshock = 517, default = \"dualshock\" }\n\
+             save_family = \"psx-memcard\"\n",
+        )
+        .unwrap();
+        let pad = p.pad_devices(&id("x")).unwrap();
+        assert_eq!(pad.default, "dualshock");
+        assert_eq!(pad.modes["digital"], 1);
+        assert_eq!(pad.modes["dualshock"], 517);
+        assert_eq!(p.save_family(&id("x")).as_deref(), Some("psx-memcard"));
+        assert_eq!(p.save_family_cores("psx-memcard"), [id("x")]);
+        assert!(p.save_family_cores("other").is_empty());
+        assert!(p.pad_devices(&id("y")).is_none());
+        assert!(p.save_family(&id("y")).is_none());
+        for bad in [
+            "pad_devices = { digital = 1, default = \"dualshock\" }",
+            "pad_devices = { default = \"digital\" }",
+            "pad_devices = { digital = 65536, default = \"digital\" }",
+            "pad_devices = { digital = -1, default = \"digital\" }",
+            "pad_devices = { analog = 3, digital = 1, default = \"digital\" }",
+            "pad_devices = { digital = 1 }",
+            "save_family = \"\"",
+            "save_family = \"A/b\"",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert!(parse("pad_devices = { digital = 65535, default = \"digital\" }").is_ok());
+    }
+
+    #[test]
+    fn save_pattern_sub_folders() {
+        for ok in [
+            "{game}.brm",
+            "opera/per_game/{game}.*.srm",
+            "opera/{game}.srm",
+            "a/b/*.sav",
+        ] {
+            assert!(is_save_pattern(ok), "{ok}");
+        }
+        for bad in [
+            "a/b/c/{game}.srm",
+            "/abs/{game}.srm",
+            "../{game}.srm",
+            "a/../{game}.srm",
+            "a//{game}.srm",
+            "a/",
+            "a/*",
+            "*/x.srm",
+            "{game}/x.srm",
+            "a\\b/{game}.srm",
+            "C:/x.srm",
+            "a/b/{game}.*.*",
+            "./{game}.srm",
+        ] {
+            assert!(!is_save_pattern(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn builtin_ps1_and_3do_data() {
+        let prefs = CorePreferences::builtin();
+        let psx = "Sony - PlayStation";
+        let ids = ["pcsx_rearmed", "swanstation", "mednafen_psx"];
+        assert_eq!(
+            prefs.for_system(psx),
+            ids.iter().map(|c| id(c)).collect::<Vec<_>>()
+        );
+        assert_eq!(prefs.for_system("The 3DO Company - 3DO"), [id("opera")]);
+        assert_eq!(prefs.save_family_cores("psx-memcard"), {
+            let mut v: Vec<_> = ids.iter().map(|c| id(c)).collect();
+            v.sort();
+            v
+        });
+        for c in ids {
+            let c = id(c);
+            let req = prefs.required_firmware(&c, psx).unwrap();
+            assert_eq!(req.fallback, Some(FirmwareFallback::Core), "{c}");
+            assert_eq!(req.files["japan"], "scph5500.bin");
+            assert_eq!(req.files["usa"], "scph5501.bin");
+            assert_eq!(req.files["europe"], "scph5502.bin");
+            assert_eq!(req.default, "usa");
+            let pad = prefs.pad_devices(&c).unwrap();
+            assert_eq!(pad.default, "digital");
+            assert_eq!(pad.modes["digital"], 1);
+            assert!(prefs.builtin_firmware(&c).is_some());
+        }
+        assert_eq!(
+            prefs.pad_devices(&id("swanstation")).unwrap().modes["dualshock"],
+            261
+        );
+        assert_eq!(
+            prefs.pad_devices(&id("pcsx_rearmed")).unwrap().modes["dualshock"],
+            517
+        );
+        assert_eq!(
+            prefs.pad_devices(&id("mednafen_psx")).unwrap().modes["dualshock"],
+            517
+        );
+        assert!(
+            prefs
+                .frontend_options(&id("swanstation"))
+                .contains(&("swanstation_GPU_Renderer".to_owned(), "Software".to_owned()))
+        );
+        let opera = id("opera");
+        let req = prefs
+            .required_firmware(&opera, "The 3DO Company - 3DO")
+            .unwrap();
+        assert_eq!(req.files["usa"], "panafz10.bin");
+        assert_eq!(
+            req.fallback,
+            Some(FirmwareFallback::Option {
+                option: "opera_bios".to_owned(),
+                value: "opera-boot-internal".to_owned()
+            })
+        );
+        assert!(prefs.pad_devices(&opera).is_none());
+        assert!(prefs.save_family(&opera).is_none());
+        assert!(
+            prefs
+                .game_save_patterns(&opera)
+                .contains(&"opera/per_game/{game}.*.srm".to_owned())
+        );
     }
 }

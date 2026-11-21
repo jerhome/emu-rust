@@ -375,6 +375,20 @@ mod tests {
             [parse_md5("d3293ebaaa7f4eb2a6766b68a0fb4609").unwrap()]
         );
         assert!(known.md5_for("nope.bin").is_empty());
+        // 7.0 sections (System.dat: « Sony - PlayStation », « 3DO Company, The - 3DO »).
+        for (name, md5, size) in [
+            ("scph5500.bin", "8dd7d5296a650fac7319bce665a6a53c", 524_288),
+            ("scph5501.bin", "490f666e1afb15b7362b406ed1cea246", 524_288),
+            ("scph5502.bin", "32736f17079d0b2b7024407c39bd3050", 524_288),
+            (
+                "panafz10.bin",
+                "51f2f43ae2f3508a14d9f56597e2d3ce",
+                1_048_576,
+            ),
+        ] {
+            assert_eq!(known.md5_for(name), [parse_md5(md5).unwrap()], "{name}");
+            assert_eq!(known.size_for(name), Some(size), "{name}");
+        }
         assert!(KnownFirmware::parse("[firmware]\n\"../x\" = []\n").is_err());
         assert!(KnownFirmware::parse("[firmware]\n\"x\" = [\"zz\"]\n").is_err());
     }
@@ -571,9 +585,9 @@ mod tests {
         assert_eq!(known.size_for("vice/JiffyDOS_C64.bin"), Some(8192));
         assert_eq!(known.size_for("bios_CD_E.bin"), Some(131_072));
         assert_eq!(md5("bios_CD_U.bin"), ["2efd74e3232ff260e371b99f84024f7f"]);
-        // Not authorised yet (7.0), nor libraries of the DOS section.
-        assert!(known.md5_for("scph5501.bin").is_empty());
-        assert!(known.md5_for("panafz10.bin").is_empty());
+        // 7.0 files (PlayStation, 3DO) are known; the libraries of the DOS section are not.
+        assert_eq!(md5("scph5501.bin"), ["490f666e1afb15b7362b406ed1cea246"]);
+        assert_eq!(md5("panafz10.bin"), ["51f2f43ae2f3508a14d9f56597e2d3ce"]);
         assert!(known.md5_for("bass.dll").is_empty());
     }
 
