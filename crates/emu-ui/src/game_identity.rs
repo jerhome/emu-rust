@@ -1,7 +1,7 @@
 //! Game identity on the UI side (design `v2.1-identite-disques.md` §3.2): resolved before loading, because the
 //! per-game options file is named after it, then handed to `Emulator::load_content_as`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use emu_runtime::{
     ContentSpec, GameIdentity, StateOrigin, identity_request_for, resolve_game_identity,
@@ -72,22 +72,6 @@ pub fn state_load_needs_confirmation(origin: Option<StateOrigin>) -> bool {
     )
 }
 
-/// Working-copy folder of the session (same rule as the runtime's): `None` for a `Direct` set.
-pub(crate) fn session_work_dir(
-    saves_core_dir: &Path,
-    direct: bool,
-    prepared_work_dir: Option<Option<&Path>>,
-    save_name: &str,
-) -> Option<PathBuf> {
-    if direct {
-        return None;
-    }
-    match prepared_work_dir {
-        Some(dir) => dir.map(Path::to_path_buf),
-        None => Some(saves_core_dir.join(format!("{save_name}.disks"))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,26 +85,6 @@ mod tests {
         assert!(!state_load_needs_confirmation(Some(StateOrigin::Same)));
         assert!(!state_load_needs_confirmation(Some(StateOrigin::Unknown)));
         assert!(!state_load_needs_confirmation(None));
-    }
-
-    #[test]
-    fn work_dir_follows_the_runtime_rule() {
-        let saves = Path::new("/s/hatari");
-        assert_eq!(session_work_dir(saves, true, None, "G"), None);
-        assert_eq!(
-            session_work_dir(saves, false, None, "no-game"),
-            Some(PathBuf::from("/s/hatari/no-game.disks"))
-        );
-        assert_eq!(
-            session_work_dir(
-                saves,
-                false,
-                Some(Some(Path::new("/s/hatari/G (2).disks"))),
-                "G"
-            ),
-            Some(PathBuf::from("/s/hatari/G (2).disks"))
-        );
-        assert_eq!(session_work_dir(saves, false, Some(None), "G"), None);
     }
 
     #[test]

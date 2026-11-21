@@ -24,9 +24,7 @@ use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::config_computer::KeyboardModeChoice;
 use crate::content::content_spec;
 use crate::egui_layer::EguiLayer;
-use crate::game_identity::{
-    ResolvedGame, resolve_game, session_work_dir, state_load_needs_confirmation,
-};
+use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options};
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
@@ -198,8 +196,6 @@ pub(crate) struct App {
     frontend_options: Vec<(String, String)>,
     disks_view: Option<DisksView>,
     working_copy: bool,
-    /// `Direct` disk set: no working-copy folder (no added disks to remember, nothing to clean).
-    media_direct: bool,
     /// The files the game was launched with (disk menu: « ajouter une image du même dossier »).
     content_files: Vec<PathBuf>,
     states_warned: bool,
@@ -357,13 +353,6 @@ impl App {
             spec,
             ContentSpec::Media {
                 policy: MediaPolicy::WorkingCopy,
-                ..
-            }
-        );
-        let media_direct = matches!(
-            spec,
-            ContentSpec::Media {
-                policy: MediaPolicy::Direct,
                 ..
             }
         );
@@ -538,7 +527,6 @@ impl App {
             frontend_options,
             disks_view: None,
             working_copy,
-            media_direct,
             content_files,
             states_warned: false,
         })
@@ -724,7 +712,7 @@ impl App {
             .collect();
         let can_reset = self.hosted && self.working_copy;
         let saves_core_dir = self.options.dirs.saves.join(&self.core_id);
-        let work_dir = self.work_dir();
+        let work_dir = self.emulator.work_dir();
         let orphans = work_dir.as_ref().filter(|d| d.is_dir()).map(|dir| {
             emu_runtime::orphan_copies(&saves_core_dir, dir).unwrap_or_else(|e| {
                 tracing::warn!("copies non utilisées non listées : {e}");
@@ -746,7 +734,7 @@ impl App {
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default(),
-                        modified: std::fs::metadata(&a.copy).and_then(|m| m.modified()).ok(),
+                        modified: a.modified,
                         size: a.size,
                         source_missing: a.source.is_some() && !a.source_present,
                         inserted: a.index.is_some() && a.index == current,
@@ -763,18 +751,6 @@ impl App {
                 orphans,
             }
         });
-    }
-
-    /// Working-copy folder of the session (`<saves>/<core>/<save_name>.disks` or the one `prepare_media` chose).
-    fn work_dir(&self) -> Option<PathBuf> {
-        session_work_dir(
-            &self.options.dirs.saves.join(&self.core_id),
-            self.media_direct,
-            self.emulator
-                .prepared_media()
-                .map(|p| p.work_dir.as_deref()),
-            self.emulator.game_name(),
-        )
     }
 
     fn forget_disk(&mut self, copy: &Path, delete: bool) {
@@ -836,7 +812,7 @@ impl App {
 
     fn clean_copies(&mut self, names: &[String]) {
         let saves_core_dir = self.options.dirs.saves.join(&self.core_id);
-        let Some(dir) = self.work_dir() else {
+        let Some(dir) = self.emulator.work_dir() else {
             return;
         };
         match emu_runtime::remove_orphan_copies(&saves_core_dir, &dir, names) {

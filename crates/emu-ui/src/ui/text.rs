@@ -604,19 +604,9 @@ pub fn clean_failed(e: &dyn std::fmt::Display) -> String {
 pub fn disk_error(e: &emu_runtime::RuntimeError) -> String {
     match e {
         emu_runtime::RuntimeError::DiskInserted => DISKS_INSERTED_REFUSED.to_owned(),
-        emu_runtime::RuntimeError::InvalidMediaSet(msg) if is_list_full(msg) => {
-            DISKS_LIST_FULL.to_owned()
-        }
+        emu_runtime::RuntimeError::DiskListFull { .. } => DISKS_LIST_FULL.to_owned(),
         other => disk_failed(other),
     }
-}
-
-/// The runtime's « list full » refusal (`media.rs`, `list_full`); matched on its message, no dedicated variant.
-fn is_list_full(msg: &str) -> bool {
-    msg.starts_with(&format!(
-        "at most {} disk images",
-        emu_runtime::MAX_MEDIA_IMAGES
-    ))
 }
 
 #[cfg(test)]
@@ -657,10 +647,9 @@ mod tests {
 
     #[test]
     fn disk_errors_tell_what_to_do() {
-        let full = emu_runtime::RuntimeError::InvalidMediaSet(format!(
-            "at most {} disk images: remove an added disk first",
-            emu_runtime::MAX_MEDIA_IMAGES
-        ));
+        let full = emu_runtime::RuntimeError::DiskListFull {
+            max: emu_runtime::MAX_MEDIA_IMAGES,
+        };
         assert_eq!(disk_error(&full), DISKS_LIST_FULL);
         assert_eq!(
             disk_error(&emu_runtime::RuntimeError::DiskInserted),
