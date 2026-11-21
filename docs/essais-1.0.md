@@ -38,5 +38,6 @@
 | Windows | NBA Jam (32X), picodrive | ✅ **impeccable** : image, son, manette PS4 (fichier extrait) ; ❌ zip simple (un seul fichier) non utilisable, l'utilisateur a dû extraire — symptôme à préciser, défaut à diagnostiquer |
 | Windows | Metroid Fusion (GBA), mgba | ✅ **impeccable** : image, son, manette PS4 |
 | Windows | Zelda Link's Awakening DX (GBC), gambatte | ✅ **impeccable** : image, son, sauvegarde (reprise après relance) |
+| Windows | Final Fight (SNES), snes9x — non-régression | ✅ **impeccable** : son et manette PS4 |
 
 Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
