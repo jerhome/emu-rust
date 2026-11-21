@@ -110,6 +110,9 @@ pub struct Emulator {
 /// Most pulses waiting at once; more are dropped (a menu action repeated faster than it can be played).
 const MAX_QUEUED_PULSES: usize = 16;
 
+/// Longest hold of one pulse, in frames (one second at 60 Hz); longer requests are clamped.
+const MAX_PULSE_FRAMES: u32 = 60;
+
 /// Queue of [`Emulator::pulse_key`] requests. A pulse holds its key for `frames` frames, then spends one frame
 /// released (the release event) so that two pulses of the same key are seen as two presses by polling cores.
 #[derive(Debug, Default)]
@@ -131,7 +134,8 @@ impl KeyPulses {
             tracing::warn!(?key, "too many simulated key presses waiting: dropped");
             return;
         }
-        self.queue.push_back((key, frames.max(2)));
+        self.queue
+            .push_back((key, frames.clamp(2, MAX_PULSE_FRAMES)));
     }
 
     /// Applies the pulse of this frame to `input` (already polled from the backends): state forced to pressed,
@@ -714,7 +718,7 @@ impl Emulator {
     /// `KeyboardState` reports `key` pressed; a press `KeyEvent` is delivered at the start and a release at the
     /// end, through the same path as `InputFrame::key_events` (outside `retro_run`, ADR 0015). Queued pulses
     /// follow one another without overlapping; a key really held by the user is not released by the pulse.
-    /// Never goes through the host key nor the remapping. Usual value: [`crate::PULSE_FRAMES`].
+    /// Never goes through the host key nor the remapping. Usual value: [`crate::PULSE_FRAMES`]. `frames` is clamped to 2..=60.
     /// Played from the next `run_frame`: the release event comes with the frame after the last held one, and
     /// the next queued pulse starts one frame later. At most 16 pulses wait at once (more are dropped, logged).
     pub fn pulse_key(&mut self, key: RetroKey, frames: u32) {
@@ -1171,6 +1175,16 @@ mod tests {
             [(97, true), (97, true)],
             "pulse press, then the user's"
         );
+    }
+
+    #[test]
+    fn key_pulse_hold_is_bounded() {
+        let a = RetroKey::new(97).unwrap();
+        let mut pulses = KeyPulses::default();
+        pulses.push(a, u32::MAX);
+        assert_eq!(pulses.queue[0].1, MAX_PULSE_FRAMES);
+        pulses.push(a, 0);
+        assert_eq!(pulses.queue[1].1, 2);
     }
 
     #[test]

@@ -312,3 +312,18 @@ fn user_playlist_never_passes_a_command_to_other_cores() {
         .unwrap();
     assert_eq!((p.content, p.dropped_lines), (m3u2, 0));
 }
+
+#[test]
+fn program_refuses_an_image_path_containing_a_colon() {
+    let f = Fixture::new();
+    let a = f.file("C:dir/A.dsk", b"a");
+    let b = f.file("C:dir/B.dsk", b"b");
+    let err = f
+        .prepare(
+            &set(vec![a, b], Some("INTRO")),
+            MediaPolicy::Direct,
+            M3uLaunch::Program,
+        )
+        .unwrap_err();
+    assert!(matches!(err, RuntimeError::InvalidLaunch(_)), "{err:?}");
+}
