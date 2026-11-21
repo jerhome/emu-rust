@@ -42,6 +42,28 @@ struct CoreEntry {
     recommended_on: Vec<String>,
     #[serde(default)]
     options: BTreeMap<String, String>,
+    // 4.0 keys (design v4.0 §3.3).
+    #[serde(default)]
+    folders: Option<FolderPolicy>,
+    #[serde(default)]
+    vfs: bool,
+    #[serde(default)]
+    analog: bool,
+    #[serde(default)]
+    system_caches: Vec<String>,
+    #[serde(default)]
+    featured_options: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    layout_option: Option<LayoutOptionEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LayoutOptionEntry {
+    option: String,
+    fallback: String,
+    #[serde(default)]
+    map: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +96,12 @@ struct CoreProps {
     required_firmware: BTreeMap<String, RequiredFirmware>,
     recommended_on: Vec<Platform>,
     options: Vec<(String, String)>,
+    folders: Option<FolderPolicy>,
+    vfs: bool,
+    analog: bool,
+    system_caches: Vec<String>,
+    featured_options: BTreeMap<String, Vec<String>>,
+    layout_option: Option<LayoutOption>,
 }
 
 /// Ordered core preferences per system, from the embedded `data/cores.toml`, plus user overrides
@@ -202,44 +230,44 @@ impl CorePreferences {
     /// `folders` of `data/cores.toml` (design v4.0 §3.3): how an unpacked game folder reaches the core.
     /// `None`: folders are refused for this core.
     pub fn folder_policy(&self, core: &CoreId) -> Option<FolderPolicy> {
-        let _ = core;
-        todo!("DA1: `folders = \"snapshot\"`")
+        self.cores.get(core)?.folders
     }
 
     /// `vfs = true` of `data/cores.toml`: the frontend answers `GET_VFS_INTERFACE` (`CoreConfig::provide_vfs`).
     /// `false` for cores without the key (puae, hatari: unchanged).
     pub fn provides_vfs(&self, core: &CoreId) -> bool {
-        let _ = core;
-        todo!("DA1: `vfs`")
+        self.cores.get(core).is_some_and(|p| p.vfs)
     }
 
     /// `[cores.<core>.featured_options] "<system>" = […]`: option keys shown first (« Réglages DOS »), in file
     /// order. Unknown core or system ⇒ empty.
     pub fn featured_options(&self, core: &CoreId, system: &str) -> Vec<String> {
-        let _ = (core, system);
-        todo!("DA1: `featured_options` per system")
+        self.cores
+            .get(core)
+            .and_then(|p| p.featured_options.get(system))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// `layout_option` of `data/cores.toml`: core option computed from the system language (design v3.0 §3.5.4,
     /// v4.0 §3.3). `None` for cores without the key.
     pub fn layout_option(&self, core: &CoreId) -> Option<LayoutOption> {
-        let _ = core;
-        todo!("DA1: `layout_option`")
+        self.cores.get(core)?.layout_option.clone()
     }
 
     /// `analog = true` of `data/cores.toml`: sticks are passed as `RETRO_DEVICE_ANALOG` and no longer converted
     /// to the D-pad (ADR 0016 amended). `false` without the key.
     pub fn analog(&self, core: &CoreId) -> bool {
-        let _ = core;
-        todo!("DA1: `analog`")
+        self.cores.get(core).is_some_and(|p| p.analog)
     }
 
     /// `system_caches` of `data/cores.toml`: plain file names the core writes at the root of `system/` and that
     /// go stale after an install / import there (`DOSBoxPureMidiCache.txt`), for
     /// [`crate::bios::invalidate_system_caches`]. Empty without the key.
     pub fn system_caches(&self, core: &CoreId) -> Vec<String> {
-        let _ = core;
-        todo!("DA1: `system_caches`")
+        self.cores
+            .get(core)
+            .map_or_else(Vec::new, |p| p.system_caches.clone())
     }
 
     /// Systems known to the preferences (for "install recommended cores").
@@ -266,6 +294,33 @@ pub struct LayoutOption {
     pub map: BTreeMap<String, String>,
     /// Value when no entry matches (`us`).
     pub fallback: String,
+}
+
+impl LayoutOption {
+    /// Value for a system locale (`fr-BE`, `fr_FR.UTF-8`, `de-CH`): exact language (case-insensitive), then the
+    /// language without its region, else `fallback`. `None` (locale unknown) ⇒ `fallback`.
+    pub fn value_for(&self, locale: Option<&str>) -> &str {
+        let tag = locale
+            .unwrap_or("")
+            .split(['.', '@'])
+            .next()
+            .unwrap_or("")
+            .replace('_', "-");
+        let primary = tag.split('-').next().unwrap_or("");
+        let find = |wanted: &str| {
+            (!wanted.is_empty())
+                .then(|| {
+                    self.map
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(wanted))
+                        .map(|(_, v)| v.as_str())
+                })
+                .flatten()
+        };
+        find(&tag)
+            .or_else(|| find(primary))
+            .unwrap_or(&self.fallback)
+    }
 }
 
 /// Where the UI takes the variant passed to [`super::check_required`] from (`variant` of a
@@ -357,6 +412,34 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
             recommended_on.push(platform);
         }
     }
+    let mut system_caches: Vec<String> = Vec::new();
+    for name in &entry.system_caches {
+        if !is_cache_name(name) {
+            return Err(format!("system_caches invalide pour {core} : {name}"));
+        }
+        if !system_caches.contains(name) {
+            system_caches.push(name.clone());
+        }
+    }
+    let mut featured_options = BTreeMap::new();
+    for (system, keys) in entry.featured_options {
+        let mut list: Vec<String> = Vec::new();
+        for key in keys {
+            if !is_option_key(&key) {
+                return Err(format!(
+                    "featured_options invalide pour {core} ({system}) : {key}"
+                ));
+            }
+            if !list.contains(&key) {
+                list.push(key);
+            }
+        }
+        featured_options.insert(system, list);
+    }
+    let layout_option = entry
+        .layout_option
+        .map(|l| layout_option(core, l))
+        .transpose()?;
     Ok(CoreProps {
         media: entry.media.unwrap_or_default(),
         media_direct,
@@ -365,7 +448,70 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         required_firmware,
         recommended_on,
         options: entry.options.into_iter().collect(),
+        folders: entry.folders,
+        vfs: entry.vfs,
+        analog: entry.analog,
+        system_caches,
+        featured_options,
+        layout_option,
     })
+}
+
+fn layout_option(core: &str, entry: LayoutOptionEntry) -> Result<LayoutOption, String> {
+    let context = format!("layout_option de {core}");
+    if !is_option_key(&entry.option) {
+        return Err(format!("{context} : option invalide {}", entry.option));
+    }
+    if !is_option_value(&entry.fallback) {
+        return Err(format!("{context} : fallback invalide"));
+    }
+    if let Some((lang, value)) = entry
+        .map
+        .iter()
+        .find(|(lang, value)| !is_language_tag(lang) || !is_option_value(value))
+    {
+        return Err(format!("{context} : entrée invalide {lang} = {value}"));
+    }
+    // Case-insensitive lookup (`value_for`): two keys differing only by case would be ambiguous.
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(dup) = entry
+        .map
+        .keys()
+        .find(|k| !seen.insert(k.to_ascii_lowercase()))
+    {
+        return Err(format!("{context} : langue en double {dup}"));
+    }
+    Ok(LayoutOption {
+        option: entry.option,
+        map: entry.map,
+        fallback: entry.fallback,
+    })
+}
+
+/// BCP 47 language tag as written in `layout_option` maps (`fr`, `fr-BE`, `de-CH`).
+fn is_language_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 16
+        && tag
+            .split('-')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// A core option value: non-empty, printable, no surrounding space.
+fn is_option_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+/// A plain file name at the root of `system/` (same rule as `crate::bios::invalidate_system_caches`).
+fn is_cache_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
 fn check_required_table(
@@ -507,8 +653,18 @@ mod tests {
         assert_eq!(first("Nintendo - Nintendo Entertainment System"), "mesen");
         assert_eq!(first("Atari - ST"), "hatari");
         assert_eq!(prefs.for_system("Atari - ST")[1].to_string(), "hatarib");
-        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0).
-        assert_eq!(prefs.systems().count(), 10);
+        // 8 systems of 1.0 / 2.0, Mega CD (2.1), Amiga (3.0), DOS (4.0).
+        assert_eq!(prefs.systems().count(), 11);
+        let dos: Vec<String> = prefs
+            .for_system("DOS")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            dos,
+            ["dosbox_pure"],
+            "ADR 0018 §1: dosbox_core / dosbox_svn by hand only"
+        );
         assert_eq!(first("Commodore - Amiga"), "puae");
         assert_eq!(
             prefs.for_system("Commodore - Amiga")[1].to_string(),
@@ -757,5 +913,151 @@ mod tests {
             [Platform::MacosX86_64, Platform::LinuxX86_64]
         );
         assert!(parse("recommended_on = [\"mac\"]\n").is_err());
+    }
+
+    #[test]
+    fn dos_core() {
+        let prefs = CorePreferences::builtin();
+        let c = id("dosbox_pure");
+        assert_eq!(prefs.media_policy(&c), CoreMediaPolicy::WorkingCopy);
+        assert_eq!(
+            prefs.media_direct(&c),
+            ["zip", "dosz", "iso", "cue", "chd", "ins"]
+        );
+        assert_eq!(prefs.folder_policy(&c), Some(FolderPolicy::Snapshot));
+        assert!(prefs.provides_vfs(&c));
+        assert!(prefs.analog(&c));
+        assert_eq!(
+            prefs.game_save_patterns(&c),
+            ["{game}.pure.zip", "{game}-*.sav"]
+        );
+        assert_eq!(prefs.system_caches(&c), ["DOSBoxPureMidiCache.txt"]);
+        assert_eq!(
+            prefs.frontend_options(&c),
+            [("dosbox_pure_midi".to_owned(), "disabled".to_owned())]
+        );
+        assert!(prefs.builtin_firmware(&c).is_none());
+        assert!(prefs.required_firmware(&c, "DOS").is_none());
+        let featured = prefs.featured_options(&c, "DOS");
+        assert_eq!(
+            featured,
+            [
+                "dosbox_pure_cycles",
+                "dosbox_pure_memory_size",
+                "dosbox_pure_cpu_type",
+                "dosbox_pure_machine",
+                "dosbox_pure_sblaster_type",
+                "dosbox_pure_midi",
+                "dosbox_pure_keyboard_layout",
+                "dosbox_pure_mouse_speed_factor",
+            ]
+        );
+        assert!(prefs.featured_options(&c, "Commodore - Amiga").is_empty());
+        assert!(prefs.featured_options(&id("unknown"), "DOS").is_empty());
+        let layout = prefs.layout_option(&c).unwrap();
+        assert_eq!(layout.option, "dosbox_pure_keyboard_layout");
+        assert_eq!(layout.fallback, "us");
+        assert_eq!(layout.map.len(), 8);
+        for (locale, value) in [
+            (Some("fr-FR"), "fr"),
+            (Some("fr_FR.UTF-8"), "fr"),
+            (Some("fr-BE"), "be"),
+            (Some("fr_be"), "be"),
+            (Some("fr-CH"), "sf"),
+            (Some("de-CH"), "sg"),
+            (Some("de-AT"), "gr"),
+            (Some("en-GB"), "uk"),
+            (Some("en-US"), "us"),
+            (Some("es-ES"), "sp"),
+            (Some("it"), "it"),
+            (Some("ja-JP"), "us"),
+            (Some("C"), "us"),
+            (Some(""), "us"),
+            (None, "us"),
+        ] {
+            assert_eq!(layout.value_for(locale), value, "{locale:?}");
+        }
+        // Cores without the 4.0 keys keep the 3.0 behaviour.
+        for core in ["puae", "hatari", "genesis_plus_gx", "unknown"] {
+            let c = id(core);
+            assert_eq!(prefs.folder_policy(&c), None, "{core}");
+            assert!(!prefs.provides_vfs(&c), "{core}");
+            assert!(!prefs.analog(&c), "{core}");
+            assert!(prefs.system_caches(&c).is_empty(), "{core}");
+            assert!(prefs.layout_option(&c).is_none(), "{core}");
+        }
+    }
+
+    #[test]
+    fn v4_keys_are_checked() {
+        let parse = |t: &str| CorePreferences::parse(&format!("[systems]\n[cores.x]\n{t}"));
+        let p = parse(
+            "folders = \"snapshot\"\nvfs = true\nanalog = true\n\
+             system_caches = [\"a.txt\", \"a.txt\", \"B-c_d\"]\n\
+             featured_options = { S = [\"o2\", \"o1\", \"o2\"], T = [] }\n",
+        )
+        .unwrap();
+        let x = id("x");
+        assert_eq!(p.folder_policy(&x), Some(FolderPolicy::Snapshot));
+        assert!(p.provides_vfs(&x) && p.analog(&x));
+        assert_eq!(p.system_caches(&x), ["a.txt", "B-c_d"]);
+        assert_eq!(p.featured_options(&x, "S"), ["o2", "o1"]);
+        assert!(p.featured_options(&x, "T").is_empty());
+        assert!(p.featured_options(&x, "U").is_empty());
+        assert!(parse("folders = \"copy\"\n").is_err());
+        assert!(parse("vfs = \"yes\"\n").is_err());
+        assert!(parse("analog = 1\n").is_err());
+        for bad in ["../x", "a/b", "a\\\\b", ".hidden", "", "c:x", "a b"] {
+            assert!(
+                parse(&format!("system_caches = [\"{bad}\"]\n")).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse("featured_options = { S = [\"a b\"] }\n").is_err());
+        assert!(parse("featured_options = { S = \"o\" }\n").is_err());
+        // layout_option.
+        let layout = |t: &str| parse(&format!("layout_option = {{ {t} }}\n"));
+        let ok =
+            layout("option = \"k\", fallback = \"us\", map = { fr = \"fr\", \"pt-BR\" = \"br\" }")
+                .unwrap();
+        let l = ok.layout_option(&x).unwrap();
+        assert_eq!(l.value_for(Some("pt_BR")), "br");
+        assert_eq!(l.value_for(Some("pt-PT")), "us");
+        assert!(layout("option = \"k\", fallback = \"us\"").is_ok());
+        assert!(layout("option = \"a b\", fallback = \"us\"").is_err());
+        assert!(layout("option = \"k\", fallback = \"\"").is_err());
+        assert!(layout("option = \"k\", fallback = \" us\"").is_err());
+        assert!(layout("option = \"k\"").is_err());
+        assert!(layout("option = \"k\", fallback = \"us\", map = { \"fr_FR\" = \"fr\" }").is_err());
+        assert!(layout("option = \"k\", fallback = \"us\", map = { \"fr-\" = \"fr\" }").is_err());
+        assert!(layout("option = \"k\", fallback = \"us\", map = { fr = \"\" }").is_err());
+        assert!(
+            layout("option = \"k\", fallback = \"us\", map = { fr = \"fr\", FR = \"x\" }").is_err()
+        );
+        assert!(layout("option = \"k\", fallback = \"us\", other = 1").is_err());
+    }
+
+    /// `cores.toml` and emu-library's `systems.toml` share their system keys (libretro database names): every
+    /// catalogued system has cores and every system of `cores.toml` is catalogued. Read from disk (no crate
+    /// dependency between emu-assets and emu-library).
+    #[test]
+    fn systems_match_the_library_catalogue() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../emu-library/data/systems.toml"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let catalogue: toml::Table = toml::from_str(&text).unwrap();
+        let databases: std::collections::BTreeSet<&str> = catalogue["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["database"].as_str().unwrap())
+            .collect();
+        let prefs = CorePreferences::builtin();
+        let ours: std::collections::BTreeSet<&str> = prefs.systems().map(|(s, _)| s).collect();
+        assert_eq!(ours, databases);
+        assert!(ours.contains("DOS"));
+        assert!(prefs.systems().all(|(_, cores)| !cores.is_empty()));
     }
 }

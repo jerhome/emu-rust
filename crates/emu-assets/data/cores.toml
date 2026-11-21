@@ -112,3 +112,32 @@ A1200OG = "kick40068.A1200"
 A1200 = "kick40068.A1200"
 A4030 = "kick40068.A4000"
 A4040 = "kick40068.A4000"
+
+# PC-DOS (ADR 0018 §1): dosbox_pure only. dosbox_core and dosbox_svn are not offered (no zip, no savestates,
+# they write into game folders); they stay usable with `--core <path>`.
+[systems."DOS"]
+cores = ["dosbox_pure"]                           # GPLv2
+
+# 4.0 keys (design docs/design/v4.0-dos.md §3.3):
+# - folders: "snapshot" = an unpacked game folder reaches the core as a stored-zip snapshot (folder never
+#   written); absent = folders refused for the core.
+# - vfs: the frontend answers GET_VFS_INTERFACE (v3) for this core. Default false.
+# - analog: sticks passed as RETRO_DEVICE_ANALOG, no stick -> D-pad conversion (ADR 0016 amended). Default false.
+# - system_caches: plain file names the core writes at the root of system/, deleted after an install / import
+#   there (they would list stale files).
+# - layout_option: core option computed from the system language (exact tag, then language without region,
+#   else `fallback`); a user setting always wins.
+# - featured_options."<system>": option keys shown first (« Réglages DOS »), in this order.
+[cores.dosbox_pure]
+media = "working_copy"                            # img / ima / vhd / jrc: written in place by the core
+media_direct = ["zip", "dosz", "iso", "cue", "chd", "ins"]   # never copied nor extracted (the core reads zips)
+folders = "snapshot"
+vfs = true                                        # lists system/ (SoundFonts, MT-32 ROMs) through the VFS
+game_saves = ["{game}.pure.zip", "{game}-*.sav"]  # changes of the C: drive, save states of the core
+system_caches = ["DOSBoxPureMidiCache.txt"]
+analog = true
+layout_option = { option = "dosbox_pure_keyboard_layout", fallback = "us", map = { fr = "fr", "fr-BE" = "be", de = "gr", "en-GB" = "uk", es = "sp", it = "it", "de-CH" = "sg", "fr-CH" = "sf" } }
+options = { dosbox_pure_midi = "disabled" }       # MIDI only once a SoundFont / MT-32 is chosen
+
+[cores.dosbox_pure.featured_options]
+"DOS" = ["dosbox_pure_cycles", "dosbox_pure_memory_size", "dosbox_pure_cpu_type", "dosbox_pure_machine", "dosbox_pure_sblaster_type", "dosbox_pure_midi", "dosbox_pure_keyboard_layout", "dosbox_pure_mouse_speed_factor"]

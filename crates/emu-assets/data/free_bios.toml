@@ -1,4 +1,6 @@
-# Free BIOS catalogue (ADR 0005, ADR 0015 §2). Only free software: never a commercial TOS / Kickstart.
+# Free BIOS catalogue (ADR 0005, ADR 0015 §2) and free SoundFont (ADR 0018 §5). Only free software: never a
+# commercial TOS / Kickstart / MT-32 ROM. `kind` = "bios" (default) or "soundfont" (own size limits);
+# `[[bios.archive]] format` = "zip" (default) or "raw" (the file is the variant).
 # Every archive and every image is pinned (size + SHA-256; md5 for `check_firmware`). No TOFU: a new EmuTOS
 # release means a new version of this file, reviewed by `reviewer`.
 # Values measured on 2026-11-20 from the SourceForge archives (they match docs/design/v2.0-atari-st.md §3.3).
@@ -227,3 +229,36 @@ entry = "emutos-192k-1.4/etos192ca.img"
 size = 196608
 md5 = "efce90b35353e4ad2a71eb250806dd1e"
 sha256 = "c4fec6f77c0d17056a1f4ea0948a970143085a76a3fd3570dae5a79decb24b38"
+
+# Free SoundFont for DOS MIDI (ADR 0018 §5; ADR 0005, 2026-11-21 amendment: downloaded only on the user's action,
+# never bundled). GeneralUser GS 2.0.3 by S. Christian Collins, "GeneralUser GS License v2.0" (use without
+# restriction, redistribution and modification allowed; not an OSI licence): documentation/LICENSE.txt of the
+# repository at the pinned commit. The raw file is the variant (`format = "raw"`, `entry` empty, same pins).
+# Values measured on 2026-11-21 from the pinned commit (they match docs/design/v4.0-dos.md §3.3).
+[[bios]]
+id = "generaluser-gs"
+kind = "soundfont"
+name = "GeneralUser GS"
+version = "2.0.3"
+license = "GeneralUser GS License v2.0"
+homepage = "https://github.com/mrbumpy409/GeneralUser-GS"
+system = "DOS"
+install_as = "GeneralUser-GS.sf2"
+default_variant = "sf2"
+
+# Pinned commit, never a branch: the URL cannot move to another file.
+[[bios.archive]]
+name = "GeneralUser-GS.sf2"
+format = "raw"
+url = "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2"
+size = 32319396
+sha256 = "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe"
+
+[[bios.variant]]
+id = "sf2"
+label = "GeneralUser GS — SoundFont General MIDI (32 Mo)"
+archive = "GeneralUser-GS.sf2"
+entry = ""
+size = 32319396
+md5 = "bfe69fe5b2702ef7c12c44bd0d34f8f1"
+sha256 = "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe"

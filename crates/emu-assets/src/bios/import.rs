@@ -108,7 +108,8 @@ impl FirmwareCatalogue {
         for path in known.paths() {
             add(path, path, None, known.size_for(path), known.md5_for(path));
         }
-        for bios in free {
+        // A SoundFont is not a firmware: never an import target (design v4.0 §3.3).
+        for bios in free.iter().filter(|b| b.kind == super::FreeBiosKind::Bios) {
             for variant in &bios.variants {
                 add(
                     &bios.install_as,

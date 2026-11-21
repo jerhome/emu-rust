@@ -543,3 +543,207 @@ fn stale_temporaries_are_cleaned_on_open() {
         [".tos.img.tmp-Recent", "bios.tmp-AbC123", "tos.img"]
     );
 }
+
+// --- SoundFont (`kind = "soundfont"`, `format = "raw"`, design v4.0 §3.3) ---
+
+const SF2_PATH: &str = "/mrbumpy409/GeneralUser-GS/0123abcd/GeneralUser-GS.sf2";
+
+/// Larger than the BIOS image limit (4 MiB): only the SoundFont limit lets it through.
+fn sf2_body() -> Vec<u8> {
+    let mut body = b"RIFF\0\0\0\0sfbk".to_vec();
+    body.extend((0..5u32 << 20).map(|i| (i % 251) as u8));
+    body
+}
+
+fn soundfont(url: &str, pinned: &[u8]) -> FreeBios {
+    let size = pinned.len() as u64;
+    let sha256: [u8; 32] = Sha256::digest(pinned).into();
+    FreeBios {
+        // The embedded catalogue's id: `installed_md5` must skip it.
+        id: "generaluser-gs".into(),
+        name: "GeneralUser GS".into(),
+        version: "2.0.3".into(),
+        license: "GeneralUser GS License v2.0".into(),
+        homepage: "https://github.com/mrbumpy409/GeneralUser-GS".into(),
+        system: "DOS".into(),
+        install_as: "GeneralUser-GS.sf2".into(),
+        archives: vec![BiosArchive {
+            name: "GeneralUser-GS.sf2".into(),
+            url: url.into(),
+            size,
+            sha256,
+            format: ArchiveFormat::Raw,
+        }],
+        variants: vec![BiosVariant {
+            id: "sf2".into(),
+            label: "GeneralUser GS".into(),
+            language: None,
+            archive: "GeneralUser-GS.sf2".into(),
+            entry: String::new(),
+            size,
+            sha256,
+            md5: Md5::digest(pinned).into(),
+        }],
+        default_variant: "sf2".into(),
+        kind: FreeBiosKind::SoundFont,
+    }
+}
+
+fn serve_sf2(server: &Server, body: Vec<u8>, expected_calls: u64) -> String {
+    server.mount(
+        Mock::given(method("GET"))
+            .and(path(SF2_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .expect(expected_calls),
+    );
+    format!("{}{SF2_PATH}", server.server.uri())
+}
+
+#[test]
+fn raw_soundfont_is_installed_as_is() {
+    let server = Server::start();
+    let body = sf2_body();
+    let url = serve_sf2(&server, body.clone(), 1);
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let sf = soundfont(&url, &body);
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    assert_eq!(manager.state(&sf), FreeBiosState::Missing);
+    let target = install(&manager, &sf, "sf2", ReplacePolicy::Refuse).unwrap();
+    assert_eq!(target, system.join("GeneralUser-GS.sf2"));
+    assert_eq!(fs::read(&target).unwrap(), body);
+    assert_eq!(listing(&system), [MANIFEST_FILE_NAME, "GeneralUser-GS.sf2"]);
+    assert_eq!(
+        manager.state(&sf),
+        FreeBiosState::Installed {
+            variant: "sf2".into()
+        }
+    );
+    // Not a firmware: never reported to `check_firmware`.
+    assert!(manager.installed_md5().is_empty());
+    assert!(manager.remove(&sf).unwrap());
+    assert_eq!(listing(&system), [MANIFEST_FILE_NAME]);
+    server.verify();
+}
+
+#[test]
+fn raw_soundfont_with_a_wrong_hash_writes_nothing() {
+    let server = Server::start();
+    let mut body = sf2_body();
+    let sf = soundfont("", &body);
+    *body.last_mut().unwrap() ^= 0xff;
+    let url = serve_sf2(&server, body, 1);
+    let sf = FreeBios {
+        archives: vec![BiosArchive {
+            url,
+            ..sf.archives[0].clone()
+        }],
+        ..sf
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    let err = install(&manager, &sf, "sf2", ReplacePolicy::Refuse).unwrap_err();
+    assert!(
+        matches!(err, BiosError::HashMismatch(ref n) if n == "GeneralUser-GS.sf2"),
+        "{err}"
+    );
+    assert!(listing(&system).is_empty());
+    server.verify();
+}
+
+#[test]
+fn raw_soundfont_longer_than_pinned_is_cut_off() {
+    let server = Server::start();
+    let body = sf2_body();
+    let mut served = body.clone();
+    served.extend_from_slice(b"trailing");
+    let url = serve_sf2(&server, served, 1);
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    let err = install(
+        &manager,
+        &soundfont(&url, &body),
+        "sf2",
+        ReplacePolicy::Refuse,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, BiosError::Asset(AssetError::TooLarge { limit }) if limit == body.len() as u64),
+        "{err}"
+    );
+    assert!(listing(&system).is_empty());
+    server.verify();
+}
+
+#[test]
+fn soundfont_sized_file_declared_as_a_bios_is_refused_before_any_request() {
+    let server = Server::start();
+    let body = sf2_body();
+    let url = serve_sf2(&server, body.clone(), 0);
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    let as_bios = FreeBios {
+        kind: FreeBiosKind::Bios,
+        ..soundfont(&url, &body)
+    };
+    let err = install(&manager, &as_bios, "sf2", ReplacePolicy::Refuse).unwrap_err();
+    assert!(matches!(err, BiosError::InvalidCatalogue(_)), "{err}");
+    // An empty entry outside `raw` is refused too.
+    let zip_without_entry = soundfont(&url, b"small");
+    let zip_without_entry = FreeBios {
+        archives: vec![BiosArchive {
+            format: ArchiveFormat::Zip,
+            ..zip_without_entry.archives[0].clone()
+        }],
+        ..zip_without_entry
+    };
+    let err = install(&manager, &zip_without_entry, "sf2", ReplacePolicy::Refuse).unwrap_err();
+    assert!(matches!(err, BiosError::InvalidCatalogue(_)), "{err}");
+    assert_eq!(
+        manager.state(&as_bios),
+        FreeBiosState::Unreadable("catalogue invalide".into())
+    );
+    assert!(listing(&system).is_empty());
+    server.verify();
+}
+
+#[test]
+fn raw_soundfont_offline_install_and_user_file_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let body = sf2_body();
+    let src = dir.path().join("downloaded.sf2");
+    fs::write(&src, &body).unwrap();
+    let sf = soundfont("https://example.invalid/GeneralUser-GS.sf2", &body);
+    let manager = FreeBiosManager::open(&system, client()).unwrap();
+    // A SoundFont the user placed there himself is never overwritten without consent.
+    fs::write(system.join("GeneralUser-GS.sf2"), b"user sf2").unwrap();
+    assert!(matches!(
+        manager.install_from_archive(&sf, "sf2", &src, ReplacePolicy::Refuse),
+        Err(BiosError::UserFileExists(_))
+    ));
+    assert_eq!(
+        fs::read(system.join("GeneralUser-GS.sf2")).unwrap(),
+        b"user sf2"
+    );
+    let target = manager
+        .install_from_archive(&sf, "sf2", &src, ReplacePolicy::BackupAndReplace)
+        .unwrap();
+    assert_eq!(fs::read(&target).unwrap(), body);
+    assert!(
+        listing(&system)
+            .iter()
+            .any(|n| n.starts_with("GeneralUser-GS.sf2.user-"))
+    );
+    // A wrong local file: nothing written.
+    let other = dir.path().join("other.sf2");
+    fs::write(&other, b"not the pinned file").unwrap();
+    assert!(matches!(
+        manager.install_from_archive(&sf, "sf2", &other, ReplacePolicy::BackupAndReplace),
+        Err(BiosError::HashMismatch(_))
+    ));
+    assert_eq!(fs::read(&target).unwrap(), body);
+}

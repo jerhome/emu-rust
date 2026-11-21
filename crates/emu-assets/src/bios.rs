@@ -1,7 +1,9 @@
 //! Free BIOS installer (ADR 0015 §2): EmuTOS for the Atari ST (AROS is built into puae, never downloaded:
-//! ADR 0005, 2026-11-21 amendment), and the import of a BIOS provided by the user (`import`, ADR 0017 §3).
+//! ADR 0005, 2026-11-21 amendment), the free GeneralUser GS SoundFont for DOS (`kind = "soundfont"`, ADR 0018
+//! §5, ADR 0005 amended), and the import of a BIOS provided by the user (`import`, ADR 0017 §3).
 //! Catalogue embedded from `data/free_bios.toml`; every archive and every installed file is pinned by SHA-256.
-//! Only free software is ever downloaded here (ADR 0005): never a commercial TOS or Kickstart.
+//! Only the free resources named by ADR 0005 are ever downloaded here: never a commercial TOS, Kickstart or
+//! MT-32 ROM.
 //!
 //! Default variant: EmuTOS 192 KB **French** (user decision recorded in ADR 0015). Callers pass the system
 //! language to [`FreeBios::preferred_variant`]; when no 192 KB image matches it, `default_variant` (`192fr`)
@@ -23,11 +25,12 @@ pub use import::{
     TargetState, identify_firmware, import_firmware, target_state,
 };
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use md5::Md5;
@@ -47,6 +50,8 @@ pub const MAX_BIOS_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 pub const MANIFEST_FILE_NAME: &str = ".emu-rust-bios.toml";
 /// Lower bound applied to the client's timeout for BIOS downloads (slow SourceForge mirrors).
 pub const BIOS_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Lower bound of the whole-request timeout for a `soundfont` download (32 MB: 10 min ≈ 55 KB/s at least).
+pub const SOUNDFONT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 const BUILTIN: &str = include_str!("../data/free_bios.toml");
 /// EmuTOS 192k zip: 49 entries.
@@ -57,10 +62,13 @@ const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
 /// Size limit of a `soundfont` resource, archive **and** installed file (GeneralUser GS: 32 319 396 bytes).
 /// BIOS limits ([`MAX_BIOS_ARCHIVE_BYTES`], [`MAX_BIOS_IMAGE_BYTES`]) are unchanged.
 pub const MAX_SOUNDFONT_BYTES: u64 = 64 << 20;
+// `state` hashes the installed file through `hash_file`, bounded by `MAX_FIRMWARE_SIZE`.
+const _: () = assert!(MAX_SOUNDFONT_BYTES <= MAX_FIRMWARE_SIZE);
 
 /// `kind` of `free_bios.toml` (default `bios`). A `SoundFont` is never a firmware: absent from
 /// `check_firmware` and from the `required_firmware` check (design v4.0 §3.3).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FreeBiosKind {
     #[default]
     Bios,
@@ -86,7 +94,8 @@ impl FreeBiosKind {
 }
 
 /// `[[bios.archive]] format` (default `zip`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ArchiveFormat {
     #[default]
     Zip,
@@ -95,7 +104,7 @@ pub enum ArchiveFormat {
     Raw,
 }
 
-/// One free BIOS family (`emutos`, later `aros`).
+/// One free resource of the catalogue: a BIOS family (`emutos`) or a SoundFont (`generaluser-gs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FreeBios {
     /// `[A-Za-z0-9_-]{1,32}`, stable (config, manifest).
@@ -112,7 +121,7 @@ pub struct FreeBios {
     pub archives: Vec<BiosArchive>,
     pub variants: Vec<BiosVariant>,
     pub default_variant: String,
-    /// `kind` (4.0): `Bios` until DA1 parses the key.
+    /// `kind` (4.0, default `bios`): selects the size limits; a `SoundFont` is never a firmware.
     pub kind: FreeBiosKind,
 }
 
@@ -124,7 +133,7 @@ pub struct BiosArchive {
     pub url: String,
     pub size: u64,
     pub sha256: [u8; 32],
-    /// `format` (4.0): `Zip` until DA1 parses the key.
+    /// `format` (4.0, default `zip`).
     pub format: ArchiveFormat,
 }
 
@@ -137,7 +146,7 @@ pub struct BiosVariant {
     /// BCP 47 language tag used to preselect the variant (`fr`, `en-GB`), `None` for multilingual images.
     pub language: Option<String>,
     pub archive: String,
-    /// Exact entry name in the archive (compared, never used as a path).
+    /// Exact entry name in the archive (compared, never used as a path); empty for a `Raw` archive only.
     pub entry: String,
     pub size: u64,
     pub sha256: [u8; 32],
@@ -200,7 +209,6 @@ pub fn builtin_free_bios() -> Vec<FreeBios> {
     }
 }
 
-/// Free BIOS of the embedded catalogue by id (`--install-bios emutos`).
 /// Deletes the stale core caches `names` (plain file names, no separator) at the root of `system_dir` after an
 /// install or import there (`DOSBoxPureMidiCache.txt`); returns the files removed. Never recurses, never follows
 /// a link (design v4.0 §2.4, §3.3).
@@ -208,10 +216,40 @@ pub fn invalidate_system_caches(
     system_dir: &Path,
     names: &[String],
 ) -> Result<Vec<PathBuf>, BiosError> {
-    let _ = (system_dir, names);
-    todo!("DA1: plain names only, root of system/ only")
+    // Every name is checked before anything is deleted.
+    if let Some(bad) = names.iter().find(|n| !is_plain_file_name(n)) {
+        return Err(BiosError::InvalidTargetName(bad.clone()));
+    }
+    let mut removed = Vec::new();
+    for name in names {
+        let path = system_dir.join(name);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(BiosError::Io { path, source }),
+        };
+        // A link or a directory under that name is not the core's cache: left alone.
+        if !meta.file_type().is_file() {
+            tracing::debug!("{name} n'est pas un fichier ordinaire : conservé");
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => removed.push(path),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(BiosError::Io { path, source }),
+        }
+    }
+    if !removed.is_empty() {
+        crate::http::sync_dir(system_dir);
+        tracing::info!(
+            "{} cache(s) de core supprimé(s) dans system/",
+            removed.len()
+        );
+    }
+    Ok(removed)
 }
 
+/// Free BIOS of the embedded catalogue by id (`--install-bios emutos`).
 pub fn find_free_bios(id: &str) -> Result<FreeBios, BiosError> {
     builtin_free_bios()
         .into_iter()
@@ -219,11 +257,12 @@ pub fn find_free_bios(id: &str) -> Result<FreeBios, BiosError> {
         .ok_or_else(|| BiosError::UnknownBios(id.to_owned()))
 }
 
-/// `(install_as, md5, label)` of every variant: the input of `cores::check_firmware`, so that a free image under
-/// the expected name is `FirmwareState::Free` whoever copied it there.
+/// `(install_as, md5, label)` of every BIOS variant: the input of `cores::check_firmware`, so that a free image
+/// under the expected name is `FirmwareState::Free` whoever copied it there. SoundFonts are not firmware: skipped.
 pub fn free_firmware_md5(catalogue: &[FreeBios]) -> Vec<(String, [u8; 16], String)> {
     catalogue
         .iter()
+        .filter(|b| b.kind == FreeBiosKind::Bios)
         .flat_map(|b| {
             b.variants
                 .iter()
@@ -267,6 +306,8 @@ struct CatalogueFile {
 #[serde(deny_unknown_fields)]
 struct BiosEntry {
     id: String,
+    #[serde(default)]
+    kind: FreeBiosKind,
     name: String,
     version: String,
     license: String,
@@ -284,6 +325,8 @@ struct BiosEntry {
 #[serde(deny_unknown_fields)]
 struct ArchiveEntry {
     name: String,
+    #[serde(default)]
+    format: ArchiveFormat,
     url: String,
     size: u64,
     sha256: String,
@@ -315,7 +358,7 @@ impl BiosEntry {
                     name: a.name,
                     url: a.url,
                     size: a.size,
-                    format: ArchiveFormat::Zip,
+                    format: a.format,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -347,7 +390,7 @@ impl BiosEntry {
             archives,
             variants,
             default_variant: self.default_variant,
-            kind: FreeBiosKind::Bios,
+            kind: self.kind,
         })
     }
 }
@@ -392,9 +435,11 @@ fn validate(bios: &FreeBios) -> Result<(), String> {
     if !is_plain_file_name(&bios.install_as) {
         return Err(format!("{} : install_as refusé", bios.id));
     }
+    let max_archive = bios.kind.max_archive_bytes();
+    let max_image = bios.kind.max_image_bytes();
     let mut names = BTreeSet::new();
     for a in &bios.archives {
-        if a.size == 0 || a.size > MAX_BIOS_ARCHIVE_BYTES {
+        if a.size == 0 || a.size > max_archive {
             return Err(format!("{} : taille hors limites", a.name));
         }
         if !names.insert(a.name.as_str()) {
@@ -406,10 +451,17 @@ fn validate(bios: &FreeBios) -> Result<(), String> {
         if !is_id(&v.id) || !ids.insert(v.id.as_str()) {
             return Err(format!("variante invalide ou en double : {}", v.id));
         }
-        if !names.contains(v.archive.as_str()) {
+        let Some(archive) = bios.archive(&v.archive) else {
             return Err(format!("{} : archive inconnue {}", v.id, v.archive));
-        }
-        if v.size == 0 || v.size > MAX_BIOS_IMAGE_BYTES || v.entry.is_empty() {
+        };
+        let entry_ok = match archive.format {
+            ArchiveFormat::Zip => !v.entry.is_empty(),
+            // The downloaded file is the variant: nothing to look up, both pins must agree.
+            ArchiveFormat::Raw => {
+                v.entry.is_empty() && v.size == archive.size && v.sha256 == archive.sha256
+            }
+        };
+        if v.size == 0 || v.size > max_image || !entry_ok {
             return Err(format!("{} : taille ou entrée invalide", v.id));
         }
     }
@@ -528,6 +580,8 @@ struct ManifestEntry {
 pub struct FreeBiosManager {
     system_dir: PathBuf,
     http: HttpClient,
+    /// Same client with a timeout of at least [`SOUNDFONT_DOWNLOAD_TIMEOUT`], built on the first SoundFont download.
+    soundfont_http: OnceLock<HttpClient>,
 }
 
 impl FreeBiosManager {
@@ -555,6 +609,7 @@ impl FreeBiosManager {
         let manager = Self {
             system_dir: system_dir.to_path_buf(),
             http,
+            soundfont_http: OnceLock::new(),
         };
         manager.clean_stale_temporaries();
         Ok(manager)
@@ -605,9 +660,13 @@ impl FreeBiosManager {
         let _guard = self.lock();
         self.check_policy(bios, policy)?;
         tracing::info!("téléchargement de {} ({})", archive.name, bios.license);
-        let data = self
-            .http
-            .get_with_progress(&archive.url, archive.size, progress, cancel)?;
+        // Bounded by the pinned size, itself bounded by the kind's limit (`validate`).
+        let data = self.client_for(bios.kind)?.get_with_progress(
+            &archive.url,
+            archive.size,
+            progress,
+            cancel,
+        )?;
         if cancel.is_cancelled() {
             return Err(AssetError::Cancelled.into());
         }
@@ -630,15 +689,13 @@ impl FreeBiosManager {
             source,
         };
         let file = File::open(archive_path).map_err(io_err)?;
+        let limit = bios.kind.max_archive_bytes();
         let mut data = Vec::new();
-        file.take(MAX_BIOS_ARCHIVE_BYTES + 1)
+        file.take(limit + 1)
             .read_to_end(&mut data)
             .map_err(io_err)?;
-        if data.len() as u64 > MAX_BIOS_ARCHIVE_BYTES {
-            return Err(AssetError::TooLarge {
-                limit: MAX_BIOS_ARCHIVE_BYTES,
-            }
-            .into());
+        if data.len() as u64 > limit {
+            return Err(AssetError::TooLarge { limit }.into());
         }
         self.finish(bios, variant, archive, &data, policy)
     }
@@ -668,12 +725,17 @@ impl FreeBiosManager {
     }
 
     /// md5 of every installed free BIOS file still intact, for `check_firmware` (state `FirmwareState::Free`):
-    /// `(path relative to the system directory, md5, label)`.
+    /// `(path relative to the system directory, md5, label)`. SoundFonts of the embedded catalogue are skipped.
     pub fn installed_md5(&self) -> Vec<(String, [u8; 16], String)> {
+        let soundfonts: BTreeSet<String> = builtin_free_bios()
+            .into_iter()
+            .filter(|b| b.kind != FreeBiosKind::Bios)
+            .map(|b| b.id)
+            .collect();
         self.read_manifest()
             .installed
             .into_iter()
-            .filter(|e| is_plain_file_name(&e.file))
+            .filter(|e| is_plain_file_name(&e.file) && !soundfonts.contains(&e.bios))
             .filter_map(|e| {
                 let (sha256, md5) = hash_file(&self.system_dir.join(&e.file)).ok()?;
                 (hex(&sha256) == e.sha256 && parse_hex::<16>(&e.md5) == Some(md5))
@@ -684,6 +746,22 @@ impl FreeBiosManager {
 
     fn lock(&self) -> MutexGuard<'static, ()> {
         lock_manifests()
+    }
+
+    fn client_for(&self, kind: FreeBiosKind) -> Result<&HttpClient, BiosError> {
+        if kind != FreeBiosKind::SoundFont {
+            return Ok(&self.http);
+        }
+        if let Some(client) = self.soundfont_http.get() {
+            return Ok(client);
+        }
+        let config = HttpConfig {
+            timeout: self.http.config().timeout.max(SOUNDFONT_DOWNLOAD_TIMEOUT),
+            ..self.http.config().clone()
+        };
+        // A concurrent first call may have won the race: either client is fine.
+        let _ = self.soundfont_http.set(HttpClient::new(config)?);
+        Ok(self.soundfont_http.get().unwrap_or(&self.http))
     }
 
     fn check_policy(&self, bios: &FreeBios, policy: ReplacePolicy) -> Result<(), BiosError> {
@@ -712,20 +790,32 @@ impl FreeBiosManager {
         if data.len() as u64 != archive.size || Sha256::digest(data).as_slice() != archive.sha256 {
             return Err(BiosError::HashMismatch(archive.name.clone()));
         }
-        let limits = ExtractLimits {
-            max_entry_size: variant.size,
-            max_total_size: variant.size,
-            max_entries: MAX_ARCHIVE_ENTRIES,
+        let image: Cow<'_, [u8]> = match archive.format {
+            ArchiveFormat::Raw => Cow::Borrowed(data),
+            ArchiveFormat::Zip => {
+                let limits = ExtractLimits {
+                    max_entry_size: variant.size,
+                    max_total_size: variant.size,
+                    max_entries: MAX_ARCHIVE_ENTRIES,
+                };
+                Cow::Owned(
+                    extract_core(data, &variant.entry, limits).map_err(|e| match e {
+                        ArchiveError::MissingEntry(name) => BiosError::MissingEntry(name),
+                        other => BiosError::Archive(other.to_string()),
+                    })?,
+                )
+            }
         };
-        let image = extract_core(data, &variant.entry, limits).map_err(|e| match e {
-            ArchiveError::MissingEntry(name) => BiosError::MissingEntry(name),
-            other => BiosError::Archive(other.to_string()),
-        })?;
         if image.len() as u64 != variant.size
             || Sha256::digest(&image).as_slice() != variant.sha256
             || Md5::digest(&image).as_slice() != variant.md5
         {
-            return Err(BiosError::HashMismatch(variant.entry.clone()));
+            let name = if variant.entry.is_empty() {
+                &archive.name
+            } else {
+                &variant.entry
+            };
+            return Err(BiosError::HashMismatch(name.clone()));
         }
 
         let target = self.system_dir.join(&bios.install_as);
@@ -942,9 +1032,16 @@ mod tests {
     #[test]
     fn builtin_catalogue() {
         let list = builtin_free_bios();
-        assert_eq!(list.len(), 1);
+        assert_eq!(list.len(), 2);
         let emutos = &list[0];
         assert_eq!(emutos.id, "emutos");
+        assert_eq!(emutos.kind, FreeBiosKind::Bios);
+        assert!(
+            emutos
+                .archives
+                .iter()
+                .all(|a| a.format == ArchiveFormat::Zip)
+        );
         assert_eq!(emutos.install_as, "tos.img");
         assert_eq!(emutos.system, "Atari - ST");
         assert_eq!(emutos.license, "GPL-2.0-or-later");
@@ -981,9 +1078,191 @@ mod tests {
             find_free_bios("tos"),
             Err(BiosError::UnknownBios(_))
         ));
+        // The SoundFont is not a firmware.
         let free = free_firmware_md5(&list);
         assert_eq!(free.len(), 20);
         assert!(free.iter().all(|(p, _, _)| p == "tos.img"));
+    }
+
+    #[test]
+    fn builtin_soundfont() {
+        let sf = find_free_bios("generaluser-gs").unwrap();
+        assert_eq!(sf.kind, FreeBiosKind::SoundFont);
+        assert_eq!(sf.name, "GeneralUser GS");
+        assert_eq!(sf.version, "2.0.3");
+        assert_eq!(sf.license, "GeneralUser GS License v2.0");
+        assert_eq!(sf.system, "DOS");
+        assert_eq!(sf.install_as, "GeneralUser-GS.sf2");
+        assert_eq!(sf.archives.len(), 1);
+        let a = &sf.archives[0];
+        assert_eq!(a.format, ArchiveFormat::Raw);
+        // Pinned commit of the official repository, never a branch.
+        assert_eq!(
+            a.url,
+            "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/\
+             684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2"
+        );
+        assert_eq!(a.size, 32_319_396);
+        assert!(a.size <= MAX_SOUNDFONT_BYTES && a.size > MAX_BIOS_ARCHIVE_BYTES);
+        let sha = "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe";
+        assert_eq!(hex(&a.sha256), sha);
+        let v = sf.preferred_variant(Some("fr-FR")).unwrap();
+        assert_eq!(v.id, "sf2");
+        assert!(v.entry.is_empty());
+        assert_eq!(v.size, a.size);
+        assert_eq!(hex(&v.sha256), sha);
+        assert_eq!(hex(&v.md5), "bfe69fe5b2702ef7c12c44bd0d34f8f1");
+        assert!(free_firmware_md5(std::slice::from_ref(&sf)).is_empty());
+    }
+
+    #[test]
+    fn limits_per_kind() {
+        assert_eq!(FreeBiosKind::Bios.max_archive_bytes(), 16 << 20);
+        assert_eq!(FreeBiosKind::Bios.max_image_bytes(), 4 << 20);
+        assert_eq!(FreeBiosKind::SoundFont.max_archive_bytes(), 64 << 20);
+        assert_eq!(FreeBiosKind::SoundFont.max_image_bytes(), 64 << 20);
+        let base = BUILTIN.replace("\r\n", "\n");
+        let sf_start = base.find("id = \"generaluser-gs\"").unwrap();
+        let (head, sf) = base.split_at(sf_start);
+        let bad_sf = |from: &str, to: &str| {
+            assert!(sf.contains(from), "{from}");
+            let text = format!("{head}{}", sf.replace(from, to));
+            parse_free_bios(&text).unwrap_err()
+        };
+        // Above 64 MiB, even for a SoundFont.
+        bad_sf("size = 32319396", "size = 67108865");
+        // The same 32 MB file declared as a BIOS: refused by the BIOS limits.
+        bad_sf("kind = \"soundfont\"", "kind = \"bios\"");
+        bad_sf("kind = \"soundfont\"", "kind = \"font\"");
+        // Raw: entry must be empty, pins must agree.
+        bad_sf("entry = \"\"", "entry = \"x.sf2\"");
+        bad_sf("format = \"raw\"", "format = \"zip\"");
+        bad_sf("format = \"raw\"", "format = \"tar\"");
+        bad_sf(
+            "sha256 = \"9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe\"\n\n",
+            "sha256 = \"0575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe\"\n\n",
+        );
+        // Exactly 64 MiB is accepted for a SoundFont (archive and variant sizes kept equal).
+        let ok = format!("{head}{}", sf.replace("size = 32319396", "size = 67108864"));
+        assert!(parse_free_bios(&ok).is_ok());
+        // A BIOS above 4 MiB stays refused, and an empty entry outside `raw` too.
+        let emutos = base.replacen("size = 1048576", "size = 4194305", 1);
+        assert!(parse_free_bios(&emutos).is_err());
+        let emutos = base.replacen(
+            "entry = \"emutos-1024k-1.4/etos1024k.img\"",
+            "entry = \"\"",
+            1,
+        );
+        assert!(parse_free_bios(&emutos).is_err());
+    }
+
+    #[test]
+    fn soundfont_never_an_import_target() {
+        let known = crate::cores::KnownFirmware::builtin();
+        let catalogue = FirmwareCatalogue::build(&known, &[], &builtin_free_bios());
+        assert!(
+            catalogue
+                .expected_names()
+                .iter()
+                .all(|e| e.name != "GeneralUser-GS.sf2")
+        );
+    }
+
+    #[test]
+    fn dos_firmware_known_never_downloaded() {
+        let known = crate::cores::KnownFirmware::builtin();
+        for (name, size, md5) in [
+            (
+                "MT32_CONTROL.ROM",
+                65_536,
+                "5626206284b22c2734f3e9efefcd2675",
+            ),
+            ("MT32_PCM.ROM", 524_288, "89e42e386e82e0cacb4a2704a03706ca"),
+            (
+                "CM32L_CONTROL.ROM",
+                65_536,
+                "bfff32b6144c1d706109accb6e6b1113",
+            ),
+            (
+                "CM32L_PCM.ROM",
+                1_048_576,
+                "08cdcfa0ed93e9cb16afa76e6ac5f0a4",
+            ),
+        ] {
+            assert_eq!(known.size_for(name), Some(size), "{name}");
+            assert_eq!(
+                known.md5_for(name),
+                [parse_hex::<16>(md5).unwrap()],
+                "{name}"
+            );
+            // Commercial Roland ROMs (ADR 0005): never in the download catalogue.
+            assert!(builtin_free_bios().iter().all(|b| b.install_as != name));
+        }
+    }
+
+    #[test]
+    fn invalidate_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = dir.path();
+        fs::write(sys.join("DOSBoxPureMidiCache.txt"), b"cache").unwrap();
+        fs::write(sys.join("keep.txt"), b"keep").unwrap();
+        fs::create_dir(sys.join("dir.txt")).unwrap();
+        fs::create_dir(sys.join("sub")).unwrap();
+        fs::write(sys.join("sub/DOSBoxPureMidiCache.txt"), b"nested").unwrap();
+        let names = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let removed = invalidate_system_caches(
+            sys,
+            &names(&["DOSBoxPureMidiCache.txt", "absent.txt", "dir.txt"]),
+        )
+        .unwrap();
+        assert_eq!(removed, [sys.join("DOSBoxPureMidiCache.txt")]);
+        assert!(!sys.join("DOSBoxPureMidiCache.txt").exists());
+        assert!(sys.join("keep.txt").exists());
+        assert!(sys.join("dir.txt").is_dir());
+        assert!(sys.join("sub/DOSBoxPureMidiCache.txt").exists());
+        // Second call: nothing left to remove.
+        assert!(
+            invalidate_system_caches(sys, &names(&["DOSBoxPureMidiCache.txt"]))
+                .unwrap()
+                .is_empty()
+        );
+        // Any bad name refuses the whole call before deleting anything.
+        fs::write(sys.join("a.txt"), b"a").unwrap();
+        for bad in [
+            "../keep.txt",
+            "sub/DOSBoxPureMidiCache.txt",
+            "sub\\x",
+            "/abs",
+            "",
+            "..",
+            ".hidden",
+        ] {
+            assert!(
+                matches!(
+                    invalidate_system_caches(sys, &names(&["a.txt", bad])),
+                    Err(BiosError::InvalidTargetName(_))
+                ),
+                "{bad}"
+            );
+        }
+        assert!(sys.join("a.txt").exists());
+        assert!(sys.join("keep.txt").exists());
+        assert!(invalidate_system_caches(sys, &[]).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalidate_caches_never_follows_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.txt");
+        fs::write(&outside, b"user").unwrap();
+        let sys = dir.path().join("system");
+        fs::create_dir(&sys).unwrap();
+        std::os::unix::fs::symlink(&outside, sys.join("DOSBoxPureMidiCache.txt")).unwrap();
+        let removed =
+            invalidate_system_caches(&sys, &["DOSBoxPureMidiCache.txt".to_owned()]).unwrap();
+        assert!(removed.is_empty());
+        assert_eq!(fs::read(&outside).unwrap(), b"user");
     }
 
     #[test]
