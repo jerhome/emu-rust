@@ -19,6 +19,7 @@ mod media;
 mod pacing;
 mod resample;
 mod saves;
+mod snapshot;
 mod timing;
 mod workcopy;
 
@@ -45,8 +46,8 @@ pub use crate::gl::{GlWindow, Scaling};
 pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest};
 pub use crate::identity::{identity_request_for, resolve_game_identity};
 pub use crate::input::{
-    InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState, NullInput,
-    PadState, ScriptedInput,
+    AnalogStick, InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState,
+    NullInput, PadState, ScriptedInput,
 };
 pub use crate::media::{
     ContentSpec, DiskSlot, Disks, MAX_COPY_BYTES, MAX_MEDIA_IMAGES, MediaPolicy, MediaRules,
@@ -62,5 +63,8 @@ pub use crate::saves::{
     FileMode, STATE_FORMAT_VERSION, STATE_MAGIC, STATE_SLOTS, StateFileError, StateHeader,
     core_id_from_path, decode_state, encode_state, game_name_from_path, sram_path, state_path,
     write_atomic,
+};
+pub use crate::snapshot::{
+    SnapshotLimits, SnapshotReport, SnapshotStatus, snapshot_folder, snapshot_path, snapshot_status,
 };
 pub use crate::timing::FramePacer;

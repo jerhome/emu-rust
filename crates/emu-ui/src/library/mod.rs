@@ -524,7 +524,7 @@ impl LibraryUi {
         let check = cores_ui::plan_launch(&manager, &prefs, database, ext);
         let megacd_region = (system_id == megacd::SYSTEM_ID).then(|| match &content {
             GameContent::Files(files) => files.first().and_then(|p| megacd::region_of(p)),
-            GameContent::NoGame => None,
+            GameContent::NoGame | GameContent::Folder { .. } => None,
         });
         let failure_hint = megacd_region.map(|region| {
             let names = region.map_or(megacd::BIOS_NAMES.to_vec(), |r| vec![megacd::bios_name(r)]);

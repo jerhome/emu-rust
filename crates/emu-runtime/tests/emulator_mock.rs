@@ -55,6 +55,8 @@ impl Env {
         EmulatorOptions {
             system_dir: data.join("system"),
             save_dir: data.join("saves"),
+            cache_dir: data.join("cache"),
+            provide_vfs: false,
             state_dir: data.join("states"),
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),

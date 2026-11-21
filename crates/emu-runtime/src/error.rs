@@ -42,4 +42,16 @@ pub enum RuntimeError {
     /// link, not a plain file name, folder that is not a `*.disks` of the core's save folder). Nothing deleted.
     #[error("refused to delete {path}: {reason}")]
     RemovalRefused { path: PathBuf, reason: String },
+    /// Folder snapshot above `SnapshotLimits` (bytes, files or depth); nothing left behind.
+    #[error("game folder too large for a snapshot (limit {limit})")]
+    SnapshotTooLarge { limit: u64 },
+    /// `snapshot_folder` cancelled; the temporary file has been removed.
+    #[error("snapshot cancelled")]
+    SnapshotCancelled,
+    /// A file name of a game folder cannot be stored in a zip entry (control character, empty component…).
+    #[error("file name cannot be stored in a snapshot: {0}")]
+    UnrepresentableName(PathBuf),
+    /// `ContentSpec::Folder::start` is not an 8.3 `exe` / `com` / `bat` at the root of the folder.
+    #[error("invalid start program: {0}")]
+    InvalidStart(String),
 }

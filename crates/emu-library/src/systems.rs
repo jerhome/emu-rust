@@ -84,6 +84,9 @@ pub struct SystemInfo {
     /// Subset of `extensions` kept for this system only under a folder named after its `id` (design v3.0
     /// §3.5.2; `systems.toml` `folder_extensions`, default empty).
     pub folder_extensions: Vec<String>,
+    /// A sub-folder of `roms/<id>/` holding an `exe` / `com` / `bat` at its root is one game (DOS, design v4.0
+    /// §3.4; `systems.toml` `folder_games`, default `false`).
+    pub folder_games: bool,
 }
 
 #[derive(Deserialize)]
@@ -221,6 +224,8 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             },
             dats,
             folder_extensions: s.folder_extensions,
+            // DB1: `systems.toml` `folder_games`.
+            folder_games: false,
         });
     }
     Ok(out)

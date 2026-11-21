@@ -54,6 +54,47 @@ const MAX_ARCHIVE_ENTRIES: usize = 512;
 /// `.tmp-*` files older than this are leftovers of an interrupted write.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
 
+/// Size limit of a `soundfont` resource, archive **and** installed file (GeneralUser GS: 32 319 396 bytes).
+/// BIOS limits ([`MAX_BIOS_ARCHIVE_BYTES`], [`MAX_BIOS_IMAGE_BYTES`]) are unchanged.
+pub const MAX_SOUNDFONT_BYTES: u64 = 64 << 20;
+
+/// `kind` of `free_bios.toml` (default `bios`). A `SoundFont` is never a firmware: absent from
+/// `check_firmware` and from the `required_firmware` check (design v4.0 §3.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FreeBiosKind {
+    #[default]
+    Bios,
+    SoundFont,
+}
+
+impl FreeBiosKind {
+    /// Bound of a downloaded archive of this kind.
+    pub fn max_archive_bytes(self) -> u64 {
+        match self {
+            Self::Bios => MAX_BIOS_ARCHIVE_BYTES,
+            Self::SoundFont => MAX_SOUNDFONT_BYTES,
+        }
+    }
+
+    /// Bound of an installed file of this kind.
+    pub fn max_image_bytes(self) -> u64 {
+        match self {
+            Self::Bios => MAX_BIOS_IMAGE_BYTES,
+            Self::SoundFont => MAX_SOUNDFONT_BYTES,
+        }
+    }
+}
+
+/// `[[bios.archive]] format` (default `zip`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    #[default]
+    Zip,
+    /// The downloaded file **is** the variant: archive and variant have the same size and SHA-256, `entry` is
+    /// empty (accepted only for this format).
+    Raw,
+}
+
 /// One free BIOS family (`emutos`, later `aros`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FreeBios {
@@ -71,6 +112,8 @@ pub struct FreeBios {
     pub archives: Vec<BiosArchive>,
     pub variants: Vec<BiosVariant>,
     pub default_variant: String,
+    /// `kind` (4.0): `Bios` until DA1 parses the key.
+    pub kind: FreeBiosKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +124,8 @@ pub struct BiosArchive {
     pub url: String,
     pub size: u64,
     pub sha256: [u8; 32],
+    /// `format` (4.0): `Zip` until DA1 parses the key.
+    pub format: ArchiveFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +201,17 @@ pub fn builtin_free_bios() -> Vec<FreeBios> {
 }
 
 /// Free BIOS of the embedded catalogue by id (`--install-bios emutos`).
+/// Deletes the stale core caches `names` (plain file names, no separator) at the root of `system_dir` after an
+/// install or import there (`DOSBoxPureMidiCache.txt`); returns the files removed. Never recurses, never follows
+/// a link (design v4.0 §2.4, §3.3).
+pub fn invalidate_system_caches(
+    system_dir: &Path,
+    names: &[String],
+) -> Result<Vec<PathBuf>, BiosError> {
+    let _ = (system_dir, names);
+    todo!("DA1: plain names only, root of system/ only")
+}
+
 pub fn find_free_bios(id: &str) -> Result<FreeBios, BiosError> {
     builtin_free_bios()
         .into_iter()
@@ -259,6 +315,7 @@ impl BiosEntry {
                     name: a.name,
                     url: a.url,
                     size: a.size,
+                    format: ArchiveFormat::Zip,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -290,6 +347,7 @@ impl BiosEntry {
             archives,
             variants,
             default_variant: self.default_variant,
+            kind: FreeBiosKind::Bios,
         })
     }
 }

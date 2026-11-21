@@ -39,6 +39,10 @@ pub struct EmulatorOptions {
     pub assets_dir: PathBuf,
     /// Core option overrides (`key`, `value`).
     pub core_variables: Vec<(String, String)>,
+    /// `<data>/cache`: folder snapshots go to `<cache_dir>/<core_id>/` (design v4.0 §3.2).
+    pub cache_dir: PathBuf,
+    /// `CoreConfig::provide_vfs` (`cores.toml` `vfs = true`, `CorePreferences::provides_vfs`).
+    pub provide_vfs: bool,
 }
 
 /// Outcome of one emulated frame.
@@ -170,6 +174,11 @@ impl Emulator {
             ContentSpec::File(rom) => game_name_from_path(rom),
             ContentSpec::Media { set, .. } => game_name_from_str(&set.name),
             ContentSpec::NoGame => NO_GAME_NAME.to_owned(),
+            ContentSpec::Folder { .. } => {
+                todo!(
+                    "DR1: game name = `name`; snapshot (crate::snapshot) then load `<snapshot>.zip[#START]`"
+                )
+            }
         };
         let core_save_dir = options.save_dir.join(&core_id);
         fs::create_dir_all(&core_save_dir).map_err(io_err(&core_save_dir))?;
@@ -182,6 +191,7 @@ impl Emulator {
             save_dir: core_save_dir.clone(),
             assets_dir: options.assets_dir,
             variables: options.core_variables,
+            provide_vfs: options.provide_vfs,
         };
         let mut core = Core::load(core_path, config)?;
         let mut content_dir = None;
@@ -202,6 +212,7 @@ impl Emulator {
                 Some(source)
             }
             ContentSpec::NoGame => None,
+            ContentSpec::Folder { .. } => todo!("DR1: GameSource::Path(<snapshot>.zip[#START])"),
         };
         let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
         let loaded = match source {
@@ -348,6 +359,14 @@ impl Emulator {
     /// Resets the emulated machine; `frame_count` keeps increasing (it indexes frames of this session).
     pub fn reset(&mut self) {
         self.core.reset();
+    }
+
+    /// Resets through `Core::reset_with`: `held` keys read as pressed by `input_state(KEYBOARD)` during
+    /// `retro_reset` only (keyboard state restored afterwards, no `send_key_event`). dosbox_pure: `LSHIFT` forces
+    /// its start menu (« Changer de programme de démarrage », design v4.0 §2.2).
+    pub fn reset_with_keys(&mut self, held: &[RetroKey]) {
+        let _ = held;
+        todo!("DR1: handler with `held` in its keyboard state, then Core::reset_with")
     }
 
     // ---- Phase 2 (docs/design/phase2-frontend.md §2.2). Contract for `Emulator::load` from phase 2:

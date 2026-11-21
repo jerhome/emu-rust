@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use emu_assets::AssetError;
 use emu_assets::bios::{
-    BiosArchive, BiosError, BiosVariant, FreeBios, FreeBiosManager, FreeBiosState,
-    MANIFEST_FILE_NAME, ReplacePolicy,
+    ArchiveFormat, BiosArchive, BiosError, BiosVariant, FreeBios, FreeBiosKind, FreeBiosManager,
+    FreeBiosState, MANIFEST_FILE_NAME, ReplacePolicy,
 };
 use emu_assets::http::{CancelToken, HttpClient, HttpConfig};
 use md5::Md5;
@@ -115,6 +115,7 @@ fn catalogue(url: &str, archive: &[u8]) -> FreeBios {
             url: url.into(),
             size: archive.len() as u64,
             sha256: Sha256::digest(archive).into(),
+            format: ArchiveFormat::Zip,
         }],
         variants: vec![
             variant("192fr", "emutos-192k-1.4/etos192fr.img", IMAGE_FR, "fr"),
@@ -122,6 +123,7 @@ fn catalogue(url: &str, archive: &[u8]) -> FreeBios {
             variant("192de", "emutos-192k-1.4/etos192de.img", IMAGE_US, "de"),
         ],
         default_variant: "192fr".into(),
+        kind: FreeBiosKind::Bios,
     }
 }
 

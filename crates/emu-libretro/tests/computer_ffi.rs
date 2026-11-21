@@ -55,6 +55,7 @@ fn load(lib: &Path, dir: &Path) -> Core {
             save_dir: dir.join("saves"),
             assets_dir: dir.join("assets"),
             variables: Vec::new(),
+            provide_vfs: false,
         },
     )
     .expect("load mock core")

@@ -1000,6 +1000,7 @@ mod tests {
             save_dir: PathBuf::from("/tmp/saves"),
             assets_dir: PathBuf::from("/tmp/assets"),
             variables,
+            provide_vfs: false,
         }
     }
 

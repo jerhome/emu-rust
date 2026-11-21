@@ -12,6 +12,10 @@ pub enum GameContent {
     Files(Vec<PathBuf>),
     /// No content (`SET_SUPPORT_NO_GAME`): the computer's desktop.
     NoGame,
+    /// Unpacked game folder (DOS, design v4.0 §4): launched through `computer::dos::plan_dos_launch` (DU1), never
+    /// through [`content_spec`]. `start`: program chosen for this launch (`[dos] start` or « Lancer un autre
+    /// programme… »).
+    Folder { dir: PathBuf, start: Option<String> },
 }
 
 impl GameContent {
@@ -20,6 +24,7 @@ impl GameContent {
         match self {
             Self::Files(f) => f.first().map(PathBuf::as_path),
             Self::NoGame => None,
+            Self::Folder { dir, .. } => Some(dir),
         }
     }
 }
@@ -74,6 +79,11 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         GameContent::NoGame => return ContentSpec::NoGame,
         GameContent::Files(f) if f.is_empty() => return ContentSpec::NoGame,
         GameContent::Files(f) => f,
+        GameContent::Folder { .. } => {
+            todo!(
+                "DU1: folders go through plan_dos_launch (the ContentSpec needs the identity's save_name)"
+            )
+        }
     };
     let id = CoreId::new(core_id);
     let policy = match id.as_ref().map(|id| prefs.media_policy(id)) {

@@ -122,6 +122,7 @@ mod tests {
             last_played_unix: None,
             play_count: 0,
             media: Vec::new(),
+            is_dir: false,
         }
     }
 

@@ -36,6 +36,7 @@ fn config(dir: &Path, variables: Vec<(String, String)>) -> CoreConfig {
         save_dir: dir.join("saves"),
         assets_dir: dir.join("assets"),
         variables,
+        provide_vfs: false,
     }
 }
 

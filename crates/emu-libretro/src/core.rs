@@ -24,6 +24,9 @@ pub struct CoreConfig {
     pub assets_dir: PathBuf,
     /// Core option overrides (`key`, `value`); options not listed use the default declared by the core.
     pub variables: Vec<(String, String)>,
+    /// Answer `GET_VFS_INTERFACE` (45) with the frontend's VFS v3 table (`cores.toml` `vfs = true`, ADR 0018).
+    /// `false`: 45 is refused, as in 3.0.
+    pub provide_vfs: bool,
 }
 
 /// Receives the per-frame callbacks while `Core::run` executes. Called on the thread that owns the `Core`.
@@ -556,6 +559,15 @@ impl Core {
     /// Drains the OSD messages received since the last call (`SET_MESSAGE`, `SET_MESSAGE_EXT`).
     pub fn take_messages(&mut self) -> Vec<CoreMessage> {
         callbacks::take_messages()
+    }
+
+    /// `retro_reset` with `handler` installed for its duration, exactly as in [`Core::run`] (same reentrancy
+    /// guard, a `panic` of the handler is contained, handler removed on every path): input polled by the core
+    /// inside `retro_reset` (dosbox_pure reads Shift to force its start menu) reaches `handler`. No-op without a
+    /// game. [`Core::reset`] is unchanged (no handler: input reads as 0).
+    pub fn reset_with(&mut self, handler: &mut dyn FrontendHandler) {
+        let _ = handler;
+        todo!("DF1: install_handler around retro_reset (design v4.0 §3.1)")
     }
 
     pub fn reset(&mut self) {

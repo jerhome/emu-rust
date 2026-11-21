@@ -31,6 +31,7 @@ fn game(id: i64, system: &str, path: &str, entry: Option<&str>) -> Game {
         last_played_unix: None,
         play_count: 0,
         media: Vec::new(),
+        is_dir: false,
     }
 }
 

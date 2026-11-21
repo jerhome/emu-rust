@@ -12,6 +12,7 @@ mod log;
 mod options;
 mod sys;
 mod types;
+mod vfs;
 
 pub use crate::core::{Core, CoreConfig, FrontendHandler, RunEvents};
 pub use crate::disk::{DiskControl, DiskControlKind};

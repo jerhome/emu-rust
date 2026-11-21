@@ -29,6 +29,26 @@ impl PadState {
     pub fn bits(&self) -> u16 {
         self.buttons
     }
+
+    /// Stick position answered to `input_state(ANALOG, index, X / Y)` (cores with `analog = true` only; others
+    /// keep 0 and the stick → D-pad conversion, ADR 0016 amended). Design v4.0 §3.2.
+    pub fn set_analog(&mut self, stick: AnalogStick, x: i16, y: i16) {
+        let _ = (stick, x, y);
+        todo!("DR1: four i16 fields (derives kept: Copy, Eq)")
+    }
+
+    /// `(x, y)`, `(0, 0)` unless set.
+    pub fn analog(&self, stick: AnalogStick) -> (i16, i16) {
+        let _ = stick;
+        todo!("DR1")
+    }
+}
+
+/// `RETRO_DEVICE_INDEX_ANALOG_LEFT` / `_RIGHT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalogStick {
+    Left,
+    Right,
 }
 
 /// Snapshot of every virtual device for one emulated frame. Will grow (analog sticks, keyboard, mouse) without

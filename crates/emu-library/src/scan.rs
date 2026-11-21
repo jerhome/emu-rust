@@ -69,6 +69,10 @@ pub struct ScanReport {
     pub missing_roots: Vec<PathBuf>,
     /// Unreadable files and archives (path + French message), the scan goes on.
     pub errors: Vec<(PathBuf, String)>,
+    /// Executables directly in a `folder_games` root (`roms/dos/`): not games (design v4.0 §3.4).
+    pub ignored_loose_executables: u64,
+    /// Files referenced by a `.cue` and hidden from every system (CD tracks).
+    pub hidden_tracks: u64,
 }
 
 /// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).

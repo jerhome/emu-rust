@@ -199,10 +199,73 @@ impl CorePreferences {
             .map_or_else(Vec::new, |p| p.recommended_on.clone())
     }
 
+    /// `folders` of `data/cores.toml` (design v4.0 §3.3): how an unpacked game folder reaches the core.
+    /// `None`: folders are refused for this core.
+    pub fn folder_policy(&self, core: &CoreId) -> Option<FolderPolicy> {
+        let _ = core;
+        todo!("DA1: `folders = \"snapshot\"`")
+    }
+
+    /// `vfs = true` of `data/cores.toml`: the frontend answers `GET_VFS_INTERFACE` (`CoreConfig::provide_vfs`).
+    /// `false` for cores without the key (puae, hatari: unchanged).
+    pub fn provides_vfs(&self, core: &CoreId) -> bool {
+        let _ = core;
+        todo!("DA1: `vfs`")
+    }
+
+    /// `[cores.<core>.featured_options] "<system>" = […]`: option keys shown first (« Réglages DOS »), in file
+    /// order. Unknown core or system ⇒ empty.
+    pub fn featured_options(&self, core: &CoreId, system: &str) -> Vec<String> {
+        let _ = (core, system);
+        todo!("DA1: `featured_options` per system")
+    }
+
+    /// `layout_option` of `data/cores.toml`: core option computed from the system language (design v3.0 §3.5.4,
+    /// v4.0 §3.3). `None` for cores without the key.
+    pub fn layout_option(&self, core: &CoreId) -> Option<LayoutOption> {
+        let _ = core;
+        todo!("DA1: `layout_option`")
+    }
+
+    /// `analog = true` of `data/cores.toml`: sticks are passed as `RETRO_DEVICE_ANALOG` and no longer converted
+    /// to the D-pad (ADR 0016 amended). `false` without the key.
+    pub fn analog(&self, core: &CoreId) -> bool {
+        let _ = core;
+        todo!("DA1: `analog`")
+    }
+
+    /// `system_caches` of `data/cores.toml`: plain file names the core writes at the root of `system/` and that
+    /// go stale after an install / import there (`DOSBoxPureMidiCache.txt`), for
+    /// [`crate::bios::invalidate_system_caches`]. Empty without the key.
+    pub fn system_caches(&self, core: &CoreId) -> Vec<String> {
+        let _ = core;
+        todo!("DA1: `system_caches`")
+    }
+
     /// Systems known to the preferences (for "install recommended cores").
     pub fn systems(&self) -> impl Iterator<Item = (&str, &[CoreId])> {
         self.systems.iter().map(|(s, c)| (s.as_str(), c.as_slice()))
     }
+}
+
+/// `folders` of `data/cores.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderPolicy {
+    /// The core gets a stored-zip snapshot of the folder (`emu_runtime::snapshot_folder`); the folder is never
+    /// written.
+    Snapshot,
+}
+
+/// Core option whose default is computed from the system language (`layout_option` of `data/cores.toml`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutOption {
+    /// Option key (`dosbox_pure_keyboard_layout`).
+    pub option: String,
+    /// BCP 47 language (`fr`, `fr-BE`) → option value; exact language first, then without region.
+    pub map: BTreeMap<String, String>,
+    /// Value when no entry matches (`us`).
+    pub fallback: String,
 }
 
 /// Where the UI takes the variant passed to [`super::check_required`] from (`variant` of a

@@ -43,6 +43,16 @@ pub enum ContentSpec {
     Media { set: MediaSet, rules: MediaRules },
     /// `retro_load_game(NULL)` (GEM desktop); needs `SET_SUPPORT_NO_GAME`. Game name [`NO_GAME_NAME`].
     NoGame,
+    /// Unpacked game folder (DOS, design v4.0 §3.2): never handed over nor written; `load_content` loads its
+    /// stored-zip snapshot `snapshot_path(<cache_dir>/<core_id>, name)` (built first if not `Current`, without
+    /// progress: run [`crate::snapshot_folder`] beforehand for a progress bar). `name` = `GameIdentity::save_name`.
+    /// `start`: 8.3 `exe` / `com` / `bat` at the root of `dir` (case ignored), passed as `<snapshot>.zip#START`;
+    /// otherwise [`RuntimeError::InvalidStart`].
+    Folder {
+        dir: PathBuf,
+        name: String,
+        start: Option<String>,
+    },
 }
 
 /// Game name (saves, states, working copies of disks added from the menu) of a `ContentSpec::NoGame` session.

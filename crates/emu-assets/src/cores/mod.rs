@@ -27,5 +27,5 @@ pub use manager::{
 pub use platform::Platform;
 pub use select::{
     BuiltinFirmware, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
-    FirmwareVariant, RequiredFirmware, choose_core,
+    FirmwareVariant, FolderPolicy, LayoutOption, RequiredFirmware, choose_core,
 };

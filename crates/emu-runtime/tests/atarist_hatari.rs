@@ -69,6 +69,8 @@ fn options(dir: &Path) -> EmulatorOptions {
     EmulatorOptions {
         system_dir: system,
         save_dir: dir.join("saves"),
+        cache_dir: dir.join("cache"),
+        provide_vfs: false,
         state_dir: dir.join("states"),
         assets_dir: dir.join("assets"),
         core_variables: Vec::new(),

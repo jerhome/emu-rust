@@ -65,6 +65,7 @@ fn config(dir: &Path) -> CoreConfig {
         save_dir: dir.join("saves"),
         assets_dir: dir.join("assets"),
         variables: Vec::new(),
+        provide_vfs: false,
     }
 }
 

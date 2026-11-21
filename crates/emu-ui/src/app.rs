@@ -380,6 +380,8 @@ impl App {
                 state_dir: options.dirs.states.clone(),
                 assets_dir: options.dirs.assets.clone(),
                 core_variables,
+                cache_dir: options.dirs.root.join("cache"),
+                provide_vfs: false,
             },
         )?;
         let audio = if options.audio && options.config.audio.enabled {
@@ -464,7 +466,7 @@ impl App {
         }
         let content_files = match &options.content {
             crate::GameContent::Files(f) => f.clone(),
-            crate::GameContent::NoGame => Vec::new(),
+            crate::GameContent::NoGame | crate::GameContent::Folder { .. } => Vec::new(),
         };
         Ok(Self {
             egui: None,

@@ -52,6 +52,8 @@ pub struct Game {
     /// Ordered disk images when the game has several (a `(Disk N of M)` group, first disk included, or the
     /// files of a `.m3u`, which is then `path`); empty for a single image. Stored in `game_media` (schema v3).
     pub media: Vec<PathBuf>,
+    /// Unpacked game folder (DOS, design v4.0 §3.4): `path` is the folder. Column `game.is_dir` (schema v5).
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -298,6 +300,8 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
         last_played_unix: row.get(10)?,
         play_count: u32::try_from(row.get::<_, i64>(11)?.max(0)).unwrap_or(u32::MAX),
         media: Vec::new(),
+        // DB1: column `game.is_dir` (schema v5).
+        is_dir: false,
     })
 }
 
