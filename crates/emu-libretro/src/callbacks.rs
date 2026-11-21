@@ -1396,6 +1396,10 @@ mod tests {
             sys::RETRO_ENVIRONMENT_GET_OVERSCAN,
             (&raw mut overscan).cast()
         ));
+        // Numbers as in libretro.h (62, 63 and 66 carry no EXPERIMENTAL bit).
+        assert_eq!(sys::RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK, 62);
+        assert_eq!(sys::RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY, 63);
+        assert_eq!(sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, 66);
         let mut scratch = [0u8; 64];
         for cmd in [
             sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE,
