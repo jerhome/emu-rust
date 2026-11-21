@@ -16,10 +16,9 @@ pub(crate) struct ComputedContext<'a> {
     pub system: &'a str,
     /// Result of the single firmware check of this launch, when one was made.
     pub firmware: Option<&'a FirmwareCheck>,
-    // Read by the 4.0 (`layout_option`) and 5.0 (`options_by_extension`) layers; filled from 3.0 on.
-    #[allow(dead_code)]
+    /// System language for `layout_option`.
     pub locale: &'a str,
-    #[allow(dead_code)]
+    /// Lower-case extension of the launched file, without the dot (`options_by_extension`); `""` when none.
     pub extension: &'a str,
 }
 
@@ -36,6 +35,10 @@ pub(crate) fn computed_options(ctx: &ComputedContext) -> Vec<(String, String)> {
     let mut out = firmware_fallback_options(ctx.firmware, fallback);
     if let Some(layout) = ctx.prefs.layout_option(ctx.core) {
         out.push((layout.option.clone(), layout_value(&layout, ctx.locale)));
+    }
+    // After the layout: a file type may pin a key the language default also sets (e.g. a `.cpr` model).
+    if !ctx.extension.is_empty() {
+        out.extend(ctx.prefs.options_by_extension(ctx.core, ctx.extension));
     }
     out
 }

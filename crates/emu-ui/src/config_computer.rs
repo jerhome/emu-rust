@@ -34,7 +34,7 @@ impl KeyboardModeSetting {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "RawComputerConfig")]
 pub struct ComputerConfig {
     /// 0.1 to 5.0 (clamped when used).
     pub mouse_sensitivity: f32,
@@ -43,6 +43,7 @@ pub struct ComputerConfig {
     /// Mode of games launched from the library; the desktop (no game) is always `Keyboard`.
     /// 2.0-4.0 key, superseded by `keyboard_mode` (5.0): CU1 makes it a read-only migration input (`"joystick"`
     /// ⇒ `keyboard_mode = "joystick"`, `"keyboard"` ignored, never written again); `app.rs` reads it until CU2.
+    #[serde(skip_serializing)]
     pub default_keyboard_mode: KeyboardModeChoice,
     /// 5.0: initial mode of a game without a remembered one (`Auto` = the system's `default_input`).
     #[serde(skip_serializing_if = "KeyboardModeSetting::is_auto")]
@@ -52,6 +53,8 @@ pub struct ComputerConfig {
     pub grab_pointer: bool,
     /// EmuTOS variant id (`"192fr"`); absent: derived from the system language, else the catalogue default.
     pub emutos_variant: Option<String>,
+    /// 5.0: let the core's fast-forward request (tape / disk loading) speed the emulation up (`Speed::FastForward`).
+    pub auto_fast_load: bool,
     /// User key overrides per keyboard layout id (`[computer.remap.amiga]`): winit `KeyCode` name → libretro key
     /// name, above the layout file's own `[remap]`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -69,8 +72,66 @@ impl Default for ComputerConfig {
             keyboard_mode: KeyboardModeSetting::Auto,
             grab_pointer: true,
             emutos_variant: None,
+            auto_fast_load: true,
             remap: BTreeMap::new(),
             extra: toml::Table::new(),
+        }
+    }
+}
+
+/// Deserialization shape of [`ComputerConfig`]: same keys, plus the migration of the 2.0-4.0 key.
+#[derive(Deserialize)]
+#[serde(default)]
+struct RawComputerConfig {
+    mouse_sensitivity: f32,
+    auto_capture: bool,
+    default_keyboard_mode: KeyboardModeChoice,
+    keyboard_mode: KeyboardModeSetting,
+    grab_pointer: bool,
+    emutos_variant: Option<String>,
+    auto_fast_load: bool,
+    remap: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(flatten)]
+    extra: toml::Table,
+}
+
+impl Default for RawComputerConfig {
+    fn default() -> Self {
+        let d = ComputerConfig::default();
+        Self {
+            mouse_sensitivity: d.mouse_sensitivity,
+            auto_capture: d.auto_capture,
+            default_keyboard_mode: d.default_keyboard_mode,
+            keyboard_mode: d.keyboard_mode,
+            grab_pointer: d.grab_pointer,
+            emutos_variant: d.emutos_variant,
+            auto_fast_load: d.auto_fast_load,
+            remap: d.remap,
+            extra: d.extra,
+        }
+    }
+}
+
+impl From<RawComputerConfig> for ComputerConfig {
+    fn from(r: RawComputerConfig) -> Self {
+        // `"keyboard"` of the old key proves no choice (the whole table was written when any field changed), so
+        // only `"joystick"` is carried over, and never over an explicit new key.
+        let keyboard_mode = match (r.keyboard_mode, r.default_keyboard_mode) {
+            (KeyboardModeSetting::Auto, KeyboardModeChoice::Joystick) => {
+                KeyboardModeSetting::Joystick
+            }
+            (mode, _) => mode,
+        };
+        Self {
+            mouse_sensitivity: r.mouse_sensitivity,
+            auto_capture: r.auto_capture,
+            default_keyboard_mode: r.default_keyboard_mode,
+            keyboard_mode,
+            grab_pointer: r.grab_pointer,
+            emutos_variant: r.emutos_variant,
+            auto_fast_load: r.auto_fast_load,
+            remap: r.remap,
+            extra: r.extra,
         }
     }
 }
@@ -141,8 +202,45 @@ mod tests {
         assert_eq!(c.default_keyboard_mode, KeyboardModeChoice::Joystick);
         assert_eq!(c.emutos_variant.as_deref(), Some("192de"));
         let back: ComputerConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        // The old key is migration input only: never written, its value moves to `keyboard_mode`.
+        assert_eq!(back.keyboard_mode, KeyboardModeSetting::Joystick);
+        let out = toml::to_string(&c).unwrap();
+        assert!(!out.contains("default_keyboard_mode"), "{out}");
+        assert!(out.contains("keyboard_mode = \"joystick\"") && out.contains("future = 3"));
+        let again: ComputerConfig = toml::from_str(&toml::to_string(&back).unwrap()).unwrap();
+        assert_eq!(again.keyboard_mode, back.keyboard_mode);
+    }
+
+    #[test]
+    fn legacy_keyboard_value_is_ignored_and_explicit_key_wins() {
+        let c: ComputerConfig = toml::from_str("default_keyboard_mode = \"keyboard\"\n").unwrap();
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Auto);
+        assert!(c.is_default());
+        let c: ComputerConfig =
+            toml::from_str("default_keyboard_mode = \"joystick\"\nkeyboard_mode = \"keyboard\"\n")
+                .unwrap();
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Keyboard);
+        let c: ComputerConfig = toml::from_str("keyboard_mode = \"joystick\"\n").unwrap();
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Joystick);
+    }
+
+    /// A 2.0-4.0 `[computer]` table (old key included) is read without loss: nothing but the old key disappears.
+    #[test]
+    fn config_4_0_reads_back_unchanged() {
+        let text = "mouse_sensitivity = 2.5\nauto_capture = false\ndefault_keyboard_mode = \"keyboard\"\n\
+                    grab_pointer = false\nemutos_variant = \"192fr\"\n[remap.atari_st]\nContextMenu = \"RALT\"\n";
+        let c: ComputerConfig = toml::from_str(text).unwrap();
+        assert_eq!(c.mouse_sensitivity, 2.5);
+        assert!(!c.auto_capture && !c.grab_pointer && c.auto_fast_load);
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Auto);
+        assert_eq!(c.remap["atari_st"]["ContextMenu"], "RALT");
+        let back: ComputerConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
-        assert!(toml::to_string(&c).unwrap().contains("future = 3"));
+        assert!(
+            !toml::to_string(&c)
+                .unwrap()
+                .contains("default_keyboard_mode")
+        );
     }
 
     #[test]

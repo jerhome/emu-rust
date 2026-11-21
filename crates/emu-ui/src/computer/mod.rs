@@ -4,6 +4,7 @@
 pub(crate) mod amiga;
 pub(crate) mod computed;
 pub(crate) mod dos;
+pub(crate) mod eightbit;
 pub(crate) mod host;
 pub(crate) mod input;
 pub(crate) mod keymap;

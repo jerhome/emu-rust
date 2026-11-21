@@ -553,6 +553,7 @@ impl<'de> Deserialize<'de> for KeyMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_computer::KeyboardModeSetting;
 
     #[test]
     fn round_trip() {
@@ -673,7 +674,10 @@ button = "a"
         assert_eq!(c.computer.mouse_sensitivity, 2.0);
         assert_eq!(c.computer.emutos_variant.as_deref(), Some("192de"));
         let again: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
-        assert_eq!(again, c);
+        // The 2.0-4.0 key is migrated to `keyboard_mode` and no longer written.
+        assert_eq!(c.computer.keyboard_mode, KeyboardModeSetting::Joystick);
+        assert_eq!(again.computer.keyboard_mode, KeyboardModeSetting::Joystick);
+        assert_eq!(again.computer.extra, c.computer.extra);
         // Computer cores never inherit the shared « default » profile; their built-in map is small.
         let mut c = Config::default();
         c.set_keymap(DEFAULT_PROFILE, KeyMap::snes_default());

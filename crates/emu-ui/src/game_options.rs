@@ -32,6 +32,9 @@ pub struct GameInput {
 pub struct GameMedia {
     /// Index of the floppy to re-insert at launch.
     pub last_disk: Option<u32>,
+    /// Launch text (`RUN"DISC` on the CPC, program name on the C64), validated by `validate_launch`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch: Option<String>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
