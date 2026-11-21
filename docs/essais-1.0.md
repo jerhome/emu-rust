@@ -35,5 +35,6 @@
 | Windows | Another World (Amiga, ADF), Kickstart 1.3 | ✅ **OK** : mode joystick et son |
 | Windows | Maniac Mansion (C64), vice_x64 | ❌→✅ installation refusée (CRC : index buildbot en retard, voir questions-ouvertes) → DLL posée à la main ; chargement long ; pointeur immobile sur le port 2 par défaut → **OK au port 1** (menu « Port joystick »), son OK, changement de face par le raccourci OK. Piste : le jeu/la DAT pourrait mémoriser le port connu par jeu, ou le guide le signaler |
 | Windows | B.A.T. (CPC), cap32 | ❌ zip de `.dsk` dans `roms/cpc/` : Ready, `cat` → « Drive A: disc missing » (aucune disquette insérée) ; ✅ les 4 `.dsk` (« Disk N of 4 ») extraits dans `roms/cpc/` : regroupés, fonctionne (« trop beau », jouable à la manette PS4), changement de disquette OK. **Défaut en diagnostic** (zip + cap32 `media = direct`) |
+| Windows | NBA Jam (32X), picodrive | ✅ **impeccable** : image, son, manette PS4 (fichier extrait) ; ❌ zip simple (un seul fichier) non utilisable, l'utilisateur a dû extraire — symptôme à préciser, défaut à diagnostiquer |
 
 Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
