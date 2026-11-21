@@ -11,16 +11,17 @@ use rusqlite::{Connection, params};
 use zip::ZipArchive;
 
 use crate::db::{
-    Identified, NameIndex, dat_match, db_error, extension_of, identification_text, identify,
-    identify_dos, load_media, sha1_from, to_i64,
+    DiscIndex, Identified, NameIndex, RedumpSet, SEGA_32X, dat_match, db_error, extension_of,
+    identification_text, identify, identify_dos, load_media, sha1_from, to_i64,
 };
+use crate::disc::{BIN_PROBE_LEN, bin_kind, disc_header, first_track, serial_keys};
 use crate::dos::DosFile;
 use crate::media::{parse_m3u, strip_media_marker};
 use crate::systems::{Attribution, attribute, systems};
 use crate::{
-    DISC_EXTENSIONS, DiscFormat, Identification, LibraryError, MAX_HASH_SIZE, RomHashes,
-    SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
-    systems_for_extension,
+    BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
+    RomHashes, SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
+    probe_bin, region_from_name, systems_for_extension,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -118,6 +119,9 @@ struct Existing {
     identification: String,
     media: Vec<String>,
     is_dir: bool,
+    title: String,
+    /// Stored `game.region` (schema v6).
+    region: Option<String>,
 }
 
 /// How the system of an analysed file is decided once the DATs can be read (design v3.0 §3.5.2).
@@ -141,6 +145,13 @@ enum Rule {
         system: &'static SystemInfo,
         pinned: bool,
     },
+    /// Image of a `disc` system (design v6.0 §3.4): `matched` by the Redump DAT during the analysis (track size +
+    /// CRC32, header serial, name), else identified by name.
+    Disc {
+        system: &'static SystemInfo,
+        pinned: bool,
+        matched: Option<(String, Identification)>,
+    },
 }
 
 /// One image listed by a `.m3u`, hashed only when the DATs may be needed to attribute it.
@@ -155,6 +166,8 @@ struct Analysis {
     hashes: Option<RomHashes>,
     rule: Rule,
     stem: String,
+    /// Region of a disc image or playlist (design v6.0 §2.2), stored only when the game lands in a `disc` system.
+    region: Option<DiscRegion>,
 }
 
 enum Failure {
@@ -628,7 +641,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
             lower_ext(&f.path).is_some_and(|e| {
                 let systems = systems_for_extension(&e);
                 !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
-            })
+            }) || is_console_disc(f)
         })
         .filter(|(_, f)| lower_ext(&f.path).is_some_and(|e| !is_m3u(&e)))
         .map(|(i, f)| (f.path.clone(), i))
@@ -655,6 +668,29 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
         seen.remove(&f.key);
     }
     found.retain(|f| !hidden.contains(&f.key));
+}
+
+/// A disc image that the analysis will give to a `disc` system (a folder named after it, or a Sega CD header
+/// outside any system folder): its `(Disc N)` files are grouped like disks (design v6.0 §3.4). DOS discs are left
+/// as they were.
+fn is_console_disc(found: &Found) -> bool {
+    let Some(ext) = lower_ext(&found.path) else {
+        return false;
+    };
+    if !DISC_EXTENSIONS.contains(&ext.as_str()) || found.is_dir {
+        return false;
+    }
+    match attribute(&ext, &found.folders) {
+        Attribution::Folder(s) => s.disc,
+        Attribution::Unclassified => {
+            ext != "chd"
+                && disc_info(&found.path)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|i| i.format == DiscFormat::SegaCd)
+        }
+        Attribution::Candidates(_) | Attribution::ByDat(_) => false,
+    }
 }
 
 /// Tracks of a disc are not games (design v2.1 Mega CD §3.2): the files named by a `.cue` are hidden (any
@@ -755,6 +791,26 @@ fn entry_folders(found: &Found, entry: &Path) -> Vec<String> {
     folders
 }
 
+/// Attribution of a playlist entry; a disc image outside any system folder is attributed by its Sega CD header
+/// (same probe as a lone disc, design v6.0 §3.4: the system of a `.m3u` is the one of its entries).
+fn entry_attribution(found: &Found, entry: &Path) -> Option<Attribution> {
+    let ext = lower_ext(entry)?;
+    let attribution = attribute(&ext, &entry_folders(found, entry));
+    if matches!(attribution, Attribution::Unclassified)
+        && ext != "chd"
+        && DISC_EXTENSIONS.contains(&ext.as_str())
+        && let Ok(Some(info)) = disc_info(entry)
+    {
+        let system = match info.format {
+            DiscFormat::SegaCd => crate::system("megacd"),
+        };
+        if let Some(s) = system {
+            return Some(Attribution::Candidates(vec![s]));
+        }
+    }
+    Some(attribution)
+}
+
 /// The system accepting `.m3u` named by a folder of the playlist.
 fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
     match attribute(&lower_ext(&found.path)?, &found.folders) {
@@ -786,6 +842,17 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
             && old.pinned
                 == folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
     }
+    if ext == "bin" && old.system == SEGA_32X {
+        // Kept as 32X by its header (unchanged content): only the folder flag can have changed.
+        return old.pinned == found.folders.iter().any(|f| f == SEGA_32X);
+    }
+    if ext == "bin"
+        && old.entry.is_none()
+        && probe_bin(&found.path).is_ok_and(|k| k == BinKind::Sega32x)
+    {
+        // A 32X `.bin` stored as Mega Drive before the 6.0 (< 0x220 bytes read).
+        return false;
+    }
     let accepts = |c: &[&SystemInfo]| c.iter().any(|s| s.id == old.system);
     match attribute(&ext, &found.folders) {
         Attribution::Folder(s) => old.pinned && old.system == s.id,
@@ -796,10 +863,11 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
                 && accepts(&c)
                 && matches!(old.identification.as_str(), "sha1" | "crc32_size")
         }
-        // A disc outside a folder, kept as Mega CD by its header at the last scan.
+        // A disc outside a folder, kept as Mega CD by its header at the last scan, or a `.chd` by its Redump name
+        // (a Redump import sends these rows to a new analysis).
         Attribution::Unclassified => {
             !old.pinned
-                && ext != "chd"
+                && (ext != "chd" || old.identification == "name")
                 && DISC_EXTENSIONS.contains(&ext.as_str())
                 && old.system == "megacd"
         }
@@ -811,10 +879,9 @@ fn playlist_agrees(old: &Existing, found: &Found) -> bool {
     let mut systems: Vec<&str> = Vec::new();
     for entry in &found.media {
         let path = Path::new(entry);
-        let Some(ext) = lower_ext(path) else {
+        let Some(attribution) = entry_attribution(found, path) else {
             continue;
         };
-        let attribution = attribute(&ext, &entry_folders(found, path));
         if needs_hashes(&attribution) {
             return false;
         }
@@ -935,6 +1002,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                 pinned: folder_dos.is_some(),
             },
             stem: stem_of(&found.path),
+            region: None,
         });
     }
     if computers.len() > 1 {
@@ -957,7 +1025,23 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let Some(ext) = lower_ext(Path::new(&name)) else {
         return Err("extension inconnue".to_owned().into());
     };
-    let rule = rule_of(attribute(&ext, &found.folders))?;
+    let mut rule = rule_of(attribute(&ext, &found.folders))?;
+    if ext == "bin" {
+        // A zipped 32X `.bin` (design v6.0 §3.4): the first bytes of the entry decide, bounded read.
+        let entry = archive
+            .by_index(index)
+            .map_err(|e| format!("archive illisible : {e}"))?;
+        let mut head = Vec::with_capacity(BIN_PROBE_LEN);
+        entry
+            .take(BIN_PROBE_LEN as u64)
+            .read_to_end(&mut head)
+            .map_err(|e| format!("archive illisible : {e}"))?;
+        if bin_kind(&head) == BinKind::Sega32x
+            && let Some(r) = rule_32x(found)
+        {
+            rule = r;
+        }
+    }
     let hashes = if declared > max {
         None
     } else {
@@ -977,6 +1061,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         hashes,
         rule,
         stem: stem_of(&found.path),
+        region: None,
     })
 }
 
@@ -984,8 +1069,17 @@ fn rule_systems(rule: &Rule) -> &[&'static SystemInfo] {
     match rule {
         Rule::Identify { candidates, .. } | Rule::ByDat(candidates) => candidates,
         Rule::Playlist { .. } => &[],
-        Rule::Dos { system, .. } => std::slice::from_ref(system),
+        Rule::Dos { system, .. } | Rule::Disc { system, .. } => std::slice::from_ref(system),
     }
+}
+
+/// A `.bin` with the `SEGA 32X` signature: system `32x`, pinned when a folder is named after it.
+fn rule_32x(found: &Found) -> Option<Rule> {
+    let system = crate::system(SEGA_32X)?;
+    Some(Rule::Identify {
+        candidates: vec![system],
+        pinned: found.folders.contains(&system.id),
+    })
 }
 
 /// Hashes of a file of `size` bytes (`None` above `max`).
@@ -1021,7 +1115,7 @@ fn playlist_rule(found: &Found, max: u64, cancel: &AtomicBool) -> Rule {
         .iter()
         .filter_map(|entry| {
             let path = Path::new(entry);
-            let attribution = attribute(&lower_ext(path)?, &entry_folders(found, path));
+            let attribution = entry_attribution(found, path)?;
             let hashes = if needs_hashes(&attribution) {
                 let size = fs::metadata(path).map(|m| m.len()).ok()?;
                 let header = match &attribution {
@@ -1050,8 +1144,13 @@ fn stem_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn analyze(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
-    let result = analyze_file(found, max, cancel);
+fn analyze(
+    found: &Found,
+    max: u64,
+    cancel: &AtomicBool,
+    discs: &DiscIndex,
+) -> Result<Analysis, Failure> {
+    let result = analyze_file(found, max, cancel, discs);
     // A read failed by `CancelRead` surfaces as an I/O or archive error: the flag tells them apart.
     if result.is_err() && is_cancelled(cancel) {
         return Err(Failure::Cancelled);
@@ -1059,7 +1158,12 @@ fn analyze(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Fai
     result
 }
 
-fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
+fn analyze_file(
+    found: &Found,
+    max: u64,
+    cancel: &AtomicBool,
+    discs: &DiscIndex,
+) -> Result<Analysis, Failure> {
     if found.is_dir {
         return analyze_dir(found, max, cancel);
     }
@@ -1071,12 +1175,24 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
     }
     // Disc images first (never hashed, probed only), before the generic attribution of design v3.0 §3.5.2.
     if DISC_EXTENSIONS.contains(&ext.as_str()) {
-        return analyze_disc(found, &ext);
+        return analyze_disc(found, &ext, max, cancel, discs);
     }
-    let mut rule = if is_playlist(found) {
+    let playlist = is_playlist(found);
+    let mut rule = if playlist {
         playlist_rule(found, max, cancel)
     } else {
         rule_of(attribute(&ext, &found.folders))?
+    };
+    if ext == "bin"
+        && let Ok(BinKind::Sega32x) = probe_bin(&found.path)
+        && let Some(r) = rule_32x(found)
+    {
+        rule = r;
+    }
+    let region = if playlist {
+        playlist_region(found, discs)
+    } else {
+        None
     };
     // A lone DOS file: identified by its name and, for a small image, by its CRC32 (design v4.0 §3.4).
     let dos = match &rule {
@@ -1126,6 +1242,7 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
         hashes,
         rule,
         stem: stem_of(&found.path),
+        region,
     })
 }
 
@@ -1185,56 +1302,246 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        region: None,
     })
 }
 
 /// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 4 KiB read).
 /// Under a system folder the folder decides. Elsewhere only a Sega CD header classifies a `.cue` / `.iso`
-/// (design v4.0 §10 #7: the extensions are shared with `dos`), anything else is unclassified.
-fn analyze_disc(found: &Found, ext: &str) -> Result<Analysis, Failure> {
-    let rule = match attribute(ext, &found.folders) {
-        Attribution::Folder(s) if s.folder_games => Rule::Dos {
-            files: Vec::new(),
-            system: s,
-            pinned: true,
-        },
-        Attribution::Folder(s) => Rule::Identify {
-            candidates: vec![s],
-            pinned: true,
-        },
-        _ => {
-            // A `.chd` is never read; an unreadable `.cue` is reported once, by `hide_disc_tracks`.
-            let info = if ext == "chd" {
-                None
-            } else {
-                disc_info(&found.path).ok().flatten()
-            };
-            let system = info.and_then(|i| match i.format {
-                DiscFormat::SegaCd => crate::system("megacd"),
-            });
-            match system {
-                Some(s) => Rule::Identify {
-                    candidates: vec![s],
-                    pinned: false,
-                },
-                None => return Err(Failure::Unclassified),
-            }
-        }
-    };
-    Ok(Analysis {
+/// (design v4.0 §10 #7: the extensions are shared with `dos`), and a `.chd` (never read) only its name in the
+/// Redump DAT of a disc system (design v6.0 §3.4); anything else is unclassified.
+fn analyze_disc(
+    found: &Found,
+    ext: &str,
+    max: u64,
+    cancel: &AtomicBool,
+    discs: &DiscIndex,
+) -> Result<Analysis, Failure> {
+    let stem = stem_of(&found.path);
+    let analysis = |rule, region| Analysis {
         entry: None,
         size: found.file_size,
         hashes: None,
         rule,
-        stem: stem_of(&found.path),
-    })
+        stem: stem.clone(),
+        region,
+    };
+    let (system, pinned) = match attribute(ext, &found.folders) {
+        Attribution::Folder(s) if s.folder_games => {
+            return Ok(analysis(
+                Rule::Dos {
+                    files: Vec::new(),
+                    system: s,
+                    pinned: true,
+                },
+                None,
+            ));
+        }
+        Attribution::Folder(s) => (s, true),
+        _ => {
+            // An unreadable `.cue` is reported once, by `hide_disc_tracks`.
+            let by_header = if ext == "chd" {
+                None
+            } else {
+                disc_info(&found.path)
+                    .ok()
+                    .flatten()
+                    .and_then(|i| match i.format {
+                        DiscFormat::SegaCd => crate::system("megacd"),
+                    })
+            };
+            let by_name = || {
+                (ext == "chd")
+                    .then(|| {
+                        systems().iter().find(|s| {
+                            s.disc
+                                && s.extensions.iter().any(|e| e == ext)
+                                && discs
+                                    .get(&s.id)
+                                    .is_some_and(|set| set.by_name(&stem).is_some())
+                        })
+                    })
+                    .flatten()
+            };
+            match by_header.or_else(by_name) {
+                Some(s) => (s, false),
+                None => return Err(Failure::Unclassified),
+            }
+        }
+    };
+    if !system.disc {
+        return Ok(analysis(
+            Rule::Identify {
+                candidates: vec![system],
+                pinned,
+            },
+            None,
+        ));
+    }
+    let (matched, region) =
+        disc_facts(&found.path, ext, &stem, discs.get(&system.id), max, cancel)?;
+    Ok(analysis(
+        Rule::Disc {
+            system,
+            pinned,
+            matched,
+        },
+        region,
+    ))
+}
+
+/// Redump match (DAT game name, how) and region of a disc image.
+type DiscFacts = (Option<(String, Identification)>, Option<DiscRegion>);
+
+/// Data track whose size and CRC32 a Redump DAT lists: the first file of a `.cue`, a `.iso` itself.
+fn redump_track(path: &Path, ext: &str) -> Option<PathBuf> {
+    match ext {
+        "iso" => Some(path.to_path_buf()),
+        "cue" => first_track(path).ok().flatten(),
+        _ => None,
+    }
+}
+
+/// CRC32 of a file of `size` bytes, read once (cancellable); an error if its size changed meanwhile.
+fn crc_file(path: &Path, size: u64, cancel: &AtomicBool) -> Result<u32, String> {
+    let file = open_regular(path)?;
+    let mut reader = CancelRead {
+        inner: file,
+        cancel,
+    }
+    .take(size.saturating_add(1));
+    let mut hasher = crc32fast::Hasher::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        total += n as u64;
+    }
+    if total != size {
+        return Err("fichier modifié pendant la lecture".to_owned());
+    }
+    Ok(hasher.finalize())
+}
+
+/// Redump identification and region of a disc image (design v6.0 §2.2, §3.4). Identification: size + CRC32 of
+/// the data track, computed only when the DAT lists that size (and at most `max` bytes), else the header serial,
+/// else the name. Region: header byte 0x20B, else the Redump line, else the name tag. Without a listed size the
+/// reads stay under 64 KiB of cue and 0x220 bytes of track; a `.chd` is never read.
+fn disc_facts(
+    path: &Path,
+    ext: &str,
+    stem: &str,
+    set: Option<&RedumpSet>,
+    max: u64,
+    cancel: &AtomicBool,
+) -> Result<DiscFacts, Failure> {
+    let header = if ext == "chd" {
+        None
+    } else {
+        disc_header(path).ok().flatten()
+    };
+    let mut matched = None;
+    if let Some(set) = set {
+        if let Some(track) = redump_track(path, ext)
+            && let Some(size) = fs::metadata(&track)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+            && size <= max
+            && set.has_size(size)
+        {
+            match crc_file(&track, size, cancel) {
+                Ok(crc) => {
+                    matched = set
+                        .by_crc(size, crc)
+                        .map(|e| (e, Identification::Crc32Size));
+                }
+                Err(_) if is_cancelled(cancel) => return Err(Failure::Cancelled),
+                Err(message) => {
+                    tracing::warn!("cannot read disc track {}: {message}", track.display());
+                }
+            }
+        }
+        if matched.is_none()
+            && let Some(field) = header.as_ref().and_then(|(_, f)| f.as_deref())
+        {
+            matched = set
+                .by_serial(&serial_keys(field))
+                .map(|e| (e, Identification::Serial));
+        }
+        if matched.is_none() {
+            matched = set.by_name(stem).map(|e| (e, Identification::Name));
+        }
+    }
+    let region = header
+        .and_then(|(info, _)| info.region)
+        .or_else(|| matched.and_then(|(e, _)| e.region))
+        .or_else(|| region_from_name(stem));
+    Ok((matched.map(|(e, how)| (e.game.clone(), how)), region))
+}
+
+/// Region of a game whose row the scan leaves unchanged (a v5 row of a disc system: `region` NULL). Reads at most
+/// 64 KiB of cue and 0x220 bytes of track (no CRC): header, else the Redump line found by serial or by the stored
+/// title, else the name tag.
+fn region_of_row(path: &Path, title: &str, set: Option<&RedumpSet>) -> Option<DiscRegion> {
+    let ext = lower_ext(path)?;
+    let header = if ext == "chd" {
+        None
+    } else {
+        disc_header(path).ok().flatten()
+    };
+    let stem = stem_of(path);
+    header
+        .as_ref()
+        .and_then(|(info, _)| info.region)
+        .or_else(|| {
+            let set = set?;
+            header
+                .as_ref()
+                .and_then(|(_, f)| f.as_deref())
+                .and_then(|f| set.by_serial(&serial_keys(f)))
+                .or_else(|| set.by_name(title))
+                .or_else(|| set.by_name(&stem))
+                .and_then(|e| e.region)
+        })
+        .or_else(|| region_from_name(&stem))
+        .or_else(|| region_from_name(title))
+}
+
+/// Region of a playlist (multi-CD): its first disc image, else its own name (Redump line, then tag).
+fn playlist_region(found: &Found, discs: &DiscIndex) -> Option<DiscRegion> {
+    let stem = stem_of(&found.path);
+    found
+        .media
+        .first()
+        .and_then(|first| {
+            let first = Path::new(first);
+            let ext = lower_ext(first)?;
+            if ext == "chd" || !DISC_EXTENSIONS.contains(&ext.as_str()) {
+                return None;
+            }
+            disc_header(first).ok().flatten()?.0.region
+        })
+        .or_else(|| {
+            systems()
+                .iter()
+                .filter(|s| s.disc)
+                .filter_map(|s| discs.get(&s.id)?.by_name(&stem))
+                .find_map(|e| e.region)
+        })
+        .or_else(|| region_from_name(&stem))
 }
 
 fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, LibraryError> {
     let mut media = load_media(conn, None)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification, is_dir
+            "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification, is_dir,
+                    title, region
              FROM game",
         )
         .map_err(db_error)?;
@@ -1252,6 +1559,8 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 identification: r.get(8)?,
                 media: Vec::new(),
                 is_dir: r.get::<_, i64>(9)? != 0,
+                title: r.get(10)?,
+                region: r.get(11)?,
             },
         ))
     })
@@ -1345,6 +1654,21 @@ fn resolve(
             identify_dos(conn, names, system, files, &analysis.stem)?,
             *pinned,
         )),
+        Rule::Disc {
+            system,
+            pinned,
+            matched,
+        } => {
+            let id = match matched {
+                Some((title, how)) => Identified {
+                    system: system.id.clone(),
+                    title: title.clone(),
+                    how: *how,
+                },
+                None => identify(conn, names, &[system], None, &analysis.stem)?,
+            };
+            Some((id, *pinned))
+        }
         Rule::Playlist { entries, folder } => {
             let system = match playlist_system(conn, names, entries)? {
                 Some(s) => Some(s),
@@ -1389,15 +1713,19 @@ fn store(
     };
     let full = analysis.hashes.map(|h| h.full);
     let headerless = analysis.hashes.and_then(|h| h.headerless);
+    let region = analysis
+        .region
+        .filter(|_| crate::system(&id.system).is_some_and(|s| s.disc))
+        .map(DiscRegion::key);
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
-                           title, identification, pinned, is_dir)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                           title, identification, pinned, is_dir, region)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(path) DO UPDATE SET entry = excluded.entry, system = excluded.system, size = excluded.size,
              file_size = excluded.file_size, mtime_unix = excluded.mtime_unix, crc32 = excluded.crc32,
              sha1 = excluded.sha1, crc32_nh = excluded.crc32_nh, sha1_nh = excluded.sha1_nh,
              title = excluded.title, identification = excluded.identification, pinned = excluded.pinned,
-             is_dir = excluded.is_dir",
+             is_dir = excluded.is_dir, region = excluded.region",
         params![
             found.key,
             analysis.entry,
@@ -1413,6 +1741,7 @@ fn store(
             identification_text(id.how),
             pinned,
             found.is_dir,
+            region,
         ],
     )
     .map_err(db_error)?;
@@ -1497,6 +1826,9 @@ pub(crate) fn run(
 
     resolve_media(&mut found, &mut seen, &mut report);
     let existing = load_existing(conn)?;
+    let discs = DiscIndex::load(conn)?;
+    // (row id, region key) of unchanged rows of a disc system whose region was never computed (v5 rows).
+    let mut regions: Vec<(i64, &'static str)> = Vec::new();
     let mut names = NameIndex::default();
     let mut state = ScanProgress::default();
     let mut last_emit: Option<Instant> = None;
@@ -1520,9 +1852,18 @@ pub(crate) fn run(
                 && pin_agrees(o, f)
         }) {
             report.unchanged += 1;
+            if let Some(o) = old
+                && o.region.is_none()
+                && let Some(system) = crate::system(&o.system).filter(|s| s.disc)
+            {
+                let probe = f.media.first().map_or(f.path.as_path(), Path::new);
+                if let Some(region) = region_of_row(probe, &o.title, discs.get(&system.id)) {
+                    regions.push((o.id, region.key()));
+                }
+            }
         } else {
             // No transaction is open here: a slow read never holds the write lock.
-            match analyze(f, options.max_file_size, cancel) {
+            match analyze(f, options.max_file_size, cancel, &discs) {
                 Ok(analysis) => {
                     if analysis.hashes.is_some() {
                         state.hashed += 1;
@@ -1579,6 +1920,17 @@ pub(crate) fn run(
         &mut report,
         &mut unclassified,
     )?;
+    if !regions.is_empty() {
+        let tx = conn.transaction().map_err(db_error)?;
+        for (id, region) in &regions {
+            tx.execute(
+                "UPDATE game SET region = ?2 WHERE id = ?1 AND region IS NULL",
+                params![id, region],
+            )
+            .map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+    }
     if cancelled || is_cancelled(cancel) {
         return Err(LibraryError::Cancelled);
     }
@@ -1687,10 +2039,18 @@ mod tests {
         };
         let cancel = AtomicBool::new(true);
         assert!(matches!(
-            analyze(&found, MAX_HASH_SIZE, &cancel),
+            analyze(&found, MAX_HASH_SIZE, &cancel, &DiscIndex::default()),
             Err(Failure::Cancelled)
         ));
-        assert!(analyze(&found, MAX_HASH_SIZE, &AtomicBool::new(false)).is_ok());
+        assert!(
+            analyze(
+                &found,
+                MAX_HASH_SIZE,
+                &AtomicBool::new(false),
+                &DiscIndex::default()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2057,6 +2417,87 @@ mod tests {
             assert_eq!(progress.hashed, 0);
             assert!(start.elapsed() < Duration::from_secs(5));
             assert_eq!(names(&lib.games().unwrap()).len(), 1);
+        }
+
+        /// The data track is read whole only when the Redump DAT lists its size (and it is under the hash limit):
+        /// a set cancel flag makes any such read fail, so `Ok` proves that nothing past the probe was read.
+        #[test]
+        fn track_crc_only_when_the_size_is_listed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let track = tmp.path().join("Big (Track 1).bin");
+            write(&track, &raw_track(0x64, 0));
+            let size = 32 * 1024 * 1024;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&track)
+                .unwrap()
+                .set_len(size)
+                .unwrap();
+            let cue = tmp.path().join("Big.cue");
+            write(&cue, b"FILE \"Big (Track 1).bin\" BINARY\n");
+            let cancel = AtomicBool::new(true);
+            let index_with = |sizes: &[u64]| {
+                let mut lib = Library::open_in_memory().unwrap();
+                let dat = crate::Dat {
+                    name: "Sega - Mega-CD - Sega CD".into(),
+                    version: None,
+                    entries: sizes
+                        .iter()
+                        .map(|&size| crate::DatEntry {
+                            game: format!("G{size} (Japan)"),
+                            rom_name: "t.bin".into(),
+                            size,
+                            crc32: 1,
+                            sha1: None,
+                            serial: None,
+                            region: Some("Japan".into()),
+                        })
+                        .collect(),
+                };
+                lib.import_dat_source("megacd", crate::DatSource::Redump, &dat, None)
+                    .unwrap();
+                DiscIndex::load(&lib.conn).unwrap()
+            };
+            let absent = index_with(&[2352, size + 1]);
+            let (matched, region) = disc_facts(
+                &cue,
+                "cue",
+                "Big",
+                absent.get("megacd"),
+                MAX_HASH_SIZE,
+                &cancel,
+            )
+            .ok()
+            .unwrap();
+            assert_eq!((matched, region), (None, Some(DiscRegion::Europe)));
+            let listed = index_with(&[size]);
+            assert!(matches!(
+                disc_facts(
+                    &cue,
+                    "cue",
+                    "Big",
+                    listed.get("megacd"),
+                    MAX_HASH_SIZE,
+                    &cancel
+                ),
+                Err(Failure::Cancelled)
+            ));
+            // Above the hash limit: never read either.
+            assert!(
+                disc_facts(&cue, "cue", "Big", listed.get("megacd"), size - 1, &cancel).is_ok()
+            );
+            // Listed and read: no CRC match, so the name decides (none here).
+            let (matched, _) = disc_facts(
+                &cue,
+                "cue",
+                "Big",
+                listed.get("megacd"),
+                MAX_HASH_SIZE,
+                &AtomicBool::new(false),
+            )
+            .ok()
+            .unwrap();
+            assert_eq!(matched, None);
         }
 
         #[cfg(any(windows, target_os = "macos"))]

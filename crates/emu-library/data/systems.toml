@@ -11,6 +11,8 @@
 # (generic archives, formats of other machines). An extension accepted by several computers outside their folders
 # is attributed by the DATs, else left unclassified (design v3.0 §3.5.2).
 # `default_input`: "keyboard" (default) or "joystick": keyboard mode of a game when nothing else chooses (v5.0).
+# `dat = "redump"`: metadat/redump/ (discs: size + CRC32 of track 01, serial, region).
+# `disc`: CD system (v6.0): game named after its `.cue` / `.chd` / `.iso` / `.m3u`, Redump identification, region.
 # Blocks are appended at the end, never reordered.
 
 [[system]]
@@ -89,10 +91,15 @@ igdb = 63
 id = "megacd"
 name = "Mega CD / Sega CD"
 # Disc images are never hashed and never copied; tracks referenced by a `.cue` are hidden by the scanner.
-extensions = ["cue", "chd", "iso"]
-# Shared with `dos`: kept only under `megacd/`, or outside it when the header says `SEGADISCSYSTEM` (scanner probe).
+# `.m3u`: multi-CD playlist, its system is the one of its entries.
+extensions = ["cue", "chd", "iso", "m3u"]
+# Shared with `dos`: kept only under `megacd/`, or outside it when the header says `SEGADISCSYSTEM` (scanner probe),
+# or for a `.chd` whose name is a game of the Redump DAT.
 folder_extensions = ["cue", "chd", "iso"]
 database = "Sega - Mega-CD - Sega CD"
+# Redump (metadat/redump/): size + CRC32 of track 01, then the header serial, then the name.
+dat = "redump"
+disc = true
 # Ids from memory, NOT yet confirmed (same caveat as atarist).
 screenscraper = 20
 igdb = 78
@@ -153,3 +160,22 @@ dat = ["no-intro"]
 # Not yet confirmed (same caveat as cpc).
 screenscraper = 66
 igdb = 15
+
+[[system]]
+id = "gba"
+name = "Game Boy Advance"
+extensions = ["gba"]
+database = "Nintendo - Game Boy Advance"
+# Not yet confirmed against systemesListe.php / the IGDB platforms endpoint (no network in the dev container).
+screenscraper = 12
+igdb = 24
+
+[[system]]
+id = "32x"
+name = "32X"
+# A `.bin` whose header says `SEGA 32X` at 0x100 is also a 32X game (scanner probe; otherwise Mega Drive).
+extensions = ["32x"]
+database = "Sega - 32X"
+# Not yet confirmed (same caveat as gba).
+screenscraper = 19
+igdb = 30

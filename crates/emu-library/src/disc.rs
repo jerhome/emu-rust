@@ -27,8 +27,9 @@ impl DiscRegion {
 
     /// Inverse of [`DiscRegion::key`] (column `game.region`, schema v6); `None` for anything else.
     pub fn from_key(key: &str) -> Option<Self> {
-        let _ = key;
-        todo!("GB1: game.region column (design v6.0 §3.4)")
+        [DiscRegion::Europe, DiscRegion::Usa, DiscRegion::Japan]
+            .into_iter()
+            .find(|r| r.key() == key)
     }
 }
 
@@ -58,6 +59,12 @@ const RAW_DATA_OFFSET: usize = 0x10;
 const REGION_BYTE: usize = 0x20B;
 /// Enough for the region byte behind a raw sector header (0x10 + 0x20C), well under the 0x220 bound.
 const PROBE_LEN: usize = RAW_DATA_OFFSET + REGION_BYTE + 1;
+/// Mega Drive style header inside sector 0: type + serial field (`GM T-93175 -00`), 14 bytes.
+const SERIAL_OFFSET: usize = 0x180;
+const SERIAL_LEN: usize = 14;
+/// 32X cartridge signature at 0x100 (`SEGA 32X`).
+const SEGA_32X_MAGIC: &[u8] = b"SEGA 32X";
+const CARTRIDGE_MAGIC_OFFSET: usize = 0x100;
 
 fn io_error(path: &Path, source: io::Error) -> LibraryError {
     LibraryError::Io {
@@ -222,24 +229,35 @@ fn track_in_folder(cue: &Path, track: &Path) -> bool {
     }
 }
 
-/// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track. `Ok(None)`: not a known disc
-/// (or a `.chd`, never read). Reads at most 64 KiB of the cue and 0x220 bytes of the track.
-pub fn disc_info(path: &Path) -> Result<Option<DiscInfo>, LibraryError> {
+/// First file of a `.cue` (its data track for a Sega CD), kept only when it stays in the cue's folder; `Ok(None)`
+/// for a cue without `FILE` line.
+pub(crate) fn first_track(cue: &Path) -> Result<Option<PathBuf>, LibraryError> {
+    Ok(cue_references(cue)?
+        .into_iter()
+        .next()
+        .filter(|track| track_in_folder(cue, track)))
+}
+
+/// First bytes of a data track, and the offsets where its header may start.
+type Head = (Vec<u8>, &'static [usize]);
+
+/// First bytes of the data track of a disc and the offsets where its header may start: a `.iso` (0), a `.bin`
+/// track or the first track of a `.cue` (0 or 0x10). `Ok(None)`: no readable track (or a `.chd`, never read).
+fn disc_head(path: &Path) -> Result<Option<Head>, LibraryError> {
+    const ISO: &[usize] = &[0];
+    const TRACK: &[usize] = &[0, RAW_DATA_OFFSET];
     let Some(ext) = ext_of(path) else {
         return Ok(None);
     };
     match ext.as_str() {
-        "iso" => Ok(probe_head(&read_head(path)?, &[0])),
-        "bin" => Ok(probe_head(&read_head(path)?, &[0, RAW_DATA_OFFSET])),
+        "iso" => Ok(Some((read_head(path)?, ISO))),
+        "bin" => Ok(Some((read_head(path)?, TRACK))),
         "cue" => {
-            let Some(track) = cue_references(path)?.into_iter().next() else {
+            let Some(track) = first_track(path)? else {
                 return Ok(None);
             };
-            if !track_in_folder(path, &track) {
-                return Ok(None);
-            }
             match read_head(&track) {
-                Ok(head) => Ok(probe_head(&head, &[0, RAW_DATA_OFFSET])),
+                Ok(head) => Ok(Some((head, TRACK))),
                 // A cue whose first track is missing is not a disc we can recognise.
                 Err(LibraryError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound =>
@@ -251,6 +269,12 @@ pub fn disc_info(path: &Path) -> Result<Option<DiscInfo>, LibraryError> {
         }
         _ => Ok(None),
     }
+}
+
+/// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track. `Ok(None)`: not a known disc
+/// (or a `.chd`, never read). Reads at most 64 KiB of the cue and 0x220 bytes of the track.
+pub fn disc_info(path: &Path) -> Result<Option<DiscInfo>, LibraryError> {
+    Ok(disc_head(path)?.and_then(|(head, offsets)| probe_head(&head, offsets)))
 }
 
 /// Region tag of a file name (`Dune (Europe)` ⇒ Europe). Fallback when the header cannot be read.
@@ -292,21 +316,115 @@ pub enum BinKind {
     Unknown,
 }
 
-/// Header probe of a `.bin` (GB1): reads at most 0x220 bytes; `SegaCdTrack` as [`disc_info`] sees it, `Sega32x`
-/// for `SEGA 32X` at 0x100, else `MegaDrive` (`Unknown` for a file too short to tell). Same untrusted-input rules
-/// as the rest of this module (regular file only, bounded read, no panic).
-pub fn probe_bin(path: &Path) -> Result<BinKind, LibraryError> {
-    let _ = path;
-    todo!("GB1: probe_bin (design v6.0 §3.4)")
+/// What the first bytes of a `.bin` say ([`probe_bin`]); pure, for the scanner's zip entries too.
+pub(crate) fn bin_kind(head: &[u8]) -> BinKind {
+    if probe_head(head, &[0, RAW_DATA_OFFSET]).is_some() {
+        return BinKind::SegaCdTrack;
+    }
+    match head.get(CARTRIDGE_MAGIC_OFFSET..CARTRIDGE_MAGIC_OFFSET + SEGA_32X_MAGIC.len()) {
+        Some(magic) if magic == SEGA_32X_MAGIC => BinKind::Sega32x,
+        Some(_) => BinKind::MegaDrive,
+        None => BinKind::Unknown,
+    }
 }
 
-/// Serial number in the disc header (GB1; generic: one probe per [`DiscFormat`]). `SegaCd`: MD-style header at
-/// 0x100 of sector 0, serial at 0x180 (`T-93175`, `GM 00-2501-14`), trimmed; of a `.cue` (its first track, kept in
-/// the cue's folder) or a `.iso`. `Ok(None)`: no header or blank serial, and always for a `.chd` (never read).
-/// Bounded reads (64 KiB of cue, one sector of track).
+/// Bytes [`probe_bin`] reads (and the scanner reads of a zipped `.bin`).
+pub(crate) const BIN_PROBE_LEN: usize = PROBE_LEN;
+
+/// Header probe of a `.bin`: reads at most 0x220 bytes; `SegaCdTrack` as [`disc_info`] sees it, `Sega32x`
+/// for `SEGA 32X` at 0x100, else `MegaDrive` (`Unknown` for a file too short to hold the 32X signature). Same
+/// untrusted-input rules as the rest of this module (regular file only, bounded read, no panic).
+pub fn probe_bin(path: &Path) -> Result<BinKind, LibraryError> {
+    Ok(bin_kind(&read_head(path)?))
+}
+
+/// A header field without its type code (`GM `, `AI `), trimmed.
+fn strip_type(text: &str) -> &str {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() > 3 && bytes[..2].iter().all(u8::is_ascii_uppercase) && bytes[2] == b' ' {
+        text[3..].trim_start()
+    } else {
+        text
+    }
+}
+
+/// A serial without its trailing revision (`T-93175 -00` ⇒ `T-93175`), trimmed.
+fn strip_revision(text: &str) -> &str {
+    match text.rsplit_once('-') {
+        Some((serial, rev))
+            if rev.len() == 2
+                && rev.bytes().all(|b| b.is_ascii_digit())
+                && !serial.trim().is_empty() =>
+        {
+            serial.trim()
+        }
+        _ => text.trim(),
+    }
+}
+
+/// Serial of a header field: type code and trailing revision dropped. `None` when blank.
+fn clean_serial(field: &str) -> Option<String> {
+    let text = strip_revision(strip_type(field));
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Raw header field of a Sega CD (type code and revision kept, trimmed), for matching against the DAT.
+pub(crate) fn header_serial_field(head: &[u8], offsets: &[usize]) -> Option<String> {
+    let off = offsets.iter().copied().find(|&off| {
+        head.get(off..off + SEGA_MAGIC.len())
+            .is_some_and(|m| m == SEGA_MAGIC)
+    })?;
+    let field = head.get(off + SERIAL_OFFSET..off + SERIAL_OFFSET + SERIAL_LEN)?;
+    // Space padding is the rule; NUL padding is tolerated.
+    let end = field.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    let field = &field[..end];
+    if !field.iter().all(|b| (0x20..0x7F).contains(b)) {
+        return None;
+    }
+    let text = std::str::from_utf8(field).ok()?.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Header facts of a disc read once: region byte and serial field (scanner, < 0x220 bytes of track).
+pub(crate) fn disc_header(path: &Path) -> Result<Option<(DiscInfo, Option<String>)>, LibraryError> {
+    Ok(disc_head(path)?.and_then(|(head, offsets)| {
+        probe_head(&head, offsets).map(|info| (info, header_serial_field(&head, offsets)))
+    }))
+}
+
+/// Serial number in the disc header (generic: one probe per [`DiscFormat`]). `SegaCd`: MD-style header at 0x100
+/// of sector 0, field at 0x180 (`GM T-93175 -00` ⇒ `T-93175`: type code and revision dropped, trimmed); of a
+/// `.cue` (its first track, kept in the cue's folder), a `.iso` or a `.bin` track. `Ok(None)`: no header or blank
+/// serial, and always for a `.chd` (never read). Bounded reads (64 KiB of cue, 0x220 bytes of track).
 pub fn disc_serial(path: &Path, format: DiscFormat) -> Result<Option<String>, LibraryError> {
-    let _ = (path, format);
-    todo!("GB1: disc_serial (design v6.0 §3.4)")
+    match format {
+        DiscFormat::SegaCd => Ok(disc_head(path)?
+            .and_then(|(head, offsets)| header_serial_field(&head, offsets))
+            .and_then(|field| clean_serial(&field))),
+    }
+}
+
+/// Upper case, spaces removed: form compared between a disc and the DAT `serial` field.
+pub(crate) fn normalize_serial(serial: &str) -> String {
+    serial
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Comparison keys of a header field (`GM MK-4407-50`): the field, without its type code (`MK-4407-50`), and
+/// without its revision too (`MK-4407`), normalized; a DAT listing any of these forms matches.
+pub(crate) fn serial_keys(field: &str) -> Vec<String> {
+    let untyped = strip_type(field);
+    let mut keys = Vec::new();
+    for k in [field, untyped, strip_revision(untyped)].map(normalize_serial) {
+        if !k.is_empty() && !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    keys
 }
 
 #[cfg(test)]
@@ -556,5 +674,135 @@ mod tests {
         ] {
             assert_eq!(region_from_name(stem), region, "{stem}");
         }
+    }
+
+    #[test]
+    fn region_from_key_is_the_inverse_of_key() {
+        for r in [DiscRegion::Europe, DiscRegion::Usa, DiscRegion::Japan] {
+            assert_eq!(DiscRegion::from_key(r.key()), Some(r));
+        }
+        for bad in ["", "USA", "Europe", "world", "usa "] {
+            assert_eq!(DiscRegion::from_key(bad), None, "{bad}");
+        }
+    }
+
+    fn with_serial(mut sector: Vec<u8>, field: &[u8]) -> Vec<u8> {
+        sector[0x180..0x180 + field.len()].copy_from_slice(field);
+        sector
+    }
+
+    #[test]
+    fn probe_bin_kinds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut md = vec![0x11u8; 4096];
+        md[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "md.bin", &md)).unwrap(),
+            BinKind::MegaDrive
+        );
+        let mut x = vec![0u8; 0x200];
+        x[0x100..0x110].copy_from_slice(b"SEGA 32X U      ");
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "x.bin", &x)).unwrap(),
+            BinKind::Sega32x
+        );
+        // Just long enough for the signature.
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "x8.bin", &x[..0x108])).unwrap(),
+            BinKind::Sega32x
+        );
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "cd2048.bin", &sector0(0x64))).unwrap(),
+            BinKind::SegaCdTrack
+        );
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "cd2352.bin", &raw(0xA1))).unwrap(),
+            BinKind::SegaCdTrack
+        );
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "tiny.bin", b"SEGA 32X")).unwrap(),
+            BinKind::Unknown
+        );
+        assert_eq!(
+            probe_bin(&write(tmp.path(), "empty.bin", b"")).unwrap(),
+            BinKind::Unknown
+        );
+        assert!(probe_bin(&tmp.path().join("none.bin")).is_err());
+        assert!(probe_bin(tmp.path()).is_err());
+        // A huge file is never read past the probe.
+        let big = tmp.path().join("big.bin");
+        let f = File::create(&big).unwrap();
+        f.set_len(1 << 30).unwrap();
+        assert_eq!(probe_bin(&big).unwrap(), BinKind::MegaDrive);
+    }
+
+    #[test]
+    fn serials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s0 = with_serial(sector0(0x7A), b"GM T-93175 -00");
+        let iso = write(tmp.path(), "d.iso", &s0);
+        assert_eq!(
+            disc_serial(&iso, DiscFormat::SegaCd).unwrap().as_deref(),
+            Some("T-93175")
+        );
+        let mut track = raw(0x64);
+        track[0x10 + 0x180..0x10 + 0x18E].copy_from_slice(b"GM 00-2501-14 ");
+        write(tmp.path(), "t.bin", &track);
+        let cue = write(
+            tmp.path(),
+            "d.cue",
+            b"FILE \"t.bin\" BINARY\nFILE \"a.wav\" WAVE\n",
+        );
+        assert_eq!(
+            disc_serial(&cue, DiscFormat::SegaCd).unwrap().as_deref(),
+            Some("00-2501")
+        );
+        assert_eq!(
+            disc_header(&cue).unwrap().map(|(i, f)| (i.region, f)),
+            Some((Some(DiscRegion::Europe), Some("GM 00-2501-14".to_owned())))
+        );
+        // Blank or non-text field, no header, `.chd` (never read, absent here), short file.
+        let blank = write(tmp.path(), "b.iso", &sector0(0x64));
+        assert_eq!(disc_serial(&blank, DiscFormat::SegaCd).unwrap(), None);
+        let spaces = write(
+            tmp.path(),
+            "s.iso",
+            &with_serial(sector0(0), b"              "),
+        );
+        assert_eq!(disc_serial(&spaces, DiscFormat::SegaCd).unwrap(), None);
+        let binary = write(
+            tmp.path(),
+            "n.iso",
+            &with_serial(sector0(0), b"GM \xFF\x01"),
+        );
+        assert_eq!(disc_serial(&binary, DiscFormat::SegaCd).unwrap(), None);
+        let none = write(tmp.path(), "z.iso", &[0x20u8; 4096]);
+        assert_eq!(disc_serial(&none, DiscFormat::SegaCd).unwrap(), None);
+        assert_eq!(
+            disc_serial(&tmp.path().join("x.chd"), DiscFormat::SegaCd).unwrap(),
+            None
+        );
+        let short = write(tmp.path(), "short.iso", &sector0(0)[..0x185]);
+        assert_eq!(disc_serial(&short, DiscFormat::SegaCd).unwrap(), None);
+        let plain = write(tmp.path(), "p.iso", &with_serial(sector0(0), b"MK-4407"));
+        assert_eq!(
+            disc_serial(&plain, DiscFormat::SegaCd).unwrap().as_deref(),
+            Some("MK-4407")
+        );
+    }
+
+    #[test]
+    fn serial_keys_cover_the_dat_forms() {
+        assert_eq!(
+            serial_keys("GM T-93175 -00"),
+            ["GMT-93175-00", "T-93175-00", "T-93175"]
+        );
+        assert_eq!(
+            serial_keys("GM MK-4407-50"),
+            ["GMMK-4407-50", "MK-4407-50", "MK-4407"]
+        );
+        assert_eq!(serial_keys("T-93175"), ["T-93175"]);
+        assert!(serial_keys("   ").is_empty());
+        assert_eq!(normalize_serial(" t-93175 "), "T-93175");
     }
 }

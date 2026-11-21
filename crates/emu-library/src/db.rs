@@ -17,8 +17,9 @@ use crate::{
 };
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
-/// v5 (4.0): `game.is_dir` (unpacked DOS game folders).
-pub const SCHEMA_VERSION: u32 = 5;
+/// v5 (4.0): `game.is_dir` (unpacked DOS game folders). v6 (6.0): `game.region` (disc systems), and the Redump
+/// `serial` / `region` of each `dat_entry`.
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -29,6 +30,8 @@ pub enum Identification {
     Crc32Size,
     /// File name equal to a DAT game name (normalized).
     Name,
+    /// Disc header serial equal to the DAT `serial` of one game (Redump, design v6.0 §3.4).
+    Serial,
     Unknown,
 }
 
@@ -57,7 +60,7 @@ pub struct Game {
     pub is_dir: bool,
     /// Region of a game of a `disc = true` system (design v6.0 §2.2): disc header, else Redump DAT, else name
     /// tag; `None` = unknown or not a disc system. Column `game.region` (schema v6, `DiscRegion::key`), filled by
-    /// the scan; `None` until GB1 adds the migration.
+    /// the scan (also for a row left unchanged by it, the first time).
     pub region: Option<DiscRegion>,
 }
 
@@ -222,12 +225,19 @@ CREATE INDEX dat_entry_crc ON dat_entry(system, crc32, size);
     r#"
 ALTER TABLE game ADD COLUMN is_dir INTEGER NOT NULL DEFAULT 0;
 "#,
+    // Region of a game of a disc system (design v6.0 §2.2, `DiscRegion::key`), NULL until the next scan fills it;
+    // serial and region of a Redump DAT line (identification by header serial, region fallback). Additive.
+    r#"
+ALTER TABLE game ADD COLUMN region TEXT;
+ALTER TABLE dat_entry ADD COLUMN serial TEXT;
+ALTER TABLE dat_entry ADD COLUMN region TEXT;
+"#,
 ];
 
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 
 const GAME_COLUMNS: &str = "id, path, entry, system, size, crc32, sha1, title, identification, favorite, \
-                            last_played_unix, play_count, is_dir";
+                            last_played_unix, play_count, is_dir, region";
 
 pub(crate) fn db_error(e: rusqlite::Error) -> LibraryError {
     LibraryError::Database(e.to_string())
@@ -265,6 +275,7 @@ fn identification_name(i: Identification) -> &'static str {
         Identification::Sha1 => "sha1",
         Identification::Crc32Size => "crc32_size",
         Identification::Name => "name",
+        Identification::Serial => "serial",
         Identification::Unknown => "unknown",
     }
 }
@@ -274,6 +285,7 @@ fn identification_from(s: &str) -> Identification {
         "sha1" => Identification::Sha1,
         "crc32_size" => Identification::Crc32Size,
         "name" => Identification::Name,
+        "serial" => Identification::Serial,
         _ => Identification::Unknown,
     }
 }
@@ -310,8 +322,10 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
         play_count: u32::try_from(row.get::<_, i64>(11)?.max(0)).unwrap_or(u32::MAX),
         media: Vec::new(),
         is_dir: row.get::<_, i64>(12)? != 0,
-        // GB1: column `game.region` (schema v6).
-        region: None,
+        region: row
+            .get::<_, Option<String>>(13)?
+            .as_deref()
+            .and_then(DiscRegion::from_key),
     })
 }
 
@@ -679,11 +693,12 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
         crc32_nh: Option<i64>,
         sha1_nh: Option<Vec<u8>>,
         pinned: bool,
+        identification: String,
     }
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, entry, system, size, crc32, sha1, crc32_nh, sha1_nh, pinned FROM game
-             WHERE is_dir = 0",
+            "SELECT id, path, entry, system, size, crc32, sha1, crc32_nh, sha1_nh, pinned, identification
+             FROM game WHERE is_dir = 0",
         )
         .map_err(db_error)?;
     let rows: Vec<Row> = stmt
@@ -699,6 +714,7 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
                 crc32_nh: r.get(7)?,
                 sha1_nh: r.get(8)?,
                 pinned: r.get::<_, i64>(9)? != 0,
+                identification: r.get(10)?,
             })
         })
         .map_err(db_error)?
@@ -721,23 +737,39 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
         if crate::system(&row.system).is_some_and(|s| s.folder_games) {
             continue;
         }
-        let all = systems_for_extension(&ext);
-        if !all.iter().any(|s| s.id == system) {
+        // A disc identified by its track CRC or header serial (never stored): the next scan redoes it, the name
+        // alone must not undo it here.
+        if crate::system(&row.system).is_some_and(|s| s.disc)
+            && matches!(row.identification.as_str(), "crc32_size" | "serial")
+        {
             continue;
         }
-        let pinned = all
-            .iter()
-            .copied()
-            .find(|s| row.pinned && s.id == row.system);
-        let (candidates, by_dat): (Vec<&SystemInfo>, bool) = match pinned {
-            Some(p) => (vec![p], false),
-            None => match attribute(&ext, &[]) {
-                Attribution::Folder(s) => (vec![s], false),
-                Attribution::Candidates(c) => (c, false),
-                Attribution::ByDat(c) => (c, true),
-                Attribution::Unclassified => continue,
-            },
-        };
+        let (candidates, by_dat): (Vec<&SystemInfo>, bool) =
+            if ext == "bin" && row.system == SEGA_32X {
+                // Kept as 32X by its header (scanner probe): only the 32X DAT re-identifies it.
+                match crate::system(SEGA_32X) {
+                    Some(s) if system == SEGA_32X => (vec![s], false),
+                    _ => continue,
+                }
+            } else {
+                let all = systems_for_extension(&ext);
+                if !all.iter().any(|s| s.id == system) {
+                    continue;
+                }
+                let pinned = all
+                    .iter()
+                    .copied()
+                    .find(|s| row.pinned && s.id == row.system);
+                match pinned {
+                    Some(p) => (vec![p], false),
+                    None => match attribute(&ext, &[]) {
+                        Attribution::Folder(s) => (vec![s], false),
+                        Attribution::Candidates(c) => (c, false),
+                        Attribution::ByDat(c) => (c, true),
+                        Attribution::Unclassified => continue,
+                    },
+                }
+            };
         let size = u64::try_from(row.size).unwrap_or(0);
         let hashes = match (crc_from(row.crc32), sha1_from(row.sha1)) {
             (Some(crc32), Some(sha1)) => {
@@ -783,6 +815,128 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
             .map_err(db_error)? as u64;
     }
     Ok(changed)
+}
+
+/// System of a `.bin` whose header says `SEGA 32X` (design v6.0 §3.4).
+pub(crate) const SEGA_32X: &str = "32x";
+
+/// One line of a Redump DAT (design v6.0 §3.4).
+pub(crate) struct RedumpEntry {
+    pub game: String,
+    pub region: Option<DiscRegion>,
+}
+
+/// Redump lines of one disc system, indexed by track size, header serial and normalized game name.
+#[derive(Default)]
+pub(crate) struct RedumpSet {
+    entries: Vec<RedumpEntry>,
+    /// Size of a track ⇒ `(crc32, entry)`: the CRC is computed only when the size is listed.
+    by_size: HashMap<u64, Vec<(u32, usize)>>,
+    by_serial: HashMap<String, Vec<usize>>,
+    by_name: HashMap<String, usize>,
+}
+
+impl RedumpSet {
+    pub fn has_size(&self, size: u64) -> bool {
+        self.by_size.contains_key(&size)
+    }
+
+    pub fn by_crc(&self, size: u64, crc32: u32) -> Option<&RedumpEntry> {
+        self.by_size
+            .get(&size)?
+            .iter()
+            .find(|(crc, _)| *crc == crc32)
+            .map(|&(_, i)| &self.entries[i])
+    }
+
+    /// The game whose serial matches one of `keys` (normalized), when exactly one game does.
+    pub fn by_serial(&self, keys: &[String]) -> Option<&RedumpEntry> {
+        let mut hit: Option<usize> = None;
+        for k in keys {
+            for &i in self.by_serial.get(k).into_iter().flatten() {
+                match hit {
+                    Some(h) if self.entries[h].game != self.entries[i].game => return None,
+                    _ => hit = Some(i),
+                }
+            }
+            if hit.is_some() {
+                break;
+            }
+        }
+        hit.map(|i| &self.entries[i])
+    }
+
+    pub fn by_name(&self, stem: &str) -> Option<&RedumpEntry> {
+        let key = normalize_title(stem);
+        (!key.is_empty())
+            .then(|| self.by_name.get(&key))
+            .flatten()
+            .map(|&i| &self.entries[i])
+    }
+}
+
+/// Region of a Redump line: its `region` field (`USA`, `Japan, USA`…), else the tag of its game name.
+fn dat_region(field: Option<&str>, game: &str) -> Option<DiscRegion> {
+    field
+        .and_then(|f| crate::region_from_name(&format!("({f})")))
+        .or_else(|| crate::region_from_name(game))
+}
+
+/// Redump lines of every `disc` system declaring the `redump` source, loaded once per scan (a few thousand).
+#[derive(Default)]
+pub(crate) struct DiscIndex(HashMap<String, RedumpSet>);
+
+impl DiscIndex {
+    pub fn load(conn: &Connection) -> Result<Self, LibraryError> {
+        let mut index = DiscIndex::default();
+        let mut stmt = conn
+            .prepare(
+                "SELECT game, size, crc32, serial, region FROM dat_entry WHERE system = ?1 AND source = ?2
+                 ORDER BY rowid",
+            )
+            .map_err(db_error)?;
+        for system in crate::systems()
+            .iter()
+            .filter(|s| s.disc && s.dats.contains(&DatSource::Redump))
+        {
+            let mut set = RedumpSet::default();
+            let rows = stmt
+                .query_map([system.id.as_str(), DatSource::Redump.id()], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(db_error)?;
+            for row in rows {
+                let (game, size, crc, serial, region) = row.map_err(db_error)?;
+                let i = set.entries.len();
+                if let (Ok(size), Some(crc)) = (u64::try_from(size), crc_from(Some(crc))) {
+                    set.by_size.entry(size).or_default().push((crc, i));
+                }
+                for value in serial.iter().flat_map(|s| s.split(',')) {
+                    let key = crate::disc::normalize_serial(value);
+                    if !key.is_empty() {
+                        set.by_serial.entry(key).or_default().push(i);
+                    }
+                }
+                set.by_name.entry(normalize_title(&game)).or_insert(i);
+                set.entries.push(RedumpEntry {
+                    region: dat_region(region.as_deref(), &game),
+                    game,
+                });
+            }
+            index.0.insert(system.id.clone(), set);
+        }
+        Ok(index)
+    }
+
+    pub fn get(&self, system: &str) -> Option<&RedumpSet> {
+        self.0.get(system)
+    }
 }
 
 /// Disk images per game id, in disk order.
@@ -955,8 +1109,8 @@ impl Library {
         {
             let mut insert = tx
                 .prepare(
-                    "INSERT INTO dat_entry (system, source, game, rom_name, size, crc32, sha1)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO dat_entry (system, source, game, rom_name, size, crc32, sha1, serial, region)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 )
                 .map_err(db_error)?;
             for e in &dat.entries {
@@ -971,7 +1125,9 @@ impl Library {
                         e.rom_name,
                         size,
                         i64::from(e.crc32),
-                        e.sha1.as_ref().map(|s| &s[..])
+                        e.sha1.as_ref().map(|s| &s[..]),
+                        e.serial,
+                        e.region
                     ])
                     .map_err(db_error)?;
                 count += 1;
@@ -983,7 +1139,8 @@ impl Library {
         )
         .map_err(db_error)?;
         reidentify(&tx, system)?;
-        if crate::system(system).is_some_and(|s| s.folder_games) {
+        // Disc games are identified from their track size, CRC and header serial (not stored) too.
+        if crate::system(system).is_some_and(|s| s.folder_games || s.disc) {
             // The identification of these games needs their file lists (not stored): an impossible mtime makes
             // the next scan analyse them again, once.
             tx.execute(

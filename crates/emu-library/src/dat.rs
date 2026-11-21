@@ -1,4 +1,4 @@
-//! clrmamepro DAT (libretro-database `metadat/no-intro/`, `metadat/tosec/`, `dat/`).
+//! clrmamepro DAT (libretro-database `metadat/no-intro/`, `metadat/tosec/`, `metadat/redump/`, `dat/`).
 //! Untrusted text: bounded, no panic.
 
 use std::fs::File;
@@ -24,6 +24,11 @@ pub struct DatEntry {
     pub size: u64,
     pub crc32: u32,
     pub sha1: Option<[u8; 20]>,
+    /// `serial` of the game block (else of the `rom` line): Redump discs (`T-93175`, sometimes a comma-separated
+    /// list). `None` elsewhere.
+    pub serial: Option<String>,
+    /// `region` of the game block (`USA`, `Europe`, `Japan, USA`…), as written in the DAT.
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -280,8 +285,17 @@ fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
+/// Longest `serial` / `region` value kept (real ones are a few dozen characters).
+const MAX_META_LEN: usize = 256;
+
+fn meta(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    (!value.is_empty() && value.len() <= MAX_META_LEN).then(|| value.to_owned())
+}
+
 /// One `rom ( … )` of a game; `None` when `name`, `size` or `crc` is missing or invalid.
-fn rom_entry(game: &str, rom: &Node<'_>) -> Option<DatEntry> {
+fn rom_entry(game: &Node<'_>, rom: &Node<'_>) -> Option<DatEntry> {
+    let name = game.atom("name")?;
     let rom_name = rom.atom("name")?;
     let size_text = rom.atom("size")?;
     // `u64::from_str` also accepts a leading `+`; the DAT format does not.
@@ -292,11 +306,13 @@ fn rom_entry(game: &str, rom: &Node<'_>) -> Option<DatEntry> {
     let crc32 = u32::from_be_bytes(parse_hex::<4>(rom.atom("crc")?)?);
     let sha1 = rom.atom("sha1").and_then(parse_hex::<20>);
     Some(DatEntry {
-        game: game.to_owned(),
+        game: name.to_owned(),
         rom_name: rom_name.to_owned(),
         size,
         crc32,
         sha1,
+        serial: meta(game.atom("serial")).or_else(|| meta(rom.atom("serial"))),
+        region: meta(game.atom("region")),
     })
 }
 
@@ -342,12 +358,11 @@ pub fn parse_clrmamepro(text: &str) -> Result<Dat, LibraryError> {
                 let Node::Block(items) = &node else {
                     continue;
                 };
-                let game = node.atom("name");
                 for (k, v) in items {
                     if k != "rom" {
                         continue;
                     }
-                    match game.and_then(|g| rom_entry(g, v)) {
+                    match rom_entry(&node, v) {
                         Some(entry) => dat.entries.push(entry),
                         None => {
                             if skipped == 0 {
@@ -618,5 +633,59 @@ game atom
             load_dat_file(&dir.path().join("absent.dat")),
             Err(LibraryError::Io { .. })
         ));
+    }
+
+    /// Shape of libretro-database `metadat/redump/Sega - Mega-CD - Sega CD.dat` (fictitious values).
+    const REDUMP: &str = r#"clrmamepro (
+	name "Sega - Mega-CD - Sega CD"
+	version "20261121"
+)
+
+game (
+	name "Fake Quest (USA)"
+	region "USA"
+	serial "T-93175"
+	rom ( name "Fake Quest (USA) (Track 01).bin" size 2352000 crc 0A1B2C3D md5 00000000000000000000000000000000 sha1 A9993E364706816ABA3E25717850C26C9CD0D89D )
+)
+
+game (
+	name "Rom Serial (Europe)"
+	rom ( name "Rom Serial (Europe) (Track 01).bin" size 4704 crc 00000001 serial "MK-4407-50" )
+)
+
+game (
+	name "Plain (Japan)"
+	serial ""
+	rom ( name "Plain (Japan) (Track 01).bin" size 2352 crc 00000002 )
+)
+"#;
+
+    #[test]
+    fn redump_serial_and_region() {
+        let dat = parse_clrmamepro(REDUMP).unwrap();
+        assert_eq!(dat.entries.len(), 3);
+        let a = &dat.entries[0];
+        assert_eq!(
+            (a.serial.as_deref(), a.region.as_deref(), a.size),
+            (Some("T-93175"), Some("USA"), 2_352_000)
+        );
+        assert_eq!(dat.entries[1].serial.as_deref(), Some("MK-4407-50"));
+        assert_eq!(dat.entries[1].region, None);
+        assert_eq!(
+            (
+                dat.entries[2].serial.as_deref(),
+                dat.entries[2].region.as_deref()
+            ),
+            (None, None)
+        );
+        // No-Intro entries keep their region, without serial.
+        let ni = parse_clrmamepro(SAMPLE).unwrap();
+        assert_eq!(ni.entries[0].region.as_deref(), Some("World"));
+        assert_eq!(ni.entries[0].serial, None);
+        let long = format!(
+            "game ( name \"g\" serial \"{}\" rom ( name \"r\" size 1 crc 00000000 ) )",
+            "x".repeat(300)
+        );
+        assert_eq!(parse_clrmamepro(&long).unwrap().entries[0].serial, None);
     }
 }

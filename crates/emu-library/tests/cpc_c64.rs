@@ -50,6 +50,8 @@ fn entry(game: &str, rom: &str, data: &[u8]) -> DatEntry {
         size: h.full.size,
         crc32: h.full.crc32,
         sha1: Some(h.full.sha1),
+        serial: None,
+        region: None,
     }
 }
 

@@ -38,18 +38,27 @@ const GAME_SQL: &str = "SELECT id, path, entry, system, size, file_size, mtime_u
                         sha1_nh, title, identification, favorite, last_played_unix, play_count, pinned \
                         FROM game ORDER BY id";
 
+/// Columns of `dat_entry` up to v5.
+const ENTRY_SQL: &str =
+    "SELECT system, source, game, rom_name, size, crc32, sha1 FROM dat_entry ORDER BY rowid";
+
 #[test]
 fn a_v4_base_gains_is_dir_without_loss() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("library.sqlite");
     fs::copy(fixture(), &db).unwrap();
     drop(Library::open(&db).unwrap());
-    assert_eq!(SCHEMA_VERSION, 5);
-    // Back to the v4 layout.
+    assert_eq!(SCHEMA_VERSION, 6);
+    // Back to the v4 layout (the v6 columns go too: the steps after v4 are replayed).
     {
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("ALTER TABLE game DROP COLUMN is_dir;")
-            .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE game DROP COLUMN region;
+             ALTER TABLE dat_entry DROP COLUMN serial;
+             ALTER TABLE dat_entry DROP COLUMN region;
+             ALTER TABLE game DROP COLUMN is_dir;",
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 4).unwrap();
     }
     assert_eq!(user_version(&db), 4);
@@ -57,7 +66,7 @@ fn a_v4_base_gains_is_dir_without_loss() {
     let media = rows(&db, "SELECT * FROM game_media ORDER BY game_id, idx");
     let covers = rows(&db, "SELECT * FROM cover ORDER BY game, kind");
     let dat = rows(&db, "SELECT * FROM dat_info ORDER BY system, source");
-    let entries = rows(&db, "SELECT * FROM dat_entry ORDER BY rowid");
+    let entries = rows(&db, ENTRY_SQL);
     assert_eq!(games.len(), 7);
 
     let (lib, outcome) = Library::open(&db).unwrap();
@@ -66,7 +75,7 @@ fn a_v4_base_gains_is_dir_without_loss() {
     assert_eq!(all.len(), 7);
     assert!(all.iter().all(|g| !g.is_dir));
     drop(lib);
-    assert_eq!(user_version(&db), 5);
+    assert_eq!(user_version(&db), 6);
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(
         rows(&db, "SELECT * FROM game_media ORDER BY game_id, idx"),
@@ -77,7 +86,7 @@ fn a_v4_base_gains_is_dir_without_loss() {
         rows(&db, "SELECT * FROM dat_info ORDER BY system, source"),
         dat
     );
-    assert_eq!(rows(&db, "SELECT * FROM dat_entry ORDER BY rowid"), entries);
+    assert_eq!(rows(&db, ENTRY_SQL), entries);
     // The new column: every old row is a file, and the migration is applied once.
     assert_eq!(
         rows(&db, "SELECT DISTINCT is_dir FROM game"),

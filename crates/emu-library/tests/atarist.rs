@@ -101,6 +101,8 @@ fn disk_groups_become_one_game_with_the_ordered_disks() {
                 size: h.size,
                 crc32: h.crc32,
                 sha1: Some(h.sha1),
+                serial: None,
+                region: None,
             }],
         },
         None,

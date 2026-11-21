@@ -76,9 +76,9 @@ fn a_real_2_0_base_migrates_to_the_current_schema_without_loss() {
 
     let (lib, outcome) = Library::open(&db).unwrap();
     assert_eq!(outcome, OpenOutcome::Opened);
-    assert_eq!(SCHEMA_VERSION, 5);
+    assert_eq!(SCHEMA_VERSION, 6);
     drop(lib);
-    assert_eq!(user_version(&db), 5);
+    assert_eq!(user_version(&db), 6);
     // Games (identification, favorites, history, pins), disks and covers are byte-identical rows.
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(rows(&db, MEDIA_SQL), media);
@@ -198,6 +198,8 @@ fn after_migration_a_scan_of_a_missing_root_keeps_the_games_and_dats_are_per_sou
         size: 1,
         crc32: 1,
         sha1: None,
+        serial: None,
+        region: None,
     };
     lib.import_dat_source(
         "amiga",
@@ -246,6 +248,8 @@ fn st_and_consoles_identify_as_in_2_0() {
                 size: data.len() as u64,
                 crc32: crc32(data),
                 sha1: None,
+                serial: None,
+                region: None,
             });
         }
     };

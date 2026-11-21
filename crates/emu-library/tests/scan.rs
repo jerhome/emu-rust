@@ -36,6 +36,8 @@ fn entry(game: &str, data: &[u8], with_sha1: bool) -> DatEntry {
         size: h.size,
         crc32: h.crc32,
         sha1: with_sha1.then_some(h.sha1),
+        serial: None,
+        region: None,
     }
 }
 
@@ -140,6 +142,8 @@ fn identifies_by_sha1_crc_headerless_and_name() {
                 size: 1,
                 crc32: 1,
                 sha1: None,
+                serial: None,
+                region: None,
             },
         ]),
         Some("\"etag\""),

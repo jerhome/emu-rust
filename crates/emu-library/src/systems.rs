@@ -139,6 +139,7 @@ enum RawDat {
     NoIntro,
     Tosec,
     Libretro,
+    Redump,
 }
 
 impl RawDat {
@@ -147,6 +148,7 @@ impl RawDat {
             RawDat::NoIntro => DatSource::NoIntro,
             RawDat::Tosec => DatSource::Tosec,
             RawDat::Libretro => DatSource::Libretro,
+            RawDat::Redump => DatSource::Redump,
         }
     }
 }
@@ -185,6 +187,8 @@ struct RawSystem {
     folder_games: bool,
     #[serde(default)]
     default_input: RawInput,
+    #[serde(default)]
+    disc: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -236,6 +240,14 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
         if dats.is_empty() || dats.iter().collect::<HashSet<_>>().len() != dats.len() {
             return Err(format!("`{}`: empty or repeated `dat`", s.id));
         }
+        if s.disc
+            && !s
+                .extensions
+                .iter()
+                .any(|e| crate::DISC_EXTENSIONS.contains(&e.as_str()))
+        {
+            return Err(format!("`{}`: `disc` without a disc extension", s.id));
+        }
         let mut restricted = HashSet::new();
         for ext in &s.folder_extensions {
             if !s.extensions.contains(ext)
@@ -268,8 +280,7 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 RawInput::Keyboard => InputDefault::Keyboard,
                 RawInput::Joystick => InputDefault::Joystick,
             },
-            // GB1: `disc` key of `systems.toml`.
-            disc: false,
+            disc: s.disc,
         });
     }
     Ok(out)
@@ -376,7 +387,9 @@ mod tests {
                 "amiga",
                 "dos",
                 "cpc",
-                "c64"
+                "c64",
+                "gba",
+                "32x"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -402,13 +415,19 @@ mod tests {
         assert_eq!(DatSource::from_id("libretro"), Some(DatSource::Libretro));
         assert!(st.folder_extensions.is_empty());
         for s in systems().iter().filter(|s| s.kind == SystemKind::Console) {
-            assert_eq!(s.dats.as_slice(), &[DatSource::NoIntro][..], "{}", s.id);
+            let dat = if s.id == "megacd" {
+                DatSource::Redump
+            } else {
+                DatSource::NoIntro
+            };
+            assert_eq!(s.dats.as_slice(), &[dat][..], "{}", s.id);
+            assert_eq!(s.disc, s.id == "megacd", "{}", s.id);
             // Only the Mega CD shares its disc extensions with `dos` (design v4.0 §10 #7).
             assert_eq!(s.folder_extensions.is_empty(), s.id != "megacd", "{}", s.id);
             assert!(!s.folder_games, "{}", s.id);
         }
         let m3u: Vec<_> = systems_for_extension("m3u").iter().map(|s| &s.id).collect();
-        assert_eq!(m3u, ["atarist", "amiga", "dos", "cpc", "c64"]);
+        assert_eq!(m3u, ["atarist", "megacd", "amiga", "dos", "cpc", "c64"]);
         let m3u8: Vec<_> = systems_for_extension("m3u8")
             .iter()
             .map(|s| &s.id)
@@ -507,7 +526,15 @@ mod tests {
         assert_eq!(ids(attribute("cue", &f(&["roms", "dos"]))), "folder:dos");
         assert_eq!(ids(attribute("exe", &[])), "unclassified");
         assert_eq!(ids(attribute("ima", &[])), "candidates:dos");
-        assert_eq!(ids(attribute("m3u", &[])), "dat:atarist,amiga,dos,cpc,c64");
+        assert_eq!(
+            ids(attribute("m3u", &[])),
+            "dat:atarist,megacd,amiga,dos,cpc,c64"
+        );
+        assert_eq!(ids(attribute("m3u", &f(&["megacd"]))), "folder:megacd");
+        assert_eq!(ids(attribute("32x", &[])), "candidates:32x");
+        assert_eq!(ids(attribute("gba", &[])), "candidates:gba");
+        // `.bin` stays Mega Drive here: the 32X header is a probe of the scanner.
+        assert_eq!(ids(attribute("bin", &f(&["32x"]))), "candidates:megadrive");
         assert_eq!(ids(attribute("m3u8", &[])), "candidates:dos");
         assert_eq!(ids(attribute("lha", &f(&["atarist"]))), "unclassified");
         assert_eq!(
@@ -599,7 +626,7 @@ mod tests {
         assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\nheader = \"x\""))).is_err());
         assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\ncores = []"))).is_err());
         assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\nkind = \"tablet\""))).is_err());
-        assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\ndat = \"redump\""))).is_err());
+        assert!(parse_catalog(&one(&format!("id = \"a\"\n{base}\ndat = \"trurip\""))).is_err());
         assert!(
             parse_catalog(&one(&format!(
                 "id = \"a\"\n{base}\nkind = \"computer\"\ndat = \"tosec\""
@@ -614,7 +641,9 @@ mod tests {
         for bad in [
             "dat = []",
             "dat = [\"tosec\", \"tosec\"]",
-            "dat = [\"tosec\", \"redump\"]",
+            "dat = [\"tosec\", \"trurip\"]",
+            "disc = true",
+            "disc = \"yes\"",
             "folder_extensions = [\"y\"]",
             "folder_extensions = [\"x\", \"x\"]",
         ] {
@@ -626,5 +655,34 @@ mod tests {
         let m3u = "id = \"a\"\nname = \"N\"\ndatabase = \"D\"\nextensions = [\"x\", \"m3u\"]";
         assert!(parse_catalog(&one(&format!("{m3u}\nfolder_extensions = [\"x\"]"))).is_ok());
         assert!(parse_catalog(&one(&format!("{m3u}\nfolder_extensions = [\"m3u\"]"))).is_err());
+    }
+
+    #[test]
+    fn v6_systems_gba_32x_and_the_mega_cd_disc_system() {
+        let gba = system("gba").unwrap();
+        assert_eq!(
+            (gba.database.as_str(), gba.extensions.as_slice(), gba.kind),
+            (
+                "Nintendo - Game Boy Advance",
+                &["gba".to_owned()][..],
+                SystemKind::Console
+            )
+        );
+        assert_eq!((gba.screenscraper, gba.igdb), (Some(12), Some(24)));
+        let s32x = system("32x").unwrap();
+        assert_eq!(s32x.database, "Sega - 32X");
+        assert_eq!(s32x.extensions, ["32x"]);
+        assert_eq!((s32x.screenscraper, s32x.igdb), (Some(19), Some(30)));
+        let cd = system("megacd").unwrap();
+        assert_eq!(cd.database, "Sega - Mega-CD - Sega CD");
+        assert_eq!(cd.extensions, ["cue", "chd", "iso", "m3u"]);
+        assert_eq!(cd.dats, [DatSource::Redump]);
+        assert!(cd.disc && !gba.disc && !s32x.disc);
+        assert_eq!(systems().iter().filter(|s| s.disc).count(), 1);
+        let disc =
+            "id = \"a\"\nname = \"N\"\ndatabase = \"D\"\nextensions = [\"iso\"]\ndisc = true";
+        let parsed = parse_catalog(&format!("[[system]]\n{disc}\ndat = \"redump\"\n")).unwrap();
+        assert!(parsed[0].disc);
+        assert_eq!(parsed[0].dats, [DatSource::Redump]);
     }
 }

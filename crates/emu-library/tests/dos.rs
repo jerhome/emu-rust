@@ -195,6 +195,8 @@ fn dat_identification_of_folders_and_zips_and_reidentification_after_import() {
         size: bytes.len() as u64,
         crc32: crc_of(bytes),
         sha1: None,
+        serial: None,
+        region: None,
     };
     let dat = Dat {
         name: "DOS".into(),
@@ -380,6 +382,8 @@ fn small_images_are_matched_on_crc_and_playlists_group_them() {
             size: d1.len() as u64,
             crc32: crc_of(&d1),
             sha1: None,
+            serial: None,
+            region: None,
         }],
     };
     let mut lib = Library::open_in_memory().unwrap();
