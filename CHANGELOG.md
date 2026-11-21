@@ -2,6 +2,37 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [5.0.0-rc.1] - 2026-11-21
+
+Première pré-release de la 5.0 : **Amstrad CPC** (cap32) et **Commodore 64** (vice_x64, vice_x64sc). Guide d'essai :
+`docs/guide-essai-5.0.md`.
+
+### Ajouté
+
+- Amstrad CPC (cap32) et Commodore 64 (vice_x64 par défaut, vice_x64sc en alternative plus exacte).
+- ROM système intégrées aux cores (CPC : permission d'Amstrad ; C64 : ROM VICE) : l'écran Cores affiche « ROM intégrées
+  au core » et la notice de licence ; rien à importer.
+- Mode d'entrée **Joystick** par défaut pour le CPC et le C64 (ZQSD / flèches + J / K), Ctrl droit + J pour passer au
+  clavier ; les entrées « BASIC » démarrent en Clavier.
+- Chargement accéléré automatique, piloté par le core (OSD « Chargement accéléré », son coupé) ; désactivable.
+- Menus **Cassette** (lecture, arrêt, rembobinage) et **Port joystick** (C64, retenu par jeu).
+- Commande de démarrage : `RUN"…` (CPC), programme d'une disquette C64 (« Programme à lancer… »), mémorisée par jeu.
+- Sauvegardes CPC par jeu (`saves/cap32/<jeu>/`) ; les disquettes d'origine ne sont jamais modifiées.
+- Claviers virtuels CPC (AZERTY) et C64.
+- JiffyDOS facultatif : importable par « Importer un BIOS… » et « Activer JiffyDOS pour tous les jeux C64 ».
+- Ligne de commande : `--launch <commande>`, `--no-auto-fast-load`.
+
+### Modifié
+
+- Réglage `[computer] keyboard_mode` (Automatique / Clavier / Joystick) ; ancienne valeur migrée automatiquement.
+- Un zip mélangeant des disquettes CPC et C64 est ignoré (compté dans le résumé du scan).
+
+### Limites connues
+
+- vice_x64sc est environ 5 fois plus lent que vice_x64 (peut manquer de fluidité sur un Mac Intel modeste).
+- Un `.m3u` écrit par l'utilisateur au format VICE (`image:PRG`) n'est pas pris en charge.
+- Aucune migration de bibliothèque : la 5.0 ajoute seulement deux systèmes.
+
 ## [4.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 4.0 : **PC-DOS** (dosbox_pure). Guide d'essai : `docs/guide-essai-4.0.md`.
