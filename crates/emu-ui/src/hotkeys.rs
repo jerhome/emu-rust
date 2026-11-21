@@ -129,15 +129,18 @@ impl SpeedState {
     }
 }
 
-/// Ratio of a fast-forward requested by the core: its own when it asks for more than real time, else the
-/// frontend's (`[speed] fast_forward_ratio`); a ratio of 0 means « the frontend's pace », and the pacer would
-/// read 0 or 1 as unlimited.
-pub fn core_fast_forward_ratio(requested: f32, frontend: f64) -> f64 {
+/// Ratio applied when a core asks for a fast-forward without a usable ratio (0 = « the frontend's pace »,
+/// design 5.0 §2.4); the pacer would read 0 or 1 as unlimited.
+pub const CORE_DEFAULT_FAST_FORWARD_RATIO: f64 = 2.0;
+
+/// Ratio of a fast-forward requested by the core: its own when it asks for more than real time, else
+/// [`CORE_DEFAULT_FAST_FORWARD_RATIO`].
+pub fn core_fast_forward_ratio(requested: f32) -> f64 {
     let requested = f64::from(requested);
     if requested.is_finite() && requested > 1.0 {
         requested
     } else {
-        frontend
+        CORE_DEFAULT_FAST_FORWARD_RATIO
     }
 }
 
@@ -218,10 +221,10 @@ mod tests {
     #[test]
     fn core_requested_fast_forward() {
         let mut s = SpeedState {
-            core_fast_forward_ratio: Some(core_fast_forward_ratio(0.0, 4.0)),
+            core_fast_forward_ratio: Some(core_fast_forward_ratio(0.0)),
             ..SpeedState::default()
         };
-        assert_eq!(s.speed(3.0), Speed::FastForward { ratio: 4.0 });
+        assert_eq!(s.speed(3.0), Speed::FastForward { ratio: 2.0 });
         assert!(s.audio_paused() && s.core_fast_forward());
         s.fast_forward = true;
         assert_eq!(s.speed(3.0), Speed::FastForward { ratio: 3.0 });
@@ -229,8 +232,8 @@ mod tests {
         s.paused = true;
         assert_eq!(s.speed(3.0), Speed::Paused);
         assert!(!s.core_fast_forward());
-        assert_eq!(core_fast_forward_ratio(8.0, 4.0), 8.0);
-        assert_eq!(core_fast_forward_ratio(1.0, 4.0), 4.0);
-        assert_eq!(core_fast_forward_ratio(f32::NAN, 4.0), 4.0);
+        assert_eq!(core_fast_forward_ratio(8.0), 8.0);
+        assert_eq!(core_fast_forward_ratio(1.0), 2.0);
+        assert_eq!(core_fast_forward_ratio(f32::NAN), 2.0);
     }
 }

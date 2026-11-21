@@ -1162,11 +1162,10 @@ impl App {
     /// The core asked for fast-forward or gave it back (env 64, design v5.0 §2.4).
     fn core_fast_forward_changed(&mut self) {
         let now = Instant::now();
-        let ratio = self.options.config.speed.fast_forward_ratio;
         match self.emulator.fastforward_override() {
             Some(o) if o.fastforward => {
                 let was = self.speed.core_fast_forward_ratio.is_some();
-                self.speed.core_fast_forward_ratio = Some(core_fast_forward_ratio(o.ratio, ratio));
+                self.speed.core_fast_forward_ratio = Some(core_fast_forward_ratio(o.ratio));
                 self.fast_load_inhibit = o.inhibit_toggle;
                 if o.inhibit_toggle {
                     self.speed.fast_forward = false;

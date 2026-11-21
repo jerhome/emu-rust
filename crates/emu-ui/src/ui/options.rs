@@ -39,23 +39,16 @@ pub(super) fn show(
                 actions.push(UiAction::SetGameScope(!data.game_scope));
             }
         });
-        if let Some(launch) = &data.eightbit.launch {
-            let label = match launch.kind {
-                M3uLaunch::Program => text::LAUNCH_PROGRAM,
-                _ => text::LAUNCH_COMMAND,
-            };
-            let resp = ui.add(
-                Button::new(text::launch_row(label, launch.current.as_deref()))
-                    .min_size([w, ROW_HEIGHT].into()),
-            );
-            nav(&resp, &mut false);
-            if resp.clicked() {
-                overlay.launch_edit = Some(launch.current.clone().unwrap_or_default());
-                overlay.focus_first = true;
-            }
-        }
         let groups = group_options_with(data.options, data.categories, data.featured);
         let mut focused_info: Option<String> = None;
+        // Design 5.0 §4: the launch row follows the system's featured group (« Réglages CPC / C64 »); without
+        // such a group it comes first.
+        let launch_in_grid = data.featured.is_some_and(|f| {
+            !f.keys.is_empty() && groups.first().is_some_and(|(t, _)| *t == f.title)
+        });
+        if !launch_in_grid {
+            ui.horizontal(|ui| launch_row_ui(ui, data, overlay, w, false));
+        }
         if groups.is_empty() {
             ui.label(text::OPTIONS_NONE);
         } else {
@@ -107,6 +100,10 @@ pub(super) fn show(
                                             value,
                                         });
                                     }
+                                    ui.end_row();
+                                }
+                                if launch_in_grid && std::ptr::eq(title, &groups[0].0) {
+                                    launch_row_ui(ui, data, overlay, w, true);
                                     ui.end_row();
                                 }
                             }
@@ -187,4 +184,37 @@ fn launch_editor(
     }
     ui.label(RichText::new(text::NAV_HINT).small().weak());
     true
+}
+
+/// « Commande de démarrage… » / « Programme à lancer… » (nothing for the other systems). `in_grid`: two cells of
+/// the options grid (label, value) instead of one full-width button.
+fn launch_row_ui(
+    ui: &mut egui::Ui,
+    data: &UiData<'_>,
+    overlay: &mut Overlay,
+    w: f32,
+    in_grid: bool,
+) {
+    let Some(launch) = &data.eightbit.launch else {
+        return;
+    };
+    let label = match launch.kind {
+        M3uLaunch::Program => text::LAUNCH_PROGRAM,
+        _ => text::LAUNCH_COMMAND,
+    };
+    let resp = if in_grid {
+        ui.label(label);
+        let value = launch.current.as_deref().filter(|t| !t.is_empty());
+        ui.add(Button::new(value.unwrap_or("-")).min_size([w * 0.45, ROW_HEIGHT].into()))
+    } else {
+        ui.add(
+            Button::new(text::launch_row(label, launch.current.as_deref()))
+                .min_size([w, ROW_HEIGHT].into()),
+        )
+    };
+    nav(&resp, &mut false);
+    if resp.clicked() {
+        overlay.launch_edit = Some(launch.current.clone().unwrap_or_default());
+        overlay.focus_first = true;
+    }
 }

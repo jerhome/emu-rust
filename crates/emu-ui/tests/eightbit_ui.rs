@@ -116,7 +116,7 @@ fn cap32_game_folder_and_requested_fast_forward() {
             speed.core_fast_forward_ratio = emu
                 .fastforward_override()
                 .filter(|o| o.fastforward)
-                .map(|o| core_fast_forward_ratio(o.ratio, 4.0));
+                .map(|o| core_fast_forward_ratio(o.ratio));
             emu.set_fast_forwarding(speed.core_fast_forward());
             changes.push((frame, speed.speed(4.0)));
         }
@@ -126,8 +126,8 @@ fn cap32_game_folder_and_requested_fast_forward() {
     }
     assert_eq!(
         changes,
-        vec![(5, Speed::FastForward { ratio: 4.0 }), (10, Speed::Normal)],
-        "ratio 0 = the frontend's pace"
+        vec![(5, Speed::FastForward { ratio: 2.0 }), (10, Speed::Normal)],
+        "ratio 0 = design default 2.0"
     );
     let dir = game_dir.to_str().unwrap();
     let got = u32::from_le_bytes([0, 1, 2, 3].map(|i| cell(&emu, 5, i)));

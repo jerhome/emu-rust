@@ -81,6 +81,9 @@ pub(crate) fn preferences(config: &CoresConfig) -> CorePreferences {
     CorePreferences::builtin().with_overrides(&overrides)
 }
 
+/// VICE option switching the JiffyDOS ROMs on.
+const JIFFYDOS_OPTION: &str = "vice_jiffydos";
+
 /// What the screen asks its host to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CoresEvent {
@@ -158,6 +161,10 @@ pub(crate) struct CoresUi {
     detail: Option<CoreId>,
     /// Firmware of the core shown in `detail`, computed once when it opens (MD5 of BIOS files: not per frame).
     detail_firmware: Vec<FirmwareStatus>,
+    /// « Activer JiffyDOS pour tous les jeux C64 » clicked: `(core, option, value)` for `[core_options]`.
+    detail_option: Option<(String, String, String)>,
+    /// Message shown after `detail_option`.
+    detail_note: Option<String>,
     /// A dialog of the host is open over this screen: Échap belongs to it.
     modal_open: bool,
     in_use: Option<CoreId>,
@@ -216,6 +223,8 @@ impl CoresUi {
             confirm_remove: None,
             detail: None,
             detail_firmware: Vec::new(),
+            detail_option: None,
+            detail_note: None,
             modal_open: false,
             in_use: None,
             focus_first: true,
@@ -502,6 +511,7 @@ impl CoresUi {
             RowAction::Details(id) => {
                 self.detail_firmware = self.firmware_for(&id);
                 self.detail = Some(id);
+                self.detail_note = None;
                 self.focus_first = true;
             }
             RowAction::CancelInstall(id) => {
@@ -544,6 +554,9 @@ impl CoresUi {
                 self.detail = None;
             } else {
                 self.detail_view(ui, &id);
+                if let Some((core, key, value)) = self.detail_option.take() {
+                    event = Some(CoresEvent::SetCoreOption { core, key, value });
+                }
             }
         } else {
             if escape && self.confirm_remove.is_some() {
@@ -1064,6 +1077,22 @@ impl CoresUi {
                     self.import.start(Some(f.spec.path.clone()));
                 }
             });
+        }
+        let jiffy_present = statuses.iter().any(|f| {
+            f.spec.path.starts_with("vice/JiffyDOS_") && matches!(f.state, FirmwareState::Ok)
+        });
+        if jiffy_present && id.as_str().starts_with("vice_x64") {
+            if ui.button(text::JIFFYDOS_USE_FOR_ALL).clicked() {
+                self.detail_option = Some((
+                    id.as_str().to_owned(),
+                    JIFFYDOS_OPTION.to_owned(),
+                    "enabled".to_owned(),
+                ));
+                self.detail_note = Some(text::JIFFYDOS_USED_FOR_ALL.to_owned());
+            }
+            if let Some(note) = &self.detail_note {
+                ui.colored_label(GOOD, note);
+            }
         }
         ui.label(format!(
             "{} : {}",
