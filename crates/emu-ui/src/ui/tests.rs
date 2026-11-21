@@ -194,6 +194,7 @@ struct Fixture {
     overrides: BTreeMap<String, String>,
     dos: bool,
     hosted: bool,
+    eightbit: EightBitView,
 }
 
 impl Fixture {
@@ -221,6 +222,7 @@ impl Fixture {
             overrides: BTreeMap::new(),
             dos: false,
             hosted: false,
+            eightbit: EightBitView::default(),
         }
     }
 
@@ -237,6 +239,10 @@ impl Fixture {
                 })
             })
             .collect();
+        self.pass_events(overlay, slot, events)
+    }
+
+    fn pass_events(&self, overlay: &mut Overlay, slot: u8, events: Vec<Event>) -> Vec<UiAction> {
         let raw = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
             events,
@@ -261,6 +267,7 @@ impl Fixture {
             dos: self.dos,
             featured: None,
             soundfont_hint: false,
+            eightbit: &self.eightbit,
         };
         let mut actions = Vec::new();
         self.ctx
@@ -789,4 +796,87 @@ fn clean_dialog_deletes_only_checked_rows() {
     o.back();
     assert_eq!(o.clean, None);
     assert_eq!(o.screen(), Some(Screen::Disks));
+}
+
+/// Design v5.0 §4: « Cassette » and « Port joystick » rows of the menu, by keyboard.
+#[test]
+fn eight_bit_menu_rows_by_keyboard() {
+    let mut f = computer_fixture();
+    f.eightbit = EightBitView {
+        tape: true,
+        joyport: Some(JoyportView {
+            port: 2,
+            forced: None,
+        }),
+        launch: None,
+    };
+    // Resume, reset, slot, save, (load disabled), Disquettes, then Lecture / Arrêt / Rembobiner, Port joystick.
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 6].to_vec();
+    keys.push(Key::Enter);
+    assert_eq!(
+        f.keys(&mut o, 0, &keys),
+        vec![UiAction::Tape(TapeAction::Play)]
+    );
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 8].to_vec();
+    keys.push(Key::Enter);
+    assert_eq!(
+        f.keys(&mut o, 0, &keys),
+        vec![UiAction::Tape(TapeAction::Rewind)]
+    );
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 9].to_vec();
+    keys.push(Key::Enter);
+    assert_eq!(f.keys(&mut o, 0, &keys), vec![UiAction::ToggleJoyport]);
+    // A port fixed by the file name cannot be switched: the row is skipped.
+    f.eightbit.joyport = Some(JoyportView {
+        port: 2,
+        forced: Some(1),
+    });
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 9].to_vec();
+    keys.push(Key::Enter);
+    assert!(!f.keys(&mut o, 0, &keys).contains(&UiAction::ToggleJoyport));
+}
+
+/// « Commande de démarrage… »: typed text, Enter saves it; an invalid text cannot be saved; the menu key cancels.
+#[test]
+fn launch_text_is_edited_by_keyboard() {
+    let mut f = Fixture::new();
+    f.eightbit.launch = Some(LaunchView {
+        kind: M3uLaunch::Command,
+        current: None,
+    });
+    let mut o = opened(Screen::CoreOptions, &f);
+    o.launch_edit = Some(String::new());
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    f.pass_events(&mut o, 0, vec![Event::Text("RUN\"DISC".into())]);
+    let enter = [true, false]
+        .map(|pressed| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        })
+        .to_vec();
+    let actions = f.pass_events(&mut o, 0, enter.clone());
+    assert_eq!(actions, vec![UiAction::SetLaunch("RUN\"DISC".into())]);
+    assert!(o.launch_edit.is_none());
+
+    f.eightbit.launch = Some(LaunchView {
+        kind: M3uLaunch::Program,
+        current: Some("intro".into()),
+    });
+    o.launch_edit = Some("A:B".into());
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    assert!(f.pass_events(&mut o, 0, enter).is_empty());
+    o.back();
+    assert!(o.launch_edit.is_none());
+    assert_eq!(o.screen(), Some(Screen::CoreOptions));
 }

@@ -28,7 +28,8 @@ sys-locale = "0.3"
 # Native file dialog (MIT): on Linux the xdg-desktop-portal through libdbus loaded at run time (zenity fallback),
 # no OpenSSL, nothing linked at build time. Docker uses the built-in egui browser instead.
 rfd = "0.18"
-# Opens the ROM folder in the system file manager (MIT OR Apache-2.0); never goes through a shell.
+# Opens the ROM folder in the system file manager (MIT OR Apache-2.0); the path is passed as an argument (on Linux without xdg-open installed, opener
+# runs its embedded script via `sh -c <script> xdg-open <path>`, path positional: no injection).
 opener = { version = "0.9", default-features = false }
 
 [dev-dependencies]

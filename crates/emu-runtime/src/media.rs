@@ -928,33 +928,42 @@ impl<'a> Stage<'a> {
             Some((M3uLaunch::Program, program)) => Some(program),
             Some((M3uLaunch::None, _)) | None => None,
         };
-        let mut line =
-            |text: &mut Vec<u8>, image: &Path, label: Option<&str>| -> Result<(), RuntimeError> {
-                let entry = match policy {
-                    MediaPolicy::WorkingCopy => image.strip_prefix(&dir).unwrap_or(image),
-                    MediaPolicy::Direct => image,
-                };
-                let bytes = path_bytes(entry)?;
-                if bytes.iter().any(|&b| b == b'\n' || b == b'\r' || b == b'|')
-                    || bytes.first() == Some(&b'#')
-                {
-                    return Err(RuntimeError::InvalidMediaSet(format!(
-                        "{} cannot be listed in a playlist",
+        let mut line = |text: &mut Vec<u8>,
+                        image: &Path,
+                        label: Option<&str>|
+         -> Result<(), RuntimeError> {
+            let entry = match policy {
+                MediaPolicy::WorkingCopy => image.strip_prefix(&dir).unwrap_or(image),
+                MediaPolicy::Direct => image,
+            };
+            let bytes = path_bytes(entry)?;
+            if bytes.iter().any(|&b| b == b'\n' || b == b'\r' || b == b'|')
+                || bytes.first() == Some(&b'#')
+            {
+                return Err(RuntimeError::InvalidMediaSet(format!(
+                    "{} cannot be listed in a playlist",
+                    image.display()
+                )));
+            }
+            text.extend_from_slice(&bytes);
+            if let Some(program) = program.take() {
+                // `<path>:<program>` would be ambiguous (a Windows `C:\...` path under `Direct`).
+                if bytes.contains(&b':') {
+                    return Err(RuntimeError::InvalidLaunch(format!(
+                        "{} contains `:`, so a program name cannot be appended to its playlist entry",
                         image.display()
                     )));
                 }
-                text.extend_from_slice(&bytes);
-                if let Some(program) = program.take() {
-                    text.push(b':');
-                    text.extend_from_slice(program.as_bytes());
-                }
-                if let Some(label) = label {
-                    text.push(b'|');
-                    text.extend_from_slice(label.as_bytes());
-                }
-                text.push(b'\n');
-                Ok(())
-            };
+                text.push(b':');
+                text.extend_from_slice(program.as_bytes());
+            }
+            if let Some(label) = label {
+                text.push(b'|');
+                text.extend_from_slice(label.as_bytes());
+            }
+            text.push(b'\n');
+            Ok(())
+        };
         match layout {
             None => {
                 for image in &self.images {

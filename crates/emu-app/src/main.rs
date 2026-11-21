@@ -93,6 +93,8 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
         dump_last_frame: cli.dump_frame,
         screen: cli.screen,
         dump_window: cli.dump_window,
+        launch: cli.launch,
+        auto_fast_load: cli.auto_fast_load,
     })
 }
 

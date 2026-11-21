@@ -1047,7 +1047,7 @@ fn dos_folder_launch_waits_for_its_snapshot() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("GAME.EXE"), vec![1u8; 300_000]).unwrap();
     h.ui.events
-        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+        .push(LibraryEvent::Launch(Box::new(dos_request(&dir, None))));
     assert!(
         h.frame(Vec::new()).is_empty(),
         "held back during the snapshot"
@@ -1068,15 +1068,17 @@ fn dos_folder_launch_waits_for_its_snapshot() {
     assert!(!h.ui.snapshot_busy());
     assert!(h.ui.dirs.cache_dir().join("dosbox_pure/Jeu.zip").is_file());
     h.ui.events
-        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+        .push(LibraryEvent::Launch(Box::new(dos_request(&dir, None))));
     assert_eq!(
         h.frame(Vec::new()).len(),
         1,
         "current snapshot: immediate launch"
     );
     // A program that is not at the root: refused with a message, no launch.
-    h.ui.events
-        .push(LibraryEvent::Launch(dos_request(&dir, Some("NOPE.EXE"))));
+    h.ui.events.push(LibraryEvent::Launch(Box::new(dos_request(
+        &dir,
+        Some("NOPE.EXE"),
+    ))));
     assert!(h.frame(Vec::new()).is_empty());
     assert!(matches!(h.ui.dialog, Some(Dialog::Message(_))));
 }
@@ -1092,7 +1094,7 @@ fn dos_snapshot_can_be_cancelled_with_the_keyboard() {
     }
     std::fs::write(dir.join("GO.EXE"), b"MZ").unwrap();
     h.ui.events
-        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+        .push(LibraryEvent::Launch(Box::new(dos_request(&dir, None))));
     h.frame(Vec::new());
     assert!(h.ui.snapshot_busy());
     // « Annuler » has the focus: Escape or Enter cancels.

@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use emu_assets::cores::CoreId;
+use emu_assets::cores::{CoreActions, CoreId};
+use emu_library::InputDefault;
 use emu_runtime::{
     AudioConfig, AudioOutput, ContentSpec, CoreOption, CoreOptionCategory, Emulator,
-    EmulatorOptions, GlWindow, InputBackend, InputFrame, LogLevel, MAX_BURST, MediaPolicy,
-    PaceDecision, Pacer, STATE_SLOTS, Scaling, SyncMode, core_id_from_path,
+    EmulatorOptions, GlWindow, InputBackend, InputFrame, LogLevel, M3uLaunch, MAX_BURST,
+    MediaPolicy, PULSE_FRAMES, PaceDecision, Pacer, STATE_SLOTS, Scaling, SyncMode,
+    core_id_from_path,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -19,6 +21,10 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, WindowAttributes, WindowId};
 
 use crate::computer::dos;
+use crate::computer::eightbit::{
+    TapeAction, initial_keyboard_mode, joyport_forced_by_name, tape_key, toggle_joyport,
+    validate_launch,
+};
 use crate::computer::input::{CaptureEffect, CaptureEvent, CaptureState, KeyboardMode, map_button};
 use crate::computer::keymap::KeyRemap;
 use crate::computer::session::{ComputerInputs, ComputerSession, KeyOutcome};
@@ -27,18 +33,19 @@ use crate::computer::vkbd::{
 };
 use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::config_computer::KeyboardModeChoice;
-use crate::content::content_spec;
+use crate::content::{content_spec, direct_rules, with_launch};
 use crate::egui_layer::EguiLayer;
-use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
+use crate::game_identity::{ResolvedGame, resolve_game_with, state_load_needs_confirmation};
 use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options_with};
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
-use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
+use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::launch_firmware::firmware_setup;
 use crate::shutdown;
 use crate::ui::{
-    self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, Featured, OsdLevel,
-    Overlay, StatsView, UiAction, UiData, apply_capture, profile_map, text,
+    self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, EightBitView,
+    Featured, JoyportView, LaunchView, OsdLevel, Overlay, StatsView, UiAction, UiData,
+    apply_capture, profile_map, text,
 };
 use crate::{KeyboardInput, LaunchOptions, ScalingChoice, Screen, SyncChoice, UiError};
 
@@ -240,6 +247,12 @@ pub(crate) struct App {
     analog: bool,
     featured: Option<Featured>,
     soundfont_hint: bool,
+    /// Keys of the « Cassette » menu (`cores.toml` `actions`).
+    tape_actions: CoreActions,
+    /// CPC / C64 entries of the menus.
+    eightbit: EightBitView,
+    /// The core's fast-forward request forbids the user's toggle (`inhibit_toggle`).
+    fast_load_inhibit: bool,
 }
 
 struct FpsMeter {
@@ -400,15 +413,28 @@ impl App {
             &spec,
             ContentSpec::Media { rules, .. } if rules.policy == MediaPolicy::WorkingCopy
         );
+        let save_scope = crate::content::save_scope(&prefs, &core_id);
         let ResolvedGame {
             spec,
             identity,
             options_path: game_options_path,
             options_inherited,
             resolution_failed,
-        } = resolve_game(&core_id, spec, &options.dirs);
+        } = resolve_game_with(&core_id, spec, &options.dirs, save_scope);
         let mut game_options = GameOptions::load(&game_options_path);
         let spec = with_default_start(spec, game_options.options.dos.start.as_deref());
+        let launch_kind = typed_id
+            .as_ref()
+            .map_or(M3uLaunch::None, |id| crate::content::m3u_launch(&prefs, id));
+        let (launch, launch_warning) = launch_text(
+            options.launch.as_deref(),
+            &game_options.options,
+            launch_kind,
+        )
+        .map_err(UiError::Content)?;
+        let spec = with_launch(spec, launch.as_deref(), launch_kind, || {
+            direct_rules(&prefs, &core_id)
+        });
         let frontend_options = typed_id
             .as_ref()
             .map(|id| prefs.frontend_options(id))
@@ -451,9 +477,15 @@ impl App {
                 cache_dir: options.dirs.cache_dir(),
                 provide_vfs: typed_id.as_ref().is_some_and(|id| prefs.provides_vfs(id)),
                 restore_added_disks: true,
-                core_save_scope: emu_runtime::SaveScope::Core,
-                fastforward_override: false,
-                variable_state_size: false,
+                core_save_scope: save_scope,
+                fastforward_override: options.auto_fast_load
+                    && options.config.computer.auto_fast_load
+                    && typed_id
+                        .as_ref()
+                        .is_some_and(|id| prefs.fastforward_override(id)),
+                variable_state_size: typed_id
+                    .as_ref()
+                    .is_some_and(|id| prefs.variable_state_size(id)),
             },
         )?;
         let dos_core = typed_id
@@ -505,13 +537,23 @@ impl App {
         }
         let now = Instant::now();
         let mut overlay = Overlay::default();
+        let system_input = typed_id
+            .as_ref()
+            .and_then(|id| crate::launch_firmware::firmware_system(&prefs, id))
+            .and_then(|database| {
+                emu_library::systems()
+                    .iter()
+                    .find(|s| s.database == database)
+            })
+            .map_or(InputDefault::Keyboard, |s| s.default_input);
         let computer = (options.computer || is_computer_profile(&core_id)).then(|| {
             let input = &game_options.options.input;
-            let mode = match input.keyboard_mode {
-                Some(m) => m,
-                None if no_game => KeyboardModeChoice::Keyboard,
-                None => options.config.computer.default_keyboard_mode,
-            };
+            let mode = initial_keyboard_mode(
+                input.keyboard_mode,
+                options.config.computer.keyboard_mode,
+                system_input,
+                no_game,
+            );
             let layout_id = keyboard_layout_id(&core_id);
             // The PC legend follows the layout the core types with (computed from the language, or chosen).
             let layout_value = typed_id
@@ -561,6 +603,22 @@ impl App {
             text::menu_hint(options.config.hotkeys.menu)
         };
         overlay.osd.info(hint, now);
+        if computer
+            .as_ref()
+            .is_some_and(|c| c.mode == KeyboardMode::Joystick)
+        {
+            overlay.osd.push(
+                text::joystick_launch_hint(options.config.hotkeys.host_key),
+                OsdLevel::Info,
+                Duration::from_secs(8),
+                now,
+            );
+        }
+        if let Some(warning) = launch_warning {
+            overlay
+                .osd
+                .push(warning, OsdLevel::Warn, Duration::from_secs(10), now);
+        }
         if dos_first_launch {
             overlay.osd.push(
                 text::DOS_FIRST_LAUNCH.to_owned(),
@@ -596,6 +654,24 @@ impl App {
         let content_files = match &options.content {
             crate::GameContent::Files(f) => f.clone(),
             crate::GameContent::NoGame | crate::GameContent::Folder { .. } => Vec::new(),
+        };
+        let tape_actions = typed_id
+            .as_ref()
+            .map(|id| prefs.actions(id))
+            .unwrap_or_default();
+        let joyport_core = core_id.starts_with("vice_");
+        let eightbit = EightBitView {
+            tape: !tape_actions.is_empty(),
+            joyport: (joyport_core && !no_game).then(|| JoyportView {
+                port: joyport_value(&core_variables_for_legend),
+                forced: content_files
+                    .first()
+                    .and_then(|f| joyport_forced_by_name(f)),
+            }),
+            launch: (launch_kind != M3uLaunch::None && !no_game).then(|| LaunchView {
+                kind: launch_kind,
+                current: game_options.options.media.launch.clone(),
+            }),
         };
         Ok(Self {
             egui: None,
@@ -649,6 +725,9 @@ impl App {
             analog: typed_id.as_ref().is_some_and(|id| prefs.analog(id)),
             featured,
             soundfont_hint,
+            tape_actions,
+            eightbit,
+            fast_load_inhibit: false,
         })
     }
 
@@ -1012,6 +1091,99 @@ impl App {
         self.overlay.osd.info(msg, Instant::now());
     }
 
+    /// « Cassette » (design v5.0 §2.3): the core's key is held a few frames once the game runs again.
+    fn tape(&mut self, action: TapeAction) {
+        let Some(key) = tape_key(&self.tape_actions, action) else {
+            return;
+        };
+        self.emulator.pulse_key(key, PULSE_FRAMES);
+        let msg = match action {
+            TapeAction::Play => text::TAPE_PLAYING,
+            TapeAction::Stop => text::TAPE_STOPPED,
+            TapeAction::Rewind => text::TAPE_REWOUND,
+        };
+        self.overlay.osd.info(msg, Instant::now());
+    }
+
+    /// « Port joystick » (design v5.0 §2.5): applied by the core at its next variable update, kept for this game.
+    fn toggle_joyport(&mut self) {
+        let Some(joy) = &mut self.eightbit.joyport else {
+            return;
+        };
+        if joy.forced.is_some() {
+            return;
+        }
+        let next = toggle_joyport(if joy.port == 1 { "1" } else { "2" });
+        if let Err(e) = self.emulator.set_option(JOYPORT_OPTION, next) {
+            tracing::warn!("option {JOYPORT_OPTION} refusée : {e}");
+            self.overlay
+                .osd
+                .error(text::option_failed(&e), Instant::now());
+            return;
+        }
+        joy.port = if next == "1" { 1 } else { 2 };
+        self.game_options
+            .options
+            .core_options
+            .insert(JOYPORT_OPTION.to_owned(), next.to_owned());
+        self.game_options_dirty = true;
+        self.save_game_options();
+        if !self.core_options.is_empty() {
+            self.refresh_options();
+        }
+        self.overlay
+            .osd
+            .info(text::joyport_switched(next), Instant::now());
+    }
+
+    /// « Commande de démarrage… » / « Programme à lancer… »: `[media] launch` of this game, used from the next
+    /// launch (the running content keeps its playlist).
+    fn set_launch(&mut self, launch: String) {
+        let Some(view) = &mut self.eightbit.launch else {
+            return;
+        };
+        if let Err(e) = validate_launch(view.kind, &launch) {
+            self.overlay.set_notice(e);
+            return;
+        }
+        let value = (!launch.is_empty()).then_some(launch);
+        let notice = if value.is_some() {
+            text::LAUNCH_SAVED
+        } else {
+            text::LAUNCH_CLEARED
+        };
+        view.current.clone_from(&value);
+        self.game_options.options.media.launch = value;
+        self.game_options_dirty = true;
+        self.save_game_options();
+        self.overlay.set_notice(notice);
+    }
+
+    /// The core asked for fast-forward or gave it back (env 64, design v5.0 §2.4).
+    fn core_fast_forward_changed(&mut self) {
+        let now = Instant::now();
+        match self.emulator.fastforward_override() {
+            Some(o) if o.fastforward => {
+                let was = self.speed.core_fast_forward_ratio.is_some();
+                self.speed.core_fast_forward_ratio = Some(core_fast_forward_ratio(o.ratio));
+                self.fast_load_inhibit = o.inhibit_toggle;
+                if o.inhibit_toggle {
+                    self.speed.fast_forward = false;
+                }
+                if !was {
+                    self.overlay.osd.info(text::FAST_LOAD_ON, now);
+                }
+            }
+            _ => {
+                if self.speed.core_fast_forward_ratio.take().is_some() {
+                    self.overlay.osd.info(text::FAST_LOAD_OFF, now);
+                }
+                self.fast_load_inhibit = false;
+            }
+        }
+        self.apply_speed();
+    }
+
     fn toggle_virtual_keyboard(&mut self) {
         if self.egui.is_none() {
             return;
@@ -1118,7 +1290,7 @@ impl App {
     fn effective_speed(&self) -> SpeedState {
         SpeedState {
             paused: self.speed.paused || self.overlay.is_open() || self.finishing.is_some(),
-            fast_forward: self.speed.fast_forward,
+            ..self.speed
         }
     }
 
@@ -1526,6 +1698,12 @@ impl App {
                     self.config_dirty = true;
                 }
                 UiAction::SetGameScope(on) => self.game_scope = on,
+                UiAction::Tape(action) => {
+                    self.tape(action);
+                    self.close_overlay();
+                }
+                UiAction::ToggleJoyport => self.toggle_joyport(),
+                UiAction::SetLaunch(launch) => self.set_launch(launch),
                 UiAction::UnlockConfig => {
                     self.options.config.unlock();
                     self.config_dirty = true;
@@ -1541,6 +1719,10 @@ impl App {
     fn hotkey(&mut self, event_loop: &ActiveEventLoop, action: HotkeyAction, pressed: bool) {
         let now = Instant::now();
         if action == HotkeyAction::FastForward {
+            if pressed && self.fast_load_inhibit {
+                self.overlay.osd.info(text::FAST_FORWARD_INHIBITED, now);
+                return;
+            }
             if self.speed.fast_forward != pressed && pressed {
                 self.overlay.osd.info(text::FAST_FORWARD_ON, now);
             }
@@ -1744,6 +1926,9 @@ impl App {
             self.audio
                 .set_input_rate(self.emulator.av_info().timing.sample_rate);
         }
+        if status.fastforward_changed {
+            self.core_fast_forward_changed();
+        }
         let now = Instant::now();
         if status.options_changed {
             tracing::info!("options du core modifiées par le core");
@@ -1860,6 +2045,7 @@ impl App {
                 dos: self.dos,
                 featured: self.featured.as_ref(),
                 soundfont_hint: self.soundfont_hint,
+                eightbit: &self.eightbit,
             };
             self.overlay.vkbd_open = vkbd_open;
             let overlay = &mut self.overlay;
@@ -2260,7 +2446,43 @@ fn keyboard_layout_id(core_id: &str) -> &'static str {
     match core_id {
         "puae" | "puae2021" => "amiga",
         "dosbox_pure" => "pc",
+        "cap32" => "cpc",
+        "vice_x64" | "vice_x64sc" => "c64",
         _ => "atari_st",
+    }
+}
+
+/// VICE option of the port the RetroPad drives (design v5.0 §2.5).
+const JOYPORT_OPTION: &str = "vice_joyport";
+
+/// `vice_joyport` among the effective core options; the core's default is port 2.
+fn joyport_value(variables: &[(String, String)]) -> u8 {
+    match emulator_layout_value(variables, JOYPORT_OPTION).as_deref() {
+        Some("1") => 1,
+        _ => 2,
+    }
+}
+
+/// Launch text of this session (design v5.0 §4): `--launch` (refused when invalid: the message is the error),
+/// else `[media] launch` of the game (an invalid one is ignored with a warning, the game still starts).
+fn launch_text(
+    cli: Option<&str>,
+    game: &GameOptions,
+    kind: M3uLaunch,
+) -> Result<(Option<String>, Option<String>), String> {
+    if let Some(text) = cli {
+        validate_launch(kind, text.trim()).map_err(|e| format!("--launch : {e}"))?;
+        return Ok((Some(text.trim().to_owned()), None));
+    }
+    let Some(text) = game.media.launch.as_deref().map(str::trim) else {
+        return Ok((None, None));
+    };
+    match validate_launch(kind, text) {
+        Ok(()) => Ok((Some(text.to_owned()), None)),
+        Err(e) => {
+            tracing::warn!("[media] launch ignoré : {e}");
+            Ok((None, Some(text::launch_ignored(&e))))
+        }
     }
 }
 
@@ -2360,6 +2582,66 @@ mod tests {
         kb.handle_key(KeyCode::ContextMenu, true, None);
         kb.handle_key(KeyCode::KeyA, true, None);
         assert!(kb.is_held(key("ralt")) && kb.is_held(key("a")));
+    }
+
+    /// Design v5.0 §6: CPC and C64 keyboards and their `[remap]` (F1-F10 ⇒ CPC keypad, AltGr ⇒ RESTORE, `<` ⇒ £),
+    /// identical on the three OSes; the positional map keeps the other keys.
+    #[test]
+    fn eight_bit_cores_get_their_keyboards_and_remaps() {
+        use emu_runtime::RetroKey;
+        assert_eq!(keyboard_layout_id("cap32"), "cpc");
+        assert_eq!(keyboard_layout_id("vice_x64"), "c64");
+        assert_eq!(keyboard_layout_id("vice_x64sc"), "c64");
+        let key = |name| RetroKey::from_name(name).unwrap();
+        let cpc = KeyboardLayout::load("cpc").unwrap();
+        let remap = KeyRemap::for_layout(&cpc, &BTreeMap::new());
+        assert_eq!(remap.map(KeyCode::F1), Some(key("kp1")));
+        assert_eq!(remap.map(KeyCode::F10), Some(key("kp0")));
+        assert_eq!(remap.map(KeyCode::AltLeft), Some(key("lalt")));
+        assert_eq!(remap.map(KeyCode::KeyQ), Some(key("q")));
+        let q = cpc
+            .rows
+            .iter()
+            .flatten()
+            .find(|k| k.key == key("q"))
+            .unwrap();
+        assert_eq!(q.legend("fr"), "A");
+        let c64 = KeyboardLayout::load("c64").unwrap();
+        let user = BTreeMap::from([("Backquote".to_owned(), "end".to_owned())]);
+        let remap = KeyRemap::for_layout(&c64, &user);
+        assert_eq!(remap.map(KeyCode::AltRight), Some(key("pageup")));
+        assert_eq!(remap.map(KeyCode::IntlBackslash), Some(key("end")));
+        assert_eq!(remap.map(KeyCode::Backquote), Some(key("end")));
+        assert_eq!(remap.map(KeyCode::Escape), Some(key("escape")));
+    }
+
+    #[test]
+    fn launch_text_from_cli_or_game_options() {
+        let mut game = GameOptions::default();
+        assert_eq!(
+            launch_text(Some(" RUN\"X "), &game, M3uLaunch::Command).unwrap(),
+            (Some("RUN\"X".to_owned()), None)
+        );
+        assert!(
+            launch_text(Some("RUN"), &game, M3uLaunch::None)
+                .unwrap_err()
+                .starts_with("--launch")
+        );
+        assert_eq!(
+            launch_text(None, &game, M3uLaunch::Program).unwrap(),
+            (None, None)
+        );
+        game.media.launch = Some("INTRO".into());
+        assert_eq!(
+            launch_text(None, &game, M3uLaunch::Program).unwrap(),
+            (Some("INTRO".to_owned()), None)
+        );
+        // A hand-edited invalid text never blocks the game.
+        game.media.launch = Some("A:B".into());
+        let (text, warning) = launch_text(None, &game, M3uLaunch::Program).unwrap();
+        assert!(text.is_none() && warning.is_some());
+        assert_eq!(joyport_value(&[("vice_joyport".into(), "1".into())]), 1);
+        assert_eq!(joyport_value(&[]), 2);
     }
 
     #[test]

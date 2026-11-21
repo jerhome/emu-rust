@@ -288,6 +288,9 @@ pub const SOUNDFONT_REPLACE_CONFIRM: &str = "Remplacer le SoundFont existant (fi
 pub const SOUNDFONT_INSTALLING: &str = "Téléchargement du SoundFont (32 Mo)…";
 pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS ▸ MIDI » d'un jeu, \
                                           ou pour tous les jeux DOS ci-dessous.";
+pub const JIFFYDOS_USE_FOR_ALL: &str = "Activer JiffyDOS pour tous les jeux C64";
+pub const JIFFYDOS_USED_FOR_ALL: &str =
+    "JiffyDOS activé pour tous les jeux C64 (un réglage par jeu reste prioritaire).";
 pub const SOUNDFONT_USE_FOR_ALL: &str = "Utiliser pour tous les jeux DOS";
 pub const SOUNDFONT_USED_FOR_ALL: &str = "MIDI réglé sur GeneralUser GS pour tous les jeux DOS (un réglage par jeu \
                                           reste prioritaire).";
@@ -327,4 +330,9 @@ pub fn bios_offer(name: &str, license: &str, game: &str) -> String {
         "« {game} » a besoin d'un TOS. Installer {name} ({license}, libre, ~2 Mo depuis SourceForge) ? \
          Sinon, copiez votre propre TOS sous le nom tos.img dans le dossier des BIOS."
     )
+}
+
+/// Licence notice of the ROMs built into a core (design v3.0 §3.5.7, v5.0 §4): text of `cores.toml`, shown as is.
+pub fn builtin_notice(notice: &str) -> String {
+    format!("Licence : {notice}")
 }

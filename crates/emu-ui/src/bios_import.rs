@@ -7,7 +7,7 @@ use std::path::Path;
 
 use emu_assets::bios::{
     BiosError, ExpectedFirmware, FirmwareCatalogue, Identification, ReplacePolicy, TargetState,
-    builtin_free_bios, identify_firmware, import_firmware, target_state,
+    builtin_free_bios, identify_firmware, import_firmware_expecting, target_state,
 };
 use emu_assets::cores::{CoreId, CoreInfo, CoreManager, KnownFirmware};
 
@@ -172,8 +172,8 @@ pub struct BiosImportReport {
     pub failed: usize,
 }
 
-/// Writes every item. `expected_md5`: md5 found by the identification (known file): a copy whose recomputed md5
-/// differs (source changed in between) is reported as a failure.
+/// Writes every item. `expected_md5`: md5 found by the identification (known file), checked by the assets crate
+/// before anything is installed (`BiosError::Changed`).
 pub fn import_bios(
     system_dir: &Path,
     src: &Path,
@@ -182,11 +182,14 @@ pub fn import_bios(
 ) -> BiosImportReport {
     let mut report = BiosImportReport::default();
     for item in items {
-        match import_firmware(system_dir, src, &item.name, item.policy, item.verified) {
-            Ok(outcome) if expected_md5.is_some_and(|m| m != outcome.md5) => {
-                report.failed += 1;
-                report.lines.push(text::changed_during_import(&item.name));
-            }
+        match import_firmware_expecting(
+            system_dir,
+            src,
+            &item.name,
+            item.policy,
+            item.verified,
+            expected_md5,
+        ) {
             Ok(outcome) => {
                 report.installed += 1;
                 report.lines.push(text::installed(
@@ -215,6 +218,7 @@ pub fn import_error(e: &BiosError) -> String {
     match e {
         BiosError::TooLarge(n) => text::too_large(*n),
         BiosError::TargetExists(name) => text::target_exists(name),
+        BiosError::Changed => text::changed_during_import(),
         other => other.to_string(),
     }
 }
@@ -236,8 +240,8 @@ pub mod text {
         s
     }
 
-    pub fn changed_during_import(name: &str) -> String {
-        format!("{name} : le fichier a changé pendant l'import ; recommencez")
+    pub fn changed_during_import() -> String {
+        "Le fichier a changé depuis sa vérification : rien n'a été importé.".to_owned()
     }
 
     pub fn too_large(size: u64) -> String {
@@ -311,6 +315,25 @@ mod tests {
         };
         assert_eq!(targets[0].1, Ok(TargetState::Same));
         assert!(known_import_items(&targets, true).is_empty());
+    }
+
+    #[test]
+    fn changed_source_installs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("my kick.rom");
+        std::fs::write(&src, b"fake-ks").unwrap();
+        let system = dir.path().join("system");
+        let BiosIdentified::Known { md5, targets } =
+            identify_bios(&system, &src, &catalogue()).unwrap()
+        else {
+            panic!("known");
+        };
+        std::fs::write(&src, b"other-content").unwrap();
+        let items = known_import_items(&targets, false);
+        let report = import_bios(&system, &src, &items, Some(md5));
+        assert_eq!((report.installed, report.failed), (0, 1), "{report:?}");
+        assert!(report.lines[0].contains("a changé depuis sa vérification"));
+        assert!(!system.join("kick.A500").exists());
     }
 
     #[test]

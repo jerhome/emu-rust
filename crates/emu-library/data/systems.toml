@@ -10,6 +10,7 @@
 # `folder_extensions`: subset of `extensions` kept for the system only under a folder named after its `id`
 # (generic archives, formats of other machines). An extension accepted by several computers outside their folders
 # is attributed by the DATs, else left unclassified (design v3.0 §3.5.2).
+# `default_input`: "keyboard" (default) or "joystick": keyboard mode of a game when nothing else chooses (v5.0).
 # Blocks are appended at the end, never reordered.
 
 [[system]]
@@ -125,3 +126,30 @@ dat = ["libretro"]
 # Not yet confirmed against systemesListe.php (« PC Dos ») / the IGDB platforms endpoint (« DOS »).
 screenscraper = 135
 igdb = 13
+
+[[system]]
+id = "cpc"
+name = "Amstrad CPC"
+kind = "computer"
+# `.sna` / `.voc` / `.tap` are ambiguous (snapshots, samples, C64 tapes): kept only under `cpc/`.
+extensions = ["dsk", "cdt", "cpr", "sna", "voc", "tap", "m3u"]
+folder_extensions = ["sna", "voc", "tap"]
+default_input = "joystick"
+database = "Amstrad - CPC"
+# dat/Amstrad - CPC.dat (clean-cpc-db), then TOSEC.
+dat = ["libretro", "tosec"]
+# Not yet confirmed against systemesListe.php / the IGDB platforms endpoint (no network in the dev container).
+screenscraper = 65
+igdb = 25
+
+[[system]]
+id = "c64"
+name = "Commodore 64"
+kind = "computer"
+extensions = ["d64", "d71", "d81", "g64", "nib", "t64", "tap", "prg", "p00", "crt", "m3u"]
+default_input = "joystick"
+database = "Commodore - 64"
+dat = ["no-intro"]
+# Not yet confirmed (same caveat as cpc).
+screenscraper = 66
+igdb = 15

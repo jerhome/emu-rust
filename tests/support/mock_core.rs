@@ -24,6 +24,9 @@ pub enum Variant {
     Xrgb1555,
     /// The core changes `mock_color` itself (`SET_VARIABLE`) at frame 20 and reports `GET_VARIABLE_UPDATE`.
     DynamicOptions,
+    /// Linked with `-z nodelete` (Linux): `dlclose` never unmaps it, like dosbox_pure (ADR 0022). Meant for use with
+    /// `MOCK_REFUSE_REINIT`.
+    NoDelete,
 }
 
 impl Variant {
@@ -36,6 +39,7 @@ impl Variant {
             Variant::Rgb565 => "rgb565",
             Variant::Xrgb1555 => "xrgb1555",
             Variant::DynamicOptions => "dynamic",
+            Variant::NoDelete => "nodelete",
         }
     }
 
@@ -48,6 +52,7 @@ impl Variant {
             Variant::Rgb565 => Some("-DMOCK_PIXEL_RGB565"),
             Variant::Xrgb1555 => Some("-DMOCK_PIXEL_1555"),
             Variant::DynamicOptions => Some("-DMOCK_DYNAMIC_OPTIONS"),
+            Variant::NoDelete => None,
         }
     }
 }
@@ -106,6 +111,9 @@ pub fn build(variant: Variant) -> PathBuf {
     cmd.args([link, "-fPIC", "-O1", "-Wall", "-Wextra", "-std=c99"]);
     if let Some(d) = variant.define() {
         cmd.arg(d);
+    }
+    if variant == Variant::NoDelete {
+        cmd.arg("-Wl,-z,nodelete");
     }
     cmd.arg("-o").arg(&tmp).arg(&source);
     let output = cmd

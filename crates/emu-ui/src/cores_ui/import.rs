@@ -524,7 +524,8 @@ mod tests {
     }
 
     fn wait(ctx: &egui::Context, ui: &mut ImportUi, until: impl Fn(&State) -> bool) {
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
             frame(ctx, ui, Vec::new());
             if until(&ui.state) {
                 return;
@@ -547,6 +548,20 @@ mod tests {
         let mut ui = ImportUi::new(system.clone(), None).with_builtin_browser(pick);
         ui.start(Some("kick34005.A500".into()));
         assert!(matches!(ui.state, State::Browser(_)));
+        // The folder is listed on a worker thread: wait for the list, then let the first entry take the focus.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            frame(&ctx, &mut ui, Vec::new());
+            let State::Browser(b) = &mut ui.state else {
+                panic!("browser expected");
+            };
+            if !b.poll() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "listing not ready");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&ctx, &mut ui, Vec::new());
         frame(&ctx, &mut ui, Vec::new());
         // The first entry has the focus: Entrée picks it.
         key(&ctx, &mut ui, Key::Enter);

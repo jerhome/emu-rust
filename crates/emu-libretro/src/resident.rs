@@ -22,6 +22,9 @@ use libloading::Library;
 static RESIDENT: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 /// Per-process copy counter (`<stem>-<pid>-<n>.<ext>`).
 static COPY_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Copies written by this process. A file carrying our PID that is not listed here belongs to another
+/// instance (two containers sharing a volume can both be PID 1) and is only purged once old.
+static OWN_COPIES: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 /// Copies from another process younger than this are left alone by the purge: that process may be between
 /// writing its copy and loading it.
@@ -124,7 +127,7 @@ fn copy_pid(name: &str) -> Option<u32> {
 /// Best-effort removal of copies nobody uses any more: ours, or another process's once older than
 /// `PURGE_MIN_AGE`. Files still mapped refuse deletion on Windows (ignored); on Unix deleting a mapped copy is
 /// harmless. Files not named like a copy are never touched.
-fn purge_stale_copies(dir: &Path, pid: u32, now: SystemTime) {
+fn purge_stale_copies(dir: &Path, pid: u32, own: &mut HashSet<PathBuf>, now: SystemTime) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -144,10 +147,13 @@ fn purge_stale_copies(dir: &Path, pid: u32, now: SystemTime) {
             .ok()
             .and_then(|m| now.duration_since(m).ok())
             .is_some_and(|age| age >= PURGE_MIN_AGE);
-        if owner == pid || old {
-            let path = entry.path();
+        let path = entry.path();
+        if (owner == pid && own.contains(&path)) || old {
             match fs::remove_file(&path) {
-                Ok(()) => tracing::debug!(path = %path.display(), "removed stale core copy"),
+                Ok(()) => {
+                    own.remove(&path);
+                    tracing::debug!(path = %path.display(), "removed stale core copy");
+                }
                 Err(err) => tracing::debug!(path = %path.display(), %err, "stale core copy kept"),
             }
         }
@@ -155,6 +161,16 @@ fn purge_stale_copies(dir: &Path, pid: u32, now: SystemTime) {
 }
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
+    // A symlink here would redirect `create_dir_all` and `set_permissions` elsewhere.
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if !meta.file_type().is_dir() => {
+            return Err(io::Error::other(format!(
+                "{} is not a real directory (symlink or file)",
+                dir.display()
+            )));
+        }
+        Ok(_) | Err(_) => {}
+    }
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -185,7 +201,15 @@ fn create_new_file(path: &Path) -> io::Result<File> {
 pub(crate) fn write_private_copy(original: &Path, dir: &Path) -> io::Result<PathBuf> {
     create_private_dir(dir)?;
     let pid = std::process::id();
-    purge_stale_copies(dir, pid, SystemTime::now());
+    {
+        let mut guard = OWN_COPIES.lock().unwrap_or_else(PoisonError::into_inner);
+        purge_stale_copies(
+            dir,
+            pid,
+            guard.get_or_insert_with(HashSet::new),
+            SystemTime::now(),
+        );
+    }
     let mut source = File::open(original)?;
     for _ in 0..MAX_NAME_ATTEMPTS {
         let n = COPY_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -201,6 +225,11 @@ pub(crate) fn write_private_copy(original: &Path, dir: &Path) -> io::Result<Path
             let _ = fs::remove_file(&path);
             return Err(err);
         }
+        OWN_COPIES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashSet::new)
+            .insert(path.clone());
         return Ok(path);
     }
     Err(io::Error::new(
@@ -302,6 +331,40 @@ mod tests {
     }
 
     #[test]
+    fn purge_spares_young_foreign_copies_with_our_pid() {
+        let dir = temp_dir("purge");
+        let pid = std::process::id();
+        let foreign = dir.join(format!("x-{pid}-900.so"));
+        let ours = dir.join(format!("x-{pid}-901.so"));
+        fs::write(&foreign, b"f").unwrap();
+        fs::write(&ours, b"o").unwrap();
+        let mut own = HashSet::from([ours.clone()]);
+        purge_stale_copies(&dir, pid, &mut own, SystemTime::now());
+        assert!(foreign.exists(), "same PID, not ours, young");
+        assert!(!ours.exists());
+        assert!(own.is_empty());
+        let later = SystemTime::now() + PURGE_MIN_AGE + Duration::from_secs(5);
+        purge_stale_copies(&dir, pid, &mut own, later);
+        assert!(!foreign.exists(), "old enough");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_copy_dir_is_refused() {
+        let dir = temp_dir("symlink");
+        let target = dir.join("target");
+        fs::create_dir(&target).unwrap();
+        let link = dir.join("core-copies");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let original = dir.join("o.so");
+        fs::write(&original, b"x").unwrap();
+        assert!(write_private_copy(&original, &link).is_err());
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn private_copy_is_a_fresh_identical_file() {
         let dir = temp_dir("copy");
         let original = dir.join("orig_libretro.so");
@@ -348,11 +411,17 @@ mod tests {
             fs::write(f, b"x").unwrap();
         }
         let now = SystemTime::now();
-        purge_stale_copies(&dir, pid, now);
+        let mut own = HashSet::from([ours.clone()]);
+        purge_stale_copies(&dir, pid, &mut own, now);
         assert!(!ours.exists());
         assert!(foreign.exists(), "young copy of another process is kept");
         assert!(unrelated.exists());
-        purge_stale_copies(&dir, pid, now + PURGE_MIN_AGE + Duration::from_secs(1));
+        purge_stale_copies(
+            &dir,
+            pid,
+            &mut own,
+            now + PURGE_MIN_AGE + Duration::from_secs(1),
+        );
         assert!(!foreign.exists(), "old copy of another process is purged");
         assert!(unrelated.exists());
         fs::remove_dir_all(&dir).unwrap();

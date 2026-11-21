@@ -74,6 +74,8 @@ pub struct ScanReport {
     pub ignored_loose_executables: u64,
     /// Files referenced by a `.cue` and hidden from every system (CD tracks).
     pub hidden_tracks: u64,
+    /// Archives holding images of two different computers (`.dsk` and `.d64`): ignored (design v5.0 §3.4).
+    pub ignored_mixed_archives: u64,
 }
 
 /// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).
@@ -161,6 +163,8 @@ enum Failure {
     Empty,
     /// No system takes the file without a DAT match (folder-only extension outside its folder).
     Unclassified,
+    /// Archive with images of two computers: ignored and counted, not an error.
+    MixedArchive,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -279,8 +283,8 @@ fn game_folder_system(folders: &[String]) -> Option<&'static SystemInfo> {
 
 fn entries_have_executable(entries: &[fs::DirEntry]) -> bool {
     entries.iter().any(|e| {
-        let path = e.path();
-        is_executable(&path) && fs::metadata(&path).is_ok_and(|m| m.is_file())
+        // Links are ignored (not followed), like the runtime snapshot.
+        is_executable(&e.path()) && e.file_type().is_ok_and(|t| t.is_file())
     })
 }
 
@@ -313,8 +317,8 @@ impl Walk<'_> {
         let mut file_size = 0u64;
         let mut mtime = fs::metadata(dir).map_or(0, |m| mtime_of(&m));
         for entry in entries {
-            if let Ok(meta) = fs::metadata(entry.path())
-                && meta.is_file()
+            if entry.file_type().is_ok_and(|t| t.is_file())
+                && let Ok(meta) = entry.metadata()
             {
                 file_size = file_size.saturating_add(meta.len());
                 mtime = mtime.max(mtime_of(&meta));
@@ -869,6 +873,8 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let mut saw_program = false;
     let mut saw_disc = false;
     let mut dos_files = Vec::new();
+    // Computers owning, alone, the extension of a non-empty entry (`.dsk` = cpc, `.d64` = c64).
+    let mut computers: HashSet<&'static str> = HashSet::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_data(index)
@@ -893,11 +899,17 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         };
         saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
         saw_disc |= DISC_EXTENSIONS.contains(&ext.as_str());
+        let candidates = systems_for_extension(&ext);
+        if let [only] = candidates.as_slice()
+            && only.kind == SystemKind::Computer
+            && entry.size() > 0
+        {
+            computers.insert(only.id.as_str());
+        }
         if chosen.is_some() {
             // Kept walking to see the programs and discs listed after the chosen entry.
             continue;
         }
-        let candidates = systems_for_extension(&ext);
         if !candidates.is_empty() {
             if entry.size() == 0 {
                 continue;
@@ -924,6 +936,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             },
             stem: stem_of(&found.path),
         });
+    }
+    if computers.len() > 1 {
+        return Err(Failure::MixedArchive);
     }
     if saw_disc {
         return Err(
@@ -1123,6 +1138,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let mut names: Vec<(std::ffi::OsString, PathBuf)> = fs::read_dir(&found.path)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| (e.file_name(), e.path()))
         .filter(|(_, path)| {
             is_executable(path) || lower_ext(path).is_some_and(|e| e == "ima" || e == "img")
@@ -1137,7 +1153,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         if is_cancelled(cancel) {
             return Err(Failure::Cancelled);
         }
-        let Some(size) = fs::metadata(&path)
+        let Some(size) = fs::symlink_metadata(&path)
             .ok()
             .filter(|m| m.is_file())
             .map(|m| m.len())
@@ -1519,6 +1535,10 @@ pub(crate) fn run(
                 }
                 Err(Failure::Unclassified) => {
                     unclassified.push((index, f.path.clone()));
+                    seen.remove(&f.key);
+                }
+                Err(Failure::MixedArchive) => {
+                    report.ignored_mixed_archives += 1;
                     seen.remove(&f.key);
                 }
                 Err(Failure::Empty) => {

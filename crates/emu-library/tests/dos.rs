@@ -428,3 +428,22 @@ fn a_playlist_of_a_dos_image_outside_the_folder_is_still_dos() {
     let systems: BTreeSet<String> = lib.games().unwrap().into_iter().map(|g| g.system).collect();
     assert_eq!(systems, BTreeSet::from(["dos".to_owned()]));
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_executable_does_not_make_a_game_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("roms");
+    let dos = root.join("dos");
+    write(&tmp.path().join("real.exe"), b"MZ-real");
+    write(&dos.join("linked/DATA.DAT"), b"data");
+    std::os::unix::fs::symlink(tmp.path().join("real.exe"), dos.join("linked/GAME.EXE")).unwrap();
+    write(&dos.join("plain/GAME.EXE"), b"MZ-plain");
+
+    let mut lib = Library::open_in_memory().unwrap();
+    scan(&mut lib, &root);
+    assert_eq!(
+        listed(&lib, &root),
+        BTreeSet::from([item("dos", "dos/plain", true)])
+    );
+}

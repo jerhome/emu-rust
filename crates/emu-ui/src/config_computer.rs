@@ -40,11 +40,6 @@ pub struct ComputerConfig {
     pub mouse_sensitivity: f32,
     /// A click in the game area captures the pointer.
     pub auto_capture: bool,
-    /// Mode of games launched from the library; the desktop (no game) is always `Keyboard`.
-    /// 2.0-4.0 key, superseded by `keyboard_mode` (5.0): CU1 makes it a read-only migration input (`"joystick"`
-    /// ⇒ `keyboard_mode = "joystick"`, `"keyboard"` ignored, never written again); `app.rs` reads it until CU2.
-    #[serde(skip_serializing)]
-    pub default_keyboard_mode: KeyboardModeChoice,
     /// 5.0: initial mode of a game without a remembered one (`Auto` = the system's `default_input`).
     #[serde(skip_serializing_if = "KeyboardModeSetting::is_auto")]
     pub keyboard_mode: KeyboardModeSetting,
@@ -68,7 +63,6 @@ impl Default for ComputerConfig {
         Self {
             mouse_sensitivity: 1.0,
             auto_capture: true,
-            default_keyboard_mode: KeyboardModeChoice::default(),
             keyboard_mode: KeyboardModeSetting::Auto,
             grab_pointer: true,
             emutos_variant: None,
@@ -79,7 +73,9 @@ impl Default for ComputerConfig {
     }
 }
 
-/// Deserialization shape of [`ComputerConfig`]: same keys, plus the migration of the 2.0-4.0 key.
+/// Deserialization shape of [`ComputerConfig`]: same keys, plus the migration of the 2.0-4.0 key
+/// `default_keyboard_mode` (read only: `"joystick"` ⇒ `keyboard_mode = "joystick"`, `"keyboard"` ignored, never
+/// written again).
 #[derive(Deserialize)]
 #[serde(default)]
 struct RawComputerConfig {
@@ -101,7 +97,7 @@ impl Default for RawComputerConfig {
         Self {
             mouse_sensitivity: d.mouse_sensitivity,
             auto_capture: d.auto_capture,
-            default_keyboard_mode: d.default_keyboard_mode,
+            default_keyboard_mode: KeyboardModeChoice::Keyboard,
             keyboard_mode: d.keyboard_mode,
             grab_pointer: d.grab_pointer,
             emutos_variant: d.emutos_variant,
@@ -125,7 +121,6 @@ impl From<RawComputerConfig> for ComputerConfig {
         Self {
             mouse_sensitivity: r.mouse_sensitivity,
             auto_capture: r.auto_capture,
-            default_keyboard_mode: r.default_keyboard_mode,
             keyboard_mode,
             grab_pointer: r.grab_pointer,
             emutos_variant: r.emutos_variant,
@@ -191,7 +186,7 @@ mod tests {
         let c: ComputerConfig = toml::from_str("mouse_sensitivity = 2.0\n").unwrap();
         assert_eq!(c.mouse_sensitivity, 2.0);
         assert!(c.auto_capture);
-        assert_eq!(c.default_keyboard_mode, KeyboardModeChoice::Keyboard);
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Auto);
         assert_eq!(ComputerConfig::default().emutos_variant, None);
     }
 
@@ -199,7 +194,7 @@ mod tests {
     fn mode_and_unknown_keys_round_trip() {
         let text = "default_keyboard_mode = \"joystick\"\nemutos_variant = \"192de\"\nfuture = 3\n";
         let c: ComputerConfig = toml::from_str(text).unwrap();
-        assert_eq!(c.default_keyboard_mode, KeyboardModeChoice::Joystick);
+        assert_eq!(c.keyboard_mode, KeyboardModeSetting::Joystick);
         assert_eq!(c.emutos_variant.as_deref(), Some("192de"));
         let back: ComputerConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         // The old key is migration input only: never written, its value moves to `keyboard_mode`.

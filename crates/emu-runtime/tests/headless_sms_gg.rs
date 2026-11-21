@@ -446,8 +446,10 @@ fn sms_zip_matches_rom() {
     let _guard = lock();
     let zip = rom_path("sub_rescue-0.3.zip");
     let data = tempfile::tempdir().unwrap();
+    // Separate data dirs: a same-named game already known would make the zip an homonym.
     let reference = {
-        let mut emu = load_in(data.path(), &rom_path(SMS.rom));
+        let bare = tempfile::tempdir().unwrap();
+        let mut emu = load_in(bare.path(), &rom_path(SMS.rom));
         run_frames(&mut emu, &mut NullInput, 300)
     };
     let mut emu = load_in(data.path(), &zip);

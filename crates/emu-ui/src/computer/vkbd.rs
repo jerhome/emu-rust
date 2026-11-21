@@ -18,6 +18,8 @@ const HOLD_FRAMES: u8 = 3;
 const ATARI_ST: &str = include_str!("../../data/keyboards/atari_st.toml");
 const AMIGA: &str = include_str!("../../data/keyboards/amiga.toml");
 const PC: &str = include_str!("../../data/keyboards/pc.toml");
+const CPC: &str = include_str!("../../data/keyboards/cpc.toml");
+const C64: &str = include_str!("../../data/keyboards/c64.toml");
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LayoutKey {
@@ -80,12 +82,14 @@ struct RawKey {
 }
 
 impl KeyboardLayout {
-    /// Built-in layout by id (`atari_st`, `amiga`, `pc`); `None` for an unknown id.
+    /// Built-in layout by id (`atari_st`, `amiga`, `pc`, `cpc`, `c64`); `None` for an unknown id.
     pub fn load(id: &str) -> Option<Self> {
         let text = match id {
             "atari_st" => ATARI_ST,
             "amiga" => AMIGA,
             "pc" => PC,
+            "cpc" => CPC,
+            "c64" => C64,
             _ => return None,
         };
         match Self::parse(text) {
@@ -154,13 +158,12 @@ pub(crate) fn legend_for_variant(variant: Option<&str>) -> &'static str {
 }
 
 /// Legend language for a keyboard layout value of a core option (`dosbox_pure_keyboard_layout`: `fr` / `be` /
-/// `sf` → `fr`, `gr` / `sg` → `de`), else `us`: the virtual keyboard shows what the emulated layout types.
-// DU2 (app.rs): legend of the PC keyboard.
-#[allow(dead_code)]
+/// `sf` → `fr`, `gr` / `sg` → `de`; `cap32_lang_layout`: `french` → `fr`), else `us`: the virtual keyboard shows
+/// what the emulated layout types.
 pub(crate) fn legend_for_layout_value(value: &str) -> &'static str {
     match value {
-        "fr" | "be" | "sf" => "fr",
-        "gr" | "sg" | "de" => "de",
+        "fr" | "be" | "sf" | "french" => "fr",
+        "gr" | "sg" | "de" | "german" => "de",
         _ => "us",
     }
 }
@@ -423,6 +426,9 @@ mod tests {
         assert_eq!(legend_for_layout_value("gr"), "de");
         assert_eq!(legend_for_layout_value("uk"), "us");
         assert_eq!(legend_for_layout_value("us"), "us");
+        assert_eq!(legend_for_layout_value("french"), "fr");
+        assert_eq!(legend_for_layout_value("english"), "us");
+        assert_eq!(legend_for_layout_value("spanish"), "us");
     }
 
     #[test]

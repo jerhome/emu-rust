@@ -81,6 +81,9 @@
  *   MOCK_FPS        strtod (default 60) -> retro_get_system_av_info fps (e.g. 70.09 for VGA); audio frames per run =
  *                   44100 / fps.
  *   MOCK_AV_CHANGE  strtod fps -> at frame 10 (once per load) SET_SYSTEM_AV_INFO (32) with that fps, same geometry.
+ *   MOCK_REFUSE_REINIT set -> a static guard aborts the process when retro_init runs a second time in the same library
+ *                   image (like dosbox_pure after deinit, ADR 0022). Only a fresh image (a private copy of the
+ *                   library) has a clear guard. Read with getenv() at retro_init.
  *
  * Behaviour (documented in docs/design/phase2-frontend.md, "Core factice"):
  *  - 64x48 XRGB8888 image computed from a frame counter, a seed (FNV-1a of the content file), the option
@@ -1056,7 +1059,13 @@ MOCK_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audi
 MOCK_API void retro_set_input_poll(retro_input_poll_t cb) { poll_cb = cb; }
 MOCK_API void retro_set_input_state(retro_input_state_t cb) { input_cb = cb; }
 
+static int init_seen = 0;
 MOCK_API void retro_init(void) {
+    if (getenv("MOCK_REFUSE_REINIT") && init_seen) {
+        fputs("mock core: second retro_init in the same image\n", stderr);
+        abort();
+    }
+    init_seen = 1;
     counter = 0;
     seed = 0;
     memset(sram, 0, sizeof sram);

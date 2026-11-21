@@ -142,6 +142,8 @@ impl Host {
             } else {
                 None
             },
+            launch: None,
+            auto_fast_load: true,
         };
         tracing::info!("lancement de « {} » avec {}", request.title, request.core);
         match App::build(options, true) {
@@ -332,7 +334,7 @@ impl Host {
                 LibraryEvent::Quit => event_loop.exit(),
                 LibraryEvent::Launch(request) => {
                     if self.game.is_none() && !event_loop.exiting() {
-                        self.start_game(event_loop, request);
+                        self.start_game(event_loop, *request);
                     } else if self.game.is_none() {
                         // Exiting: the request is dropped, release its core.
                         self.library.game_over(None, None);

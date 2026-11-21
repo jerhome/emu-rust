@@ -57,7 +57,7 @@ pub use crate::gamepad::{
     PadBackend, PadButton, PadEvent, PadEventKind, PadId, PadMap, ScriptedPadSource,
     retropad_from_name, retropad_name,
 };
-pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
+pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
 pub use crate::library::megacd_cli_hint;
@@ -106,6 +106,12 @@ pub struct LaunchOptions {
     pub screen: Option<Screen>,
     /// On exit, write the window contents (back buffer, after drawing) as PNG.
     pub dump_window: Option<PathBuf>,
+    /// `--launch` (design v5.0 §4): launch text of this run, over the game's `[media] launch`; refused when the
+    /// core takes none.
+    pub launch: Option<String>,
+    /// `false` (`--no-auto-fast-load`): the core's fast-forward requests are refused for this run, whatever
+    /// `[computer] auto_fast_load` says.
+    pub auto_fast_load: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

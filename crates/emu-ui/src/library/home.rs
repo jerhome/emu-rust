@@ -109,6 +109,12 @@ impl LibraryUi {
                 if ui.button(text::AMIGA_DESKTOP_BUTTON).clicked() {
                     self.launch_desktop("amiga");
                 }
+                if ui.button(text::CPC_BASIC_BUTTON).clicked() {
+                    self.launch_desktop("cpc");
+                }
+                if ui.button(text::C64_BASIC_BUTTON).clicked() {
+                    self.launch_desktop("c64");
+                }
                 if ui.button(text::CORES).clicked() {
                     self.set_page(Page::Cores);
                 }

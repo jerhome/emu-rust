@@ -4,8 +4,10 @@
 use std::path::PathBuf;
 
 use emu_runtime::{
-    ContentSpec, GameIdentity, StateOrigin, identity_request_for, resolve_game_identity,
+    ContentSpec, GameIdentity, SaveScope, StateOrigin, identity_request_for, resolve_game_identity,
 };
+
+use emu_assets::cores::CorePreferences;
 
 use crate::DataDirs;
 use crate::content::game_key;
@@ -26,18 +28,29 @@ pub struct ResolvedGame {
 
 /// Resolves the identity of `spec` for core `core_id` (registry of `<saves>/<core_id>/`), then the options path;
 /// copies the shared 2.0 options to a homonym that inherits them. Never fails: on error the 2.0 name is used.
+/// The `cores.toml` `save_scope` of the core applies (`Game` ⇒ `core_save_dir` is the game's own folder, design
+/// v5.0 §10 n° 1), the fallback identity included.
 pub fn resolve_game(core_id: &str, spec: ContentSpec, dirs: &DataDirs) -> ResolvedGame {
+    let scope = crate::content::save_scope(&CorePreferences::builtin(), core_id);
+    resolve_game_with(core_id, spec, dirs, scope)
+}
+
+/// [`resolve_game`] with an explicit save scope.
+pub(crate) fn resolve_game_with(
+    core_id: &str,
+    spec: ContentSpec,
+    dirs: &DataDirs,
+    scope: SaveScope,
+) -> ResolvedGame {
     let saves_core_dir = dirs.saves.join(core_id);
     let states_core_dir = dirs.states.join(core_id);
-    let request = identity_request_for(&spec, &saves_core_dir, &states_core_dir);
+    let mut request = identity_request_for(&spec, &saves_core_dir, &states_core_dir);
+    request.scope = scope;
     let (identity, resolution_failed) = match resolve_game_identity(&request) {
         Ok(identity) => (identity, false),
         Err(e) => {
             tracing::warn!("identité du jeu non résolue ({e}) : nom 2.0 utilisé");
-            (
-                GameIdentity::legacy(&request.base_name, &saves_core_dir),
-                true,
-            )
+            (request.fallback_identity(), true)
         }
     };
     let options_inherited = identity.inherits_legacy()
@@ -123,5 +136,22 @@ mod tests {
         let again = resolve_game("snes9x", ContentSpec::File(a), &dirs);
         assert_eq!(again.identity.save_name, "Game");
         assert!(!again.options_inherited);
+    }
+
+    /// `save_scope = "game"` (cap32): every game gets its own folder, the first one included.
+    #[test]
+    fn game_scope_gives_every_game_its_own_core_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(&dir.path().join("data"));
+        let rom = dir.path().join("Sorcery.dsk");
+        std::fs::write(&rom, b"disk").unwrap();
+        let r = resolve_game("cap32", ContentSpec::File(rom.clone()), &dirs);
+        assert_eq!(r.identity.save_name, "Sorcery");
+        assert_eq!(
+            r.identity.core_save_dir,
+            dirs.saves.join("cap32").join("Sorcery")
+        );
+        let flat = resolve_game_with("cap32", ContentSpec::File(rom), &dirs, SaveScope::Core);
+        assert_eq!(flat.identity.core_save_dir, dirs.saves.join("cap32"));
     }
 }
