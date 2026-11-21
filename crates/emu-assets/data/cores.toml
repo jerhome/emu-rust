@@ -268,7 +268,7 @@ cores = ["opera"]                                          # modified LGPL, non-
 #   Ids <= 0xFFFF; `default` must be a key of the table.
 # - save_family: cores whose SAVE_RAM files are interchangeable; a missing .srm is copied from another core.
 # - required_firmware.fallback = "core": the core falls back to its built-in BIOS by itself.
-# - game_saves may start with one literal sub-folder (`opera/per_game/{game}.*.srm`).
+# - game_saves may start with up to two literal sub-folders (`opera/per_game/{game}.*.srm`).
 [cores.pcsx_rearmed]
 media_direct = ["cue", "chd", "iso", "pbp", "bin"]
 options = { pcsx_rearmed_memcard2 = "none" }
@@ -293,7 +293,7 @@ media_direct = ["cue", "chd", "iso", "pbp", "bin"]
 options = { swanstation_GPU_Renderer = "Software" }        # hardware rendering is out of scope (ADR 0021 §1)
 save_family = "psx-memcard"
 pad_devices = { digital = 1, dualshock = 261, default = "digital" }
-builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence à confirmer (ADR 0021)." }
+builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence MIT (pcsx-redux/nugget) (ADR 0021)." }
 
 [cores.swanstation.featured_options]
 "Sony - PlayStation" = ["swanstation_Console_Region", "swanstation_BIOS_PatchFastBoot", "swanstation_MemoryCards_Card2Type", "swanstation_Controller1_AnalogDPadInDigitalMode", "swanstation_CPU_ExecutionMode"]
@@ -313,7 +313,7 @@ options = { beetle_psx_enable_memcard1 = "disabled" }
 game_saves = ["{game}.*.mcr"]
 save_family = "psx-memcard"
 pad_devices = { digital = 1, dualshock = 517, default = "digital" }
-builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence à confirmer (ADR 0021)." }
+builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence MIT (pcsx-redux/nugget) (ADR 0021)." }
 
 [cores.mednafen_psx.featured_options]
 "Sony - PlayStation" = ["beetle_psx_region", "beetle_psx_skip_bios", "beetle_psx_enable_memcard1", "beetle_psx_cpu_dynarec", "beetle_psx_dither_mode"]

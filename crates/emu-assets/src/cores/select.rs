@@ -1020,6 +1020,10 @@ fn is_save_pattern(pattern: &str) -> bool {
     if parts.len() > 2 || !parts.iter().all(|d| is_literal_folder(d)) {
         return false;
     }
+    // Same rule as the runtime (`SaveGlob::new`): below a sub-folder the pattern must name the game.
+    if !parts.is_empty() && !file.contains("{game}") {
+        return false;
+    }
     let without_game = file.replace("{game}", "");
     !file.is_empty()
         && file != "*"
@@ -1032,15 +1036,13 @@ fn is_save_pattern(pattern: &str) -> bool {
         && !file.ends_with([' ', '.'])
 }
 
+/// Runtime grammar (`SaveGlob::new`): `[a-z0-9_]+`.
 fn is_literal_folder(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
-        && name != "."
-        && !name.starts_with(' ')
-        && !name.ends_with([' ', '.'])
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b' '))
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// libretro option keys are plain identifiers (`hatari_vkbd`).
@@ -1743,17 +1745,61 @@ mod tests {
         assert!(parse("pad_devices = { digital = 65535, default = \"digital\" }").is_ok());
     }
 
+    /// Mirror of the runtime rules (`SaveGlob::new`): every shipped pattern must be usable at reset time.
+    #[test]
+    fn shipped_game_saves_fit_runtime_grammar() {
+        let value: toml::Value = toml::from_str(BUILTIN).unwrap();
+        let cores = value["cores"].as_table().unwrap();
+        let mut seen = 0;
+        for (id, core) in cores {
+            let game_scope = core.get("save_scope").and_then(|v| v.as_str()) == Some("game");
+            for p in core
+                .get("game_saves")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .map(|p| p.as_str().unwrap())
+            {
+                seen += 1;
+                let mut parts: Vec<&str> = p.split('/').collect();
+                let file = parts.pop().unwrap();
+                assert!(parts.len() <= 2, "{id}: {p}");
+                assert!(
+                    parts.iter().all(|d| !d.is_empty()
+                        && d.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')),
+                    "{id}: {p}"
+                );
+                assert!(file.matches('*').count() <= 1, "{id}: {p}");
+                assert!(
+                    !file.is_empty() && !file.contains(['\\', ':', '\0']),
+                    "{id}: {p}"
+                );
+                // `*.sav` without `{game}` is only valid for save_scope = "game" (no sub-folder).
+                assert!(
+                    file.contains("{game}") || (game_scope && parts.is_empty()),
+                    "{id}: {p}"
+                );
+            }
+        }
+        assert!(seen > 0);
+    }
+
     #[test]
     fn save_pattern_sub_folders() {
         for ok in [
             "{game}.brm",
             "opera/per_game/{game}.*.srm",
             "opera/{game}.srm",
-            "a/b/*.sav",
+            "a/b/{game}-*.sav",
         ] {
             assert!(is_save_pattern(ok), "{ok}");
         }
         for bad in [
+            "a/b/*.sav",
+            "A/{game}.srm",
+            "a-b/{game}.srm",
+            "a b/{game}.srm",
             "a/b/c/{game}.srm",
             "/abs/{game}.srm",
             "../{game}.srm",
