@@ -161,6 +161,8 @@ fn session(core: &Path, rom: &Path, dir: &Path, label: &str) -> u64 {
         variables: Vec::new(),
         provide_vfs: false,
         copy_dir: Some(dir.join("copies")),
+        fastforward_override: false,
+        variable_state_size: false,
     };
     let mut c = Core::load(core, config).unwrap_or_else(|e| panic!("{label}: load: {e}"));
     c.load_game(rom)

@@ -74,6 +74,8 @@ fn config(dir: &Path, copy_dir: Option<&Path>) -> CoreConfig {
         variables: Vec::new(),
         provide_vfs: false,
         copy_dir: copy_dir.map(Path::to_path_buf),
+        fastforward_override: false,
+        variable_state_size: false,
     }
 }
 

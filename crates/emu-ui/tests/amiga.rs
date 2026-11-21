@@ -105,6 +105,9 @@ fn emu_options(dirs: &DataDirs, core_variables: Vec<(String, String)>) -> Emulat
         assets_dir: dirs.assets.clone(),
         core_variables,
         restore_added_disks: true,
+        core_save_scope: emu_runtime::SaveScope::Core,
+        fastforward_override: false,
+        variable_state_size: false,
         cache_dir: dirs.cache_dir(),
         provide_vfs: false,
     }
