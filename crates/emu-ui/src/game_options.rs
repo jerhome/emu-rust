@@ -20,6 +20,10 @@ pub struct GameInput {
     pub keyboard_mode: Option<KeyboardModeChoice>,
     /// Absent: `[computer] auto_capture`.
     pub auto_capture: Option<bool>,
+    /// Pad mode of this game (`"digital"` | `"dualshock"`, design v7.0 §4); absent: `[input.pad_device]`, else the
+    /// core's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pad_device: Option<String>,
     /// The user accepted launching this game with the built-in AROS instead of a Kickstart (warned once per game).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub aros_acknowledged: bool,
@@ -320,6 +324,15 @@ mod tests {
             &map(&[("k", "kick")]),
         );
         assert_eq!(game, pairs(&[("k", "kick")]));
+    }
+
+    #[test]
+    fn pad_device_round_trips_and_is_omitted_when_unset() {
+        let mut o = GameOptions::default();
+        assert!(!toml::to_string(&o).unwrap().contains("pad_device"));
+        o.input.pad_device = Some("dualshock".into());
+        let back: GameOptions = toml::from_str(&toml::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back.input.pad_device.as_deref(), Some("dualshock"));
     }
 
     #[test]

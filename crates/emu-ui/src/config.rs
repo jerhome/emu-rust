@@ -258,6 +258,10 @@ pub struct InputConfig {
     /// `[input.gamepad]` (ADR 0016). Absent from 1.0/2.0 files and not written while default.
     #[serde(skip_serializing_if = "GamepadConfig::is_default")]
     pub gamepad: GamepadConfig,
+    /// `[input.pad_device]` (7.0, design §4): core id → pad mode key (`"digital"` | `"dualshock"`), the global
+    /// choice for a core that declares `pad_devices`. Absent = the core's default (digital).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pad_device: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -689,6 +693,19 @@ button = "a"
             c.keymap_for("other", PadStyle::Generic),
             KeyMap::snes_default()
         );
+    }
+
+    #[test]
+    fn pad_device_table_round_trips_and_is_absent_by_default() {
+        let c: Config = toml::from_str("[video]\nscale = 4\n").unwrap();
+        assert!(c.input.pad_device.is_empty());
+        assert!(!toml::to_string_pretty(&c).unwrap().contains("pad_device"));
+        let c: Config =
+            toml::from_str("[input.pad_device]\nswanstation = \"dualshock\"\n").unwrap();
+        assert_eq!(c.input.pad_device["swanstation"], "dualshock");
+        assert!(c.input.extra.is_empty());
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back.input.pad_device, c.input.pad_device);
     }
 
     #[test]

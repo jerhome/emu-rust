@@ -32,8 +32,8 @@ impl PadStyle {
             "snes9x" | "bsnes" | "mesen-s" => Self::Snes,
             "gambatte" | "sameboy" | "mgba_gb" => Self::GameBoy,
             "mgba" => Self::Gba,
-            // PU1: `pcsx_rearmed` | `swanstation` | `mednafen_psx` => PlayStation, `opera` => ThreeDo (and
-            // `from_extension("pbp")` => PlayStation). Not mapped yet: 6.0 behaviour is unchanged.
+            "pcsx_rearmed" | "swanstation" | "mednafen_psx" => Self::PlayStation,
+            "opera" => Self::ThreeDo,
             "nestopia" | "fceumm" | "mesen" | "quicknes" => Self::Nes,
             _ => Self::Generic,
         }
@@ -50,6 +50,7 @@ impl PadStyle {
             "nes" | "fds" | "unf" | "unif" => Some(Self::Nes),
             "md" | "gen" | "bin" | "smd" | "32x" => Some(Self::MegaDrive),
             "sfc" | "smc" => Some(Self::Snes),
+            "pbp" => Some(Self::PlayStation),
             _ => None,
         }
     }
@@ -462,14 +463,41 @@ impl KeyMap {
     }
 
     /// Port 0, PlayStation layout (design v7.0 §3.5): SNES layout (J = cross, K = circle, U = square, I = triangle,
-    /// O = L1, L = R1) plus L2 = P, R2 = M (PU1 moves them on a conflict with a shortcut); L3 / R3 unbound.
+    /// O = L1, L = R1) plus L2 = N, R2 = M; L3 / R3 unbound. P (pause) is taken by a global hotkey, hence N;
+    /// M only clashes with a host-key shortcut (mouse capture).
     pub fn playstation_default() -> Self {
-        todo!("PU1: PlayStation key layout")
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::with_faces(
+            true,
+            &[
+                (K::KeyJ, B::B),
+                (K::KeyK, B::A),
+                (K::KeyU, B::Y),
+                (K::KeyI, B::X),
+                (K::KeyO, B::L),
+                (K::KeyL, B::R),
+                (K::KeyN, B::L2),
+                (K::KeyM, B::R2),
+            ],
+        )
     }
 
     /// Port 0, 3DO layout: U = A, J = B, K = C, O = L, L = R, Enter = P, Right Shift = X.
+    /// Libretro buttons as opera reads them: A = Y, B = B, C = A, L / R, P = Start, X = Select.
     pub fn threedo_default() -> Self {
-        todo!("PU1: 3DO key layout")
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::with_faces(
+            true,
+            &[
+                (K::KeyU, B::Y),
+                (K::KeyJ, B::B),
+                (K::KeyK, B::A),
+                (K::KeyO, B::L),
+                (K::KeyL, B::R),
+            ],
+        )
     }
 
     /// Built-in layout of a keyboard profile: computer cores (joystick mode) get [`KeyMap::computer_default`],
@@ -598,7 +626,7 @@ impl InputBackend for KeyboardInput {
 
 #[cfg(test)]
 mod tests {
-    const ALL_STYLES: [PadStyle; 8] = [
+    const ALL_STYLES: [PadStyle; 10] = [
         PadStyle::MegaDrive,
         PadStyle::MasterSystem,
         PadStyle::GameGear,
@@ -606,6 +634,8 @@ mod tests {
         PadStyle::GameBoy,
         PadStyle::Nes,
         PadStyle::Gba,
+        PadStyle::PlayStation,
+        PadStyle::ThreeDo,
         PadStyle::Generic,
     ];
 
@@ -749,6 +779,37 @@ mod tests {
             assert_eq!(PadStyle::from_core_id(id), PadStyle::Snes);
         }
         assert_eq!(PadStyle::from_core_id("whatever"), PadStyle::Generic);
+        for id in ["pcsx_rearmed", "swanstation", "mednafen_psx"] {
+            assert_eq!(PadStyle::from_core_id(id), PadStyle::PlayStation);
+        }
+        assert_eq!(PadStyle::from_core_id("opera"), PadStyle::ThreeDo);
+        assert_eq!(PadStyle::from_extension("PBP"), Some(PadStyle::PlayStation));
+        // The core decides for the disc extensions.
+        for ext in ["cue", "chd", "iso", "m3u"] {
+            assert_eq!(PadStyle::from_extension(ext), None, "{ext}");
+        }
+    }
+
+    #[test]
+    fn playstation_and_3do_layouts() {
+        use JoypadButton as B;
+        let m = KeyMap::playstation_default();
+        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyJ]);
+        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyK]);
+        assert_eq!(m.keys_for(0, B::Y), vec![KeyCode::KeyU]);
+        assert_eq!(m.keys_for(0, B::X), vec![KeyCode::KeyI]);
+        assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyO]);
+        assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyL]);
+        assert_eq!(m.keys_for(0, B::L2), vec![KeyCode::KeyN]);
+        assert_eq!(m.keys_for(0, B::R2), vec![KeyCode::KeyM]);
+        assert!(m.keys_for(0, B::L3).is_empty() && m.keys_for(0, B::R3).is_empty());
+        assert_eq!(m.keys_for(0, B::Select), vec![KeyCode::ShiftRight]);
+        let m = KeyMap::threedo_default();
+        assert_eq!(m.keys_for(0, B::Y), vec![KeyCode::KeyU]); // A
+        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyJ]); // B
+        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyK]); // C
+        assert_eq!(m.keys_for(0, B::Start), vec![KeyCode::Enter]); // P
+        assert_eq!(m.keys_for(0, B::Select), vec![KeyCode::ShiftRight]); // X
     }
 
     #[test]

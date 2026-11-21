@@ -357,6 +357,35 @@ pub(crate) fn fallback_option(
         .map(|(option, value)| (option.to_owned(), value.to_owned()))
 }
 
+/// Warning of `CoreFallback` for a core that replaces the missing BIOS by its own (design v7.0 §3.5; shown once per
+/// game): the wanted file, and the other files of the table already present (`FirmwareCheck::others_present`,
+/// e.g. a BIOS of another region). `label` is the core's `builtin_firmware` label.
+#[allow(dead_code)] // PU2 uses it for the OSD / dialog of a `CoreFallback` without option
+pub(crate) fn core_fallback_warning(
+    label: &str,
+    wanted: &str,
+    others_present: &[String],
+) -> String {
+    let mut text = String::from(
+        "BIOS absent : le core utilise son remplaçant intégré, certains jeux peuvent ne pas fonctionner",
+    );
+    let label = label.trim();
+    if !label.is_empty() {
+        text.push_str(&format!(" ({label})"));
+    }
+    text.push('.');
+    if !wanted.is_empty() {
+        text.push_str(&format!(" Fichier attendu : {wanted}."));
+    }
+    if !others_present.is_empty() {
+        text.push_str(&format!(
+            " Présent mais d'une autre région : {}.",
+            others_present.join(", ")
+        ));
+    }
+    text
+}
+
 /// What a launch decides about firmware before loading the core (design v3.0 §2.1, §3.5.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FirmwareSetup {
@@ -980,5 +1009,14 @@ mod tests {
         // A `.bin` cartridge stays a cartridge (never the Mega CD table).
         let bin = db(&gpgx, "/nonexistent/Sonic.bin");
         assert_ne!(bin.as_deref(), Some(MEGA_CD));
+    }
+
+    #[test]
+    fn core_fallback_warning_text() {
+        let t = core_fallback_warning("HLE", "scph5501.bin", &[]);
+        assert!(t.starts_with("BIOS absent : le core utilise son remplaçant intégré"));
+        assert!(t.contains("scph5501.bin") && t.contains("(HLE)") && !t.contains("région"));
+        let t = core_fallback_warning("", "scph5501.bin", &["scph5502.bin".into()]);
+        assert!(t.contains("scph5502.bin") && !t.contains("()"));
     }
 }

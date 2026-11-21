@@ -194,6 +194,9 @@ pub fn plan_disc_launch(
     if is_zip {
         return Err(LaunchRefusal::ArchivedDisc);
     }
+    if let Some(refusal) = foreign_disc(game) {
+        return Err(refusal);
+    }
     // A `.m3u` game keeps the user's playlist as its single content (`media` lists its discs).
     if game.media.len() < 2 || is_m3u(&game.path) {
         return Ok(ContentSpec::File(game.path.clone()));
@@ -211,6 +214,18 @@ pub fn plan_disc_launch(
         },
         rules,
     })
+}
+
+/// The header of the first disc names a known format that belongs to an other system than the game's. An
+/// unreadable or unknown header never refuses (and a `.chd` is never read).
+fn foreign_disc(game: &emu_library::Game) -> Option<LaunchRefusal> {
+    let first = if is_m3u(&game.path) {
+        game.media.first()?
+    } else {
+        &game.path
+    };
+    let info = emu_library::disc_info(first).ok().flatten()?;
+    (info.format.system_id() != game.system).then_some(LaunchRefusal::ForeignDisc)
 }
 
 /// `cores.toml` `m3u_launch` of a core as the runtime takes it (`None` without the key).
@@ -603,5 +618,41 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// 7.0: a disc whose header names another system than the game's is refused (a Sega CD disc filed under
+    /// `psx`); the right system, an unreadable header and a `.chd` never refuse.
+    #[test]
+    fn foreign_disc_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sector = b"SEGADISCSYSTEM  ".to_vec();
+        sector.resize(0x220, 0);
+        let iso = tmp.path().join("Disc.iso");
+        std::fs::write(&iso, &sector).unwrap();
+        let prefs = CorePreferences::builtin();
+        let core = CoreId::new("pcsx_rearmed").unwrap();
+        let path = iso.to_str().unwrap();
+        let mut game = disc_game(path, &[], None);
+        game.system = "psx".into();
+        assert_eq!(
+            plan_disc_launch(&game, &core, &prefs),
+            Err(LaunchRefusal::ForeignDisc)
+        );
+        game.system = "megacd".into();
+        assert!(plan_disc_launch(&game, &core, &prefs).is_ok());
+        // A playlist is judged by its first disc.
+        let m3u = tmp.path().join("g.m3u");
+        std::fs::write(&m3u, "Disc.iso\n").unwrap();
+        let mut game = disc_game(m3u.to_str().unwrap(), &[path, path], None);
+        game.system = "psx".into();
+        assert_eq!(
+            plan_disc_launch(&game, &core, &prefs),
+            Err(LaunchRefusal::ForeignDisc)
+        );
+        // No header to read: no refusal.
+        let mut game = disc_game("/nowhere/Game.cue", &[], None);
+        game.system = "psx".into();
+        assert!(plan_disc_launch(&game, &core, &prefs).is_ok());
+        assert!(!LaunchRefusal::ForeignDisc.message().is_empty());
     }
 }
