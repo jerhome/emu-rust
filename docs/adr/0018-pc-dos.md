@@ -306,3 +306,11 @@ Les décisions ci-dessus sont confirmées. Précisions (détail : design 4.0 §1
   `releaseyear` / `developer` de `DOS.dat` ne sont pas importées en 4.0.
 - **MT-32 (§5)** : la section « DOS » de `firmware.toml` existe depuis la 3.0 (A3) ; la 4.0 n'y ajoute rien.
 - `m3u8` est traité comme `m3u` dans les trois crates qui lisent des listes.
+
+## Amendement du 2026-11-21 (2) — rechargement de dosbox_pure dans le même processus
+
+dosbox_pure reste en mémoire après `dlclose` (liaisons de `libstdc++` vers ses symboles C++) et plante au 2e
+`retro_load_game` du même processus (« Redémarrer le jeu », jeu suivant depuis la bibliothèque). Décision
+transversale : **ADR 0022** (détection « resté en mémoire » après déchargement, puis chargement d'une copie privée
+sous un nom unique dans `<data>/cache/core-copies/`). Aucune clé `cores.toml` ; `CoreConfig::copy_dir` et
+`LibretroError::CoreCopy` s'ajoutent aux API du §« Conséquences ». Détail et découpage : design 4.0 §10 n° 21.
