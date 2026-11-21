@@ -41,13 +41,9 @@ pub fn failure_hint(core_error: Option<&str>) -> String {
     }
 }
 
-/// Control characters of an untrusted core message removed (one terminal line).
+/// Untrusted core message as one terminal line (control and Unicode format characters removed).
 fn clean_line(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .trim()
-        .to_owned()
+    emu_ui::sanitize_core_line(text)
 }
 
 /// Appended to a runtime error (the core exists but could not be loaded or started).
@@ -71,6 +67,12 @@ mod tests {
         );
         assert_eq!(failure_hint(None), load_failure_hint());
         assert_eq!(failure_hint(Some(" \n")), load_failure_hint());
+    }
+
+    #[test]
+    fn bidi_and_format_characters_are_removed() {
+        let hint = failure_hint(Some("a\u{202E}b\u{2066}c"));
+        assert!(!hint.contains('\u{202E}') && !hint.contains('\u{2066}'));
     }
 
     #[test]

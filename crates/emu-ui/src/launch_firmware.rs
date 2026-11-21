@@ -100,25 +100,60 @@ pub(crate) fn firmware_system_for(
     }
 }
 
+/// Extensions of the entries of a zip (central directory only, nothing is decompressed); empty if unreadable.
+fn zip_entry_extensions(path: &Path) -> Vec<String> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return Vec::new();
+    };
+    (0..archive.len())
+        .filter_map(|i| {
+            let entry = archive.by_index_raw(i).ok()?;
+            let name = entry.name().ok()?.into_owned();
+            let ext = Path::new(&name).extension()?.to_str()?.to_ascii_lowercase();
+            Some(ext)
+        })
+        .collect()
+}
+
 /// libretro database name of the system of `first_file` for `core` when no library entry says it (CLI
-/// `--core/--rom`): the systems accepting its extension that list the core; a disc header (`disc_info`) picks a
-/// `disc = true` system, otherwise the first cartridge system. `None`: nothing matches (the core's table system
-/// applies, [`firmware_system`]).
+/// `--core/--rom`): the systems accepting its extension (for a `.zip`, the extension of its first recognised
+/// entry) that list the core; a disc header (`disc_info`) picks a `disc = true` system, otherwise the first
+/// cartridge system. A file whose extension is unknown (`.7z`, odd name) never selects a system with a
+/// `required_firmware` table by default: the first system of the core without table applies (a Mega Drive `.zip`
+/// is not a Mega CD game). `None`: no file, or the core only lists systems with a table ([`firmware_system`]).
 pub(crate) fn content_database(
     prefs: &CorePreferences,
     core: &CoreId,
     first_file: Option<&Path>,
 ) -> Option<String> {
     let path = first_file?;
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let candidates: Vec<&emu_library::SystemInfo> = emu_library::systems_for_extension(&ext)
-        .into_iter()
-        .filter(|s| {
-            prefs
-                .systems()
-                .any(|(db, cores)| db == s.database && cores.contains(core))
-        })
-        .collect();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let lists_core = |s: &emu_library::SystemInfo| {
+        prefs
+            .systems()
+            .any(|(db, cores)| db == s.database && cores.contains(core))
+    };
+    let candidates_of = |ext: &str| -> Vec<&emu_library::SystemInfo> {
+        emu_library::systems_for_extension(ext)
+            .into_iter()
+            .filter(|s| lists_core(s))
+            .collect()
+    };
+    let mut candidates = candidates_of(&ext);
+    if candidates.is_empty() && ext == "zip" {
+        candidates = zip_entry_extensions(path)
+            .iter()
+            .map(|e| candidates_of(e))
+            .find(|c| !c.is_empty())
+            .unwrap_or_default();
+    }
     let chosen = match candidates.as_slice() {
         [] => None,
         [only] => Some(*only),
@@ -131,7 +166,25 @@ pub(crate) fn content_database(
                 .copied()
         }
     };
-    chosen.map(|s| s.database.clone())
+    chosen.map(|s| s.database.clone()).or_else(|| {
+        let plain = |db: &str| {
+            prefs
+                .systems()
+                .any(|(s, cores)| s == db && cores.contains(core))
+                && prefs.required_firmware(core, db).is_none()
+        };
+        // Mega Drive / 32X first (the cores that also play Mega CD), then the first plain system of the core.
+        ["Sega - Mega Drive - Genesis", "Sega - 32X"]
+            .into_iter()
+            .find(|db| plain(db))
+            .map(str::to_owned)
+            .or_else(|| {
+                prefs
+                    .systems()
+                    .find(|(db, cores)| cores.contains(core) && plain(db))
+                    .map(|(db, _)| db.to_owned())
+            })
+    })
 }
 
 /// Variant key of a `variant = "region"` table (design v6.0 §2.2, GU1): `region` (`Game::region`) when known,
@@ -333,6 +386,16 @@ pub(crate) fn firmware_setup_for(
 ) -> FirmwareSetup {
     let Some(core) = CoreId::new(core_id) else {
         return FirmwareSetup::default();
+    };
+    // No library entry (CLI, tools): the system comes from the file, never from the core's first table.
+    let from_file = if facts.database.is_none() {
+        content_database(prefs, &core, first_file)
+    } else {
+        None
+    };
+    let facts = GameFacts {
+        database: facts.database.or(from_file.as_deref()),
+        ..facts
     };
     let global = config
         .core_options
@@ -814,6 +877,52 @@ mod tests {
     }
 
     #[test]
+    fn cli_zip_never_asks_for_the_cd_bios() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(tmp.path());
+        std::fs::create_dir_all(&dirs.system).unwrap();
+        let prefs = CorePreferences::builtin();
+        let zip_of = |name: &str, entry: &str| {
+            let path = tmp.path().join(name);
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            w.start_file(entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(b"rom").unwrap();
+            w.finish().unwrap();
+            path
+        };
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let sonic = zip_of("Sonic.zip", "Sonic.md");
+        assert_eq!(
+            content_database(&prefs, &gpgx, Some(&sonic)).as_deref(),
+            Some(MEGA_DRIVE)
+        );
+        let doom = zip_of("Doom.zip", "Doom.32x");
+        let pico = CoreId::new("picodrive").unwrap();
+        assert_eq!(
+            content_database(&prefs, &pico, Some(&doom)).as_deref(),
+            Some("Sega - 32X")
+        );
+        let setup = |core: &str, path: &Path| {
+            firmware_setup(
+                core,
+                Some(path),
+                &dirs,
+                &Config::default(),
+                &prefs,
+                &mut GameOptions::default(),
+            )
+        };
+        assert_eq!(setup("genesis_plus_gx", &sonic).notice, None);
+        assert_eq!(setup("picodrive", &doom).notice, None);
+        let missing = Path::new("/nonexistent/Sonic.7z");
+        assert_eq!(setup("genesis_plus_gx", missing).notice, None);
+        let cue = setup("genesis_plus_gx", Path::new("/nonexistent/Dune.cue"));
+        assert!(cue.notice.is_some_and(|n| n.contains("bios_CD_")));
+    }
+
+    #[test]
     fn cli_content_finds_the_system_of_the_file() {
         let prefs = CorePreferences::builtin();
         let gpgx = CoreId::new("genesis_plus_gx").unwrap();
@@ -823,7 +932,12 @@ mod tests {
         assert_eq!(db(&gpgx, "/r/Dune.cue").as_deref(), Some(MEGA_CD));
         assert_eq!(db(&gpgx, "/r/Dune.CHD").as_deref(), Some(MEGA_CD));
         assert_eq!(db(&pico, "/r/Doom.32x").as_deref(), Some("Sega - 32X"));
-        assert_eq!(db(&gpgx, "/r/x.zzz"), None);
+        // Unknown extension: the first system of the core without BIOS table, never the Mega CD.
+        assert_eq!(db(&gpgx, "/r/x.zzz").as_deref(), Some(MEGA_DRIVE));
+        assert_eq!(db(&gpgx, "/r/Sonic.zip").as_deref(), Some(MEGA_DRIVE));
+        assert_eq!(db(&gpgx, "/r/Sonic.7z").as_deref(), Some(MEGA_DRIVE));
+        let pdb = db(&pico, "/r/Doom.zip");
+        assert!(pdb.is_some() && pdb.as_deref() != Some(MEGA_CD));
         assert_eq!(content_database(&prefs, &gpgx, None), None);
         // A `.bin` cartridge stays a cartridge (never the Mega CD table).
         let bin = db(&gpgx, "/nonexistent/Sonic.bin");

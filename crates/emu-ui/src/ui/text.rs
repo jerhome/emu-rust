@@ -281,6 +281,17 @@ pub fn sanitize_core_text(s: &str) -> String {
         .collect()
 }
 
+/// [`sanitize_core_text`] as one terminal line: newlines, control and format characters (bidi overrides...)
+/// become spaces, ends trimmed.
+pub fn sanitize_core_line(s: &str) -> String {
+    sanitize_core_text(s)
+        .chars()
+        .map(|c| if c == '\n' || c == '\u{FFFD}' { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 // ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
 
 pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : ↑ ↓ puis Entrée pour lancer un programme · → : le lancer automatiquement la prochaine fois";

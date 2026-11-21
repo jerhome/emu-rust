@@ -277,7 +277,36 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
         for line in &required {
             println!("{}", describe_required(line));
         }
-        required_problem |= required_is_problem(&required);
+        // Built-in ROMs of the systems without table (picodrive: 32X BIOS) are shown.
+        let known = KnownFirmware::builtin();
+        for (system, cores) in prefs.systems() {
+            if cores.contains(&id)
+                && prefs.required_firmware(&id, system).is_none()
+                && let Some(Ok(check)) =
+                    check_core_firmware(&dirs.system, &prefs, &id, system, None, &known)
+                && matches!(check.state, FirmwareState::Builtin { .. })
+            {
+                println!(
+                    "{}",
+                    describe_required(&RequiredLine {
+                        region: None,
+                        check
+                    })
+                );
+            }
+        }
+        // A core that also plays a system without table (genesis_plus_gx, picodrive: Mega Drive / 32X) is not
+        // in error for a missing Mega CD BIOS: the exit code only reflects cores that cannot play without it.
+        let playable_without_table = prefs.systems().any(|(system, cores)| {
+            cores.contains(&id) && prefs.required_firmware(&id, system).is_none()
+        });
+        if required_is_problem(&required) && playable_without_table {
+            println!(
+                "  (BIOS requis pour les seuls jeux Mega CD ; Mega Drive et 32X jouables sans)"
+            );
+        } else {
+            required_problem |= required_is_problem(&required);
+        }
         for status in &statuses {
             println!("{}", describe(status));
             required_problem |= required.is_empty()

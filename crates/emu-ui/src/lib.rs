@@ -62,6 +62,7 @@ pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
+pub use crate::ui::text::sanitize_core_line;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.
