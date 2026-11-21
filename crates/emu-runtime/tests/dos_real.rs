@@ -4,10 +4,12 @@
 //! All tests are `#[ignore]`: run `scripts/fetch-test-assets.sh --with-4.0` then
 //! `cargo test -p emu-runtime --test dos_real -- --ignored --test-threads=1`.
 //!
-//! **One process per emulation session.** dosbox_pure cannot be loaded a second time in the same process once it
-//! has run frames (`retro_deinit` leaves the library mapped with stale state; the second `retro_load_game`
-//! crashes with SIGSEGV, reproduced with `emu-libretro` alone). Each test therefore drives its sessions through
-//! `play`, which re-executes this test binary (`zz_worker`) with the scenario in `DOS_PLAY` and reads back
+//! **One process per emulation session, for isolation.** dosbox_pure stays mapped after `dlclose` (libstdc++ binds to
+//! its exported templates), so its static state survives `retro_deinit`; since ADR 0022 `emu-libretro` reloads it
+//! from a private copy of the library, which works in the same process (see
+//! `two_dos_games_in_a_row_in_the_same_process`). The other tests still drive each session through `play`, which
+//! re-executes this test binary (`zz_worker`) with the scenario in `DOS_PLAY`: every session then starts from a
+//! pristine process, so the pinned fingerprints do not depend on what ran before. The worker reads back
 //! `@@ key=value` lines. Set `EMU_UPDATE_FINGERPRINTS=1` to
 //! (re)write `tests/fingerprints/dos-dosbox-pure.txt` after inspecting the PNGs in `target/test-output/dos/`.
 
@@ -394,6 +396,28 @@ fn zz_worker() {
     }
 }
 
+/// Worker of `two_dos_games_in_a_row_in_the_same_process`: three sessions (hello, menu, hello) in this process,
+/// each a full `Emulator` life cycle in the same data directory (the application's "next game" case).
+#[test]
+#[ignore = "worker of the other tests (needs DOS_SEQUENCE)"]
+fn zz_sequence_worker() {
+    let Some(text) = std::env::var_os("DOS_SEQUENCE") else {
+        return;
+    };
+    let mut lines = text
+        .to_string_lossy()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let data = lines.remove(0);
+    println!();
+    for (i, content) in lines.iter().enumerate() {
+        let params = parse_params(&format!("data={data}\ncontent={content}\nframes=600"));
+        let report = session(&params);
+        println!("@@ fp{i}={}", report["fp"]);
+    }
+}
+
 /// Result of one session.
 struct Played {
     report: BTreeMap<String, String>,
@@ -533,6 +557,58 @@ fn hello_zip_and_folder_show_the_text_and_leave_the_sources_alone() {
     );
     assert_eq!(digest(&zip), zip_before, "the zip must stay untouched");
     assert_eq!(digest(&dir), dir_before, "the folder must stay untouched");
+}
+
+#[test]
+#[ignore = "needs dosbox_pure and the DOS test data: scripts/fetch-test-assets.sh --with-4.0"]
+fn two_dos_games_in_a_row_in_the_same_process() {
+    let _guard = lock();
+    let games = games("same-process");
+    let hello = format!("file:{}", games.join("hello.zip").display());
+    let menu = format!("folder:{}", games.join("menu").display());
+    let data = out_dir("same-process-data");
+
+    // Reference: hello in a pristine process.
+    let reference = play("same-process-ref", &[("content", &hello)]).fp();
+
+    // hello, menu, hello again, all in one process: no crash, and the third run equals a fresh process.
+    let text = format!("{}\n{hello}\n{menu}\n{hello}", data.display());
+    let run = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "zz_sequence_worker",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("DOS_SEQUENCE", text)
+        .output()
+        .expect("spawn the worker");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "the sequence crashed ({}):\n{stdout}\n{}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let fp = |i: usize| {
+        let key = format!("@@ fp{i}=");
+        let hex = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(&key))
+            .unwrap_or_else(|| panic!("no {key} in:\n{stdout}"));
+        u64::from_str_radix(hex, 16).unwrap()
+    };
+    assert_eq!(fp(0), reference, "first session = fresh process");
+    assert_ne!(fp(0), fp(1), "the second game shows something else");
+    assert_eq!(
+        fp(2),
+        reference,
+        "reload through the private copy = fresh process"
+    );
+    // The copies are unlinked as soon as they are mapped.
+    let copies = data.join("cache/core-copies");
+    assert_eq!(fs::read_dir(&copies).map_or(0, Iterator::count), 0);
 }
 
 #[test]
