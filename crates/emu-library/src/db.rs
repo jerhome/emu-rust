@@ -744,32 +744,34 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
         {
             continue;
         }
-        let (candidates, by_dat): (Vec<&SystemInfo>, bool) =
-            if ext == "bin" && row.system == SEGA_32X {
-                // Kept as 32X by its header (scanner probe): only the 32X DAT re-identifies it.
-                match crate::system(SEGA_32X) {
-                    Some(s) if system == SEGA_32X => (vec![s], false),
-                    _ => continue,
-                }
-            } else {
-                let all = systems_for_extension(&ext);
-                if !all.iter().any(|s| s.id == system) {
-                    continue;
-                }
-                let pinned = all
-                    .iter()
-                    .copied()
-                    .find(|s| row.pinned && s.id == row.system);
-                match pinned {
-                    Some(p) => (vec![p], false),
-                    None => match attribute(&ext, &[]) {
-                        Attribution::Folder(s) => (vec![s], false),
-                        Attribution::Candidates(c) => (c, false),
-                        Attribution::ByDat(c) => (c, true),
-                        Attribution::Unclassified => continue,
-                    },
-                }
-            };
+        let (candidates, by_dat): (Vec<&SystemInfo>, bool) = if ext == "bin"
+            && (row.system == SEGA_32X || crate::system(&row.system).is_some_and(|s| s.disc))
+        {
+            // Kept as 32X, PlayStation or 3DO by its header (scanner probe): only the DAT of that system
+            // re-identifies it.
+            match crate::system(&row.system) {
+                Some(s) if system == row.system => (vec![s], false),
+                _ => continue,
+            }
+        } else {
+            let all = systems_for_extension(&ext);
+            if !all.iter().any(|s| s.id == system) {
+                continue;
+            }
+            let pinned = all
+                .iter()
+                .copied()
+                .find(|s| row.pinned && s.id == row.system);
+            match pinned {
+                Some(p) => (vec![p], false),
+                None => match attribute(&ext, &[]) {
+                    Attribution::Folder(s) => (vec![s], false),
+                    Attribution::Candidates(c) => (c, false),
+                    Attribution::ByDat(c) => (c, true),
+                    Attribution::Unclassified => continue,
+                },
+            }
+        };
         let size = u64::try_from(row.size).unwrap_or(0);
         let hashes = match (crc_from(row.crc32), sha1_from(row.sha1)) {
             (Some(crc32), Some(sha1)) => {
@@ -1148,6 +1150,18 @@ impl Library {
                 [system],
             )
             .map_err(db_error)?;
+        }
+        if crate::system(system).is_some_and(|s| s.disc) {
+            // A `.chd` outside any folder is attributed by its name only when one Redump DAT lists it (design
+            // v7.0 §3.4): a new Redump DAT may make the name of another disc system's `.chd` ambiguous.
+            for other in crate::systems().iter().filter(|s| s.disc && s.id != system) {
+                tx.execute(
+                    "UPDATE game SET mtime_unix = -1
+                     WHERE system = ?1 AND pinned = 0 AND lower(path) LIKE '%.chd'",
+                    [other.id.as_str()],
+                )
+                .map_err(db_error)?;
+            }
         }
         tx.commit().map_err(db_error)?;
         Ok(count)

@@ -72,14 +72,27 @@ const SEGA_MAGIC: &[u8] = b"SEGADISCSYSTEM";
 const RAW_DATA_OFFSET: usize = 0x10;
 /// Byte genesis_plus_gx reads to pick the CD BIOS (design C2): 0x64 Europe, 0xA1 Japan, anything else USA.
 const REGION_BYTE: usize = 0x20B;
-/// Enough for the region byte behind a raw sector header (0x10 + 0x20C), well under the 0x220 bound.
-const PROBE_LEN: usize = RAW_DATA_OFFSET + REGION_BYTE + 1;
 /// Mega Drive style header inside sector 0: type + serial field (`GM T-93175 -00`), 14 bytes.
 const SERIAL_OFFSET: usize = 0x180;
 const SERIAL_LEN: usize = 14;
 /// 32X cartridge signature at 0x100 (`SEGA 32X`).
 const SEGA_32X_MAGIC: &[u8] = b"SEGA 32X";
 const CARTRIDGE_MAGIC_OFFSET: usize = 0x100;
+/// 3DO (Opera) volume header: record type, five sync bytes, version.
+const OPERA_MAGIC: &[u8] = b"\x01\x5A\x5A\x5A\x5A\x5A\x01";
+/// User bytes of a data sector (MODE1, MODE2 form 1, ISO).
+const USER_DATA: usize = 2048;
+/// System identifier of a PlayStation ISO 9660 descriptor (`PLAYSTATION`, space padded).
+const PSX_SYSTEM_ID: &[u8] = b"PLAYSTATION";
+/// First bytes of a track read by the disc probes: up to the end of the user data of sector 16 in a raw MODE2
+/// track (the largest of the three layouts), so the PlayStation descriptor and licence sector come in one read.
+const PSX_HEAD_LEN: usize = 16 * 2352 + 24 + USER_DATA;
+/// Sector reads of a PlayStation probe past the first `PSX_HEAD_LEN` bytes: root directory, then `SYSTEM.CNF`.
+const MAX_PSX_SECTOR_READS: usize = MAX_ROOT_SECTORS as usize + 1;
+/// Sectors of the ISO 9660 root directory walked to find `SYSTEM.CNF`.
+const MAX_ROOT_SECTORS: u64 = 4;
+/// Fixed part of an ISO 9660 directory record (33 bytes + at least one name byte).
+const DIR_RECORD_MIN: usize = 34;
 
 fn io_error(path: &Path, source: io::Error) -> LibraryError {
     LibraryError::Io {
@@ -196,11 +209,11 @@ pub fn cue_references(cue: &Path) -> Result<Vec<PathBuf>, LibraryError> {
         .collect())
 }
 
-/// Reads up to `PROBE_LEN` bytes from the start of `path`.
-fn read_head(path: &Path) -> Result<Vec<u8>, LibraryError> {
+/// Reads up to `len` bytes from the start of `path`.
+fn read_head(path: &Path, len: usize) -> Result<Vec<u8>, LibraryError> {
     let file = open_regular(path)?;
-    let mut head = Vec::with_capacity(PROBE_LEN);
-    file.take(PROBE_LEN as u64)
+    let mut head = Vec::with_capacity(len);
+    file.take(len as u64)
         .read_to_end(&mut head)
         .map_err(|e| io_error(path, e))?;
     Ok(head)
@@ -223,6 +236,13 @@ fn probe_head(head: &[u8], offsets: &[usize]) -> Option<DiscInfo> {
             region: head.get(off + REGION_BYTE).copied().map(region_of_byte),
         })
     })
+}
+
+/// 3DO volume header (`01 5A 5A 5A 5A 5A 01`) at one of `offsets` of `head`.
+fn opera_at(head: &[u8], offsets: &[usize]) -> bool {
+    offsets
+        .iter()
+        .any(|&off| head.get(off..off + OPERA_MAGIC.len()) == Some(OPERA_MAGIC))
 }
 
 /// A track of a cue is read only if it stays in the cue's folder: a symlink pointing elsewhere is not followed.
@@ -253,43 +273,364 @@ pub(crate) fn first_track(cue: &Path) -> Result<Option<PathBuf>, LibraryError> {
         .filter(|track| track_in_folder(cue, track)))
 }
 
-/// First bytes of a data track, and the offsets where its header may start.
-type Head = (Vec<u8>, &'static [usize]);
+/// How the sectors of a data track are stored: bytes per sector and offset of the 2048 user bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Layout {
+    sector: usize,
+    data: usize,
+}
 
-/// First bytes of the data track of a disc and the offsets where its header may start: a `.iso` (0), a `.bin`
-/// track or the first track of a `.cue` (0 or 0x10). `Ok(None)`: no readable track (or a `.chd`, never read).
-fn disc_head(path: &Path) -> Result<Option<Head>, LibraryError> {
-    const ISO: &[usize] = &[0];
-    const TRACK: &[usize] = &[0, RAW_DATA_OFFSET];
+const COOKED: Layout = Layout {
+    sector: 2048,
+    data: 0,
+};
+/// MODE2/2352 form 1 (PlayStation): sync, header, 8-byte subheader.
+const MODE2_RAW: Layout = Layout {
+    sector: 2352,
+    data: 24,
+};
+const MODE1_RAW: Layout = Layout {
+    sector: 2352,
+    data: RAW_DATA_OFFSET,
+};
+const ISO_LAYOUTS: &[Layout] = &[COOKED, MODE2_RAW, MODE1_RAW];
+const TRACK_LAYOUTS: &[Layout] = &[MODE2_RAW, MODE1_RAW, COOKED];
+const ISO_OFFSETS: &[usize] = &[0];
+const TRACK_OFFSETS: &[usize] = &[0, RAW_DATA_OFFSET];
+
+/// Data track of a disc: the file to read and where its headers may start.
+struct Track {
+    path: PathBuf,
+    /// Offsets of a sector-0 header (Sega CD, 3DO).
+    offsets: &'static [usize],
+    /// Layouts tried for the ISO 9660 descriptor (PlayStation).
+    layouts: &'static [Layout],
+}
+
+/// Data track of a `.iso` (itself), a `.bin` (itself) or a `.cue` (its first file, kept in its folder), opened.
+/// `Ok(None)`: no readable track (a cue without `FILE` line or whose track is missing, a `.chd` / `.pbp`, never
+/// read, any other extension).
+fn open_track(path: &Path) -> Result<Option<(Track, File)>, LibraryError> {
     let Some(ext) = ext_of(path) else {
         return Ok(None);
     };
-    match ext.as_str() {
-        "iso" => Ok(Some((read_head(path)?, ISO))),
-        "bin" => Ok(Some((read_head(path)?, TRACK))),
-        "cue" => {
-            let Some(track) = first_track(path)? else {
-                return Ok(None);
+    let (track, cue) = match ext.as_str() {
+        "iso" => (
+            Track {
+                path: path.to_path_buf(),
+                offsets: ISO_OFFSETS,
+                layouts: ISO_LAYOUTS,
+            },
+            false,
+        ),
+        "bin" | "cue" => {
+            let file = if ext == "cue" {
+                let Some(track) = first_track(path)? else {
+                    return Ok(None);
+                };
+                track
+            } else {
+                path.to_path_buf()
             };
-            match read_head(&track) {
-                Ok(head) => Ok(Some((head, TRACK))),
-                // A cue whose first track is missing is not a disc we can recognise.
-                Err(LibraryError::Io { source, .. })
-                    if source.kind() == io::ErrorKind::NotFound =>
-                {
-                    Ok(None)
-                }
-                Err(e) => Err(e),
-            }
+            (
+                Track {
+                    path: file,
+                    offsets: TRACK_OFFSETS,
+                    layouts: TRACK_LAYOUTS,
+                },
+                ext == "cue",
+            )
         }
-        _ => Ok(None),
+        _ => return Ok(None),
+    };
+    match open_regular(&track.path) {
+        Ok(file) => Ok(Some((track, file))),
+        // A cue whose first track is missing is not a disc we can recognise.
+        Err(LibraryError::Io { source, .. }) if cue && source.kind() == io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(e) => Err(e),
     }
 }
 
-/// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track. `Ok(None)`: not a known disc
-/// (or a `.chd`, never read). Reads at most 64 KiB of the cue and 0x220 bytes of the track.
+/// What the probe of a disc found: its format and region, and its serial (Sega CD: the raw header field, type code
+/// and revision kept; PlayStation: the canonical `SLES-00032` form).
+struct Probe {
+    info: DiscInfo,
+    serial: Option<String>,
+}
+
+/// Probe of a disc (design v7.0 §3.4): Sega CD and 3DO headers in the first 0x21C bytes, then the PlayStation
+/// descriptor at sector 16 and the licence sector 4 inside the first `PSX_HEAD_LEN` bytes (one read), then, for
+/// the serial (or a region the licence does not give), at most `MAX_PSX_SECTOR_READS` sectors of the ISO 9660
+/// root and `SYSTEM.CNF`. Nothing read is trusted: offsets are checked against the file size, no allocation size
+/// comes from the disc.
+fn probe_disc(path: &Path, want_serial: bool) -> Result<Option<Probe>, LibraryError> {
+    let Some((track, file)) = open_track(path)? else {
+        return Ok(None);
+    };
+    let size = file.metadata().map_err(|e| io_error(&track.path, e))?.len();
+    let mut file = file;
+    let head = {
+        let mut head = Vec::with_capacity(PSX_HEAD_LEN);
+        (&mut file)
+            .take(PSX_HEAD_LEN as u64)
+            .read_to_end(&mut head)
+            .map_err(|e| io_error(&track.path, e))?;
+        head
+    };
+    if let Some(info) = probe_head(&head, track.offsets) {
+        return Ok(Some(Probe {
+            info,
+            serial: header_serial_field(&head, track.offsets),
+        }));
+    }
+    if opera_at(&head, track.offsets) {
+        return Ok(Some(Probe {
+            info: DiscInfo {
+                format: DiscFormat::Opera,
+                region: None,
+            },
+            serial: None,
+        }));
+    }
+    let Some((layout, pvd)) = psx_descriptor(&head, track.layouts) else {
+        return Ok(None);
+    };
+    let license = license_region(&head, layout);
+    let serial = if want_serial || license.is_none() {
+        let mut sectors = Sectors {
+            src: FileAt { file, size },
+            layout,
+            reads: 0,
+        };
+        psx_serial(&mut sectors, pvd).map_err(|e| io_error(&track.path, e))?
+    } else {
+        None
+    };
+    Ok(Some(Probe {
+        info: DiscInfo {
+            format: DiscFormat::Psx,
+            region: license.or_else(|| serial.as_deref().and_then(psx_serial_region)),
+        },
+        serial,
+    }))
+}
+
+/// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track: Sega CD, 3DO, PlayStation.
+/// `Ok(None)`: not a known disc (or a `.chd` / `.pbp`, never read). Reads at most 64 KiB of the cue, the first
+/// `PSX_HEAD_LEN` bytes of the track and, for a PlayStation disc without licence region, a few sectors more.
 pub fn disc_info(path: &Path) -> Result<Option<DiscInfo>, LibraryError> {
-    Ok(disc_head(path)?.and_then(|(head, offsets)| probe_head(&head, offsets)))
+    Ok(probe_disc(path, false)?.map(|p| p.info))
+}
+
+/// The PlayStation ISO 9660 primary volume descriptor at sector 16 under one of `layouts`, inside `head`.
+fn psx_descriptor<'h>(head: &'h [u8], layouts: &[Layout]) -> Option<(Layout, &'h [u8])> {
+    layouts.iter().find_map(|&layout| {
+        let off = 16 * layout.sector + layout.data;
+        let pvd = head.get(off..off + USER_DATA)?;
+        let system_id = trim_padding(&pvd[8..40]);
+        (pvd[0] == 1 && &pvd[1..6] == b"CD001" && system_id == PSX_SYSTEM_ID)
+            .then_some((layout, pvd))
+    })
+}
+
+/// Trailing spaces and NULs dropped (ISO 9660 a-characters are space padded).
+fn trim_padding(field: &[u8]) -> &[u8] {
+    let end = field
+        .iter()
+        .rposition(|&b| b != b' ' && b != 0)
+        .map_or(0, |i| i + 1);
+    &field[..end]
+}
+
+/// Region of the licence text of sector 4 (`… Euro pe`, `… Amer  ica`, `… Inc.`), inside `head`.
+fn license_region(head: &[u8], layout: Layout) -> Option<DiscRegion> {
+    let off = 4 * layout.sector + layout.data;
+    let text = head.get(off..head.len().min(off + USER_DATA))?;
+    let has = |token: &[u8]| text.windows(token.len()).any(|w| w == token);
+    if has(b"Euro") {
+        Some(DiscRegion::Europe)
+    } else if has(b"Amer") {
+        Some(DiscRegion::Usa)
+    } else if has(b"Inc.") {
+        Some(DiscRegion::Japan)
+    } else {
+        None
+    }
+}
+
+/// Region of a canonical PlayStation serial from its prefix (`SLES` / `SCES` Europe, `SLUS` / `SCUS` USA,
+/// `SLPS` / `SCPS` / `SLPM` / `SLKA` Japan…); `None` for anything else (`PAPX`, demos).
+fn psx_serial_region(serial: &str) -> Option<DiscRegion> {
+    match serial.get(2..4)? {
+        "ES" | "ED" => Some(DiscRegion::Europe),
+        "US" | "UD" => Some(DiscRegion::Usa),
+        "PS" | "PM" | "PD" | "KA" => Some(DiscRegion::Japan),
+        _ => None,
+    }
+}
+
+/// Random access to a disc track (a file, or a buffer in tests).
+trait ReadAt {
+    fn size(&self) -> u64;
+    fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+}
+
+struct FileAt {
+    file: File,
+    size: u64,
+}
+
+impl ReadAt for FileAt {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        use std::io::{Seek, SeekFrom};
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.read_exact(buf)
+    }
+}
+
+/// User data of the sectors of a track under one layout, at most `MAX_PSX_SECTOR_READS` reads.
+struct Sectors<R> {
+    src: R,
+    layout: Layout,
+    reads: usize,
+}
+
+impl<R: ReadAt> Sectors<R> {
+    /// User data of sector `lba`; `Ok(None)` when it lies past the end of the file or the read budget is spent.
+    fn read(&mut self, lba: u64) -> io::Result<Option<[u8; USER_DATA]>> {
+        if self.reads >= MAX_PSX_SECTOR_READS {
+            return Ok(None);
+        }
+        let Some(offset) = lba
+            .checked_mul(self.layout.sector as u64)
+            .and_then(|o| o.checked_add(self.layout.data as u64))
+        else {
+            return Ok(None);
+        };
+        if offset
+            .checked_add(USER_DATA as u64)
+            .is_none_or(|end| end > self.src.size())
+        {
+            return Ok(None);
+        }
+        self.reads += 1;
+        let mut buf = [0u8; USER_DATA];
+        self.src.read_exact_at(offset, &mut buf)?;
+        Ok(Some(buf))
+    }
+}
+
+fn le32(bytes: &[u8], at: usize) -> Option<u64> {
+    let b = bytes.get(at..at + 4)?;
+    Some(u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+}
+
+/// Serial of a PlayStation disc: ISO 9660 root (at most `MAX_ROOT_SECTORS` sectors) ⇒ `SYSTEM.CNF` (at most one
+/// sector) ⇒ `BOOT = cdrom:\SLES_000.32;1` ⇒ `SLES-00032`. `Ok(None)` when anything is missing or malformed.
+fn psx_serial<R: ReadAt>(sectors: &mut Sectors<R>, pvd: &[u8]) -> io::Result<Option<String>> {
+    // Logical block size (both-endian field, little-endian half first): only 2048 is walked.
+    if pvd.get(128..130) != Some(&[0x00, 0x08][..]) {
+        return Ok(None);
+    }
+    let (Some(root), Some(root_size)) = (le32(pvd, 156 + 2), le32(pvd, 156 + 10)) else {
+        return Ok(None);
+    };
+    let Some((cnf, cnf_size)) = find_system_cnf(sectors, root, root_size)? else {
+        return Ok(None);
+    };
+    if cnf_size == 0 {
+        return Ok(None);
+    }
+    let Some(sector) = sectors.read(cnf)? else {
+        return Ok(None);
+    };
+    let len = usize::try_from(cnf_size).map_or(USER_DATA, |n| n.min(USER_DATA));
+    Ok(serial_of_cnf(&sector[..len]))
+}
+
+/// Extent and size of `SYSTEM.CNF` in the root directory (`extent`, `size` read from the descriptor).
+fn find_system_cnf<R: ReadAt>(
+    sectors: &mut Sectors<R>,
+    extent: u64,
+    size: u64,
+) -> io::Result<Option<(u64, u64)>> {
+    let count = size.div_ceil(USER_DATA as u64).min(MAX_ROOT_SECTORS);
+    for i in 0..count {
+        let Some(sector) = sectors.read(extent.saturating_add(i))? else {
+            break;
+        };
+        let mut pos = 0usize;
+        while pos + DIR_RECORD_MIN <= USER_DATA {
+            let len = usize::from(sector[pos]);
+            // A zero length pads the rest of the sector; a record never spans two sectors.
+            if len < DIR_RECORD_MIN || pos + len > USER_DATA {
+                break;
+            }
+            let record = &sector[pos..pos + len];
+            let name_len = usize::from(record[32]);
+            if let Some(name) = record.get(33..33 + name_len) {
+                let name = name.split(|&b| b == b';').next().unwrap_or(name);
+                let is_dir = record[25] & 0x02 != 0;
+                if !is_dir && name.eq_ignore_ascii_case(b"SYSTEM.CNF") {
+                    return Ok(le32(record, 2).zip(le32(record, 10)));
+                }
+            }
+            pos += len;
+        }
+    }
+    Ok(None)
+}
+
+/// Serial named by the `BOOT` line of a `SYSTEM.CNF` (`BOOT = cdrom:\SLES_000.32;1`), canonical form.
+fn serial_of_cnf(text: &[u8]) -> Option<String> {
+    for line in text.split(|&b| b == b'\n' || b == b'\r') {
+        let line = String::from_utf8_lossy(line);
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("BOOT") {
+            continue;
+        }
+        let file = value.trim().rsplit(['\\', '/', ':']).next()?;
+        let file = file.split(';').next()?.trim();
+        return canonical_psx_serial(file, true);
+    }
+    None
+}
+
+/// `SLES_000.32` / `SLES-00032` (any case) ⇒ `SLES-00032`. `strict`: the form `[A-Z]{4}[-_][0-9]{3}\.?[0-9]{2}`
+/// only (a disc); otherwise the separator may also be missing (a DAT value, spaces already removed).
+fn canonical_psx_serial(text: &str, strict: bool) -> Option<String> {
+    let text = text.to_ascii_uppercase();
+    let b = text.as_bytes();
+    let letters = b.get(..4)?;
+    if !letters.iter().all(u8::is_ascii_uppercase) {
+        return None;
+    }
+    let rest = match b.get(4)? {
+        b'-' | b'_' => &b[5..],
+        _ if !strict => &b[4..],
+        _ => return None,
+    };
+    let digits: Vec<u8> = match rest {
+        [a, b2, c, b'.', d, e] => vec![*a, *b2, *c, *d, *e],
+        [_, _, _, _, _] => rest.to_vec(),
+        _ => return None,
+    };
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}",
+        &text[..4],
+        std::str::from_utf8(&digits).ok()?
+    ))
 }
 
 /// Region tag of a file name (`Dune (Europe)` ⇒ Europe). Fallback when the header cannot be read.
@@ -335,10 +676,17 @@ pub enum BinKind {
     Unknown,
 }
 
-/// What the first bytes of a `.bin` say ([`probe_bin`]); pure, for the scanner's zip entries too.
+/// What the first bytes of a `.bin` say ([`probe_bin`]); pure, for the scanner's zip entries too (`head`: the
+/// first [`BIN_PROBE_LEN`] bytes, or fewer for a short file).
 pub(crate) fn bin_kind(head: &[u8]) -> BinKind {
-    if probe_head(head, &[0, RAW_DATA_OFFSET]).is_some() {
+    if probe_head(head, TRACK_OFFSETS).is_some() {
         return BinKind::SegaCdTrack;
+    }
+    if opera_at(head, TRACK_OFFSETS) {
+        return BinKind::OperaTrack;
+    }
+    if psx_descriptor(head, TRACK_LAYOUTS).is_some() {
+        return BinKind::PsxTrack;
     }
     match head.get(CARTRIDGE_MAGIC_OFFSET..CARTRIDGE_MAGIC_OFFSET + SEGA_32X_MAGIC.len()) {
         Some(magic) if magic == SEGA_32X_MAGIC => BinKind::Sega32x,
@@ -347,14 +695,16 @@ pub(crate) fn bin_kind(head: &[u8]) -> BinKind {
     }
 }
 
-/// Bytes [`probe_bin`] reads (and the scanner reads of a zipped `.bin`).
-pub(crate) const BIN_PROBE_LEN: usize = PROBE_LEN;
+/// Bytes [`probe_bin`] reads (and the scanner reads of a zipped `.bin`): up to the PlayStation descriptor of
+/// sector 16 in a raw MODE2 track.
+pub(crate) const BIN_PROBE_LEN: usize = PSX_HEAD_LEN;
 
-/// Header probe of a `.bin`: reads at most 0x220 bytes; `SegaCdTrack` as [`disc_info`] sees it, `Sega32x`
-/// for `SEGA 32X` at 0x100, else `MegaDrive` (`Unknown` for a file too short to hold the 32X signature). Same
-/// untrusted-input rules as the rest of this module (regular file only, bounded read, no panic).
+/// Header probe of a `.bin`: reads at most [`BIN_PROBE_LEN`] bytes (one read, < 40 KiB); `SegaCdTrack`,
+/// `OperaTrack` and `PsxTrack` as [`disc_info`] sees them, `Sega32x` for `SEGA 32X` at 0x100, else `MegaDrive`
+/// (`Unknown` for a file too short to hold the 32X signature). Same untrusted-input rules as the rest of this
+/// module (regular file only, bounded read, no panic).
 pub fn probe_bin(path: &Path) -> Result<BinKind, LibraryError> {
-    Ok(bin_kind(&read_head(path)?))
+    Ok(bin_kind(&read_head(path, BIN_PROBE_LEN)?))
 }
 
 /// A header field without its type code (`GM `, `AI `), trimmed.
@@ -405,34 +755,41 @@ pub(crate) fn header_serial_field(head: &[u8], offsets: &[usize]) -> Option<Stri
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Header facts of a disc read once: region byte and serial field (scanner, < 0x220 bytes of track).
+/// Header facts of a disc read once: format, region and serial (scanner). Sega CD: the raw header field;
+/// PlayStation: the canonical serial (`SLES-00032`); 3DO: none.
 pub(crate) fn disc_header(path: &Path) -> Result<Option<(DiscInfo, Option<String>)>, LibraryError> {
-    Ok(disc_head(path)?.and_then(|(head, offsets)| {
-        probe_head(&head, offsets).map(|info| (info, header_serial_field(&head, offsets)))
-    }))
+    Ok(probe_disc(path, true)?.map(|p| (p.info, p.serial)))
 }
 
-/// Serial number in the disc header (generic: one probe per [`DiscFormat`]). `SegaCd`: MD-style header at 0x100
-/// of sector 0, field at 0x180 (`GM T-93175 -00` ⇒ `T-93175`: type code and revision dropped, trimmed); of a
-/// `.cue` (its first track, kept in the cue's folder), a `.iso` or a `.bin` track. `Ok(None)`: no header or blank
-/// serial, and always for a `.chd` (never read). Bounded reads (64 KiB of cue, 0x220 bytes of track).
+/// Serial number in the disc header (one probe per [`DiscFormat`]); `Ok(None)` when the disc is of another format,
+/// has no header or a blank serial, and always for a `.chd` / `.pbp` (never read). `SegaCd`: MD-style header at
+/// 0x100 of sector 0, field at 0x180 (`GM T-93175 -00` ⇒ `T-93175`: type code and revision dropped, trimmed).
+/// `Psx`: `BOOT` line of `SYSTEM.CNF` (`cdrom:\SLES_000.32;1` ⇒ `SLES-00032`), accepted only in the form
+/// `[A-Z]{4}[-_][0-9]{3}\.?[0-9]{2}`. `Opera`: 3DO discs carry none. Of a `.cue` (its first track, kept in the
+/// cue's folder), a `.iso` or a `.bin` track; bounded reads (see [`disc_info`]).
 pub fn disc_serial(path: &Path, format: DiscFormat) -> Result<Option<String>, LibraryError> {
-    match format {
-        DiscFormat::SegaCd => Ok(disc_head(path)?
-            .and_then(|(head, offsets)| header_serial_field(&head, offsets))
-            .and_then(|field| clean_serial(&field))),
-        // PB1: bounded ISO 9660 walk to SYSTEM.CNF for `Psx`; 3DO discs carry no serial.
-        DiscFormat::Psx | DiscFormat::Opera => Ok(None),
+    let Some(probe) = probe_disc(path, format == DiscFormat::Psx)? else {
+        return Ok(None);
+    };
+    if probe.info.format != format {
+        return Ok(None);
     }
+    Ok(match format {
+        DiscFormat::SegaCd => probe.serial.as_deref().and_then(clean_serial),
+        DiscFormat::Psx => probe.serial,
+        DiscFormat::Opera => None,
+    })
 }
 
-/// Upper case, spaces removed: form compared between a disc and the DAT `serial` field.
+/// Upper case, spaces removed: form compared between a disc and the DAT `serial` field. A PlayStation serial
+/// takes its canonical form (`SLES_000.32`, `SLES 00032` ⇒ `SLES-00032`).
 pub(crate) fn normalize_serial(serial: &str) -> String {
-    serial
+    let text: String = serial
         .chars()
         .filter(|c| !c.is_whitespace())
         .map(|c| c.to_ascii_uppercase())
-        .collect()
+        .collect();
+    canonical_psx_serial(&text, false).unwrap_or(text)
 }
 
 /// Comparison keys of a header field (`GM MK-4407-50`): the field, without its type code (`MK-4407-50`), and
@@ -448,8 +805,80 @@ pub(crate) fn serial_keys(field: &str) -> Vec<String> {
     keys
 }
 
+/// Fake PlayStation / 3DO images for the unit tests of this crate (no commercial content).
+#[cfg(test)]
+pub(crate) mod fixtures {
+    /// 2048-byte-sector image of a fake PlayStation disc: licence text at sector 4, `PLAYSTATION` descriptor at 16,
+    /// root directory at 18 (`SYSTEM.CNF;1` at 19 when `cnf` is given).
+    pub(crate) fn psx_iso(license: Option<&str>, cnf: Option<&[u8]>) -> Vec<u8> {
+        let mut img = vec![0u8; 20 * 2048];
+        if let Some(text) = license {
+            img[4 * 2048..4 * 2048 + text.len()].copy_from_slice(text.as_bytes());
+        }
+        let pvd = &mut img[16 * 2048..17 * 2048];
+        pvd[..7].copy_from_slice(b"\x01CD001\x01");
+        pvd[8..40].copy_from_slice(&[b' '; 32]);
+        pvd[8..19].copy_from_slice(b"PLAYSTATION");
+        pvd[128..132].copy_from_slice(&[0x00, 0x08, 0x08, 0x00]);
+        pvd[156] = 34;
+        pvd[158..162].copy_from_slice(&18u32.to_le_bytes());
+        pvd[166..170].copy_from_slice(&2048u32.to_le_bytes());
+        pvd[156 + 25] = 2;
+        img[17 * 2048..17 * 2048 + 7].copy_from_slice(b"\xFFCD001\x01");
+        let root = 18 * 2048;
+        let mut pos = root;
+        for (name, extent, size, flags) in [
+            (&b"\x00"[..], 18u32, 2048u32, 2u8),
+            (&b"\x01"[..], 18, 2048, 2),
+        ] {
+            pos += dir_record(&mut img[pos..], name, extent, size, flags);
+        }
+        if let Some(cnf) = cnf {
+            dir_record(&mut img[pos..], b"SYSTEM.CNF;1", 19, cnf.len() as u32, 0);
+            img[19 * 2048..19 * 2048 + cnf.len()].copy_from_slice(cnf);
+        }
+        img
+    }
+
+    fn dir_record(out: &mut [u8], name: &[u8], extent: u32, size: u32, flags: u8) -> usize {
+        let len = (33 + name.len() + 1) & !1;
+        out[0] = len as u8;
+        out[2..6].copy_from_slice(&extent.to_le_bytes());
+        out[10..14].copy_from_slice(&size.to_le_bytes());
+        out[25] = flags;
+        out[32] = name.len() as u8;
+        out[33..33 + name.len()].copy_from_slice(name);
+        len
+    }
+
+    /// Raw 2352-byte sectors of a 2048-byte image (`mode` 1 or 2 form 1; EDC / ECC left zero).
+    pub(crate) fn to_raw(iso: &[u8], mode: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        for user in iso.chunks(2048) {
+            let mut s = vec![0x00u8];
+            s.extend([0xFF; 10]);
+            s.extend([0x00, 0x00, 0x02, 0x00, mode]);
+            if mode == 2 {
+                s.extend([0, 0, 8, 0, 0, 0, 8, 0]);
+            }
+            s.extend(user);
+            s.resize(2352, 0);
+            out.extend(s);
+        }
+        out
+    }
+
+    pub(crate) fn opera_sector0() -> Vec<u8> {
+        let mut s = vec![0u8; 2048];
+        s[..7].copy_from_slice(b"\x01ZZZZZ\x01");
+        s[7..17].copy_from_slice(b"EMURUST3DO");
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::*;
     use super::*;
 
     /// Sector 0 user data with the Sega CD header and `region` at 0x20B.
@@ -825,5 +1254,294 @@ mod tests {
         assert_eq!(serial_keys("T-93175"), ["T-93175"]);
         assert!(serial_keys("   ").is_empty());
         assert_eq!(normalize_serial(" t-93175 "), "T-93175");
+    }
+
+    // --- PlayStation / 3DO (design v7.0 §3.4) ---
+
+    const CNF: &[u8] = b"BOOT = cdrom:\\SLES_000.32;1\r\nTCB = 4\r\nEVENT = 10\r\n";
+
+    fn psx(region: Option<DiscRegion>) -> Option<DiscInfo> {
+        Some(DiscInfo {
+            format: DiscFormat::Psx,
+            region,
+        })
+    }
+
+    #[test]
+    fn psx_iso_mode2_mode1_and_cue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let iso = psx_iso(
+            Some("Licensed by Sony Computer Entertainment Euro pe"),
+            Some(CNF),
+        );
+        let europe = psx(Some(DiscRegion::Europe));
+        let p = write(tmp.path(), "g.iso", &iso);
+        assert_eq!(disc_info(&p).unwrap(), europe);
+        assert_eq!(
+            disc_serial(&p, DiscFormat::Psx).unwrap().as_deref(),
+            Some("SLES-00032")
+        );
+        assert_eq!(disc_serial(&p, DiscFormat::SegaCd).unwrap(), None);
+        assert_eq!(disc_serial(&p, DiscFormat::Opera).unwrap(), None);
+        for mode in [2, 1] {
+            let bin = write(tmp.path(), "t.bin", &to_raw(&iso, mode));
+            assert_eq!(disc_info(&bin).unwrap(), europe, "mode {mode}");
+            assert_eq!(probe_bin(&bin).unwrap(), BinKind::PsxTrack, "mode {mode}");
+            let cue = write(
+                tmp.path(),
+                "t.cue",
+                b"FILE \"t.bin\" BINARY\n  TRACK 01 MODE2/2352\nFILE \"a.wav\" WAVE\n",
+            );
+            assert_eq!(disc_info(&cue).unwrap(), europe, "mode {mode}");
+            assert_eq!(
+                disc_header(&cue).unwrap(),
+                Some((europe.unwrap(), Some("SLES-00032".to_owned())))
+            );
+            // A raw track named `.iso` is probed too (the three layouts are tried).
+            let raw_iso = write(tmp.path(), "raw.iso", &to_raw(&iso, mode));
+            assert_eq!(disc_info(&raw_iso).unwrap(), europe, "mode {mode}");
+        }
+        // 2048-byte sectors in a `.bin`.
+        let cooked = write(tmp.path(), "cooked.bin", &iso);
+        assert_eq!(probe_bin(&cooked).unwrap(), BinKind::PsxTrack);
+    }
+
+    #[test]
+    fn psx_licence_texts_and_serial_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (text, region) in [
+            ("Sony Computer Entertainment Euro pe", DiscRegion::Europe),
+            ("Sony Computer Entertainment Amer  ica", DiscRegion::Usa),
+            ("Sony Computer Entertainment Inc.", DiscRegion::Japan),
+        ] {
+            let p = write(tmp.path(), "l.iso", &psx_iso(Some(text), Some(CNF)));
+            assert_eq!(disc_info(&p).unwrap(), psx(Some(region)), "{text}");
+        }
+        // No licence text: the serial prefix decides.
+        for (cnf, region) in [
+            (&b"BOOT=cdrom:\\SLUS_012.34;1"[..], Some(DiscRegion::Usa)),
+            (
+                b"BOOT = cdrom0:\\EXE\\SCPS_100.01;1",
+                Some(DiscRegion::Japan),
+            ),
+            (b"BOOT = cdrom:\\SCES_123.45;1", Some(DiscRegion::Europe)),
+            (b"BOOT = cdrom:\\PAPX_900.01;1", None),
+            (b"BOOT = cdrom:\\PSX.EXE;1", None),
+        ] {
+            let p = write(tmp.path(), "n.iso", &psx_iso(None, Some(cnf)));
+            assert_eq!(disc_info(&p).unwrap(), psx(region));
+        }
+        // Neither licence nor SYSTEM.CNF (a PS-EXE disc like the 240p suite has a SYSTEM.CNF without serial).
+        let bare = write(tmp.path(), "b.iso", &psx_iso(None, None));
+        assert_eq!(disc_info(&bare).unwrap(), psx(None));
+        assert_eq!(disc_serial(&bare, DiscFormat::Psx).unwrap(), None);
+    }
+
+    #[test]
+    fn psx_malformed_discs_never_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Root directory far past the end of the file.
+        let mut far = psx_iso(None, Some(CNF));
+        far[16 * 2048 + 158..16 * 2048 + 162].copy_from_slice(&u32::MAX.to_le_bytes());
+        far[16 * 2048 + 166..16 * 2048 + 170].copy_from_slice(&u32::MAX.to_le_bytes());
+        let p = write(tmp.path(), "far.iso", &far);
+        assert_eq!(disc_info(&p).unwrap(), psx(None));
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        // SYSTEM.CNF pointing past the end; a block size other than 2048.
+        let mut cnf_far = psx_iso(None, Some(CNF));
+        let rec = 18 * 2048 + 34 + 34;
+        cnf_far[rec + 2..rec + 6].copy_from_slice(&0x00FF_FFFFu32.to_le_bytes());
+        let p = write(tmp.path(), "cnf.iso", &cnf_far);
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        let mut block = psx_iso(None, Some(CNF));
+        block[16 * 2048 + 128] = 0x01;
+        let p = write(tmp.path(), "block.iso", &block);
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        // Garbage directory records (length below the minimum, name past the record).
+        let mut junk = psx_iso(None, Some(CNF));
+        junk[18 * 2048] = 7;
+        let p = write(tmp.path(), "junk.iso", &junk);
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        let mut long_name = psx_iso(None, Some(CNF));
+        long_name[rec + 32] = 0xFF;
+        let p = write(tmp.path(), "name.iso", &long_name);
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        // Malformed serials.
+        for cnf in [
+            &b"BOOT = cdrom:\\SLES_0003.2;1"[..],
+            b"BOOT = cdrom:\\SL3S_000.32;1",
+            b"BOOT = cdrom:\\SLES000.32;1",
+            b"BOOT2 = cdrom0:\\SLES_500.00;1",
+            b"BOOT = ",
+            b"\xFF\xFE\x00garbage",
+        ] {
+            let p = write(tmp.path(), "bad.iso", &psx_iso(None, Some(cnf)));
+            assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None, "{cnf:?}");
+        }
+        // Truncated right after the descriptor; a wrong system id.
+        let p = write(
+            tmp.path(),
+            "cut.iso",
+            &psx_iso(None, Some(CNF))[..17 * 2048],
+        );
+        assert_eq!(disc_info(&p).unwrap(), psx(None));
+        let p = write(
+            tmp.path(),
+            "cut2.iso",
+            &psx_iso(None, Some(CNF))[..17 * 2048 - 1],
+        );
+        assert_eq!(disc_info(&p).unwrap(), None);
+        let mut other = psx_iso(None, Some(CNF));
+        other[16 * 2048 + 8..16 * 2048 + 19].copy_from_slice(b"PLAYSTATIOX");
+        let p = write(tmp.path(), "other.iso", &other);
+        assert_eq!(disc_info(&p).unwrap(), None);
+    }
+
+    /// In-memory track counting its reads.
+    struct SliceAt<'a> {
+        data: &'a [u8],
+        reads: usize,
+    }
+
+    impl ReadAt for SliceAt<'_> {
+        fn size(&self) -> u64 {
+            self.data.len() as u64
+        }
+
+        fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.reads += 1;
+            let start = usize::try_from(offset).unwrap();
+            buf.copy_from_slice(&self.data[start..start + buf.len()]);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn psx_sector_reads_are_bounded() {
+        // A root directory claiming 4 GiB, made of empty sectors: the walk stops at the budget.
+        let mut img = psx_iso(None, None);
+        img[16 * 2048 + 166..16 * 2048 + 170].copy_from_slice(&u32::MAX.to_le_bytes());
+        img.resize(64 * 2048, 0);
+        let (_, pvd) = psx_descriptor(&img, ISO_LAYOUTS).unwrap();
+        let pvd = pvd.to_vec();
+        let mut sectors = Sectors {
+            src: SliceAt {
+                data: &img,
+                reads: 0,
+            },
+            layout: COOKED,
+            reads: 0,
+        };
+        assert_eq!(psx_serial(&mut sectors, &pvd).unwrap(), None);
+        assert_eq!(sectors.src.reads, MAX_ROOT_SECTORS as usize);
+        assert!(sectors.reads <= MAX_PSX_SECTOR_READS);
+        // A normal disc: one root sector, one SYSTEM.CNF sector.
+        let img = psx_iso(None, Some(CNF));
+        let (layout, pvd) = psx_descriptor(&img, ISO_LAYOUTS).unwrap();
+        let mut sectors = Sectors {
+            src: SliceAt {
+                data: &img,
+                reads: 0,
+            },
+            layout,
+            reads: 0,
+        };
+        assert_eq!(
+            psx_serial(&mut sectors, pvd).unwrap().as_deref(),
+            Some("SLES-00032")
+        );
+        assert_eq!(sectors.src.reads, 2);
+    }
+
+    #[test]
+    fn zipped_head_is_enough_for_the_psx_descriptor() {
+        let raw = to_raw(&psx_iso(None, Some(CNF)), 2);
+        assert_eq!(bin_kind(&raw[..BIN_PROBE_LEN]), BinKind::PsxTrack);
+        assert_eq!(bin_kind(&raw[..BIN_PROBE_LEN - 1]), BinKind::MegaDrive);
+        let mode1 = to_raw(&psx_iso(None, Some(CNF)), 1);
+        assert_eq!(bin_kind(&mode1[..BIN_PROBE_LEN]), BinKind::PsxTrack);
+    }
+
+    #[test]
+    fn opera_discs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let info = DiscInfo {
+            format: DiscFormat::Opera,
+            region: None,
+        };
+        let opera = Some(info);
+        let mut iso = opera_sector0();
+        iso.resize(32 * 2048, 0);
+        let p = write(tmp.path(), "o.iso", &iso);
+        assert_eq!(disc_info(&p).unwrap(), opera);
+        assert_eq!(disc_serial(&p, DiscFormat::Opera).unwrap(), None);
+        assert_eq!(disc_serial(&p, DiscFormat::Psx).unwrap(), None);
+        let track = to_raw(&iso, 1);
+        let bin = write(tmp.path(), "o.bin", &track);
+        assert_eq!(disc_info(&bin).unwrap(), opera);
+        assert_eq!(probe_bin(&bin).unwrap(), BinKind::OperaTrack);
+        let cue = write(tmp.path(), "o.cue", b"FILE \"o.bin\" BINARY\n");
+        assert_eq!(disc_header(&cue).unwrap(), Some((info, None)));
+        // A raw track named `.iso`: the header is looked for at 0 only.
+        let raw_iso = write(tmp.path(), "r.iso", &track);
+        assert_eq!(disc_info(&raw_iso).unwrap(), None);
+        // One byte short of the signature; a different version byte.
+        let p = write(tmp.path(), "short.iso", &opera_sector0()[..6]);
+        assert_eq!(disc_info(&p).unwrap(), None);
+        let mut v2 = opera_sector0();
+        v2[6] = 2;
+        let p = write(tmp.path(), "v2.iso", &v2);
+        assert_eq!(disc_info(&p).unwrap(), None);
+        // The Sega CD header wins over nothing else: a Sega CD stays a Sega CD.
+        assert_eq!(bin_kind(&raw(0x64)), BinKind::SegaCdTrack);
+    }
+
+    #[test]
+    fn psx_serial_forms() {
+        assert_eq!(
+            canonical_psx_serial("SLES_000.32", true).as_deref(),
+            Some("SLES-00032")
+        );
+        assert_eq!(
+            canonical_psx_serial("sles-00032", true).as_deref(),
+            Some("SLES-00032")
+        );
+        assert_eq!(canonical_psx_serial("SLES00032", true), None);
+        assert_eq!(
+            canonical_psx_serial("SLES00032", false).as_deref(),
+            Some("SLES-00032")
+        );
+        for bad in [
+            "",
+            "SLES",
+            "SLES_000.3",
+            "SLES_00.032",
+            "SLES-0003X",
+            "SLE5-00032",
+            "SLES-000321",
+        ] {
+            assert_eq!(canonical_psx_serial(bad, false), None, "{bad}");
+        }
+        // DAT side: same key as the disc; Sega CD serials are untouched.
+        assert_eq!(normalize_serial("SLES_000.32"), "SLES-00032");
+        assert_eq!(normalize_serial(" SLES 00032 "), "SLES-00032");
+        assert_eq!(normalize_serial("t-93175"), "T-93175");
+        assert_eq!(serial_keys("SLES-00032"), ["SLES-00032"]);
+        assert_eq!(psx_serial_region("SLPM-86001"), Some(DiscRegion::Japan));
+        assert_eq!(psx_serial_region("SLKA-25001"), Some(DiscRegion::Japan));
+        assert_eq!(psx_serial_region("SCUS-94163"), Some(DiscRegion::Usa));
+        assert_eq!(psx_serial_region("X"), None);
+    }
+
+    #[test]
+    fn pbp_and_chd_are_never_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(disc_info(&tmp.path().join("x.pbp")).unwrap(), None);
+        assert_eq!(
+            disc_serial(&tmp.path().join("x.pbp"), DiscFormat::Psx).unwrap(),
+            None
+        );
+        let p = write(tmp.path(), "real.pbp", &psx_iso(None, Some(CNF)));
+        assert_eq!(disc_info(&p).unwrap(), None);
     }
 }

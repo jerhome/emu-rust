@@ -400,7 +400,9 @@ mod tests {
                 "cpc",
                 "c64",
                 "gba",
-                "32x"
+                "32x",
+                "psx",
+                "3do"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -426,19 +428,23 @@ mod tests {
         assert_eq!(DatSource::from_id("libretro"), Some(DatSource::Libretro));
         assert!(st.folder_extensions.is_empty());
         for s in systems().iter().filter(|s| s.kind == SystemKind::Console) {
-            let dat = if s.id == "megacd" {
+            let cd = ["megacd", "psx", "3do"].contains(&s.id.as_str());
+            let dat = if cd {
                 DatSource::Redump
             } else {
                 DatSource::NoIntro
             };
             assert_eq!(s.dats.as_slice(), &[dat][..], "{}", s.id);
-            assert_eq!(s.disc, s.id == "megacd", "{}", s.id);
-            // Only the Mega CD shares its disc extensions with `dos` (design v4.0 §10 #7).
-            assert_eq!(s.folder_extensions.is_empty(), s.id != "megacd", "{}", s.id);
+            assert_eq!(s.disc, cd, "{}", s.id);
+            // Only the disc systems share their disc extensions with `dos` (design v4.0 §10 #7, v7.0 §3.4).
+            assert_eq!(s.folder_extensions.is_empty(), !cd, "{}", s.id);
             assert!(!s.folder_games, "{}", s.id);
         }
         let m3u: Vec<_> = systems_for_extension("m3u").iter().map(|s| &s.id).collect();
-        assert_eq!(m3u, ["atarist", "megacd", "amiga", "dos", "cpc", "c64"]);
+        assert_eq!(
+            m3u,
+            ["atarist", "megacd", "amiga", "dos", "cpc", "c64", "psx"]
+        );
         let m3u8: Vec<_> = systems_for_extension("m3u8")
             .iter()
             .map(|s| &s.id)
@@ -499,7 +505,7 @@ mod tests {
         );
         assert_eq!(systems().iter().filter(|s| s.folder_games).count(), 1);
         let cue: Vec<_> = systems_for_extension("cue").iter().map(|s| &s.id).collect();
-        assert_eq!(cue, ["megacd", "dos"]);
+        assert_eq!(cue, ["megacd", "dos", "psx", "3do"]);
     }
 
     #[test]
@@ -539,8 +545,14 @@ mod tests {
         assert_eq!(ids(attribute("ima", &[])), "candidates:dos");
         assert_eq!(
             ids(attribute("m3u", &[])),
-            "dat:atarist,megacd,amiga,dos,cpc,c64"
+            "dat:atarist,megacd,amiga,dos,cpc,c64,psx"
         );
+        // 7.0: discs shared by four systems, `.pbp` PlayStation only (design v7.0 §3.4).
+        assert_eq!(ids(attribute("chd", &f(&["roms", "psx"]))), "folder:psx");
+        assert_eq!(ids(attribute("iso", &f(&["3do"]))), "folder:3do");
+        assert_eq!(ids(attribute("chd", &[])), "unclassified");
+        assert_eq!(ids(attribute("pbp", &[])), "candidates:psx");
+        assert_eq!(ids(attribute("m3u", &f(&["psx"]))), "folder:psx");
         assert_eq!(ids(attribute("m3u", &f(&["megacd"]))), "folder:megacd");
         assert_eq!(ids(attribute("32x", &[])), "candidates:32x");
         assert_eq!(ids(attribute("gba", &[])), "candidates:gba");
@@ -602,7 +614,7 @@ mod tests {
         assert_eq!(system("nes").unwrap().header, Some(HeaderRule::INes));
         assert_eq!(system("snes").unwrap().header, Some(HeaderRule::SnesCopier));
         assert_eq!(system("megadrive").unwrap().header, None);
-        assert!(system("psx").is_none());
+        assert!(system("ps2").is_none());
         let gbc: Vec<_> = systems_for_extension("GBC").iter().map(|s| &s.id).collect();
         assert_eq!(gbc, ["gbc"]);
         let gb: Vec<_> = systems_for_extension("gb").iter().map(|s| &s.id).collect();
@@ -689,11 +701,43 @@ mod tests {
         assert_eq!(cd.extensions, ["cue", "chd", "iso", "m3u"]);
         assert_eq!(cd.dats, [DatSource::Redump]);
         assert!(cd.disc && !gba.disc && !s32x.disc);
-        assert_eq!(systems().iter().filter(|s| s.disc).count(), 1);
+        assert_eq!(systems().iter().filter(|s| s.disc).count(), 3);
+        assert!(cd.group_discs);
         let disc =
             "id = \"a\"\nname = \"N\"\ndatabase = \"D\"\nextensions = [\"iso\"]\ndisc = true";
         let parsed = parse_catalog(&format!("[[system]]\n{disc}\ndat = \"redump\"\n")).unwrap();
-        assert!(parsed[0].disc);
+        assert!(parsed[0].disc && parsed[0].group_discs);
         assert_eq!(parsed[0].dats, [DatSource::Redump]);
+        let single = parse_catalog(&format!(
+            "[[system]]\n{disc}\ndat = \"redump\"\ngroup_discs = false\n"
+        ))
+        .unwrap();
+        assert!(!single[0].group_discs);
+    }
+
+    #[test]
+    fn v7_playstation_and_3do() {
+        let psx = system("psx").unwrap();
+        assert_eq!(
+            (psx.name.as_str(), psx.database.as_str(), psx.kind),
+            ("PlayStation", "Sony - PlayStation", SystemKind::Console)
+        );
+        assert_eq!(psx.extensions, ["cue", "chd", "iso", "pbp", "m3u"]);
+        assert_eq!(psx.folder_extensions, ["cue", "chd", "iso"]);
+        assert_eq!(psx.dats, [DatSource::Redump]);
+        assert!(psx.disc && psx.group_discs);
+        assert_eq!((psx.screenscraper, psx.igdb), (Some(57), Some(7)));
+        let tdo = system("3do").unwrap();
+        assert_eq!(
+            (tdo.name.as_str(), tdo.database.as_str(), tdo.kind),
+            ("3DO", "The 3DO Company - 3DO", SystemKind::Console)
+        );
+        assert_eq!(tdo.extensions, ["cue", "chd", "iso"]);
+        assert_eq!(tdo.folder_extensions, ["cue", "chd", "iso"]);
+        assert_eq!(tdo.dats, [DatSource::Redump]);
+        assert!(tdo.disc && !tdo.group_discs);
+        assert_eq!((tdo.screenscraper, tdo.igdb), (Some(29), Some(50)));
+        assert_eq!(crate::DiscFormat::Psx.system_id(), psx.id);
+        assert_eq!(crate::DiscFormat::Opera.system_id(), tdo.id);
     }
 }

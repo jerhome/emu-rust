@@ -317,7 +317,7 @@ fn dat_import_after_scan_reidentifies() {
         Identification::Unknown
     );
     assert!(matches!(
-        lib.import_dat("psx", &dat(vec![]), None),
+        lib.import_dat("ps2", &dat(vec![]), None),
         Err(LibraryError::UnknownSystem(_))
     ));
 }

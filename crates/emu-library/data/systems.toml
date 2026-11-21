@@ -179,3 +179,37 @@ database = "Sega - 32X"
 # Not yet confirmed (same caveat as gba).
 screenscraper = 19
 igdb = 30
+
+[[system]]
+id = "psx"
+name = "PlayStation"
+# Disc images are never hashed and never copied; tracks referenced by a `.cue` are hidden by the scanner, a track
+# `.bin` without `.cue` is a game (scanner probe: ISO 9660 descriptor `PLAYSTATION` at sector 16).
+# `.pbp` (EBOOT) is never read: identified by name. `.m3u`: multi-CD playlist.
+extensions = ["cue", "chd", "iso", "pbp", "m3u"]
+# Shared with `megacd`, `dos`, `3do`: kept only under `psx/`, or outside it when the header says PlayStation, or for
+# a `.chd` whose name is a game of this Redump DAT only.
+folder_extensions = ["cue", "chd", "iso"]
+database = "Sony - PlayStation"
+# Redump: serial of SYSTEM.CNF (`SLES-00032`), then the name; never a CRC of the tracks.
+dat = "redump"
+disc = true
+# Ids from memory, NOT yet confirmed against systemesListe.php / the IGDB platforms endpoint.
+screenscraper = 57
+igdb = 7
+
+[[system]]
+id = "3do"
+name = "3DO"
+extensions = ["cue", "chd", "iso"]
+# Shared with `megacd`, `dos`, `psx`: same rule (header `01 5A5A5A5A5A 01` at sector 0).
+folder_extensions = ["cue", "chd", "iso"]
+database = "The 3DO Company - 3DO"
+# Redump: size + CRC32 of track 01 (up to 800 MiB), then the name.
+dat = "redump"
+disc = true
+# opera has neither disk interface nor `.m3u`: one game per disc.
+group_discs = false
+# Ids from memory, NOT yet confirmed (same caveat as psx).
+screenscraper = 29
+igdb = 50

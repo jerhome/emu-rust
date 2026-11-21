@@ -30,7 +30,9 @@ use crate::{
 pub struct ScanOptions {
     pub roots: Vec<PathBuf>,
     pub max_depth: usize,
-    /// Files (or zip entries) above this size are recorded but not hashed.
+    /// Files (or zip entries) above this size are recorded but not hashed. Data tracks of a disc are checked
+    /// against a Redump DAT (size + CRC32) up to this size too, except 3DO tracks: the default bound is raised to
+    /// 800 MiB for them (design v7.0 §3.4); PlayStation tracks never are (serial, then name).
     pub max_file_size: u64,
 }
 
@@ -685,26 +687,82 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
     found.retain(|f| !hidden.contains(&f.key));
 }
 
-/// A disc image that the analysis will give to a `disc` system (a folder named after it, or a Sega CD header
-/// outside any system folder): its `(Disc N)` files are grouped like disks (design v6.0 §3.4). DOS discs are left
-/// as they were.
+/// A disc image that the analysis will give to a `disc` system grouping its discs (a folder named after it, a
+/// disc header outside any system folder, a `.pbp`, a PlayStation track without `.cue`): its `(Disc N)` files are
+/// grouped like disks (design v6.0 §3.4). DOS discs, and the discs of a system with `group_discs = false` (3DO),
+/// are left as they are.
 fn is_console_disc(found: &Found) -> bool {
     let Some(ext) = lower_ext(&found.path) else {
         return false;
     };
-    if !DISC_EXTENSIONS.contains(&ext.as_str()) || found.is_dir {
+    if found.is_dir {
         return false;
     }
-    match attribute(&ext, &found.folders) {
-        Attribution::Folder(s) => s.disc,
-        Attribution::Unclassified => {
-            ext != "chd"
-                && disc_info(&found.path)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|i| i.format == DiscFormat::SegaCd)
+    let system = if ext == "bin" {
+        probe_bin(&found.path)
+            .ok()
+            .and_then(track_format)
+            .and_then(|f| crate::system(f.system_id()))
+    } else if is_disc_image(&ext) {
+        match attribute(&ext, &found.folders) {
+            Attribution::Folder(s) => Some(s),
+            Attribution::Unclassified if ext != "chd" => disc_info(&found.path)
+                .ok()
+                .flatten()
+                .and_then(|i| crate::system(i.format.system_id())),
+            Attribution::Candidates(c) if c.len() == 1 => Some(c[0]),
+            _ => None,
         }
-        Attribution::Candidates(_) | Attribution::ByDat(_) => false,
+    } else {
+        None
+    };
+    system.is_some_and(|s| s.disc && s.group_discs)
+}
+
+/// PlayStation EBOOT (`.pbp`): a disc image of `psx`, never read nor hashed (design v7.0 §3.4).
+const PBP: &str = "pbp";
+
+/// Disc images handed to the core in place: `DISC_EXTENSIONS` and `.pbp`.
+fn is_disc_image(ext: &str) -> bool {
+    DISC_EXTENSIONS.contains(&ext) || ext == PBP
+}
+
+/// Format of a `.bin` that is a game by itself when no `.cue` names it (design v7.0 §3.4): a PlayStation or 3DO
+/// track (a Sega CD track never is).
+fn track_format(kind: BinKind) -> Option<DiscFormat> {
+    match kind {
+        BinKind::PsxTrack => Some(DiscFormat::Psx),
+        BinKind::OperaTrack => Some(DiscFormat::Opera),
+        _ => None,
+    }
+}
+
+/// System folder (`psx/`, `3do/`) under which a `.bin` that is not one of its tracks is ignored, not taken for a
+/// Mega Drive ROM.
+fn track_folder(folders: &[String]) -> Option<&'static str> {
+    [DiscFormat::Psx, DiscFormat::Opera]
+        .map(DiscFormat::system_id)
+        .into_iter()
+        .find(|id| folders.iter().any(|f| f == id))
+}
+
+/// Format of the discs of a `disc` system (`megacd` ⇒ `SegaCd`…).
+fn format_of_system(id: &str) -> Option<DiscFormat> {
+    [DiscFormat::SegaCd, DiscFormat::Psx, DiscFormat::Opera]
+        .into_iter()
+        .find(|f| f.system_id() == id)
+}
+
+/// 3DO data tracks are CRC-checked up to this size when the default bound applies (Redump tracks reach ~770 MB).
+const MAX_OPERA_TRACK: u64 = 800 * 1024 * 1024;
+
+/// Largest data track whose CRC32 is computed for a Redump match (design v7.0 §3.4): `max` (512 MiB by default),
+/// 800 MiB for a 3DO track unless a smaller bound was asked, never for a PlayStation disc (serial, then name).
+fn crc_limit(system: &SystemInfo, max: u64) -> Option<u64> {
+    match format_of_system(&system.id) {
+        Some(DiscFormat::Psx) => None,
+        Some(DiscFormat::Opera) if max >= MAX_HASH_SIZE => Some(max.max(MAX_OPERA_TRACK)),
+        _ => Some(max),
     }
 }
 
@@ -748,9 +806,7 @@ fn hide_disc_tracks(
         if lower_ext(&f.path).as_deref() != Some("bin") || hidden.contains(&f.key) {
             continue;
         }
-        if let Ok(Some(info)) = disc_info(&f.path)
-            && info.format == DiscFormat::SegaCd
-        {
+        if probe_bin(&f.path).is_ok_and(|k| k == BinKind::SegaCdTrack) {
             report.errors.push((
                 f.path.clone(),
                 "piste de CD sans fichier .cue : ignorée".to_owned(),
@@ -806,7 +862,7 @@ fn entry_folders(found: &Found, entry: &Path) -> Vec<String> {
     folders
 }
 
-/// Attribution of a playlist entry; a disc image outside any system folder is attributed by its Sega CD header
+/// Attribution of a playlist entry; a disc image outside any system folder is attributed by its disc header
 /// (same probe as a lone disc, design v6.0 §3.4: the system of a `.m3u` is the one of its entries).
 fn entry_attribution(found: &Found, entry: &Path) -> Option<Attribution> {
     let ext = lower_ext(entry)?;
@@ -853,15 +909,24 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
             && old.pinned
                 == folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
     }
-    if ext == "bin" && old.system == SEGA_32X {
-        // Kept as 32X by its header (unchanged content): only the folder flag can have changed.
-        return old.pinned == found.folders.iter().any(|f| f == SEGA_32X);
+    if ext == "bin"
+        && (old.system == SEGA_32X || crate::system(&old.system).is_some_and(|s| s.disc))
+    {
+        // Kept as 32X, PlayStation or 3DO by its header (unchanged content): only the folder flag can have changed.
+        return old.pinned == found.folders.contains(&old.system);
     }
     if ext == "bin"
         && old.entry.is_none()
-        && probe_bin(&found.path).is_ok_and(|k| k == BinKind::Sega32x)
+        && (track_folder(&found.folders).is_some()
+            || probe_bin(&found.path).is_ok_and(|k| {
+                matches!(
+                    k,
+                    BinKind::Sega32x | BinKind::PsxTrack | BinKind::OperaTrack
+                )
+            }))
     {
-        // A 32X `.bin` stored as Mega Drive before the 6.0 (< 0x220 bytes read).
+        // A 32X `.bin` stored as Mega Drive before the 6.0, a PlayStation / 3DO track (or a `.bin` under `psx/`,
+        // `3do/`) stored as Mega Drive before the 7.0.
         return false;
     }
     let accepts = |c: &[&SystemInfo]| c.iter().any(|s| s.id == old.system);
@@ -874,13 +939,13 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
                 && accepts(&c)
                 && matches!(old.identification.as_str(), "sha1" | "crc32_size")
         }
-        // A disc outside a folder, kept as Mega CD by its header at the last scan, or a `.chd` by its Redump name
-        // (a Redump import sends these rows to a new analysis).
+        // A disc outside a folder, kept in a disc system by its header at the last scan, or a `.chd` by its Redump
+        // name (a Redump import sends these rows to a new analysis).
         Attribution::Unclassified => {
             !old.pinned
                 && (ext != "chd" || old.identification == "name")
                 && DISC_EXTENSIONS.contains(&ext.as_str())
-                && old.system == "megacd"
+                && crate::system(&old.system).is_some_and(|s| s.disc)
         }
     }
 }
@@ -919,6 +984,9 @@ fn playlist_agrees(old: &Existing, found: &Found) -> bool {
 fn dos_system() -> Option<&'static SystemInfo> {
     systems().iter().find(|s| s.folder_games)
 }
+
+const ZIPPED_DISC: &str =
+    "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD.";
 
 fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
     // Under a DOS folder, or a `.dosz`: a DOS game whatever the archive holds (design v4.0 §3.4).
@@ -977,7 +1045,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             continue;
         };
         saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
-        saw_disc |= DISC_EXTENSIONS.contains(&ext.as_str());
+        saw_disc |= is_disc_image(&ext);
         let candidates = systems_for_extension(&ext);
         if entry.size() > 0
             && let Some(id) = ambiguous_computer(&ext, &found.folders)
@@ -1020,11 +1088,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         return Err(Failure::MixedArchive);
     }
     if saw_disc {
-        return Err(
-            "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
-                .to_owned()
-                .into(),
-        );
+        return Err(ZIPPED_DISC.to_owned().into());
     }
     let Some((index, name, declared, _)) = chosen else {
         return Err(if saw_empty {
@@ -1052,13 +1116,15 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             BinKind::SegaCdTrack => {
                 return Err("piste de CD sans fichier .cue : ignorée".to_owned().into());
             }
+            BinKind::PsxTrack | BinKind::OperaTrack => {
+                return Err(ZIPPED_DISC.to_owned().into());
+            }
             BinKind::Sega32x => {
                 if let Some(r) = rule_32x(found) {
                     rule = r;
                 }
             }
-            // PB1 gives these their own rule (orphan track = a game); nothing produces them before.
-            BinKind::MegaDrive | BinKind::Unknown | BinKind::PsxTrack | BinKind::OperaTrack => {}
+            BinKind::MegaDrive | BinKind::Unknown => {}
         }
     }
     let hashes = if declared > max {
@@ -1193,7 +1259,7 @@ fn analyze_file(
         return analyze_zip(found, max, cancel);
     }
     // Disc images first (never hashed, probed only), before the generic attribution of design v3.0 §3.5.2.
-    if DISC_EXTENSIONS.contains(&ext.as_str()) {
+    if is_disc_image(&ext) {
         return analyze_disc(found, &ext, max, cancel, discs);
     }
     let playlist = is_playlist(found);
@@ -1202,11 +1268,23 @@ fn analyze_file(
     } else {
         rule_of(attribute(&ext, &found.folders))?
     };
-    if ext == "bin"
-        && let Ok(BinKind::Sega32x) = probe_bin(&found.path)
-        && let Some(r) = rule_32x(found)
-    {
-        rule = r;
+    if ext == "bin" && !playlist {
+        let kind = probe_bin(&found.path).ok();
+        // A PlayStation / 3DO track no `.cue` names is a game by itself (design v7.0 §3.4).
+        if let Some(system) = kind
+            .and_then(track_format)
+            .and_then(|f| crate::system(f.system_id()))
+        {
+            let pinned = found.folders.contains(&system.id);
+            return disc_analysis(found, &ext, system, pinned, max, cancel, discs);
+        }
+        if kind == Some(BinKind::Sega32x)
+            && let Some(r) = rule_32x(found)
+        {
+            rule = r;
+        } else if let Some(folder) = track_folder(&found.folders) {
+            return Err(format!("fichier .bin non reconnu sous {folder}/ : ignoré").into());
+        }
     }
     let region = if playlist {
         playlist_region(found, discs)
@@ -1325,10 +1403,11 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     })
 }
 
-/// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 4 KiB read).
-/// Under a system folder the folder decides. Elsewhere only a Sega CD header classifies a `.cue` / `.iso`
-/// (design v4.0 §10 #7: the extensions are shared with `dos`), and a `.chd` (never read) only its name in the
-/// Redump DAT of a disc system (design v6.0 §3.4); anything else is unclassified.
+/// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 40 KiB read).
+/// Under a system folder the folder decides. Elsewhere only a disc header (Sega CD, PlayStation, 3DO) classifies a
+/// `.cue` / `.iso` (design v4.0 §10 #7: the extensions are shared with `dos`), a `.chd` (never read) only its name
+/// in the Redump DAT of exactly one disc system (design v7.0 §3.4), a `.pbp` its only system; anything else is
+/// unclassified.
 fn analyze_disc(
     found: &Found,
     ext: &str,
@@ -1357,6 +1436,7 @@ fn analyze_disc(
             ));
         }
         Attribution::Folder(s) => (s, true),
+        Attribution::Candidates(c) if c.len() == 1 && c[0].disc => (c[0], false),
         _ => {
             // An unreadable `.cue` is reported once, by `hide_disc_tracks`.
             let by_header = if ext == "chd" {
@@ -1367,24 +1447,50 @@ fn analyze_disc(
                     .flatten()
                     .and_then(|i| crate::system(i.format.system_id()))
             };
+            // A title shared by several machines (« Road Rash (USA) ») attributes nothing.
             let by_name = || {
-                (ext == "chd")
-                    .then(|| {
-                        systems().iter().find(|s| {
-                            s.disc
-                                && s.extensions.iter().any(|e| e == ext)
-                                && discs
-                                    .get(&s.id)
-                                    .is_some_and(|set| set.by_name(&stem).is_some())
-                        })
-                    })
-                    .flatten()
+                if ext != "chd" {
+                    return None;
+                }
+                let mut hits = systems().iter().filter(|s| {
+                    s.disc
+                        && s.extensions.iter().any(|e| e == ext)
+                        && discs
+                            .get(&s.id)
+                            .is_some_and(|set| set.by_name(&stem).is_some())
+                });
+                match (hits.next(), hits.next()) {
+                    (Some(s), None) => Some(s),
+                    _ => None,
+                }
             };
             match by_header.or_else(by_name) {
                 Some(s) => (s, false),
                 None => return Err(Failure::Unclassified),
             }
         }
+    };
+    disc_analysis(found, ext, system, pinned, max, cancel, discs)
+}
+
+/// Analysis of a disc image (or a PlayStation / 3DO track) once its system is known.
+fn disc_analysis(
+    found: &Found,
+    ext: &str,
+    system: &'static SystemInfo,
+    pinned: bool,
+    max: u64,
+    cancel: &AtomicBool,
+    discs: &DiscIndex,
+) -> Result<Analysis, Failure> {
+    let stem = stem_of(&found.path);
+    let analysis = |rule, region| Analysis {
+        entry: None,
+        size: found.file_size,
+        hashes: None,
+        rule,
+        stem: stem.clone(),
+        region,
     };
     if !system.disc {
         return Ok(analysis(
@@ -1395,8 +1501,14 @@ fn analyze_disc(
             None,
         ));
     }
-    let (matched, region) =
-        disc_facts(&found.path, ext, &stem, discs.get(&system.id), max, cancel)?;
+    let (matched, region) = disc_facts(
+        &found.path,
+        ext,
+        &stem,
+        discs.get(&system.id),
+        crc_limit(system, max),
+        cancel,
+    )?;
     Ok(analysis(
         Rule::Disc {
             system,
@@ -1410,10 +1522,10 @@ fn analyze_disc(
 /// Redump match (DAT game name, how) and region of a disc image.
 type DiscFacts = (Option<(String, Identification)>, Option<DiscRegion>);
 
-/// Data track whose size and CRC32 a Redump DAT lists: the first file of a `.cue`, a `.iso` itself.
+/// Data track whose size and CRC32 a Redump DAT lists: the first file of a `.cue`, a `.iso` or `.bin` itself.
 fn redump_track(path: &Path, ext: &str) -> Option<PathBuf> {
     match ext {
-        "iso" => Some(path.to_path_buf()),
+        "iso" | "bin" => Some(path.to_path_buf()),
         "cue" => first_track(path).ok().flatten(),
         _ => None,
     }
@@ -1444,19 +1556,21 @@ fn crc_file(path: &Path, size: u64, cancel: &AtomicBool) -> Result<u32, String> 
     Ok(hasher.finalize())
 }
 
-/// Redump identification and region of a disc image (design v6.0 §2.2, §3.4). Identification: size + CRC32 of
-/// the data track, computed only when the DAT lists that size (and at most `max` bytes), else the header serial,
-/// else the name. Region: header byte 0x20B, else the Redump line, else the name tag. Without a listed size the
-/// reads stay under 64 KiB of cue and 0x220 bytes of track; a `.chd` is never read.
+/// Redump identification and region of a disc image (design v6.0 §2.2, §3.4, v7.0 §3.4). Identification: size +
+/// CRC32 of the data track, computed only when the DAT lists that size and it is at most `crc_limit` bytes (`None`:
+/// never, PlayStation), else the header serial, else the name. Region: the header (Sega CD byte 0x20B, PlayStation
+/// licence sector then serial prefix), else the Redump line, else the name tag. Without a listed size the reads
+/// stay under 64 KiB of cue and the probe of the track (< 40 KiB and a few sectors); a `.chd` / `.pbp` is never
+/// read.
 fn disc_facts(
     path: &Path,
     ext: &str,
     stem: &str,
     set: Option<&RedumpSet>,
-    max: u64,
+    crc_limit: Option<u64>,
     cancel: &AtomicBool,
 ) -> Result<DiscFacts, Failure> {
-    let header = if ext == "chd" {
+    let header = if ext == "chd" || ext == PBP {
         None
     } else {
         disc_header(path).ok().flatten()
@@ -1468,7 +1582,7 @@ fn disc_facts(
                 .ok()
                 .filter(|m| m.is_file())
                 .map(|m| m.len())
-            && size <= max
+            && crc_limit.is_some_and(|max| size <= max)
             && set.has_size(size)
         {
             match crc_file(&track, size, cancel) {
@@ -1506,7 +1620,7 @@ fn disc_facts(
 /// title, else the name tag.
 fn region_of_row(path: &Path, title: &str, set: Option<&RedumpSet>) -> Option<DiscRegion> {
     let ext = lower_ext(path)?;
-    let header = if ext == "chd" {
+    let header = if ext == "chd" || ext == PBP {
         None
     } else {
         disc_header(path).ok().flatten()
@@ -1538,7 +1652,7 @@ fn playlist_region(found: &Found, discs: &DiscIndex) -> Option<DiscRegion> {
         .and_then(|first| {
             let first = Path::new(first);
             let ext = lower_ext(first)?;
-            if ext == "chd" || !DISC_EXTENSIONS.contains(&ext.as_str()) {
+            if ext == "chd" || !(DISC_EXTENSIONS.contains(&ext.as_str()) || ext == "bin") {
                 return None;
             }
             disc_header(first).ok().flatten()?.0.region
@@ -2101,7 +2215,7 @@ mod tests {
         use super::*;
         use crate::{Game, Library};
 
-        fn write(path: &Path, data: &[u8]) {
+        pub(super) fn write(path: &Path, data: &[u8]) {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, data).unwrap();
         }
@@ -2130,7 +2244,7 @@ mod tests {
         }
 
         /// Stored (uncompressed) zip of `entries`.
-        fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        pub(super) fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
             let mut out = Vec::new();
             let mut central = Vec::new();
             for (name, data) in entries {
@@ -2168,7 +2282,7 @@ mod tests {
             out
         }
 
-        fn scan(lib: &mut Library, root: &Path) -> (ScanReport, ScanProgress) {
+        pub(super) fn scan(lib: &mut Library, root: &Path) -> (ScanReport, ScanProgress) {
             let mut last = ScanProgress::default();
             let opts = ScanOptions {
                 roots: vec![root.to_path_buf()],
@@ -2182,7 +2296,7 @@ mod tests {
             (report, last)
         }
 
-        fn names(games: &[Game]) -> Vec<(String, String)> {
+        pub(super) fn names(games: &[Game]) -> Vec<(String, String)> {
             let mut v: Vec<_> = games
                 .iter()
                 .map(|g| {
@@ -2196,7 +2310,7 @@ mod tests {
             v
         }
 
-        fn has_error(report: &ScanReport, file: &str, needle: &str) -> bool {
+        pub(super) fn has_error(report: &ScanReport, file: &str, needle: &str) -> bool {
             report
                 .errors
                 .iter()
@@ -2481,7 +2595,7 @@ mod tests {
                 "cue",
                 "Big",
                 absent.get("megacd"),
-                MAX_HASH_SIZE,
+                Some(MAX_HASH_SIZE),
                 &cancel,
             )
             .ok()
@@ -2494,14 +2608,22 @@ mod tests {
                     "cue",
                     "Big",
                     listed.get("megacd"),
-                    MAX_HASH_SIZE,
+                    Some(MAX_HASH_SIZE),
                     &cancel
                 ),
                 Err(Failure::Cancelled)
             ));
             // Above the hash limit: never read either.
             assert!(
-                disc_facts(&cue, "cue", "Big", listed.get("megacd"), size - 1, &cancel).is_ok()
+                disc_facts(
+                    &cue,
+                    "cue",
+                    "Big",
+                    listed.get("megacd"),
+                    Some(size - 1),
+                    &cancel
+                )
+                .is_ok()
             );
             // Listed and read: no CRC match, so the name decides (none here).
             let (matched, _) = disc_facts(
@@ -2509,7 +2631,7 @@ mod tests {
                 "cue",
                 "Big",
                 listed.get("megacd"),
-                MAX_HASH_SIZE,
+                Some(MAX_HASH_SIZE),
                 &AtomicBool::new(false),
             )
             .ok()
@@ -2531,6 +2653,326 @@ mod tests {
             let (report, _) = scan(&mut lib, &tmp.path().join("roms"));
             assert!(report.errors.is_empty(), "{report:?}");
             assert_eq!(names(&lib.games().unwrap()).len(), 1);
+        }
+    }
+
+    /// PlayStation and 3DO (design v7.0 §3.4).
+    mod ps_3do {
+        use super::megacd::{has_error, names, scan, write, zip_of};
+        use super::*;
+        use crate::disc::fixtures::{opera_sector0, psx_iso, to_raw};
+        use crate::{DatEntry, DatSource, Library};
+
+        const CNF: &[u8] = b"BOOT = cdrom:\\SLES_000.32;1\r\n";
+        const EUROPE: &str = "Sony Computer Entertainment Euro pe";
+
+        fn psx_track() -> Vec<u8> {
+            to_raw(&psx_iso(Some(EUROPE), Some(CNF)), 2)
+        }
+
+        fn opera_iso() -> Vec<u8> {
+            let mut iso = opera_sector0();
+            iso.resize(8 * 2048, 0x11);
+            iso
+        }
+
+        fn cue(track: &str) -> Vec<u8> {
+            format!("FILE \"{track}\" BINARY\n  TRACK 01 MODE2/2352\n").into_bytes()
+        }
+
+        fn entry(game: &str, size: u64, crc32: u32, serial: Option<&str>) -> DatEntry {
+            DatEntry {
+                game: game.into(),
+                rom_name: format!("{game} (Track 01).bin"),
+                size,
+                crc32,
+                sha1: None,
+                serial: serial.map(str::to_owned),
+                region: None,
+            }
+        }
+
+        fn import(lib: &mut Library, system: &str, entries: Vec<DatEntry>) {
+            let dat = crate::Dat {
+                name: system.into(),
+                version: None,
+                entries,
+            };
+            lib.import_dat_source(system, DatSource::Redump, &dat, None)
+                .unwrap();
+        }
+
+        fn game<'g>(games: &'g [crate::Game], file: &str) -> &'g crate::Game {
+            games
+                .iter()
+                .find(|g| g.path.file_name().is_some_and(|n| n == file))
+                .unwrap_or_else(|| panic!("{file} missing"))
+        }
+
+        #[test]
+        fn psx_cue_outside_a_folder_is_identified_by_serial() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("roms/misc");
+            write(&dir.join("GTA (Track 01).bin"), &psx_track());
+            write(&dir.join("GTA.cue"), &cue("GTA (Track 01).bin"));
+            let mut lib = Library::open_in_memory().unwrap();
+            // The DAT lists the track size: a PlayStation track is still never read whole.
+            let size = psx_track().len() as u64;
+            import(
+                &mut lib,
+                "psx",
+                vec![entry(
+                    "Grand Theft Auto (Europe)",
+                    size,
+                    0xDEAD_BEEF,
+                    Some("SLES-00032"),
+                )],
+            );
+            let (report, progress) = scan(&mut lib, &tmp.path().join("roms"));
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert_eq!(progress.hashed, 0);
+            let games = lib.games().unwrap();
+            assert_eq!(names(&games), [("psx".to_owned(), "GTA.cue".to_owned())]);
+            let g = game(&games, "GTA.cue");
+            assert_eq!(g.title, "Grand Theft Auto (Europe)");
+            assert_eq!(g.identification, Identification::Serial);
+            assert_eq!(g.region, Some(DiscRegion::Europe));
+            assert_eq!(report.hidden_tracks, 1);
+            // A second scan keeps everything as it is.
+            scan(&mut lib, &tmp.path().join("roms"));
+            assert_eq!(lib.games().unwrap(), games);
+        }
+
+        #[test]
+        fn psx_never_crc_and_3do_bound() {
+            let psx = crate::system("psx").unwrap();
+            let tdo = crate::system("3do").unwrap();
+            let cd = crate::system("megacd").unwrap();
+            assert_eq!(crc_limit(psx, MAX_HASH_SIZE), None);
+            assert_eq!(crc_limit(tdo, MAX_HASH_SIZE), Some(800 * 1024 * 1024));
+            assert_eq!(crc_limit(tdo, 1000), Some(1000));
+            assert_eq!(crc_limit(cd, MAX_HASH_SIZE), Some(MAX_HASH_SIZE));
+            // A PlayStation disc whose track size is listed: a set cancel flag would fail any whole read.
+            let tmp = tempfile::tempdir().unwrap();
+            let track = tmp.path().join("t.bin");
+            write(&track, &psx_track());
+            let mut lib = Library::open_in_memory().unwrap();
+            let size = psx_track().len() as u64;
+            import(&mut lib, "psx", vec![entry("X (Europe)", size, 1, None)]);
+            let index = DiscIndex::load(&lib.conn).unwrap();
+            let cancel = AtomicBool::new(true);
+            assert!(
+                disc_facts(
+                    &track,
+                    "bin",
+                    "t",
+                    index.get("psx"),
+                    crc_limit(psx, MAX_HASH_SIZE),
+                    &cancel
+                )
+                .is_ok()
+            );
+        }
+
+        #[test]
+        fn opera_track_crc_and_folder() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            write(&roms.join("3do/Road Rash (USA).iso"), &opera_iso());
+            // Outside any folder: the header attributes it.
+            write(&roms.join("x/Other (Europe).bin"), &to_raw(&opera_iso(), 1));
+            write(
+                &roms.join("x/Other (Europe).cue"),
+                &cue("Other (Europe).bin"),
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let iso = opera_iso();
+            import(
+                &mut lib,
+                "3do",
+                vec![entry(
+                    "Road Rash (USA) (Redump)",
+                    iso.len() as u64,
+                    crc32fast::hash(&iso),
+                    None,
+                )],
+            );
+            let (report, _) = scan(&mut lib, &roms);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [
+                    ("3do".to_owned(), "Other (Europe).cue".to_owned()),
+                    ("3do".to_owned(), "Road Rash (USA).iso".to_owned())
+                ]
+            );
+            let rr = game(&games, "Road Rash (USA).iso");
+            assert_eq!(rr.title, "Road Rash (USA) (Redump)");
+            assert_eq!(rr.identification, Identification::Crc32Size);
+            assert_eq!(rr.region, Some(DiscRegion::Usa));
+            assert_eq!(
+                game(&games, "Other (Europe).cue").region,
+                Some(DiscRegion::Europe)
+            );
+        }
+
+        #[test]
+        fn chd_named_in_two_dats_stays_unclassified() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            write(&roms.join("Road Rash (USA).chd"), b"not read");
+            write(&roms.join("Only PS (Europe).chd"), b"not read");
+            write(&roms.join("3do/Road Rash (USA) [b].chd"), b"not read");
+            let mut lib = Library::open_in_memory().unwrap();
+            import(
+                &mut lib,
+                "megacd",
+                vec![entry("Road Rash (USA)", 1, 1, None)],
+            );
+            let (report, _) = scan(&mut lib, &roms);
+            // Only the Mega CD DAT lists it for now.
+            let games = lib.games().unwrap();
+            assert_eq!(game(&games, "Road Rash (USA).chd").system, "megacd");
+            assert_eq!(report.unclassified, 1, "{report:?}");
+            import(
+                &mut lib,
+                "psx",
+                vec![
+                    entry("Road Rash (USA)", 1, 1, None),
+                    entry("Only PS (Europe)", 1, 1, None),
+                ],
+            );
+            let (report, _) = scan(&mut lib, &roms);
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [
+                    ("3do".to_owned(), "Road Rash (USA) [b].chd".to_owned()),
+                    ("psx".to_owned(), "Only PS (Europe).chd".to_owned())
+                ]
+            );
+            assert_eq!(report.unclassified, 1, "{report:?}");
+            assert!(
+                report
+                    .unclassified_paths
+                    .iter()
+                    .any(|p| p.ends_with("Road Rash (USA).chd"))
+            );
+        }
+
+        #[test]
+        fn lone_tracks_pbp_and_unknown_bins() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            write(&roms.join("GTA (Europe).bin"), &psx_track());
+            write(&roms.join("3do/RR.bin"), &to_raw(&opera_iso(), 1));
+            write(&roms.join("psx/Final Fantasy VII (USA).pbp"), &[7u8; 4096]);
+            write(&roms.join("Crash (USA).pbp"), &[7u8; 4096]);
+            write(&roms.join("psx/garbage.bin"), &[0x11u8; 4096]);
+            let mut md: Vec<u8> = (0..8192u32).map(|i| (i * 13 % 251) as u8).collect();
+            md[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+            write(&roms.join("Sonic.bin"), &md);
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, progress) = scan(&mut lib, &roms);
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [
+                    ("3do".to_owned(), "RR.bin".to_owned()),
+                    ("megadrive".to_owned(), "Sonic.bin".to_owned()),
+                    ("psx".to_owned(), "Crash (USA).pbp".to_owned()),
+                    ("psx".to_owned(), "Final Fantasy VII (USA).pbp".to_owned()),
+                    ("psx".to_owned(), "GTA (Europe).bin".to_owned()),
+                ]
+            );
+            // Only the Mega Drive ROM is hashed.
+            assert_eq!(progress.hashed, 1);
+            assert!(has_error(&report, "garbage.bin", "non reconnu sous psx/"));
+            let gta = game(&games, "GTA (Europe).bin");
+            assert_eq!(gta.region, Some(DiscRegion::Europe));
+            assert!(gta.crc32.is_none());
+            assert_eq!(
+                game(&games, "Crash (USA).pbp").region,
+                Some(DiscRegion::Usa)
+            );
+            // Second scan: unchanged.
+            scan(&mut lib, &roms);
+            assert_eq!(lib.games().unwrap(), games);
+        }
+
+        #[test]
+        fn zipped_playstation_discs_are_refused() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            let track = psx_track();
+            write(&roms.join("Ps.zip"), &zip_of(&[("Ps.bin", &track)]));
+            write(
+                &roms.join("Eboot.zip"),
+                &zip_of(&[("EBOOT.pbp", &[1u8; 64])]),
+            );
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &roms);
+            assert!(lib.games().unwrap().is_empty());
+            for zip in ["Ps.zip", "Eboot.zip"] {
+                assert!(has_error(&report, zip, "zip"), "{zip}: {report:?}");
+            }
+        }
+
+        #[test]
+        fn multi_disc_grouping_follows_group_discs() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            for n in [1, 2] {
+                let base = format!("Final (USA) (Disc {n})");
+                write(&roms.join(format!("psx/{base}.bin")), &psx_track());
+                write(
+                    &roms.join(format!("psx/{base}.cue")),
+                    &cue(&format!("{base}.bin")),
+                );
+                write(
+                    &roms.join(format!("3do/Two (USA) (Disc {n}).iso")),
+                    &opera_iso(),
+                );
+                // Outside a folder: the header decides, the 3DO rule still applies.
+                write(
+                    &roms.join(format!("x/Three (USA) (Disc {n}).iso")),
+                    &opera_iso(),
+                );
+            }
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &roms);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let games = lib.games().unwrap();
+            assert_eq!(
+                names(&games),
+                [
+                    ("3do".to_owned(), "Three (USA) (Disc 1).iso".to_owned()),
+                    ("3do".to_owned(), "Three (USA) (Disc 2).iso".to_owned()),
+                    ("3do".to_owned(), "Two (USA) (Disc 1).iso".to_owned()),
+                    ("3do".to_owned(), "Two (USA) (Disc 2).iso".to_owned()),
+                    ("psx".to_owned(), "Final (USA) (Disc 1).cue".to_owned()),
+                ]
+            );
+            assert_eq!(game(&games, "Final (USA) (Disc 1).cue").media.len(), 2);
+            assert!(game(&games, "Two (USA) (Disc 1).iso").media.is_empty());
+            scan(&mut lib, &roms);
+            assert_eq!(lib.games().unwrap(), games);
+        }
+
+        #[test]
+        fn dos_and_megacd_folders_keep_their_discs() {
+            let tmp = tempfile::tempdir().unwrap();
+            let roms = tmp.path().join("roms");
+            // A PlayStation image under `dos/` is a DOS CD (the folder decides).
+            write(&roms.join("dos/Game/cd.iso"), &psx_iso(None, Some(CNF)));
+            write(&roms.join("dos/Quake.iso"), &psx_iso(None, Some(CNF)));
+            write(&roms.join("megacd/Odd.iso"), &opera_iso());
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &roms);
+            let games = lib.games().unwrap();
+            assert_eq!(game(&games, "Quake.iso").system, "dos");
+            assert_eq!(game(&games, "Odd.iso").system, "megacd");
         }
     }
 
