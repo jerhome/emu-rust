@@ -611,8 +611,10 @@ fn check_zip(t: Target) {
     let stem = t.rom.rsplit_once('.').unwrap().0;
     let zip = data.path().join(format!("{stem}.zip"));
     write_zip(&zip, t.rom, &fs::read(&rom).unwrap());
+    // Separate data dirs: a same-named game already known would make the zip an homonym.
     let reference = {
-        let mut emu = load_in(t, data.path(), &rom, &[]);
+        let bare = tempfile::tempdir().unwrap();
+        let mut emu = load_in(t, bare.path(), &rom, &[]);
         run_frames(&mut emu, &mut NullInput, 300)
     };
     let mut emu = load_in(t, data.path(), &zip, &[]);

@@ -96,8 +96,15 @@ fn tree_hash(dir: &Path) -> BTreeMap<String, u64> {
     out
 }
 
+/// Files under `dir`, ignoring the game-identity registry the runtime keeps (`.emu-rust-games` and its lock).
 fn files_under(dir: &Path) -> Vec<String> {
-    tree_hash(dir).into_keys().collect()
+    tree_hash(dir)
+        .into_keys()
+        .filter(|f| {
+            let name = f.rsplit(['/', '\\']).next().unwrap_or(f);
+            name != ".emu-rust-games" && name != ".emu-rust-games.lock"
+        })
+        .collect()
 }
 
 /// A data root laid out like the app's, with an empty `system/`.
