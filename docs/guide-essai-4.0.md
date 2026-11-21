@@ -108,3 +108,26 @@ CM-32L, si vous en possédez, s'importent par « Importer un BIOS… ».
    dans le volume de données (`cache/`).
 2. macOS Intel : refaire le §1 ; noter la fluidité (si le jeu saccade : « Réglages DOS ▸ Vitesse » plus bas, ou
    l'option du core « Force 60 FPS » pour ce jeu).
+3. macOS : Alt correspond à ⌥ ; ⌥ + Entrée est transmis au DOS (plein écran du jeu, s'il le gère) ; le plein écran
+   d'emu-rust reste **Ctrl droit + F** (⌘ droit si vous avez choisi ce repli).
+
+## 7. CD et disquettes DOS (facultatif)
+
+1. Un jeu sur CD : placer l'image (`.iso`, ou `.cue` + `.bin`) **dans le dossier du jeu** ou dans son zip, à côté
+   des programmes. Attendu : le jeu voit le lecteur CD (`D:`) ; les pistes audio d'un `.cue` sont jouées.
+2. Une disquette `.img` / `.ima` seule dans `roms/dos/` : elle apparaît comme un jeu ; au lancement, dosbox_pure
+   démarre dessus si elle est amorçable, sinon elle est montée en `A:`.
+3. Rappel : un `.chd`, `.cue` ou `.iso` rangé **hors** des dossiers `roms/dos/` et `roms/megacd/` est désormais
+   « non classé » (liste visible après un scan, avec le dossier conseillé).
+
+## 8. En cas de problème
+
+- Le jeu ne démarre pas ou affiche le menu DOS à chaque fois : Ctrl droit → **Changer de programme de démarrage**,
+  puis **→** sur le bon programme pour le mémoriser.
+- Le jeu a été modifié par erreur (fichiers de configuration, sauvegardes) : Ctrl droit → **Réinitialiser les
+  modifications du jeu…** ; vos fichiers d'origine ne sont jamais touchés.
+- La préparation d'un jeu en dossier est trop longue ou bloque : Échap annule ; **Réglages → Vider le cache DOS**
+  puis relancer.
+- « Ce core ne peut pas être rechargé dans cette session » : quitter puis relancer emu-rust (copie du core
+  impossible, par exemple disque plein).
+- À noter pour le retour d'essai : nom du jeu, zip ou dossier, système (Windows, macOS, Docker), et le message affiché.

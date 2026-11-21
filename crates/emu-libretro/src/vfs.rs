@@ -922,7 +922,10 @@ mod tests {
         {
             std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
             std::os::unix::fs::symlink(dir.join("gone"), dir.join("dangling")).unwrap();
-            // Not UTF-8: skipped.
+        }
+        // Not UTF-8: skipped. APFS (macOS) refuses such names outright (EILSEQ).
+        #[cfg(target_os = "linux")]
+        {
             use std::os::unix::ffi::OsStrExt;
             std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"\xff.bin")), b"x").unwrap();
         }

@@ -1,7 +1,6 @@
-# Guide d'essai — version 5.0 (Amstrad CPC avec cap32, Commodore 64 avec VICE)
+# Guide d'essai — version 5.0.0-rc.1 (Amstrad CPC avec cap32, Commodore 64 avec VICE)
 
-Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v5.0.0-rc.1` pour le CPC, `v5.0.0-rc.2` pour le
-C64).
+Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v5.0.0-rc.1`, CPC et C64 ensemble).
 
 Durée : 45 minutes à 1 heure par machine. But : vérifier les jeux CPC puis C64 au clavier 60 % AZERTY (Windows), sur
 macOS Intel et dans Docker (WSLg) : disquette, cassette (chargement accéléré), BASIC au clavier, joystick au clavier.
@@ -10,6 +9,7 @@ Notez pour chaque étape « OK » ou ce qui s'est passé (capture d'écran bienv
 Rappel : emu-rust ne télécharge **aucun** jeu. Les ROM système sont **intégrées aux cores** (cap32 : ROM Amstrad,
 redistribution autorisée par Amstrad ; VICE : ROM Commodore, acceptées pour un usage personnel) ; l'écran Cores
 affiche « ROM intégrées au core » et la notice de licence. JiffyDOS (facultatif) s'importe par « Importer un BIOS… ».
+Vos jeux vont dans `roms/cpc/` (CPC) et `roms/c64/` (C64) ; sous Docker, dans `/data/roms/cpc/` et `/data/roms/c64/`.
 
 ## À savoir avant de commencer
 
@@ -84,3 +84,43 @@ affiche « ROM intégrées au core » et la notice de licence. JiffyDOS (faculta
 - `emu-rust --core cap32 --rom "Jeu.dsk" --launch 'RUN"DISC'`
 - `emu-rust --core vice_x64 --rom "Jeu.d64" --launch INTRO --no-auto-fast-load`
 - `emu-rust --check-bios cap32` : « ROM intégrée au core ».
+
+## JiffyDOS (facultatif, C64)
+
+Vous devez fournir vous-même les fichiers JiffyDOS (`JiffyDOS_C64.bin`, `JiffyDOS_1541-II.bin`, …) : emu-rust ne les
+télécharge pas.
+
+1. **Cores** → **Importer un BIOS…** → choisir un fichier JiffyDOS. Il est vérifié par son empreinte, puis copié
+   sous `system/vice/…` (même nom que dans le core). Répéter pour chaque fichier.
+2. Une fois les fichiers présents, cliquer **Activer JiffyDOS pour tous les jeux C64**.
+3. Lancer un jeu C64 : l'écran de démarrage affiche le bandeau JiffyDOS et les chargements disquette sont plus rapides.
+4. Désactiver : retirer l'option dans Options du core (`vice_jiffydos`) ou supprimer les fichiers de `system/vice/`.
+
+## Docker (WSLg) et macOS Intel
+
+- **Docker (WSLg)** : même parcours que ci-dessus avec `/data/roms/cpc/` et `/data/roms/c64/`. Vérifier l'image,
+  le son et le clavier AZERTY ; noter si Alt gauche (COPY) et Ctrl gauche (C=) arrivent bien à la machine.
+- **macOS Intel** : sur un Mac modeste, essayer `vice_x64` d'abord. Essayer ensuite `vice_x64sc` (≈ 5 fois plus lent) et
+  noter si l'image et le son restent fluides. Touche hôte : Ctrl droit (⌘ droit en repli).
+
+## En cas de problème
+
+- Le jeu ne démarre pas : menu → Options du core → « Commande de démarrage… » (CPC) ou « Programme à lancer… » (C64),
+  puis « Redémarrer le jeu ».
+- Le joystick ne répond pas : Ctrl droit + J (Clavier / Joystick) ; C64 : menu → « Port joystick ».
+- Chargement trop lent ou son coupé trop longtemps : désactiver le chargement accéléré automatique.
+- Image saccadée en C64 : repasser de `vice_x64sc` à `vice_x64`.
+- Un zip mêlant disquettes CPC et C64 est ignoré : le séparer par système.
+- Joindre une capture d'écran et décrire l'étape du guide concernée.
+
+## Consigner les résultats
+
+Une ligne par essai, dans `docs/essais-5.0.md` ou en réponse :
+
+```text
+Jeu : <titre, format .dsk/.cdt/.d64/.tap/.prg/.crt>
+Système : CPC | C64 (core : cap32 | vice_x64 | vice_x64sc)
+Hôte : Windows | macOS Intel | Docker WSLg | Linux
+Marche : <démarrage, son, joystick, chargement accéléré, sauvegarde…>
+Ne marche pas : <symptôme, étape du guide, capture>
+```

@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use emu_runtime::{
     CollectSink, ContentSpec, Emulator, EmulatorOptions, MAX_COPY_BYTES, MediaPolicy, MediaRules,
@@ -309,15 +309,37 @@ fn session(p: &Params) -> BTreeMap<String, String> {
     let frames: u64 = num(p, "frames", 600);
     let mut report = BTreeMap::new();
     let mut first_frame_ms = 0;
+    // dosbox_pure's start menu ignores keys for ~200-250 ms of REAL time after loading, and this harness runs
+    // far faster than real time: pause once, just before the first scripted input, so it is never swallowed.
+    let first_input = get(p, "script")
+        .unwrap_or("")
+        .split('|')
+        .filter_map(|item| {
+            let f: Vec<&str> = item.split(':').collect();
+            match f.as_slice() {
+                ["key", _, from, _] => from.parse::<u64>().ok(),
+                ["mouse", _, _, _, from, _] => from.parse::<u64>().ok(),
+                _ => None,
+            }
+        })
+        .min();
+    let mut done: u64 = 0;
     let mut run = |emu: &mut Emulator, n: u64, audio: &mut CollectSink, first: &mut u128| {
         let t = Instant::now();
+        let mut paused = Duration::ZERO;
         for i in 0..n {
+            if first_input == Some(done) {
+                paused = Duration::from_millis(500);
+                std::thread::sleep(paused);
+            }
+            done += 1;
             emu.run_frame(&mut input, audio).expect("run_frame");
             if *first == 0 && i == 0 {
                 *first = started.elapsed().as_millis();
             }
         }
-        t.elapsed().as_millis()
+        // The pause is not emulation time.
+        (t.elapsed() - paused).as_millis()
     };
     let run_ms = run(&mut emu, frames, &mut audio, &mut first_frame_ms);
     let png_path = get(p, "png").map(PathBuf::from);

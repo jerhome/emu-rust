@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "emu-app"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "ctrlc",
  "directories",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "emu-assets"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "crc32fast",
  "image",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "emu-library"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "crc32fast",
  "libc",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "emu-libretro"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "cc",
  "libloading 0.9.1",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "emu-runtime"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "cpal",
  "crc32fast",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "emu-ui"
-version = "3.0.0-rc.1"
+version = "5.0.0-rc.1"
 dependencies = [
  "egui",
  "egui-winit",
