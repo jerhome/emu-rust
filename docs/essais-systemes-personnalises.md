@@ -430,3 +430,31 @@ Chaque question a un défaut recommandé (**en gras**). Aucune ne porte sur le r
     - a) **Proposé seulement si son extension n'appartient à aucun autre système ; sinon laissé en place.**
     - b) Toujours demander le système de destination.
     - c) Jamais : les systèmes ajoutés se rangent à la main.
+
+## 10. Réponses de l'utilisateur (2026-11-21, questionnaire)
+
+Défaut recommandé retenu pour toutes les questions, sauf deux :
+
+- **Q15, partage d'une définition** : **plus tard**, pas en 8.0. L'utilisateur demande qu'on **le lui rappelle**, par
+  exemple au moment de concevoir la 8.1.
+- **Q16, prise en charge officielle d'une machine déjà ajoutée** : la définition de l'utilisateur **reste en place**.
+  emu-rust **propose la bascule vers la version officielle, en indiquant qu'elle est recommandée**. Jeux, sauvegardes et
+  touches sont conservés lors de la bascule.
+
+| Question | Réponse retenue |
+|---|---|
+| Q1 | Ordre : cartouches (8.0), CD (8.1), ordinateurs (8.2), arcade (8.3) |
+| Q2 | Aucune machine en particulier : le mécanisme général |
+| Q3 | Liste : émulateurs non expérimentaux, avec la case « tout afficher » |
+| Q4 | Ajout en un clic, tout pré-rempli, corrigeable ensuite |
+| Q5 | Core multi-machines : une entrée par machine, la principale cochée |
+| Q6 | Jeux uniquement dans `roms/<nom>/` |
+| Q7 | Étiquette « non testé » permanente, avertissement au premier lancement, bouton « ça marche chez moi » |
+| Q8 | ROM intégrées : message « contenu non vérifié, usage personnel », accepté une fois par core |
+| Q9 | Essai à blanc avant le premier lancement de chaque jeu, et message au redémarrage après un plantage |
+| Q10 | BIOS sans empreinte connue : accepté, affiché « présent, non vérifiable » |
+| Q11 | BIOS requis absent : avertissement avec « lancer quand même » |
+| Q12 | Cores manuels acceptés, avec l'étiquette « manuel, jamais vérifié » |
+| Q13 | Touches : disposition générique, noms de boutons donnés par le core |
+| Q14 | Jaquettes : recherche sur action si le nom libretro est connu, sinon nom du fichier |
+| Q17 | Rangement et glisser-déposer : proposés seulement si l'extension n'appartient à aucun autre système |
