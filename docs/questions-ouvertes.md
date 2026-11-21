@@ -295,3 +295,29 @@ Strike). Ils fonctionnent avec picodrive (déjà installé pour la 32X) et le BI
     - a) **Une seule 7.2 avec les deux**, CD 32X fait en premier.
     - b) CD 32X seul en 7.2, glisser-déposer en 7.3.
     - **Défaut recommandé : a.**
+
+### Réponses de l'utilisateur (2026-11-21, questionnaire)
+
+Toutes les options recommandées sont retenues, sauf :
+
+- **Q4, archive ouverte** : l'utilisateur veut **garder le choix**. emu-rust affiche un avertissement : le fichier vient
+  d'une archive ouverte et peut disparaître. L'avertissement propose « Extraire d'abord » (conseil, rien n'est copié)
+  ou « Tenter la copie quand même ».
+- **Q13, découpage** : version **7.2 = Sega CD 32X** ; **glisser-déposer en 7.2.1**.
+- **Q11, Night Trap 32X** : format (`.cue` ou `.chd`) et nom exact **à relever par l'utilisateur**. Le marquage
+  manuel « Ce jeu est un CD 32X » est retenu (défaut a).
+
+Les autres questions prennent le défaut recommandé :
+
+| Question | Réponse retenue |
+|---|---|
+| Q1 | Copier, avec la case « Déplacer plutôt que copier » mémorisée |
+| Q2 | Rangement direct si tout est sûr, avec « Annuler » ; aperçu en cas de doute ou pour un dossier |
+| Q3 | Accepter le curseur « interdit » pour les dépôts depuis un navigateur ou un e-mail |
+| Q5 | Zip rangé tel quel, jamais décompressé |
+| Q6 | Fichier des Téléchargements accepté |
+| Q7 | Dossier entier accepté, toujours avec aperçu |
+| Q8 | Wayland, WSL et Docker : limite acceptée, « Ouvrir le dossier des ROMs » puis « Ranger » |
+| Q9 | Comportement du dépôt et de « Annuler » : défauts retenus |
+| Q10 | Sous « Mega CD », avec une pastille « 32X » |
+| Q12 | Pré-release sur la base des tests factices ; l'essai de l'utilisateur décide de la suite |
