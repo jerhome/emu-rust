@@ -452,17 +452,27 @@ fn rule_disks_folder(
     saves: &Path,
     base: &str,
 ) -> Result<Option<(String, u32)>, RuntimeError> {
-    // A user playlist is not copied: its entries are. Only paths are compared for them.
-    let (keys, whole) = if has_ext(&source.path, "m3u") {
-        let keys = parse_playlist(&source.path)
+    // A user playlist is not copied: its entries are, so they are what the manifest recorded (path, or size +
+    // CRC32 of the whole file for an entry of at most `FP_WHOLE_MAX`: a moved folder).
+    let mut files: Vec<SetFile> = if has_ext(&source.path, "m3u") {
+        parse_playlist(&source.path)
             .unwrap_or_default()
             .iter()
-            .map(|p| registry_key(&path_key(&canonical(p))))
-            .collect();
-        (keys, false)
+            .filter_map(|p| SetFile::open(p))
+            .collect()
     } else {
         // The manifest records the CRC32 of whole files: comparable to a whole-file fingerprint only.
-        (vec![source.key.clone()], source.size <= FP_WHOLE_MAX)
+        let crc = if source.size <= FP_WHOLE_MAX {
+            Crc::Pending
+        } else {
+            Crc::TooLarge
+        };
+        vec![SetFile {
+            path: source.path.clone(),
+            key: source.key.clone(),
+            size: source.size,
+            crc,
+        }]
     };
     fn any_name(name: &str) -> bool {
         !name.is_empty() && !name.contains(['/', '\\'])
@@ -477,16 +487,18 @@ fn rule_disks_folder(
             continue;
         };
         let mut found = false;
-        for e in recorded.iter().filter(|e| e.origin == Origin::Set) {
-            if keys.contains(&registry_key(e.source_key())) {
-                found = true;
-                break;
-            }
-            if whole && e.source_size_crc().0 == source.size && !e.source_key().is_empty() {
-                let fp = source.fingerprint()?;
-                if (fp.size, fp.crc32) == e.source_size_crc() {
+        'set: for e in recorded.iter().filter(|e| e.origin == Origin::Set) {
+            for file in &mut files {
+                if registry_key(e.source_key()) == file.key {
                     found = true;
-                    break;
+                    break 'set;
+                }
+                if !e.source_key().is_empty()
+                    && e.source_size_crc().0 == file.size
+                    && file.crc()? == Some(e.source_size_crc().1)
+                {
+                    found = true;
+                    break 'set;
                 }
             }
         }
@@ -497,10 +509,55 @@ fn rule_disks_folder(
     Ok(None)
 }
 
+/// One file of the game as copied into a working-copy folder (the primary source, or an entry of its `.m3u`).
+struct SetFile {
+    path: PathBuf,
+    key: Vec<u8>,
+    size: u64,
+    crc: Crc,
+}
+
+/// Whole-file CRC32, computed at most once and only when a recorded copy has the same size.
+enum Crc {
+    Pending,
+    Known(u32),
+    /// Over `FP_WHOLE_MAX`: compared by path only here (`choose_work_dir` still finds its folder by content).
+    TooLarge,
+}
+
+impl SetFile {
+    fn open(path: &Path) -> Option<Self> {
+        let meta = fs::metadata(path).ok().filter(fs::Metadata::is_file)?;
+        let size = meta.len();
+        Some(Self {
+            path: path.to_path_buf(),
+            key: registry_key(&path_key(&canonical(path))),
+            size,
+            crc: if size <= FP_WHOLE_MAX {
+                Crc::Pending
+            } else {
+                Crc::TooLarge
+            },
+        })
+    }
+
+    fn crc(&mut self) -> Result<Option<u32>, RuntimeError> {
+        if let Crc::Pending = self.crc {
+            let file = File::open(&self.path).map_err(|e| io_error(&self.path, e))?;
+            let fp = fingerprint_of(file, self.size).map_err(|e| io_error(&self.path, e))?;
+            self.crc = Crc::Known(fp.crc32);
+        }
+        Ok(match self.crc {
+            Crc::Known(crc) => Some(crc),
+            _ => None,
+        })
+    }
+}
+
 /// Rule 4.
 ///
 /// Called only when rule 3 found no folder of this source: a `<base>.disks` whose manifest holds present `Set`
-/// copies therefore belongs to another game (the 2.0 owner of the bare name, not launched in 2.1 yet), which must
+/// copies of a source that still exists therefore belongs to another game (the 2.0 owner of the bare name, not launched in 2.1 yet), which must
 /// keep `<base>` when it comes (design §2.2). Suffixed candidates already skip any existing `<base> (n).*`, which
 /// covers the `<save_name> (n).disks` folders made by `choose_work_dir` for a replaced image.
 fn attribute(
@@ -521,8 +578,10 @@ fn attribute(
         })
 }
 
-/// Source of the first present `Set` copy recorded in `<name>.disks` (readable manifest only): that folder belongs
-/// to the game made from it.
+/// Source of the first present `Set` copy recorded in `<name>.disks` (readable manifest only), if that source
+/// still exists: the folder then belongs to the game made from it. A source that is gone (folder moved or renamed
+/// before the first 2.1 launch) reserves nothing: the game gets `<name>` as in 2.0 and `choose_work_dir` finds its
+/// copies by content.
 fn disks_owner(saves: &Path, name: &str) -> Option<PathBuf> {
     fn any_name(name: &str) -> bool {
         !name.is_empty() && !name.contains(['/', '\\'])
@@ -534,8 +593,9 @@ fn disks_owner(saves: &Path, name: &str) -> Option<PathBuf> {
     recorded
         .iter()
         .filter(|e| e.origin == Origin::Set)
-        .find(|e| workcopy::is_regular_file(&dir.join(&e.copy)).unwrap_or(false))
-        .map(|e| e.source_path().unwrap_or_default())
+        .filter(|e| workcopy::is_regular_file(&dir.join(&e.copy)).unwrap_or(false))
+        .filter_map(|e| e.source_path())
+        .find(|source| source.is_file())
 }
 
 /// Lower-cased names of `<saves>/<core_id>/` and `<states>/<core_id>/`, listed once.

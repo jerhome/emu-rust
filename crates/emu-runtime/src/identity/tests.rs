@@ -579,3 +579,113 @@ fn the_owner_of_a_2_0_folder_keeps_the_bare_name_after_a_new_homonym() {
     let id = resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap();
     assert_eq!(id.save_name, "H");
 }
+
+/// Moved before the first 2.1 launch, by a `.m3u` (rule 3 by content) or as a single image too large to be
+/// fingerprinted whole (rule 4 gives the bare name, `choose_work_dir` finds the folder by content): the only owner
+/// of `G.disks` keeps `G` and its copies.
+#[test]
+fn a_sole_owner_moved_before_the_first_2_1_launch_keeps_its_name_and_copies() {
+    use crate::media::{MediaPolicy, prepare_media};
+    let exts: Vec<String> = ["st", "m3u"].iter().map(|s| (*s).to_owned()).collect();
+
+    // `.m3u` of two disks: rc.2 recorded the old paths of the images.
+    let fx = Fx::new();
+    let old1 = fx.rom("old/G (Disk 1).st", b"disk one");
+    let old2 = fx.rom("old/G (Disk 2).st", b"disk two");
+    let work = fx.saves().join("G.disks");
+    fs::create_dir_all(&work).unwrap();
+    let mut text = b"emu-rust working copies 1\n".to_vec();
+    for (copy, src, data) in [
+        ("G (Disk 1).st", &old1, b"disk one"),
+        ("G (Disk 2).st", &old2, b"disk two"),
+    ] {
+        text.extend_from_slice(
+            format!(
+                "set\t{copy}\t\t{}\t-\t{:08x}\t",
+                data.len(),
+                crc32fast::hash(data)
+            )
+            .as_bytes(),
+        );
+        escape(&path_key(&fs::canonicalize(src).unwrap()), &mut text);
+        text.push(b'\n');
+        fs::write(work.join(copy), b"progress").unwrap();
+    }
+    fs::write(work.join(workcopy::MANIFEST_NAME), &text).unwrap();
+    fs::rename(
+        fx.tmp.path().join("roms/old"),
+        fx.tmp.path().join("roms/new"),
+    )
+    .unwrap();
+    let playlist = fx.tmp.path().join("roms/new/G.m3u");
+    fs::write(&playlist, "G (Disk 1).st\nG (Disk 2).st\n").unwrap();
+    let spec = ContentSpec::Media {
+        set: MediaSet {
+            name: "G".into(),
+            images: Vec::new(),
+            playlist: Some(playlist),
+        },
+        policy: MediaPolicy::WorkingCopy,
+    };
+    let (saves, states) = (fx.saves(), fx.states());
+    let id = resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap();
+    assert_eq!(
+        (id.save_name.as_str(), id.index, &id.notice),
+        ("G", 1, &None)
+    );
+    let ContentSpec::Media { mut set, .. } = spec else {
+        unreachable!()
+    };
+    set.name = id.save_name;
+    let prepared = prepare_media(&set, MediaPolicy::WorkingCopy, &exts, &saves).unwrap();
+    assert_eq!(prepared.work_dir.as_deref(), Some(work.as_path()));
+    assert_eq!(fs::read(work.join("G (Disk 1).st")).unwrap(), b"progress");
+    // Rule 3 matched by content, not by default: the same folder as `G (2).disks` gives `G (2)`.
+    fs::remove_file(saves.join(REGISTRY_NAME)).unwrap();
+    fs::rename(&work, saves.join("G (2).disks")).unwrap();
+    set.name = "G".into();
+    let spec = ContentSpec::Media {
+        set,
+        policy: MediaPolicy::WorkingCopy,
+    };
+    let id = resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap();
+    assert_eq!((id.save_name.as_str(), id.index), ("G (2)", 2));
+
+    // Single image over 64 MiB (sparse), moved.
+    let fx = Fx::new();
+    let size = FP_WHOLE_MAX + FP_EDGE;
+    let old = fx.tmp.path().join("roms/old/G.st");
+    fs::create_dir_all(old.parent().unwrap()).unwrap();
+    File::create(&old).unwrap().set_len(size).unwrap();
+    let mut hasher = crc32fast::Hasher::new();
+    let zeros = vec![0u8; FP_EDGE as usize];
+    for _ in 0..(size / FP_EDGE) {
+        hasher.update(&zeros);
+    }
+    let crc = hasher.finalize();
+    let work = fx.saves().join("G.disks");
+    fs::create_dir_all(&work).unwrap();
+    let copy = work.join("G.st");
+    File::create(&copy).unwrap().set_len(size).unwrap();
+    let mut text =
+        format!("emu-rust working copies 1\nset\tG.st\t\t{size}\t-\t{crc:08x}\t").into_bytes();
+    escape(&path_key(&fs::canonicalize(&old).unwrap()), &mut text);
+    text.push(b'\n');
+    fs::write(work.join(workcopy::MANIFEST_NAME), &text).unwrap();
+    let moved = fx.tmp.path().join("roms/new/G.st");
+    fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    fs::rename(&old, &moved).unwrap();
+    let (saves, states) = (fx.saves(), fx.states());
+    let spec = media("G", &moved);
+    let id = resolve_game_identity(&identity_request_for(&spec, &saves, &states)).unwrap();
+    assert_eq!(
+        (id.save_name.as_str(), id.index, &id.notice),
+        ("G", 1, &None)
+    );
+    let ContentSpec::Media { set, .. } = spec else {
+        unreachable!()
+    };
+    let prepared = prepare_media(&set, MediaPolicy::WorkingCopy, &exts, &saves).unwrap();
+    assert_eq!(prepared.work_dir.as_deref(), Some(work.as_path()));
+    assert_eq!(prepared.images, [copy]);
+}
