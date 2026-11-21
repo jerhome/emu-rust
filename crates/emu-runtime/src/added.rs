@@ -26,6 +26,8 @@ pub struct AddedDisk {
     pub source_present: bool,
     /// Size of the copy, in bytes.
     pub size: u64,
+    /// Modification date of the copy, when the platform reports it.
+    pub modified: Option<SystemTime>,
     /// Index in the core's image list when restored or added this session; `None` if not in the list (or not
     /// identifiable: basic disk interface in a `File` / `NoGame` session, which reports no paths).
     pub index: Option<u32>,
@@ -55,7 +57,7 @@ const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
 
 /// Working-copy folder of the session: the prepared one, else `<saves>/<core_id>/<save_name>.disks` for
 /// `File` / `NoGame` sessions (same rule as `Disks::add`). `None` for a `Direct` set: no working copies.
-fn session_work_dir(emu: &Emulator) -> Option<PathBuf> {
+pub(crate) fn session_work_dir(emu: &Emulator) -> Option<PathBuf> {
     if emu.media_policy == Some(MediaPolicy::Direct) {
         return None;
     }
@@ -164,6 +166,7 @@ impl Disks<'_> {
                 source,
                 source_present,
                 size: meta.len(),
+                modified: meta.modified().ok(),
                 index,
             });
         }

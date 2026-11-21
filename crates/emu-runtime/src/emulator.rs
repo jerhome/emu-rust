@@ -291,6 +291,12 @@ impl Emulator {
         Some(Disks { emulator: self })
     }
 
+    /// Working-copy folder of the session: `None` for a `Direct` set; else the prepared one, else
+    /// `<saves>/<core_id>/<save_name>.disks`. Returned owned (the fallback is computed).
+    pub fn work_dir(&self) -> Option<PathBuf> {
+        crate::added::session_work_dir(self)
+    }
+
     /// Images prepared at load time (`ContentSpec::Media`), for the disk menu and « réinitialiser ».
     pub fn prepared_media(&self) -> Option<&PreparedMedia> {
         self.prepared.as_ref()

@@ -689,3 +689,20 @@ fn a_sole_owner_moved_before_the_first_2_1_launch_keeps_its_name_and_copies() {
     assert_eq!(prepared.work_dir.as_deref(), Some(work.as_path()));
     assert_eq!(prepared.images, [copy]);
 }
+
+#[cfg(unix)]
+#[test]
+fn unreadable_playlist_entry_is_no_match_not_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.st");
+    fs::write(&path, [1u8; 64]).unwrap();
+    let mut file = SetFile::open(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&path).is_ok() {
+        return; // running as root: cannot make the file unreadable
+    }
+    assert_eq!(file.crc(), None);
+    // The failure is remembered: no second read attempt.
+    assert_eq!(file.crc(), None);
+}

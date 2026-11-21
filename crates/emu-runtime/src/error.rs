@@ -29,6 +29,9 @@ pub enum RuntimeError {
     /// A media set is empty or has more than `MAX_MEDIA_IMAGES` images.
     #[error("invalid disk set: {0}")]
     InvalidMediaSet(String),
+    /// The core's disk list is full: remove an added disk first.
+    #[error("at most {max} disk images: remove an added disk first")]
+    DiskListFull { max: usize },
     /// The running core registered no disk control interface.
     #[error("the core does not support disk swapping")]
     NoDiskControl,

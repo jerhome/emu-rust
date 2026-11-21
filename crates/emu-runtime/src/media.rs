@@ -1057,9 +1057,9 @@ impl Disks<'_> {
 /// The core's list is full: the player must remove an added disk first (the UI says « retirez une disquette
 /// ajoutée »).
 pub(crate) fn list_full() -> RuntimeError {
-    RuntimeError::InvalidMediaSet(format!(
-        "at most {MAX_MEDIA_IMAGES} disk images: remove an added disk first"
-    ))
+    RuntimeError::DiskListFull {
+        max: MAX_MEDIA_IMAGES,
+    }
 }
 
 impl Emulator {
@@ -1727,7 +1727,7 @@ mod tests {
         fs::write(&manifest, &text).unwrap();
         assert!(matches!(
             stage_added_copy(&dir, &extra, &exts(), Limits::DEFAULT, &[]),
-            Err(RuntimeError::InvalidMediaSet(_))
+            Err(RuntimeError::DiskListFull { .. })
         ));
         assert_eq!(fs::read_to_string(&manifest).unwrap(), text);
     }

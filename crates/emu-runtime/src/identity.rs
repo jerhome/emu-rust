@@ -495,7 +495,7 @@ fn rule_disks_folder(
                 }
                 if !e.source_key().is_empty()
                     && e.source_size_crc().0 == file.size
-                    && file.crc()? == Some(e.source_size_crc().1)
+                    && file.crc() == Some(e.source_size_crc().1)
                 {
                     found = true;
                     break 'set;
@@ -541,16 +541,22 @@ impl SetFile {
         })
     }
 
-    fn crc(&mut self) -> Result<Option<u32>, RuntimeError> {
+    /// `None` when too large or unreadable (an unreadable file is simply « no match », logged once).
+    fn crc(&mut self) -> Option<u32> {
         if let Crc::Pending = self.crc {
-            let file = File::open(&self.path).map_err(|e| io_error(&self.path, e))?;
-            let fp = fingerprint_of(file, self.size).map_err(|e| io_error(&self.path, e))?;
-            self.crc = Crc::Known(fp.crc32);
+            let read = File::open(&self.path).and_then(|f| fingerprint_of(f, self.size));
+            match read {
+                Ok(fp) => self.crc = Crc::Known(fp.crc32),
+                Err(e) => {
+                    tracing::warn!("cannot read {}: {e}", self.path.display());
+                    self.crc = Crc::TooLarge;
+                }
+            }
         }
-        Ok(match self.crc {
+        match self.crc {
             Crc::Known(crc) => Some(crc),
             _ => None,
-        })
+        }
     }
 }
 
