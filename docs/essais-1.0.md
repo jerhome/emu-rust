@@ -29,5 +29,6 @@
 | Linux sous WSL2 (binaire Linux, WSLg) | Dune II (Mega Drive), clavier | **OK**, impeccable |
 | idem | son | **OK** après `libasound2-plugins` + `~/.asoundrc` (configuration de l'hôte, documentée) |
 | idem | manette | non vue : WSL2 ne voit pas l'USB sans `usbipd-win` (attendu) |
+| Windows | Dune (Mega CD), BIOS européen | ✅ **parfait** : image, son, **manette PS4** OK (première validation réelle du Mega CD et de la manette) |
 
 Suites : essais Windows prévus par l'utilisateur (C64 Maniac Mansion, Mega CD Dune, Amiga Hunter, DOS Storm Master, manette) ; essai Docker WSLg à faire. PS1 non disponible (7.0 non commencée).
