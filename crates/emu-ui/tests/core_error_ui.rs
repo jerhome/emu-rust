@@ -106,7 +106,7 @@ fn refused_disc_shows_the_core_error_naming_the_checked_bios() {
         "same file as the check: {core_error}"
     );
     assert!(
-        core_error.starts_with("Unable to open CD BIOS"),
+        core_error.contains("Unable to open CD BIOS"),
         "{core_error}"
     );
     // A refusal without any ERROR line keeps the generic message.

@@ -57,25 +57,44 @@ pub(crate) const MAX_CORE_ERROR_CHARS: usize = 512;
 /// Capture state, process-global like the other callbacks state (ADR 0008): cores may log from their own threads.
 /// `CAPTURING` is the cheap check of the hot path; the mutex is taken only for ERROR lines while capturing.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
-static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static LAST_ERROR: Mutex<Captured> = Mutex::new(Captured {
+    root: None,
+    next: None,
+});
 
-fn last_error() -> std::sync::MutexGuard<'static, Option<String>> {
-    // A poisoned lock only means another thread panicked while holding a plain `Option<String>`.
+/// The first ERROR line (root cause) and the first one that differs from it (often a consequence).
+#[derive(Default)]
+struct Captured {
+    root: Option<String>,
+    next: Option<String>,
+}
+
+fn last_error() -> std::sync::MutexGuard<'static, Captured> {
+    // A poisoned lock only means another thread panicked while holding plain `Option<String>`s.
     LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Starts recording the last `RETRO_LOG_ERROR` line, right before `retro_load_game` (lines logged before are
+/// Starts recording the `RETRO_LOG_ERROR` lines, right before `retro_load_game` (lines logged before are
 /// not kept).
 pub(crate) fn begin_load_error_capture() {
-    *last_error() = None;
+    *last_error() = Captured {
+        root: None,
+        next: None,
+    };
     CAPTURING.store(true, Ordering::SeqCst);
 }
 
-/// Stops the recording started by [`begin_load_error_capture`] and returns the last ERROR line, cleaned by
-/// [`clean_core_error`]; `None` when the core logged none (or only blank lines). Lines logged after are ignored.
+/// Stops the recording started by [`begin_load_error_capture`] and returns the first ERROR line (root
+/// cause), cleaned by [`clean_core_error`], followed by " ; " and the first different one when it fits in
+/// [`MAX_CORE_ERROR_CHARS`] (at most two distinct lines); `None` when the core logged none (or only blank
+/// lines). Lines logged after are ignored.
 pub(crate) fn end_load_error_capture() -> Option<String> {
     CAPTURING.store(false, Ordering::SeqCst);
-    last_error().take()
+    let Captured { root, next } = std::mem::take(&mut *last_error());
+    let root = root?;
+    let Some(next) = next else { return Some(root) };
+    let joined = format!("{root}; {next}");
+    Some(joined.chars().take(MAX_CORE_ERROR_CHARS).collect())
 }
 
 fn capture(level: LogLevel, message: &str) {
@@ -84,7 +103,12 @@ fn capture(level: LogLevel, message: &str) {
     }
     let cleaned = clean_core_error(message);
     if !cleaned.is_empty() {
-        *last_error() = Some(cleaned);
+        let mut state = last_error();
+        if state.root.is_none() {
+            state.root = Some(cleaned);
+        } else if state.next.is_none() && state.root.as_deref() != Some(cleaned.as_str()) {
+            state.next = Some(cleaned);
+        }
     }
 }
 
@@ -230,7 +254,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn capture_keeps_last_error_only_while_active() {
+    fn capture_keeps_root_and_next_error_only_while_active() {
         let log = log_callback().log;
         // SAFETY: constant format strings with matching `%s` arguments.
         let say =
@@ -238,14 +262,26 @@ pub(crate) mod tests {
         say(sys::RETRO_LOG_ERROR, c"before");
         begin_load_error_capture();
         say(sys::RETRO_LOG_ERROR, c"first");
+        say(sys::RETRO_LOG_ERROR, c"first");
         say(sys::RETRO_LOG_ERROR, c"  second \n");
+        say(sys::RETRO_LOG_ERROR, c"third");
         say(sys::RETRO_LOG_WARN, c"warn");
         say(sys::RETRO_LOG_ERROR, c"\n");
-        assert_eq!(end_load_error_capture().as_deref(), Some("second"));
+        assert_eq!(end_load_error_capture().as_deref(), Some("first; second"));
         say(sys::RETRO_LOG_ERROR, c"after");
         assert_eq!(end_load_error_capture(), None);
         begin_load_error_capture();
         say(sys::RETRO_LOG_INFO, c"info");
         assert_eq!(end_load_error_capture(), None);
+        begin_load_error_capture();
+        say(sys::RETRO_LOG_ERROR, c"only");
+        assert_eq!(end_load_error_capture().as_deref(), Some("only"));
+        begin_load_error_capture();
+        say(sys::RETRO_LOG_ERROR, c"cause");
+        let long = std::ffi::CString::new("x".repeat(MAX_CORE_ERROR_CHARS)).unwrap();
+        say(sys::RETRO_LOG_ERROR, &long);
+        let joined = end_load_error_capture().unwrap();
+        assert_eq!(joined.chars().count(), MAX_CORE_ERROR_CHARS);
+        assert!(joined.starts_with("cause; xx"));
     }
 }
