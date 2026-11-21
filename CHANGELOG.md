@@ -34,8 +34,6 @@ Première pré-release de la 7.0 : **PlayStation** et **3DO** (rendu logiciel). 
 - Un zip de disquettes d'ordinateur devient un jeu multi-disquettes, dans l'ordre logique (« Disk N / Side X »,
   TOSEC « Disk N of M ») ; les disquettes extraites sont listées dans cet ordre dans le menu.
 - `dosbox_pure` ne plante plus quand les options du core sont lues sans jeu chargé.
-- « Réinitialiser les sauvegardes » d'un jeu PlayStation n'est plus annulé par la reprise d'une carte mémoire d'un
-  autre core.
 - Une piste audio `.bin` d'une base 6.0 est purgée au rescan ; un gros `.bin` sans en-tête n'est plus haché.
 
 ### Limites connues
