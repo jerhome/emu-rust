@@ -1845,7 +1845,8 @@ mod tests {
             self.tmp.path().join("saves/hatari")
         }
         fn file(&self, rel: &str, data: &[u8]) -> PathBuf {
-            let path = self.roms().join(rel);
+            // Component-wise join: a `/` inside `rel` must not leave a mixed-separator path on Windows.
+            let path = rel.split('/').fold(self.roms(), |p, c| p.join(c));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, data).unwrap();
             path
@@ -2454,11 +2455,15 @@ mod tests {
                 .is_empty()
         );
         // `{game}` without `*`; a `*` in the game name is literal.
-        fs::write(dir.join("St*r.brm"), b"x").unwrap();
-        fs::write(dir.join("Star.brm"), b"x").unwrap();
-        let removed = reset_core_game_files(&dir, "St*r", &strs(&["{game}.brm"])).unwrap();
-        assert_eq!(removed, [dir.join("St*r.brm")]);
-        assert!(dir.join("Star.brm").exists());
+        // `*` is not a valid file name character on Windows.
+        #[cfg(unix)]
+        {
+            fs::write(dir.join("St*r.brm"), b"x").unwrap();
+            fs::write(dir.join("Star.brm"), b"x").unwrap();
+            let removed = reset_core_game_files(&dir, "St*r", &strs(&["{game}.brm"])).unwrap();
+            assert_eq!(removed, [dir.join("St*r.brm")]);
+            assert!(dir.join("Star.brm").exists());
+        }
         // Refused patterns: nothing deleted.
         for bad in [
             "../{game}.adf",

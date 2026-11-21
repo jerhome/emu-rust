@@ -1079,7 +1079,7 @@ fn interface_captures() {
         &data,
         "cores",
         &[],
-        &["move", "95", "227", "click", "1"],
+        &["move", "95", "310", "click", "1"],
         &selector,
     );
     assert!(

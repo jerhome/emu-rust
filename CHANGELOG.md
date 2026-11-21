@@ -2,6 +2,34 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [4.0.0-rc.1] - 2026-11-21
+
+Première pré-release de la 4.0 : **PC-DOS** (dosbox_pure). Guide d'essai : `docs/guide-essai-4.0.md`.
+
+### Ajouté
+
+- PC-DOS : jeux en **zip** (lus tels quels) ou en **dossier** (copie « instantané » préparée dans le cache, avec
+  progression et annulation ; vos dossiers ne sont jamais modifiés), CD (`.iso`, `.cue`) et disquettes (`.img`).
+- Menu DOS de dosbox_pure (programme mémorisé), « Changer de programme de démarrage », « Lancer un autre
+  programme… » (touche P), « Réinitialiser les modifications du jeu… ».
+- Réglages DOS en tête des options du core ; disposition du clavier DOS selon la langue (AZERTY en français) ;
+  clavier virtuel PC 102 touches ; sticks analogiques de la manette pour les jeux DOS.
+- Musique MIDI : SoundFont libre **GeneralUser GS** (32 Mo, téléchargée seulement à votre demande depuis l'écran
+  Cores, empreinte vérifiée), applicable à tous les jeux DOS ; ROM MT-32 / CM-32L importables.
+- « Vider le cache DOS » ; ligne de commande : `--rom <dossier>`, `--rom JEU/START.EXE`, `--clear-dos-cache`.
+
+### Modifié
+
+- Bibliothèque : schéma v5 (jeux-dossiers), migration automatique sans perte.
+- Un core qui ne se décharge pas proprement (dosbox_pure) est rechargé depuis une copie privée : relancer ou changer
+  de jeu DOS ne plante plus (ADR 0022).
+- Un `.chd`, `.cue` ou `.iso` hors des dossiers `roms/dos/` et `roms/megacd/` est « non classé ».
+
+### Limites connues
+
+- Une bibliothèque ouverte par la 4.0 n'est plus lisible par une 3.x.
+- Windows 3.x / 95 installés dans dosbox_pure : non testés.
+
 ## [3.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 3.0 : **Amiga** (puae ; puae2021 recommandé sur Mac) et les règles communes des versions
