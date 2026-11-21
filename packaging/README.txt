@@ -103,7 +103,7 @@ PlayStation et 3DO (7.0, en développement) : rendu logiciel seulement (pas d'Op
   dossier system/) : scph5500.bin (Japon), scph5501.bin (USA), scph5502.bin (Europe) pour la PlayStation ; panafz10.bin pour
   la 3DO. S'ils sont présents, ils sont préférés ; sinon le core utilise son remplaçant intégré, avec un avertissement
   unique et une compatibilité réduite : HLE de pcsx_rearmed (GPL-2.0), OpenBIOS (swanstation, mednafen_psx ; licence
-  à confirmer), Opera Boot (core opera, GPL-2.0-only). Rien n'est extrait ni copié par emu-rust.
+  MIT, pcsx-redux/nugget), Opera Boot (core opera, GPL-2.0-only). Rien n'est extrait ni copié par emu-rust.
   Cartes mémoire : une par jeu (saves/<core>/<jeu>.srm), reprise automatique d'un core PlayStation à l'autre.
   Manette : pad numérique par défaut ; mode DualShock (sticks) réglable par jeu.
 Licences non embarquées (rien de plus dans THIRD-PARTY-DATA.txt que les empreintes de BIOS) : DAT Redump téléchargé à la
