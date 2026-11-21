@@ -87,8 +87,8 @@ class Tidy(unittest.TestCase):
         have = {u["id"] for u in self.m["units"]}
         for needed in ("snes-sfc", "md-md", "gb-ambiguous", "gbc-gbc", "gba-gba", "nes-nes", "sms-sms", "gg-gg",
                        "x32-32x", "zip-snes", "cd-megacd-multitrack", "cd-psx-multitrack", "multicd-psx-nom3u",
-                       "multicd-3do-disc1", "multicd-3do-disc2", "orphan-set-groupable", "chd-sbi", "st-3disks",
-                       "adf-2disks", "dos-folder", "bios-name-only", "unknown-file", "collision-conflict",
+                       "multicd-3do-disc1", "multicd-3do-disc2", "orphan-set-track-1", "chd-sbi", "st-3disks",
+                       "adf-2disks", "dos-folder", "headerless-bin", "zip-mixed", "collision-conflict",
                        "collision-duplicate", "long-name", "symlink"):
             self.assertIn(needed, have)
         self.assertIn("Mystery Disc.sbi", self.m["tree"])

@@ -19,15 +19,19 @@ manifest.json (version 1)
                   DosFolder); Blocked: TidyBlock variant name; Ambiguous / Unknown: null
     system        destination system id, or null
     candidates    systems the user may choose from (Ambiguous), else []
-    moves[]       {"from", "to"} relative to roms/, one per file moved; [] when nothing moves
+    moves[]       {"from", "to"} relative to roms/, one per file moved; [] when nothing moves. A Blocked unit whose
+                  system is known (collision, folder named like a system) keeps the moves it would have made
     whole_dir     {"from", "to"} when the unit moves as one directory rename, else null
     destination   "to" of the file or folder the unit ends in ("snes/Game.sfc", "psx/Game/"), else null
     text          why, in plain words
     requires      "unix" for the symlink unit, else null (skip the unit elsewhere / with --no-symlink)
     windows       optional override {"status", "reason"} where Windows differs (path longer than 240 chars)
-    confidence    "adr" (follows the ADR text) | "to_confirm" (an interpretation: see note)
-    note          present when confidence is "to_confirm": the open point
-  ignored[]  {"path", "reason"} files that are not units (already under their system folder)
+    confidence    "adr" (follows the ADR text, or the choice FB1a made and the architect confirmed: see note)
+    note          the decision, when the ADR text alone does not give it
+  firmware_names[]  file names to give TidyOptions::with_firmware_names (left in place, listed in ignored_paths)
+  ignored[]  {"path", "reason"} files that are not units: "already_sorted" (anywhere below a first-level roms/<id>/,
+             never analysed) or "firmware_name" (a file named like a known BIOS) or
+             "not_a_game" (no known extension: listed in ignored_paths, never a unit)
   tree[]     every path of the tree (files, symlinks) relative to roms/, sorted: the "before" snapshot
   platform   {"symlink": bool}
 """
@@ -217,6 +221,7 @@ class Tree:
         self.files: dict = {}  # rel -> bytes | ("link", target) | ("sparse", size)
         self.units: list = []
         self.ignored: list = []
+        self.firmware_names: list = []
 
     def add(self, rel: str, data):
         assert rel not in self.files, rel
@@ -290,9 +295,8 @@ def build(t: Tree):
     t.single("md-md", "Mega Test", "Mega Test.md", "megadrive", text=".md belongs to megadrive only")
     t.add("Cart Bin.bin", megadrive("CART BIN"))
     t.single("md-bin-header", "Cart Bin", "Cart Bin.bin", "megadrive", reason="Header",
-             text="SEGA MEGA DRIVE header at 0x100 in a .bin (not a CD track)", confidence="to_confirm",
-             note="a .bin is Header or Extension? the scan sees .bin as megadrive-only AND the header probe agrees; "
-                  "FB1a decides which TidyReason is reported (Header expected: probe_bin ran)")
+             text="SEGA MEGA DRIVE header at 0x100 in a .bin (not a CD track)", confidence="adr",
+             note="a .bin with a Sega / 32X header is Header, never Extension (FB1a)")
     t.add("Bin 32X.bin", mkcd.fake_32x())
     t.single("x32-bin-header", "Bin 32X", "Bin 32X.bin", "32x", reason="Header", text="SEGA 32X signature at 0x100 in a .bin")
     t.add("Super Test.32x", mkcd.fake_32x())
@@ -302,8 +306,8 @@ def build(t: Tree):
     t.add("Pocket Test.gb", gb("POCKET"))
     t.unit("gb-ambiguous", "Pocket Test", ["Pocket Test.gb"], "Ambiguous", None, None, candidates=["gb", "gbc"],
            text=".gb is listed by gb and gbc; without a DAT the user chooses",
-           confidence="to_confirm",
-           note="candidates order = catalog order (gb, gbc); a CGB-flagged .gb (0x143) is NOT used by the scan")
+           confidence="adr",
+           note="candidates in catalog order; a CGB-flagged .gb (0x143) is not used by the scan")
     t.add("Advance Test.gba", gba("ADVANCE"))
     t.single("gba-gba", "Advance Test", "Advance Test.gba", "gba", text=".gba belongs to gba only")
     t.add("Famicom Test.nes", nes(1, 1))
@@ -322,16 +326,15 @@ def build(t: Tree):
     t.single("zip-gba", "Zip Advance", "Zip Advance.zip", "gba", reason="ArchiveContent", text="one .gba entry")
     t.add("Zip NES.zip", make_zip({"Zipped Famicom.nes": nes(1, 0, 1)}))
     t.single("zip-nes", "Zip NES", "Zip NES.zip", "nes", reason="ArchiveContent", text="one .nes entry")
-    t.add("Zip Mixed.zip", make_zip({"Mixed A.sfc": snes("MIXED A"), "Mixed B.nes": nes(1, 1, 2)}))
+    t.add("Zip Mixed.zip", make_zip({"Mixed A.dsk": b"MV - CPCEMU Disk-File\r\nDisk-Info\r\n" + bytes(256), "Mixed B.d64": bytes(174848)}))
     t.unit("zip-mixed", "Zip Mixed", ["Zip Mixed.zip"], "Unknown", None, None,
-           text="entries of two systems: the scan ignores it (MixedArchive); the tidy leaves it in place",
-           confidence="to_confirm",
-           note="Unknown vs Ambiguous (candidates snes, nes)? ADR 4.3 says Ambiguous = several systems possible "
-                "for ONE unit; a mixed zip is rejected by the scan. FB1a to decide")
+           text="entries of two computers (.dsk and .d64): the scan ignores it (MixedArchive); the tidy leaves it in place",
+           confidence="adr",
+           note="a zip whose entries belong to two computer systems is Unknown (the scan's MixedArchive)")
     t.add("Zip DOS.zip", make_zip({"GAME.EXE": mkdos.fake_exe("ZDOS"), "README.TXT": b"zipped dos game\r\n"}))
     t.single("zip-dos", "Zip DOS", "Zip DOS.zip", "dos", reason="ArchiveContent", status="Suggested",
-             text="zip taken for DOS (ADR 4.3: Suggested, shown unchecked)", confidence="to_confirm",
-             note="TidyReason has no variant for a DOS zip: ArchiveContent assumed (DosFolder is for folders)")
+             text="zip taken for DOS (ADR 4.3: Suggested, shown unchecked)", confidence="adr",
+             note="a zip taken for DOS is Suggested(ArchiveContent), a .dosz is Sure(Extension)")
     t.add("Zip CD.zip", make_zip({"Zipped CD.cue": cue_text(("Zipped CD.bin", "MODE1/2352")),
                                   "Zipped CD.bin": mkcd.data_track(mkcd.megacd_sector0(), 8, 2352)}))
     t.unit("zip-cd", "Zip CD", ["Zip CD.zip"], "Blocked", "DiscInArchive", None,
@@ -363,15 +366,14 @@ def build(t: Tree):
     t.unit("multicd-psx-nom3u", "Twin Quest", list(f), "Sure", "Header", "psx",
            moves=[(n, "psx/Twin Quest/" + n) for n in sorted(f)],
            text="ADR 4.2: the whole (Disc N) group is ONE unit, ONE folder; the scan then shows one game",
-           confidence="to_confirm",
-           note="folder name = group name without the marker ('Twin Quest'); both discs share the serial prefix "
-                "(mkcd psx gives the same default serial)")
+           confidence="adr",
+           note="folder of a (Disc N) group = name without the marker: psx/Twin Quest/")
     f = megacd_files("Mega Twin", discs=2, audio=1, serial="T-22222 -00")
     t.add_all("", f)
     t.unit("multicd-megacd-nom3u", "Mega Twin", list(f), "Sure", "Header", "megacd",
            moves=[(n, "megacd/Mega Twin/" + n) for n in sorted(f)],
-           text="same rule on Mega CD (group_discs true), 2 cues + 4 tracks in one folder", confidence="to_confirm",
-           note="folder name = group name 'Mega Twin' (marker removed)")
+           text="same rule on Mega CD (group_discs true), 2 cues + 4 tracks in one folder", confidence="adr",
+           note="same rule on Mega CD: megacd/Mega Twin/")
     f = opera_files("Opera Twin", discs=2)
     t.add_all("", f)
     for k in (1, 2):
@@ -386,9 +388,8 @@ def build(t: Tree):
     t.add_all("", f)
     t.unit("multicd-psx-m3u", "Playlist Quest", list(f), "Sure", "Header", "psx",
            moves=[(n, "psx/Playlist Quest/" + n) for n in sorted(f)],
-           text=".m3u + its 2 discs and their tracks into a folder named after the .m3u", confidence="to_confirm",
-           note="an .m3u is shared by amiga/atarist/cpc/c64/dos/psx...: classification goes through the disc "
-                "probe of the listed cues (Header); FB1a to confirm the reason/status")
+           text=".m3u + its 2 discs and their tracks into a folder named after the .m3u", confidence="adr",
+           note="an .m3u of discs is Header, through the .cue it lists")
 
     # ---- single-unit folder ----------------------------------------------------------------------------------
     f = psx_files("Folder CD", serial="SLES-99903")
@@ -397,7 +398,7 @@ def build(t: Tree):
            whole_dir=("Folder CD", "psx/Folder CD"),
            moves=[("Folder CD/" + n, "psx/Folder CD/" + n) for n in sorted(f)],
            text="a folder holding exactly one folder-unit moves as is (one rename), under its own name",
-           confidence="to_confirm", note="moves[] lists the file-level view; whole_dir is the actual operation")
+           confidence="adr", note="moves[] is the file-level view; whole_dir (present) means one rename of the folder")
 
     # ---- two games, same track names, different folders -------------------------------------------------------
     for tag in ("A", "B"):
@@ -412,33 +413,32 @@ def build(t: Tree):
                moves=[("Same Tracks %s/%s" % (tag, n), "megacd/Same Tracks %s/%s" % (tag, n))
                       for n in sorted(("Track 1.bin", "Track 2.bin", "Game %s.cue" % tag))],
                text="same track file names in two folders never clash: each folder moves whole",
-               confidence="to_confirm", note="moves[] is the file-level view; whole_dir is the actual operation")
+               confidence="adr", note="moves[] is the file-level view; whole_dir (present) means one rename of the folder")
 
     # ---- orphan .bin tracks (no .cue) ------------------------------------------------------------------------
     d = megacd_files("Orphan Set", audio=2, serial="T-44444 -00")
     for n in ("Orphan Set (Track 1).bin", "Orphan Set (Track 2).bin", "Orphan Set (Track 3).bin"):
         t.add(n, d[n])
     names = ["Orphan Set (Track %d).bin" % k for k in (1, 2, 3)]
-    t.unit("orphan-set-groupable", "Orphan Set", names, "Sure", "Header", "megacd",
-           moves=[(n, "megacd/Orphan Set/" + n) for n in names],
-           text="data track + audio tracks of the same stem, no .cue (hide_disc_tracks / audio_track_name)",
-           confidence="to_confirm",
-           note="the scan IGNORES a Sega CD track without .cue (SEGA_TRACK_ALONE); the ADR says the tidy groups it "
-                "like a multi-file CD, but the folder name has no .cue to take it from: stem 'Orphan Set' assumed")
+    for k, n in enumerate(names, 1):
+        t.unit("orphan-set-track-%d" % k, "Orphan Set (Track %d)" % k, [n], "Blocked", "UngroupedTracks", None,
+               text="Sega CD track with no .cue: grouping is only done for PS1 / 3DO with data and audio tracks",
+               confidence="adr",
+               note="no megacd/Orphan Set folder: one Blocked(UngroupedTracks) unit per track, nothing moves")
     t.add("Lonely (Track 2).bin", mkcd.audio_track(8, "silence"))
     t.unit("orphan-audio-alone", "Lonely (Track 2)", ["Lonely (Track 2).bin"], "Blocked", "UngroupedTracks", None,
-           text="an audio track with no data track: grouping impossible", confidence="to_confirm",
+           text="an audio track with no data track: grouping impossible", confidence="adr",
            note="may be Unknown instead (a .bin without header = megadrive by extension?): FB1a / architect")
     t.add("Plain Orphan.bin", mkcd.data_track(mkcd.megacd_sector0(), 16, 2352))
     t.unit("orphan-megacd-alone", "Plain Orphan", ["Plain Orphan.bin"], "Blocked", "UngroupedTracks", None,
-           text="a lone Sega CD data track without .cue", confidence="to_confirm",
+           text="a lone Sega CD data track without .cue", confidence="adr",
            note="Blocked(UngroupedTracks) vs Unknown vs grouped as a one-file CD: not decided by the ADR")
     ps = psx_files("tmp", serial="SLES-99904")
     t.add("Psx Orphan.bin", ps["tmp.bin"])
     t.unit("orphan-psx-alone", "Psx Orphan", ["Psx Orphan.bin"], "Sure", "Header", "psx",
            moves=[("Psx Orphan.bin", "psx/Psx Orphan.bin")],
            text="a PlayStation data track alone is a game for the scan (PLAYSTATION descriptor)",
-           confidence="to_confirm", note="flat file or folder 'Psx Orphan/'? ADR says 'comme un CD à plusieurs fichiers'")
+           confidence="adr", note="a lone PS1 data track is a flat file psx/x.bin (a folder only when audio tracks of the same radical exist)")
 
     # ---- fake .chd + .sbi ------------------------------------------------------------------------------------
     t.add("Mystery Disc.chd", fake_chd())
@@ -446,7 +446,7 @@ def build(t: Tree):
     t.unit("chd-sbi", "Mystery Disc", ["Mystery Disc.chd", "Mystery Disc.sbi"], "Ambiguous", None, None,
            candidates=["megacd", "dos", "psx", "3do"],
            text=".chd is shared by four systems and cannot be probed here; the .sbi travels with it",
-           confidence="to_confirm", note="candidates in catalog order; the unit's moves are empty until a system is chosen")
+           confidence="adr", note="candidates [megacd, dos, psx, 3do]; the moves are empty until a system is chosen")
 
     # ---- floppy groups ---------------------------------------------------------------------------------------
     names = ["Rainbow Quest (Disk %d of 3).st" % k for k in (1, 2, 3)]
@@ -468,7 +468,7 @@ def build(t: Tree):
     t.unit("dos-folder", "Dos Game", dos, "Suggested", "DosFolder", "dos", whole_dir=("Dos Game", "dos/Dos Game"),
            moves=[(n, "dos/" + n) for n in dos],
            text="folder with an .exe at its root: Suggested (unchecked), indivisible, moved by one rename",
-           confidence="to_confirm", note="moves[] is the file-level view; whole_dir is the actual operation")
+           confidence="adr", note="moves[] is the file-level view; whole_dir (present) means one rename of the folder")
 
     # ---- any other folder: files one by one ------------------------------------------------------------------
     t.add("Misc Folder/Alpha.nes", nes(1, 1, 3))
@@ -478,19 +478,19 @@ def build(t: Tree):
 
     # ---- BIOS-like by name only, unknown ---------------------------------------------------------------------
     t.add("scph1001.bin", bytes((i * 7 + 3) & 0xFF for i in range(512 * 1024)))
-    t.unit("bios-name-only", "scph1001.bin", ["scph1001.bin"], "Sure", "Extension", "megadrive",
-           moves=[("scph1001.bin", "megadrive/scph1001.bin")],
-           text="named like a PlayStation BIOS but its md5 is NOT a known BIOS (filler bytes): ADR flags BIOS by md5 "
-                "only, so this is an ordinary headerless .bin", confidence="to_confirm",
-           note="DANGER: a headerless .bin <= 8 MiB is classified megadrive by the scan (Extension). Is it right to "
-                "propose it Sure? A 'looks like a BIOS' name guard is not in the ADR; architect to decide")
+    t.firmware_names.append("scph1001.bin")
+    t.ignored.append({"path": "scph1001.bin", "reason": "firmware_name"})
+    t.add("Headerless.bin", bytes((i * 11 + 5) & 0xFF for i in range(4096)))
+    t.unit("headerless-bin", "Headerless", ["Headerless.bin"], "Suggested", "Extension", "megadrive",
+           moves=[("Headerless.bin", "megadrive/Headerless.bin")],
+           text="a .bin without a Sega header is never Sure: Suggested(Extension), shown unchecked", confidence="adr",
+           note="deviation from ADR rule 5 chosen in FB1a; BIOS names are handled by firmware_names, not by a block")
     t.add("kick34005.A500", bytes((i * 5 + 1) & 0xFF for i in range(4096)))
-    t.unit("bios-unknown-ext", "kick34005.A500", ["kick34005.A500"], "Unknown", None, None,
-           text="BIOS-like name, extension of no system: left in place")
+    t.ignored.append({"path": "kick34005.A500", "reason": "not_a_game"})
     t.add("notes.txt", b"some notes, not a game\r\n")
-    t.unit("text-file", "notes.txt", ["notes.txt"], "Unknown", None, None, text="not a game: stays in place")
+    t.ignored.append({"path": "notes.txt", "reason": "not_a_game"})
     t.add("mystery.xyz", bytes(range(200)))
-    t.unit("unknown-file", "mystery.xyz", ["mystery.xyz"], "Unknown", None, None, text="unknown extension: stays in place")
+    t.ignored.append({"path": "mystery.xyz", "reason": "not_a_game"})
 
     # ---- name collisions -------------------------------------------------------------------------------------
     same = snes("DUPE GAME")
@@ -498,52 +498,57 @@ def build(t: Tree):
     t.add("snes/Dupe Game.sfc", same)
     t.ignored.append({"path": "snes/Dupe Game.sfc", "reason": "already_sorted"})
     t.unit("collision-duplicate", "Dupe Game", ["Dupe Game.sfc"], "Blocked", "Duplicate", "snes",
+           moves=[("Dupe Game.sfc", "snes/Dupe Game.sfc")],
            text="destination snes/Dupe Game.sfc exists with the same size and CRC32: stays, reported as a duplicate")
     t.add("Clash Game.nes", nes(1, 1, 4))
     t.add("nes/Clash Game.nes", nes(1, 1, 5))
     t.ignored.append({"path": "nes/Clash Game.nes", "reason": "already_sorted"})
     t.unit("collision-conflict", "Clash Game", ["Clash Game.nes"], "Blocked", "Conflict", "nes",
+           moves=[("Clash Game.nes", "nes/Clash Game.nes")],
            text="destination nes/Clash Game.nes exists with other content: stays, conflict")
     t.add("CASE Game.sfc", snes("CASE UPPER"))
     t.add("snes/case game.sfc", snes("CASE LOWER"))
     t.ignored.append({"path": "snes/case game.sfc", "reason": "already_sorted"})
     t.unit("collision-case", "CASE Game", ["CASE Game.sfc"], "Blocked", "Conflict", "snes",
+           moves=[("CASE Game.sfc", "snes/CASE Game.sfc")],
            text="destination differs only by case from snes/case game.sfc: compared case-insensitively, other content")
     t.add("Sub A/Twin.sms", sega8())
     t.add("Sub B/Twin.sms", bytes(sega8())[:-1] + b"\x01")
-    t.unit("collision-plan-a", "Twin (Sub A)", ["Sub A/Twin.sms"], "Blocked", "Conflict", "mastersystem",
-           text="two units of the plan target mastersystem/Twin.sms with different content", confidence="to_confirm",
-           note="which one is blocked (both, or only the later in plan order) is not fixed by the ADR; "
-                "the test should accept 'at least one Blocked, none moved over the other'")
-    t.unit("collision-plan-b", "Twin (Sub B)", ["Sub B/Twin.sms"], "Blocked", "Conflict", "mastersystem",
-           text="see collision-plan-a", confidence="to_confirm", note="see collision-plan-a")
+    t.unit("collision-plan-a", "Twin", ["Sub A/Twin.sms"], "Sure", "Extension", "mastersystem",
+           moves=[("Sub A/Twin.sms", "mastersystem/Twin.sms")],
+           text="two units target mastersystem/Twin.sms: the first in plan order keeps it", confidence="adr",
+           note="only the 2nd unit is blocked")
+    t.unit("collision-plan-b", "Twin", ["Sub B/Twin.sms"], "Blocked", "Conflict", "mastersystem",
+           moves=[("Sub B/Twin.sms", "mastersystem/Twin.sms")],
+           text="see collision-plan-a", confidence="adr", note="only the 2nd unit is blocked")
     t.add("gba/Sorted Already.gba", gba("SORTED"))
     t.ignored.append({"path": "gba/Sorted Already.gba", "reason": "already_sorted"})
 
     # ---- blocked CDs -----------------------------------------------------------------------------------------
     t.add("Broken Missing/ghost.cue", cue_text(("ghost.bin", "MODE1/2352")))
     t.unit("cue-missing-ref", "ghost", ["Broken Missing/ghost.cue"], "Blocked", "MissingReference", None,
-           text=".cue naming a track that does not exist", confidence="to_confirm",
-           note="a cue whose first track is missing cannot be probed: system null assumed")
+           text=".cue naming a track that does not exist", confidence="adr",
+           note="OutsideReference is checked before MissingReference; a cue whose first track is missing has no system")
     t.add("Broken Absolute/abs.cue", cue_text(("/abs/path/track.bin", "MODE1/2352")))
     t.unit("cue-absolute-ref", "abs", ["Broken Absolute/abs.cue"], "Blocked", "OutsideReference", None,
-           text=".cue with an absolute FILE reference", confidence="to_confirm",
-           note="absolute + missing: OutsideReference vs MissingReference precedence not fixed")
+           text=".cue with an absolute FILE reference", confidence="adr",
+           note="OutsideReference comes before MissingReference (an absolute path that does not exist is Outside)")
     sh = megacd_files("shared", serial="T-55555 -00")
     t.add("Shared Tracks/shared.bin", sh["shared.bin"])
     t.add("Shared Tracks/Shared One.cue", cue_text(("shared.bin", "MODE1/2352")))
     t.add("Shared Tracks/Shared Two.cue", cue_text(("shared.bin", "MODE1/2352")))
     t.unit("cue-shared-track-1", "Shared One", ["Shared Tracks/Shared One.cue", "Shared Tracks/shared.bin"], "Blocked",
-           "SharedTrack", "megacd", text="track cited by two .cue: both units blocked", confidence="to_confirm",
+           "SharedTrack", None, text="track cited by two .cue: both units blocked", confidence="adr",
            note="shared.bin appears in both units' files; a file belongs to one unit, so which unit lists it is "
                 "FB1a's choice")
     t.unit("cue-shared-track-2", "Shared Two", ["Shared Tracks/Shared Two.cue", "Shared Tracks/shared.bin"], "Blocked",
-           "SharedTrack", "megacd", text="see cue-shared-track-1", confidence="to_confirm", note="see cue-shared-track-1")
+           "SharedTrack", None, text="see cue-shared-track-1", confidence="adr", note="see cue-shared-track-1")
     sysname = psx_files("nes", serial="SLES-99905")
     t.add_all("", sysname)
     t.unit("folder-named-like-system", "nes", list(sysname), "Blocked", "FolderNamedLikeSystem", "psx",
+           moves=[("nes.cue", "psx/nes/nes.cue"), ("nes.bin", "psx/nes/nes.bin")],
            text="the folder to create, psx/nes/, is named after a system id: it would change the scan's folder rule",
-           confidence="to_confirm", note="reason is checked on the created folder; system psx assumed kept")
+           confidence="adr", note="the folder to create, psx/nes/, is named after a system id")
 
     # ---- symbolic link ---------------------------------------------------------------------------------------
     t.add("Real SNES.sfc", snes("REAL SNES"))
@@ -561,8 +566,8 @@ def build(t: Tree):
     t.unit("long-name", "Very Long Name", [longname], "Sure", "Extension", "snes",
            moves=[(longname, "snes/" + longname)], windows={"status": "Blocked", "reason": "PathTooLong"},
            text="230-character name: fine on Unix; on Windows 'root + snes/ + name' exceeds 240 characters",
-           confidence="to_confirm",
-           note="windows_length counts the absolute path (root included): blocked on Windows for any root")
+           confidence="adr",
+           note="PathTooLong only applies on Windows (root included in the length)")
 
 
 def main(argv):
@@ -582,6 +587,7 @@ def main(argv):
     manifest = {
         "version": 1,
         "units": sorted(t.units, key=lambda u: u["id"]),
+        "firmware_names": sorted(t.firmware_names),
         "ignored": sorted(t.ignored, key=lambda i: i["path"]),
         "tree": sorted(t.files),
         "platform": {"symlink": symlink},
