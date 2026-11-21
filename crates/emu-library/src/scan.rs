@@ -12,10 +12,11 @@ use zip::ZipArchive;
 
 use crate::db::{
     Identified, NameIndex, dat_match, db_error, extension_of, identification_text, identify,
-    load_media, sha1_from, to_i64,
+    identify_dos, load_media, sha1_from, to_i64,
 };
+use crate::dos::DosFile;
 use crate::media::{parse_m3u, strip_media_marker};
-use crate::systems::{Attribution, attribute};
+use crate::systems::{Attribution, attribute, systems};
 use crate::{
     DISC_EXTENSIONS, DiscFormat, Identification, LibraryError, MAX_HASH_SIZE, RomHashes,
     SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
@@ -99,6 +100,8 @@ struct Found {
     mtime: i64,
     /// Ordered disk images of a multi-disk game (a `(Disk N of M)` group or a `.m3u`); empty otherwise.
     media: Vec<String>,
+    /// An unpacked game folder (`path` is the folder; `file_size` / `mtime` summarise its root).
+    is_dir: bool,
 }
 
 struct Existing {
@@ -112,6 +115,7 @@ struct Existing {
     /// Stored identification name (`sha1`, `crc32_size`, `name`, `unknown`).
     identification: String,
     media: Vec<String>,
+    is_dir: bool,
 }
 
 /// How the system of an analysed file is decided once the DATs can be read (design v3.0 §3.5.2).
@@ -127,6 +131,13 @@ enum Rule {
     Playlist {
         entries: Vec<EntryCheck>,
         folder: Option<&'static SystemInfo>,
+    },
+    /// Game of a `folder_games` system (DOS): identified from the lines of its file list, else by name.
+    /// `files` is empty when only the name counts (disc images, big images).
+    Dos {
+        files: Vec<DosFile>,
+        system: &'static SystemInfo,
+        pinned: bool,
     },
 }
 
@@ -150,9 +161,6 @@ enum Failure {
     Empty,
     /// No system takes the file without a DAT match (folder-only extension outside its folder).
     Unclassified,
-    /// Not a game of the catalog after a closer look (a `.iso` / `.cue` without Sega CD header outside a
-    /// `megacd` folder): not listed, not counted, not an error.
-    Skipped,
     /// French message reported in `ScanReport::errors`.
     Message(String),
 }
@@ -228,6 +236,54 @@ fn is_candidate(path: &Path) -> bool {
     lower_ext(path).is_some_and(|e| e == "zip" || !systems_for_extension(&e).is_empty())
 }
 
+/// Extensions of the programs that make a folder a DOS game.
+const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "bat"];
+/// Disc-like images of `dos` never hashed (like `DISC_EXTENSIONS`): identified by name.
+const NAME_ONLY_EXTENSIONS: &[&str] = &["ins", "vhd", "jrc"];
+/// Files of a game folder (or a lone image) hashed for the DOS DAT: bounds of design v4.0 §3.4.
+const MAX_DOS_FILES: usize = 64;
+const MAX_DOS_FILE_SIZE: u64 = 16 * 1024 * 1024;
+
+fn is_executable(path: &Path) -> bool {
+    lower_ext(path).is_some_and(|e| EXECUTABLE_EXTENSIONS.contains(&e.as_str()))
+}
+
+fn is_m3u(ext: &str) -> bool {
+    ext == "m3u" || ext == "m3u8"
+}
+
+/// Path components of `dir` below `base` (the parent of the scan root, so the root's own name is included).
+fn folders_of(base: &Path, dir: &Path) -> Vec<String> {
+    dir.strip_prefix(base)
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `folder_games` system whose id is a component of `folders` (any position).
+fn folder_games_system(folders: &[String]) -> Option<&'static SystemInfo> {
+    systems()
+        .iter()
+        .find(|s| s.folder_games && folders.contains(&s.id))
+}
+
+/// `Some(system)` when `folders` (those of a directory) end strictly below a `folder_games` folder: the
+/// directory is then a game when it holds an executable.
+fn game_folder_system(folders: &[String]) -> Option<&'static SystemInfo> {
+    let (_, parents) = folders.split_last()?;
+    folder_games_system(parents)
+}
+
+fn entries_have_executable(entries: &[fs::DirEntry]) -> bool {
+    entries.iter().any(|e| {
+        let path = e.path();
+        is_executable(&path) && fs::metadata(&path).is_ok_and(|m| m.is_file())
+    })
+}
+
 struct Walk<'a> {
     report: &'a mut ScanReport,
     /// Prefixes whose stored games are kept even if not seen (missing root, unreadable folder).
@@ -237,6 +293,53 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// Records the folder `dir` as one game of `system` (its files are not walked). `entries` are its entries.
+    fn game_folder(
+        &mut self,
+        dir: &Path,
+        dir_folders: &[String],
+        system: &'static SystemInfo,
+        entries: &[fs::DirEntry],
+    ) {
+        let Some(key) = dir.to_str().map(str::to_owned) else {
+            tracing::warn!("non UTF-8 path ignored: {}", dir.display());
+            self.report
+                .errors
+                .push((dir.to_path_buf(), "chemin non UTF-8 ignoré".to_owned()));
+            return;
+        };
+        // The folder has no size of its own: the sum of the files of its root and the newest mtime stand for it,
+        // which is enough to notice a replaced executable or data file (not a change deeper down).
+        let mut file_size = 0u64;
+        let mut mtime = fs::metadata(dir).map_or(0, |m| mtime_of(&m));
+        for entry in entries {
+            if let Ok(meta) = fs::metadata(entry.path())
+                && meta.is_file()
+            {
+                file_size = file_size.saturating_add(meta.len());
+                mtime = mtime.max(mtime_of(&meta));
+            }
+        }
+        if file_size == 0 {
+            self.report.ignored_empty += 1;
+            return;
+        }
+        if !self.seen.insert(key.clone()) {
+            return;
+        }
+        debug_assert!(system.folder_games);
+        self.found.push(Found {
+            path: dir.to_path_buf(),
+            key,
+            // Like a file: the folders above it.
+            folders: dir_folders[..dir_folders.len().saturating_sub(1)].to_vec(),
+            file_size,
+            mtime,
+            media: Vec::new(),
+            is_dir: true,
+        });
+    }
+
     fn root(
         &mut self,
         root: &Path,
@@ -275,6 +378,16 @@ impl Walk<'_> {
                 })
                 .collect();
             entries.sort_by_key(|e| e.file_name());
+            let dir_folders = folders_of(base, &dir);
+            if let Some(system) = game_folder_system(&dir_folders)
+                && entries_have_executable(&entries)
+            {
+                self.game_folder(&dir, &dir_folders, system, &entries);
+                continue;
+            }
+            let games_root = dir_folders
+                .last()
+                .is_some_and(|last| systems().iter().any(|s| s.folder_games && s.id == *last));
             let mut subdirs = Vec::new();
             for entry in entries {
                 let path = entry.path();
@@ -307,6 +420,14 @@ impl Walk<'_> {
                 } else {
                     continue;
                 };
+                // Executables are games only as the root of a game folder: loose ones in the root of a
+                // `folder_games` folder are counted, anywhere else they are not ours.
+                if is_executable(&path) {
+                    if games_root {
+                        self.report.ignored_loose_executables += 1;
+                    }
+                    continue;
+                }
                 let Some(key) = path.to_str().map(str::to_owned) else {
                     tracing::warn!("non UTF-8 path ignored: {}", path.display());
                     self.report
@@ -337,6 +458,7 @@ impl Walk<'_> {
                     key,
                     folders,
                     media: Vec::new(),
+                    is_dir: false,
                 });
             }
             // Reversed so the stack pops them in name order.
@@ -439,7 +561,7 @@ fn read_m3u(path: &Path) -> Result<Vec<String>, String> {
     let listed = parse_m3u(&text, dir)?;
     let images: Vec<String> = listed
         .iter()
-        .filter(|p| lower_ext(p).is_none_or(|e| e != "m3u"))
+        .filter(|p| lower_ext(p).is_none_or(|e| !is_m3u(&e)))
         .filter(|p| fs::metadata(p).is_ok_and(|m| m.is_file()))
         .filter_map(|p| p.to_str().map(str::to_owned))
         .collect();
@@ -475,7 +597,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
     }
     hide_disc_tracks(found, &by_norm, &mut hidden, report);
     for f in found.iter_mut() {
-        if lower_ext(&f.path).as_deref() != Some("m3u") {
+        if !lower_ext(&f.path).is_some_and(|e| is_m3u(&e)) {
             continue;
         }
         match read_m3u(&f.path) {
@@ -504,7 +626,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
                 !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
             })
         })
-        .filter(|(_, f)| lower_ext(&f.path).is_some_and(|e| e != "m3u"))
+        .filter(|(_, f)| lower_ext(&f.path).is_some_and(|e| !is_m3u(&e)))
         .map(|(i, f)| (f.path.clone(), i))
         .collect();
     let files: Vec<PathBuf> = found
@@ -551,7 +673,11 @@ fn hide_disc_tracks(
                         continue;
                     }
                     if let Some(keys) = track.to_str().and_then(|t| by_norm.get(&norm_key(t))) {
-                        hidden.extend(keys.iter().cloned());
+                        for key in keys {
+                            if hidden.insert(key.clone()) {
+                                report.hidden_tracks += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -608,7 +734,7 @@ fn needs_hashes(attribution: &Attribution) -> bool {
 }
 
 fn is_playlist(found: &Found) -> bool {
-    !found.media.is_empty() && lower_ext(&found.path).as_deref() == Some("m3u")
+    !found.media.is_empty() && lower_ext(&found.path).is_some_and(|e| is_m3u(&e))
 }
 
 /// Folders of a playlist entry: those of the playlist, plus the sub-folders between it and the entry.
@@ -627,7 +753,7 @@ fn entry_folders(found: &Found, entry: &Path) -> Vec<String> {
 
 /// The system accepting `.m3u` named by a folder of the playlist.
 fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
-    match attribute("m3u", &found.folders) {
+    match attribute(&lower_ext(&found.path)?, &found.folders) {
         Attribution::Folder(s) => Some(s),
         _ => None,
     }
@@ -637,12 +763,25 @@ fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
 /// changed, a v1 row whose migrated flag was approximate, a 2.0 `.ipf` outside any folder): the stored system
 /// and flag must match the rules.
 fn pin_agrees(old: &Existing, found: &Found) -> bool {
+    if found.is_dir != old.is_dir {
+        return false;
+    }
+    if found.is_dir {
+        return old.pinned
+            && folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
+    }
     if is_playlist(found) {
         return playlist_agrees(old, found);
     }
     let Some(ext) = extension_of(&found.path, old.entry.as_deref()) else {
         return true;
     };
+    if ext == "zip" {
+        // A DOS archive (no launched entry): only the folder rule can have changed.
+        return crate::system(&old.system).is_some_and(|s| s.folder_games)
+            && old.pinned
+                == folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
+    }
     let accepts = |c: &[&SystemInfo]| c.iter().any(|s| s.id == old.system);
     match attribute(&ext, &found.folders) {
         Attribution::Folder(s) => old.pinned && old.system == s.id,
@@ -653,7 +792,13 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
                 && accepts(&c)
                 && matches!(old.identification.as_str(), "sha1" | "crc32_size")
         }
-        Attribution::Unclassified => false,
+        // A disc outside a folder, kept as Mega CD by its header at the last scan.
+        Attribution::Unclassified => {
+            !old.pinned
+                && ext != "chd"
+                && DISC_EXTENSIONS.contains(&ext.as_str())
+                && old.system == "megacd"
+        }
     }
 }
 
@@ -688,8 +833,17 @@ fn playlist_agrees(old: &Existing, found: &Found) -> bool {
     old.system == system && old.pinned == folder.is_some_and(|f| f.id == system)
 }
 
+/// The `folder_games` system of the catalog (DOS): where `.dosz` and zips holding programs go.
+fn dos_system() -> Option<&'static SystemInfo> {
+    systems().iter().find(|s| s.folder_games)
+}
+
 fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
-    if found.file_size > MAX_ARCHIVE_SIZE {
+    // Under a DOS folder, or a `.dosz`: a DOS game whatever the archive holds (design v4.0 §3.4).
+    let folder_dos = folder_games_system(&found.folders);
+    let dosz = lower_ext(&found.path).as_deref() == Some("dosz");
+    // The content of a DOS archive is never read: only its central directory, so no size limit.
+    if found.file_size > MAX_ARCHIVE_SIZE && folder_dos.is_none() && !dosz {
         return Err("archive trop grosse".to_owned().into());
     }
     let mut file = open_regular(&found.path)?;
@@ -712,6 +866,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     // First file entry with a catalog extension, as emu-runtime picks the first accepted entry.
     let mut chosen = None;
     let mut saw_empty = false;
+    let mut saw_program = false;
+    let mut saw_disc = false;
+    let mut dos_files = Vec::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_data(index)
@@ -722,28 +879,58 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         let Some(name) = entry_file_name(entry.name_raw()) else {
             continue;
         };
+        if entry.size() == 0 {
+            saw_empty = true;
+        } else {
+            dos_files.push(DosFile {
+                name: name.clone(),
+                crc32: entry.crc32(),
+                size: entry.size(),
+            });
+        }
         let Some(ext) = lower_ext(Path::new(&name)) else {
             continue;
         };
-        if DISC_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(
-                "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
-                    .to_owned()
-                    .into(),
-            );
-        }
+        saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
+        saw_disc |= DISC_EXTENSIONS.contains(&ext.as_str());
         if chosen.is_some() {
-            // Kept walking only to refuse a disc image listed after the chosen entry.
+            // Kept walking to see the programs and discs listed after the chosen entry.
             continue;
         }
         let candidates = systems_for_extension(&ext);
         if !candidates.is_empty() {
             if entry.size() == 0 {
-                saw_empty = true;
                 continue;
             }
             chosen = Some((index, name, entry.size(), candidates));
         }
+    }
+    if let Some(system) = folder_dos.or_else(|| (dosz || saw_program).then(dos_system).flatten()) {
+        if dos_files.is_empty() {
+            return Err(if saw_empty {
+                Failure::Empty
+            } else {
+                "aucun jeu reconnu dans l'archive".to_owned().into()
+            });
+        }
+        return Ok(Analysis {
+            entry: None,
+            size: found.file_size,
+            hashes: None,
+            rule: Rule::Dos {
+                files: dos_files,
+                system,
+                pinned: folder_dos.is_some(),
+            },
+            stem: stem_of(&found.path),
+        });
+    }
+    if saw_disc {
+        return Err(
+            "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
+                .to_owned()
+                .into(),
+        );
     }
     let Some((index, name, declared, _)) = chosen else {
         return Err(if saw_empty {
@@ -782,6 +969,7 @@ fn rule_systems(rule: &Rule) -> &[&'static SystemInfo] {
     match rule {
         Rule::Identify { candidates, .. } | Rule::ByDat(candidates) => candidates,
         Rule::Playlist { .. } => &[],
+        Rule::Dos { system, .. } => std::slice::from_ref(system),
     }
 }
 
@@ -857,28 +1045,66 @@ fn analyze(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Fai
 }
 
 fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
+    if found.is_dir {
+        return analyze_dir(found, max, cancel);
+    }
     let Some(ext) = lower_ext(&found.path) else {
         return Err("extension inconnue".to_owned().into());
     };
-    if ext == "zip" {
+    if ext == "zip" || ext == "dosz" {
         return analyze_zip(found, max, cancel);
     }
     // Disc images first (never hashed, probed only), before the generic attribution of design v3.0 §3.5.2.
     if DISC_EXTENSIONS.contains(&ext.as_str()) {
         return analyze_disc(found, &ext);
     }
-    let rule = if is_playlist(found) {
+    let mut rule = if is_playlist(found) {
         playlist_rule(found, max, cancel)
     } else {
         rule_of(attribute(&ext, &found.folders))?
     };
-    let hashes = hash_file(
-        &found.path,
-        found.file_size,
-        header_of(rule_systems(&rule)),
-        max,
-        cancel,
-    )?;
+    // A lone DOS file: identified by its name and, for a small image, by its CRC32 (design v4.0 §3.4).
+    let dos = match &rule {
+        Rule::Identify { candidates, pinned }
+            if candidates.len() == 1 && candidates[0].folder_games =>
+        {
+            Some((candidates[0], *pinned))
+        }
+        _ => None,
+    };
+    let limit = if dos.is_some() {
+        max.min(MAX_DOS_FILE_SIZE)
+    } else {
+        max
+    };
+    let hashes = if NAME_ONLY_EXTENSIONS.contains(&ext.as_str()) {
+        None
+    } else {
+        hash_file(
+            &found.path,
+            found.file_size,
+            header_of(rule_systems(&rule)),
+            limit,
+            cancel,
+        )?
+    };
+    if let Some((system, pinned)) = dos {
+        let files = hashes
+            .iter()
+            .filter_map(|h| {
+                Some(DosFile {
+                    name: found.path.file_name()?.to_string_lossy().into_owned(),
+                    crc32: h.full.crc32,
+                    size: h.full.size,
+                })
+            })
+            .collect();
+        rule = Rule::Dos {
+            files,
+            system,
+            pinned,
+        };
+    }
     Ok(Analysis {
         entry: None,
         size: found.file_size,
@@ -888,16 +1114,97 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
     })
 }
 
-/// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 4 KiB read).
-fn analyze_disc(found: &Found, ext: &str) -> Result<Analysis, Failure> {
-    let rule = rule_of(attribute(ext, &found.folders))?;
-    let pinned = matches!(rule, Rule::Identify { pinned: true, .. });
-    // Outside a system folder, a `.cue` / `.iso` without Sega CD header is some other disc (PC, audio CD): not a
-    // game of the catalog. A `.chd` is never read. An unreadable `.cue` stays listed (its error is reported once,
-    // by `hide_disc_tracks`).
-    if !pinned && ext != "chd" && matches!(disc_info(&found.path), Ok(None)) {
-        return Err(Failure::Skipped);
+/// A game folder: the DOS DAT is matched on the programs and data files of its root (at most `MAX_DOS_FILES`
+/// files of at most `MAX_DOS_FILE_SIZE` bytes, their CRC32 computed here).
+fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
+    let Some(system) = folder_games_system(&found.folders) else {
+        return Err("dossier hors d'un dossier de jeux".to_owned().into());
+    };
+    let mut names: Vec<(std::ffi::OsString, PathBuf)> = fs::read_dir(&found.path)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| (e.file_name(), e.path()))
+        .filter(|(_, path)| {
+            is_executable(path) || lower_ext(path).is_some_and(|e| e == "ima" || e == "img")
+        })
+        .collect();
+    names.sort();
+    let mut files = Vec::new();
+    for (name, path) in names {
+        if files.len() >= MAX_DOS_FILES {
+            break;
+        }
+        if is_cancelled(cancel) {
+            return Err(Failure::Cancelled);
+        }
+        let Some(size) = fs::metadata(&path)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+        else {
+            continue;
+        };
+        if size == 0 || size > MAX_DOS_FILE_SIZE {
+            continue;
+        }
+        if let Some(h) = hash_file(&path, size, None, max.min(MAX_DOS_FILE_SIZE), cancel)? {
+            files.push(DosFile {
+                name: name.to_string_lossy().into_owned(),
+                crc32: h.full.crc32,
+                size,
+            });
+        }
     }
+    Ok(Analysis {
+        entry: None,
+        size: found.file_size,
+        hashes: None,
+        rule: Rule::Dos {
+            files,
+            system,
+            pinned: true,
+        },
+        stem: found
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    })
+}
+
+/// Disc images are handed to the core in place: never hashed (hundreds of MiB), only probed (< 4 KiB read).
+/// Under a system folder the folder decides. Elsewhere only a Sega CD header classifies a `.cue` / `.iso`
+/// (design v4.0 §10 #7: the extensions are shared with `dos`), anything else is unclassified.
+fn analyze_disc(found: &Found, ext: &str) -> Result<Analysis, Failure> {
+    let rule = match attribute(ext, &found.folders) {
+        Attribution::Folder(s) if s.folder_games => Rule::Dos {
+            files: Vec::new(),
+            system: s,
+            pinned: true,
+        },
+        Attribution::Folder(s) => Rule::Identify {
+            candidates: vec![s],
+            pinned: true,
+        },
+        _ => {
+            // A `.chd` is never read; an unreadable `.cue` is reported once, by `hide_disc_tracks`.
+            let info = if ext == "chd" {
+                None
+            } else {
+                disc_info(&found.path).ok().flatten()
+            };
+            let system = info.and_then(|i| match i.format {
+                DiscFormat::SegaCd => crate::system("megacd"),
+            });
+            match system {
+                Some(s) => Rule::Identify {
+                    candidates: vec![s],
+                    pinned: false,
+                },
+                None => return Err(Failure::Unclassified),
+            }
+        }
+    };
     Ok(Analysis {
         entry: None,
         size: found.file_size,
@@ -911,7 +1218,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
     let mut media = load_media(conn, None)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification
+            "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification, is_dir
              FROM game",
         )
         .map_err(db_error)?;
@@ -928,6 +1235,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 pinned: r.get::<_, i64>(7)? != 0,
                 identification: r.get(8)?,
                 media: Vec::new(),
+                is_dir: r.get::<_, i64>(9)? != 0,
             },
         ))
     })
@@ -1013,6 +1321,14 @@ fn resolve(
         Rule::ByDat(candidates) => {
             dat_match(conn, names, candidates, hashes)?.map(|id| (id, false))
         }
+        Rule::Dos {
+            files,
+            system,
+            pinned,
+        } => Some((
+            identify_dos(conn, names, system, files, &analysis.stem)?,
+            *pinned,
+        )),
         Rule::Playlist { entries, folder } => {
             let system = match playlist_system(conn, names, entries)? {
                 Some(s) => Some(s),
@@ -1059,12 +1375,13 @@ fn store(
     let headerless = analysis.hashes.and_then(|h| h.headerless);
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
-                           title, identification, pinned)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                           title, identification, pinned, is_dir)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(path) DO UPDATE SET entry = excluded.entry, system = excluded.system, size = excluded.size,
              file_size = excluded.file_size, mtime_unix = excluded.mtime_unix, crc32 = excluded.crc32,
              sha1 = excluded.sha1, crc32_nh = excluded.crc32_nh, sha1_nh = excluded.sha1_nh,
-             title = excluded.title, identification = excluded.identification, pinned = excluded.pinned",
+             title = excluded.title, identification = excluded.identification, pinned = excluded.pinned,
+             is_dir = excluded.is_dir",
         params![
             found.key,
             analysis.entry,
@@ -1079,6 +1396,7 @@ fn store(
             title,
             identification_text(id.how),
             pinned,
+            found.is_dir,
         ],
     )
     .map_err(db_error)?;
@@ -1206,9 +1524,6 @@ pub(crate) fn run(
                 Err(Failure::Empty) => {
                     report.ignored_empty += 1;
                     // Not seen: a row stored by an earlier scan is removed.
-                    seen.remove(&f.key);
-                }
-                Err(Failure::Skipped) => {
                     seen.remove(&f.key);
                 }
                 Err(Failure::Message(message)) => {
@@ -1348,6 +1663,7 @@ mod tests {
             file_size: 1 << 20,
             mtime: 0,
             media: Vec::new(),
+            is_dir: false,
         };
         let cancel = AtomicBool::new(true);
         assert!(matches!(
@@ -1610,10 +1926,18 @@ mod tests {
             let (report, _) = scan(&mut lib, &root);
             assert!(report.errors.is_empty(), "{report:?}");
             assert_eq!(report.ignored_empty, 0);
+            // Design v4.0 §10 #7: outside a system folder a `.chd` (never read), a headerless `.iso` or a `.cue`
+            // is unclassified, no longer silently ignored or listed.
+            assert_eq!(report.unclassified, 3, "{report:?}");
+            assert!(
+                report
+                    .unclassified_paths
+                    .iter()
+                    .any(|p| p.ends_with("Game.chd"))
+            );
             assert_eq!(
                 names(&lib.games().unwrap()),
                 [
-                    ("megacd".to_owned(), "Game.chd".to_owned()),
                     ("megacd".to_owned(), "Odd.cue".to_owned()),
                     ("megacd".to_owned(), "Odd.iso".to_owned()),
                     ("megacd".to_owned(), "Real (Japan).iso".to_owned()),
@@ -1622,14 +1946,20 @@ mod tests {
         }
 
         #[test]
-        fn unreadable_cue_is_reported_and_stays_listed() {
+        fn unreadable_cue_is_reported_and_stays_listed_in_its_folder() {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("roms");
-            write(&root.join("Big.cue"), &vec![b' '; 64 * 1024 + 1]);
+            write(&root.join("megacd/Big.cue"), &vec![b' '; 64 * 1024 + 1]);
+            // Outside a folder nothing classifies it (no header to probe): reported, unclassified.
+            write(&root.join("Lost.cue"), &vec![b' '; 64 * 1024 + 1]);
             let mut lib = Library::open_in_memory().unwrap();
             let (report, _) = scan(&mut lib, &root);
-            assert_eq!(report.errors.len(), 1, "{report:?}");
-            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+            assert_eq!(report.errors.len(), 2, "{report:?}");
+            assert_eq!(
+                names(&lib.games().unwrap()),
+                [("megacd".to_owned(), "Big.cue".to_owned())]
+            );
+            assert_eq!(report.unclassified, 1);
         }
 
         #[test]

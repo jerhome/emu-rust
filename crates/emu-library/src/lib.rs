@@ -5,8 +5,6 @@
 mod dat;
 mod db;
 mod disc;
-// DB1 wires `dos` into `scan.rs`.
-#[allow(dead_code)]
 mod dos;
 mod error;
 mod filter;

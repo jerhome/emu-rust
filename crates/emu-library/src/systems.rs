@@ -158,10 +158,12 @@ struct RawSystem {
     dat: RawDats,
     #[serde(default)]
     folder_extensions: Vec<String>,
+    #[serde(default)]
+    folder_games: bool,
 }
 
 /// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database,
-/// a non-empty list of distinct DAT sources, `folder_extensions` a subset of `extensions` (`m3u` excluded: the
+/// a non-empty list of distinct DAT sources, `folder_extensions` a subset of `extensions` (`m3u` / `m3u8` excluded: the
 /// system of a playlist comes from its entries).
 fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
     let raw: RawCatalog = toml::from_str(text).map_err(|e| e.to_string())?;
@@ -203,7 +205,11 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
         }
         let mut restricted = HashSet::new();
         for ext in &s.folder_extensions {
-            if !s.extensions.contains(ext) || ext == "m3u" || !restricted.insert(ext) {
+            if !s.extensions.contains(ext)
+                || ext == "m3u"
+                || ext == "m3u8"
+                || !restricted.insert(ext)
+            {
                 return Err(format!("`{}`: invalid folder extension `{ext}`", s.id));
             }
         }
@@ -224,8 +230,7 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             },
             dats,
             folder_extensions: s.folder_extensions,
-            // DB1: `systems.toml` `folder_games`.
-            folder_games: false,
+            folder_games: s.folder_games,
         });
     }
     Ok(out)
@@ -329,7 +334,8 @@ mod tests {
                 "mastersystem",
                 "atarist",
                 "megacd",
-                "amiga"
+                "amiga",
+                "dos"
             ]
         );
         assert_eq!(systems().len(), parsed.len());
@@ -356,10 +362,17 @@ mod tests {
         assert!(st.folder_extensions.is_empty());
         for s in systems().iter().filter(|s| s.kind == SystemKind::Console) {
             assert_eq!(s.dats.as_slice(), &[DatSource::NoIntro][..], "{}", s.id);
-            assert!(s.folder_extensions.is_empty(), "{}", s.id);
+            // Only the Mega CD shares its disc extensions with `dos` (design v4.0 §10 #7).
+            assert_eq!(s.folder_extensions.is_empty(), s.id != "megacd", "{}", s.id);
+            assert!(!s.folder_games, "{}", s.id);
         }
         let m3u: Vec<_> = systems_for_extension("m3u").iter().map(|s| &s.id).collect();
-        assert_eq!(m3u, ["atarist", "amiga"]);
+        assert_eq!(m3u, ["atarist", "amiga", "dos"]);
+        let m3u8: Vec<_> = systems_for_extension("m3u8")
+            .iter()
+            .map(|s| &s.id)
+            .collect();
+        assert_eq!(m3u8, ["dos"]);
     }
 
     #[test]
@@ -385,6 +398,31 @@ mod tests {
             assert_eq!(DatSource::from_id(d.id()), Some(d));
         }
         assert_eq!(DatSource::from_id("redump"), None);
+    }
+
+    #[test]
+    fn dos_has_folder_games_and_shares_discs_with_the_mega_cd() {
+        let dos = system("dos").unwrap();
+        assert_eq!((dos.kind, dos.folder_games), (SystemKind::Computer, true));
+        assert_eq!(
+            (dos.database.as_str(), dos.dats.as_slice()),
+            ("DOS", &[DatSource::Libretro][..])
+        );
+        assert!(
+            dos.is_folder_only("exe") && dos.is_folder_only("cue") && !dos.is_folder_only("ima")
+        );
+        assert!(
+            !dos.is_folder_only("dosz")
+                && !dos.is_folder_only("m3u8")
+                && !dos.is_folder_only("jrc")
+        );
+        assert_eq!(
+            system("megacd").unwrap().folder_extensions,
+            ["cue", "chd", "iso"]
+        );
+        assert_eq!(systems().iter().filter(|s| s.folder_games).count(), 1);
+        let cue: Vec<_> = systems_for_extension("cue").iter().map(|s| &s.id).collect();
+        assert_eq!(cue, ["megacd", "dos"]);
     }
 
     #[test]
@@ -416,6 +454,14 @@ mod tests {
         assert_eq!(ids(attribute("ipf", &f(&["amiga"]))), "folder:amiga");
         assert_eq!(ids(attribute("ipf", &f(&["atarist"]))), "folder:atarist");
         assert_eq!(ids(attribute("lha", &[])), "unclassified");
+        // Discs: only under a system folder (outside, the scanner probes the Sega CD header).
+        assert_eq!(ids(attribute("cue", &[])), "unclassified");
+        assert_eq!(ids(attribute("chd", &f(&["megacd"]))), "folder:megacd");
+        assert_eq!(ids(attribute("cue", &f(&["roms", "dos"]))), "folder:dos");
+        assert_eq!(ids(attribute("exe", &[])), "unclassified");
+        assert_eq!(ids(attribute("ima", &[])), "candidates:dos");
+        assert_eq!(ids(attribute("m3u", &[])), "dat:atarist,amiga,dos");
+        assert_eq!(ids(attribute("m3u8", &[])), "candidates:dos");
         assert_eq!(ids(attribute("lha", &f(&["atarist"]))), "unclassified");
         assert_eq!(
             ids(attribute("hdf", &f(&["roms", "amiga", "whd"]))),

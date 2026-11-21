@@ -17,7 +17,8 @@ use crate::{
 };
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
-pub const SCHEMA_VERSION: u32 = 4;
+/// v5 (4.0): `game.is_dir` (unpacked DOS game folders).
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -213,12 +214,16 @@ DROP TABLE dat_info_v3;
 CREATE INDEX dat_entry_sha1 ON dat_entry(sha1);
 CREATE INDEX dat_entry_crc ON dat_entry(system, crc32, size);
 "#,
+    // 1 for a game that is a folder (DOS, design v4.0 §3.4): `path` is then the folder. Additive.
+    r#"
+ALTER TABLE game ADD COLUMN is_dir INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 
 const GAME_COLUMNS: &str = "id, path, entry, system, size, crc32, sha1, title, identification, favorite, \
-                            last_played_unix, play_count";
+                            last_played_unix, play_count, is_dir";
 
 pub(crate) fn db_error(e: rusqlite::Error) -> LibraryError {
     LibraryError::Database(e.to_string())
@@ -300,8 +305,7 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
         last_played_unix: row.get(10)?,
         play_count: u32::try_from(row.get::<_, i64>(11)?.max(0)).unwrap_or(u32::MAX),
         media: Vec::new(),
-        // DB1: column `game.is_dir` (schema v5).
-        is_dir: false,
+        is_dir: row.get::<_, i64>(12)? != 0,
     })
 }
 
@@ -553,6 +557,64 @@ pub(crate) fn identify(
     Ok(found(first, stem.to_owned(), Identification::Unknown))
 }
 
+/// `(game, rom_name)` of the DAT lines of `system` with this CRC32 and size, in DAT source order.
+pub(crate) fn dat_lines(
+    conn: &Connection,
+    system: &SystemInfo,
+    crc32: u32,
+    size: u64,
+) -> Result<Vec<(String, String)>, LibraryError> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT source, game, rom_name FROM dat_entry WHERE system = ?1 AND crc32 = ?2 AND size = ?3
+             ORDER BY rowid",
+        )
+        .map_err(db_error)?;
+    let mut rows: Vec<(usize, String, String)> = stmt
+        .query_map(params![system.id, i64::from(crc32), to_i64(size)], |r| {
+            Ok((
+                system.dat_rank(&r.get::<_, String>(0)?),
+                r.get(1)?,
+                r.get(2)?,
+            ))
+        })
+        .map_err(db_error)?
+        .collect::<Result<_, _>>()
+        .map_err(db_error)?;
+    rows.sort_by_key(|(rank, _, _)| *rank);
+    Ok(rows.into_iter().map(|(_, g, r)| (g, r)).collect())
+}
+
+/// Identification of a DOS game (design v4.0 §3.4): the DAT game with the most matching files, else the
+/// normalized name against the DAT game names, else the name itself. `files` empty: name only.
+pub(crate) fn identify_dos(
+    conn: &Connection,
+    names: &mut NameIndex,
+    system: &SystemInfo,
+    files: &[crate::dos::DosFile],
+    stem: &str,
+) -> Result<Identified, LibraryError> {
+    use crate::dos::{DosMatch, dos_candidates};
+    let failure = std::cell::RefCell::new(None);
+    let matched = dos_candidates(files, &|crc, size| {
+        dat_lines(conn, system, crc, size).unwrap_or_else(|e| {
+            failure.borrow_mut().get_or_insert(e);
+            Vec::new()
+        })
+    });
+    if let Some(e) = failure.into_inner() {
+        return Err(e);
+    }
+    match matched {
+        DosMatch::Unique(game) => Ok(Identified {
+            system: system.id.clone(),
+            title: game,
+            how: Identification::Crc32Size,
+        }),
+        DosMatch::Ambiguous | DosMatch::None => identify(conn, names, &[system], None, stem),
+    }
+}
+
 /// Attribution of a file of a shared extension (design v3.0 §3.5.2, `Attribution::ByDat`): the hashes must be
 /// found (SHA1 or CRC32 + size, not the file name) in the DATs of exactly one candidate.
 pub(crate) fn dat_match(
@@ -614,7 +676,8 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
     }
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, entry, system, size, crc32, sha1, crc32_nh, sha1_nh, pinned FROM game",
+            "SELECT id, path, entry, system, size, crc32, sha1, crc32_nh, sha1_nh, pinned FROM game
+             WHERE is_dir = 0",
         )
         .map_err(db_error)?;
     let rows: Vec<Row> = stmt
@@ -645,7 +708,11 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
         let Some(ext) = extension_of(&path, row.entry.as_deref()) else {
             continue;
         };
-        if ext == "m3u" {
+        if ext == "m3u" || ext == "m3u8" {
+            continue;
+        }
+        // Games of a `folder_games` system are identified from their file lists: the next scan redoes them.
+        if crate::system(&row.system).is_some_and(|s| s.folder_games) {
             continue;
         }
         let all = systems_for_extension(&ext);
@@ -910,6 +977,15 @@ impl Library {
         )
         .map_err(db_error)?;
         reidentify(&tx, system)?;
+        if crate::system(system).is_some_and(|s| s.folder_games) {
+            // The identification of these games needs their file lists (not stored): an impossible mtime makes
+            // the next scan analyse them again, once.
+            tx.execute(
+                "UPDATE game SET mtime_unix = -1 WHERE system = ?1",
+                [system],
+            )
+            .map_err(db_error)?;
+        }
         tx.commit().map_err(db_error)?;
         Ok(count)
     }
@@ -1244,18 +1320,34 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("library.sqlite");
         base_v3(&db);
-        let before = Library {
-            conn: Connection::open(&db).unwrap(),
-        }
-        .games()
-        .unwrap();
+        // The v1-v3 columns as text: `games()` itself needs the v5 column.
+        let snapshot = |conn: &Connection| -> Vec<String> {
+            conn.prepare(
+                "SELECT id, path, entry, system, size, crc32, sha1, title, identification, favorite,
+                        last_played_unix, play_count, pinned FROM game ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                (0..13)
+                    .map(|i| r.get_ref(i).map(|v| format!("{v:?}")))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|c| c.join("|"))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        let before = snapshot(&Connection::open(&db).unwrap());
         let (lib, outcome) = Library::open(&db).unwrap();
         assert_eq!(outcome, OpenOutcome::Opened);
-        assert_eq!(user_version(&lib.conn).ok(), Some(4));
+        assert_eq!(user_version(&lib.conn).ok(), Some(SCHEMA_VERSION));
         // Games, favorites, history, disks: identical.
-        assert_eq!(lib.games().unwrap(), before);
-        assert_eq!(before[2].media.len(), 2);
-        assert!(before[0].favorite && before[2].favorite);
+        assert_eq!(snapshot(&lib.conn), before);
+        assert_eq!(before.len(), 3);
+        let games = lib.games().unwrap();
+        assert!(games.iter().all(|g| !g.is_dir));
+        assert_eq!(games[2].media.len(), 2);
+        assert!(games[0].favorite && games[2].favorite);
         assert_eq!(
             lib.cover(GameId(1), CoverKind::Boxart)
                 .unwrap()

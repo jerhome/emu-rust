@@ -47,12 +47,15 @@ fn rows(db: &Path, sql: &str) -> Vec<String> {
     .collect()
 }
 
-const GAME_SQL: &str = "SELECT * FROM game ORDER BY id";
+// The v1-v3 columns: `is_dir` (v5) is checked by `migration_v5.rs`.
+const GAME_SQL: &str = "SELECT id, path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, \
+                        sha1_nh, title, identification, favorite, last_played_unix, play_count, pinned \
+                        FROM game ORDER BY id";
 const MEDIA_SQL: &str = "SELECT * FROM game_media ORDER BY game_id, idx";
 const COVER_SQL: &str = "SELECT * FROM cover ORDER BY game, kind";
 
 #[test]
-fn a_real_2_0_base_migrates_to_v4_without_loss() {
+fn a_real_2_0_base_migrates_to_the_current_schema_without_loss() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("library.sqlite");
     fs::copy(fixture(), &db).unwrap();
@@ -73,9 +76,9 @@ fn a_real_2_0_base_migrates_to_v4_without_loss() {
 
     let (lib, outcome) = Library::open(&db).unwrap();
     assert_eq!(outcome, OpenOutcome::Opened);
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
     drop(lib);
-    assert_eq!(user_version(&db), 4);
+    assert_eq!(user_version(&db), 5);
     // Games (identification, favorites, history, pins), disks and covers are byte-identical rows.
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(rows(&db, MEDIA_SQL), media);

@@ -89,6 +89,8 @@ id = "megacd"
 name = "Mega CD / Sega CD"
 # Disc images are never hashed and never copied; tracks referenced by a `.cue` are hidden by the scanner.
 extensions = ["cue", "chd", "iso"]
+# Shared with `dos`: kept only under `megacd/`, or outside it when the header says `SEGADISCSYSTEM` (scanner probe).
+folder_extensions = ["cue", "chd", "iso"]
 database = "Sega - Mega-CD - Sega CD"
 # Ids from memory, NOT yet confirmed (same caveat as atarist).
 screenscraper = 20
@@ -107,3 +109,19 @@ dat = ["tosec", "libretro"]
 # Not yet confirmed against systemesListe.php / the IGDB platforms endpoint (no network in the dev container).
 screenscraper = 64
 igdb = 16
+
+[[system]]
+id = "dos"
+name = "PC (MS-DOS)"
+kind = "computer"
+# `zip` is handled by the scanner itself. `dosz` / `ima` / `jrc` / `m3u8` are DOS formats accepted everywhere; the
+# others are kept only under `dos/`. A sub-folder of `dos/` with an executable at its root is one game.
+extensions = ["dosz", "exe", "com", "bat", "iso", "cue", "chd", "ins", "img", "ima", "vhd", "jrc", "m3u", "m3u8"]
+folder_extensions = ["exe", "com", "bat", "iso", "cue", "chd", "ins", "img", "vhd"]
+folder_games = true
+database = "DOS"
+# libretro-database/dat/DOS.dat: CRC32 + size per file of a game.
+dat = ["libretro"]
+# Not yet confirmed against systemesListe.php (« PC Dos ») / the IGDB platforms endpoint (« DOS »).
+screenscraper = 135
+igdb = 13
