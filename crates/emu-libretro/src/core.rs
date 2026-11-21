@@ -37,7 +37,9 @@ pub struct CoreConfig {
     pub fastforward_override: bool,
     /// `unserialize` accepts a state shorter than the current `serialize_size()` even without the
     /// `CORE_VARIABLE_SIZE` quirk (VICE: the size depends on the inserted media; `cores.toml`
-    /// `variable_state_size`). `false`: 4.0 behaviour.
+    /// `variable_state_size`). `false`: 4.0 behaviour. Safety note: with `true` the length guard is
+    /// skipped, so memory safety relies on the core reading at most `size` bytes (or failing cleanly)
+    /// on a short buffer; enable only for cores known to behave so.
     pub variable_state_size: bool,
 }
 
@@ -570,7 +572,8 @@ impl Core {
             return Err(LibretroError::UnserializeFailed);
         }
         // SAFETY: `data` is readable for `data.len()` bytes during the call; the core copies what it needs
-        // (libretro contract). Owning thread, game loaded.
+        // (libretro contract). With `variable_state_size` (or CORE_VARIABLE_SIZE) the length guard above is
+        // skipped: soundness then relies on the core reading at most `size` bytes. Owning thread, game loaded.
         let ok = unsafe { (self.api.unserialize)(data.as_ptr().cast(), data.len()) } != 0;
         if ok {
             Ok(())
