@@ -308,8 +308,8 @@ struct Track {
 }
 
 /// Data track of a `.iso` (itself), a `.bin` (itself) or a `.cue` (its first file, kept in its folder), opened.
-/// `Ok(None)`: no readable track (a cue without `FILE` line or whose track is missing, a `.chd` / `.pbp`, never
-/// read, any other extension).
+/// `Ok(None)`: no readable track (a cue without `FILE` line or whose track is missing, a `.chd` / `.pbp` track
+/// or file, never read, any other extension).
 fn open_track(path: &Path) -> Result<Option<(Track, File)>, LibraryError> {
     let Some(ext) = ext_of(path) else {
         return Ok(None);
@@ -328,6 +328,10 @@ fn open_track(path: &Path) -> Result<Option<(Track, File)>, LibraryError> {
                 let Some(track) = first_track(path)? else {
                     return Ok(None);
                 };
+                // The first FILE line is probed whatever its extension: `.chd` / `.pbp` are never read.
+                if matches!(ext_of(&track).as_deref(), Some("chd" | "pbp")) {
+                    return Ok(None);
+                }
                 track
             } else {
                 path.to_path_buf()
@@ -704,7 +708,12 @@ pub(crate) const BIN_PROBE_LEN: usize = PSX_HEAD_LEN;
 /// (`Unknown` for a file too short to hold the 32X signature). Same untrusted-input rules as the rest of this
 /// module (regular file only, bounded read, no panic).
 pub fn probe_bin(path: &Path) -> Result<BinKind, LibraryError> {
-    Ok(bin_kind(&read_head(path, BIN_PROBE_LEN)?))
+    Ok(bin_kind(&probe_bin_head(path)?))
+}
+
+/// The bytes [`probe_bin`] classifies (the scanner caches what it derives from them).
+pub(crate) fn probe_bin_head(path: &Path) -> Result<Vec<u8>, LibraryError> {
+    read_head(path, BIN_PROBE_LEN)
 }
 
 /// A header field without its type code (`GM `, `AI `), trimmed.
@@ -1531,6 +1540,16 @@ mod tests {
         assert_eq!(psx_serial_region("SLKA-25001"), Some(DiscRegion::Japan));
         assert_eq!(psx_serial_region("SCUS-94163"), Some(DiscRegion::Usa));
         assert_eq!(psx_serial_region("X"), None);
+    }
+
+    #[test]
+    fn cue_with_chd_or_pbp_track_is_never_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.pbp", &psx_iso(None, Some(CNF)));
+        let cue = write(tmp.path(), "a.cue", b"FILE \"a.pbp\" BINARY\n");
+        assert!(open_track(&cue).unwrap().is_none());
+        let cue = write(tmp.path(), "b.cue", b"FILE \"b.chd\" BINARY\n");
+        assert!(open_track(&cue).unwrap().is_none());
     }
 
     #[test]

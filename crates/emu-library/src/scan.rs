@@ -21,7 +21,7 @@ use crate::systems::{Attribution, attribute, systems};
 use crate::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
     RomHashes, SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
-    probe_bin, region_from_name, systems_for_extension,
+    region_from_name, systems_for_extension,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -94,6 +94,51 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const BATCH: usize = 128;
 /// Results are also written at least this often, so a cancellation keeps the work of a slow drive.
 const BATCH_TIME: Duration = Duration::from_secs(2);
+
+/// Largest plausible Mega Drive / 32X ROM; a bigger `.bin` without a Sega header is not a cartridge.
+const MAX_CARTRIDGE_BIN: u64 = 8 * 1024 * 1024;
+
+/// Result of the header probe of a `.bin`, kept for the duration of a scan.
+#[derive(Clone, Copy)]
+struct BinProbe {
+    kind: BinKind,
+    /// `SEGA` at 0x100 (cartridge header).
+    sega_header: bool,
+}
+
+thread_local! {
+    /// Probes of the running scan (the scan is single-threaded); cleared by [`run`].
+    static PROBES: std::cell::RefCell<HashMap<PathBuf, Option<BinProbe>>> = Default::default();
+    /// Number of files actually read by [`probe_cached`] (test instrumentation of the cache).
+    static PROBE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// [`probe_bin`] at most once per file and scan (up to four callers per `.bin`); `None` if unreadable.
+fn probe_cached(path: &Path) -> Option<BinProbe> {
+    if let Some(hit) = PROBES.with(|p| p.borrow().get(path).copied()) {
+        return hit;
+    }
+    PROBE_READS.with(|c| c.set(c.get() + 1));
+    let probe = crate::disc::probe_bin_head(path).ok().map(|head| BinProbe {
+        kind: bin_kind(&head),
+        sega_header: head.get(0x100..0x104) == Some(b"SEGA".as_slice()),
+    });
+    PROBES.with(|p| p.borrow_mut().insert(path.to_path_buf(), probe));
+    probe
+}
+
+/// `Name (Track 02).bin`: an audio / secondary track of a multi-file disc (track 1 holds the data).
+fn audio_track_name(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else {
+        return false;
+    };
+    let Some(at) = stem.rfind("(track ") else {
+        return false;
+    };
+    let rest = &stem[at + 7..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    rest[digits.len()..].starts_with(')') && digits.parse::<u32>().is_ok_and(|n| n >= 2)
+}
 
 struct Found {
     path: PathBuf,
@@ -699,8 +744,8 @@ fn is_console_disc(found: &Found) -> bool {
         return false;
     }
     let system = if ext == "bin" {
-        probe_bin(&found.path)
-            .ok()
+        probe_cached(&found.path)
+            .map(|p| p.kind)
             .and_then(track_format)
             .and_then(|f| crate::system(f.system_id()))
     } else if is_disc_image(&ext) {
@@ -806,7 +851,7 @@ fn hide_disc_tracks(
         if lower_ext(&f.path).as_deref() != Some("bin") || hidden.contains(&f.key) {
             continue;
         }
-        if probe_bin(&f.path).is_ok_and(|k| k == BinKind::SegaCdTrack) {
+        if probe_cached(&f.path).is_some_and(|p| p.kind == BinKind::SegaCdTrack) {
             report.errors.push((
                 f.path.clone(),
                 "piste de CD sans fichier .cue : ignorée".to_owned(),
@@ -918,9 +963,9 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
     if ext == "bin"
         && old.entry.is_none()
         && (track_folder(&found.folders).is_some()
-            || probe_bin(&found.path).is_ok_and(|k| {
+            || probe_cached(&found.path).is_some_and(|p| {
                 matches!(
-                    k,
+                    p.kind,
                     BinKind::Sega32x | BinKind::PsxTrack | BinKind::OperaTrack
                 )
             }))
@@ -1269,7 +1314,8 @@ fn analyze_file(
         rule_of(attribute(&ext, &found.folders))?
     };
     if ext == "bin" && !playlist {
-        let kind = probe_bin(&found.path).ok();
+        let probe = probe_cached(&found.path);
+        let kind = probe.map(|p| p.kind);
         // A PlayStation / 3DO track no `.cue` names is a game by itself (design v7.0 §3.4).
         if let Some(system) = kind
             .and_then(track_format)
@@ -1284,6 +1330,11 @@ fn analyze_file(
             rule = r;
         } else if let Some(folder) = track_folder(&found.folders) {
             return Err(format!("fichier .bin non reconnu sous {folder}/ : ignoré").into());
+        } else if audio_track_name(&found.path) {
+            return Err("piste audio d'un disque : ignorée".to_owned().into());
+        } else if found.file_size > MAX_CARTRIDGE_BIN && !probe.is_some_and(|p| p.sega_header) {
+            // No Mega Drive / 32X ROM is this big: a disc track whose `.cue` is missing. Never hashed.
+            return Err(Failure::Unclassified);
         }
     }
     let region = if playlist {
@@ -1940,6 +1991,7 @@ pub(crate) fn run(
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport, LibraryError> {
     let mut report = ScanReport::default();
+    PROBES.with(|p| p.borrow_mut().clear());
     let mut keep = Vec::new();
     let mut seen = HashSet::new();
     let mut found = Vec::new();
@@ -2401,25 +2453,53 @@ mod tests {
         }
 
         #[test]
-        fn tracks_stored_by_a_2_0_scan_are_removed() {
+        fn secondary_track_without_cue_is_not_a_game() {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("roms");
             write(&root.join("Game (Track 1).bin"), &raw_track(0x64, 0));
             write(&root.join("Game (Track 2).bin"), &[3u8; 2352]);
             let mut lib = Library::open_in_memory().unwrap();
-            scan(&mut lib, &root);
-            // Track 2 alone is not a Sega CD header: a Mega Drive "game" until its `.cue` appears.
-            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+            let (report, _) = scan(&mut lib, &root);
+            assert!(names(&lib.games().unwrap()).is_empty(), "{report:?}");
             write(
                 &root.join("Game.cue"),
                 b"FILE \"Game (Track 1).bin\" BINARY\nFILE \"Game (Track 2).bin\" BINARY\n",
             );
-            let (report, _) = scan(&mut lib, &root);
-            assert_eq!(report.removed, 1, "{report:?}");
+            scan(&mut lib, &root);
             assert_eq!(
                 names(&lib.games().unwrap()),
                 [("megacd".to_owned(), "Game.cue".to_owned())]
             );
+        }
+
+        #[test]
+        fn big_headerless_bin_is_unclassified_and_not_hashed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            write(&root.join("Big.bin"), &vec![7u8; 9 * 1024 * 1024]);
+            let mut md = vec![0u8; 0x200];
+            md[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+            write(&root.join("Sonic.bin"), &md);
+            let mut lib = Library::open_in_memory().unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert_eq!(report.unclassified, 1, "{report:?}");
+            assert_eq!(names(&lib.games().unwrap()).len(), 1);
+        }
+
+        #[test]
+        fn each_bin_is_probed_once_per_scan() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            let mut md = vec![0u8; 0x200];
+            md[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+            write(&root.join("Sonic.bin"), &md);
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            assert_eq!(PROBE_READS.with(|c| c.get()), 1);
+            // Unchanged rescan goes through the old-row check: still one read.
+            PROBE_READS.with(|c| c.set(0));
+            scan(&mut lib, &root);
+            assert_eq!(PROBE_READS.with(|c| c.get()), 1);
         }
 
         #[test]
