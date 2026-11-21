@@ -100,15 +100,31 @@ pub(crate) fn firmware_system_for(
     }
 }
 
+/// Upper bound of the zip entries examined.
+const MAX_ZIP_ENTRIES: usize = 4096;
+
+/// Opens a regular file; on Unix the open is non-blocking so a FIFO never hangs the caller, and is then refused.
+fn open_regular(path: &Path) -> Option<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    file.metadata().ok()?.is_file().then_some(file)
+}
+
 /// Extensions of the entries of a zip (central directory only, nothing is decompressed); empty if unreadable.
 fn zip_entry_extensions(path: &Path) -> Vec<String> {
-    let Ok(file) = std::fs::File::open(path) else {
+    let Some(file) = open_regular(path) else {
         return Vec::new();
     };
     let Ok(mut archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
         return Vec::new();
     };
-    (0..archive.len())
+    (0..archive.len().min(MAX_ZIP_ENTRIES))
         .filter_map(|i| {
             let entry = archive.by_index_raw(i).ok()?;
             let name = entry.name().ok()?.into_owned();
@@ -489,6 +505,27 @@ pub fn prepare_launch_firmware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zip_extensions_refuse_fifo_and_bound_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("pipe.zip");
+        if std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            assert!(zip_entry_extensions(&fifo).is_empty());
+        }
+        let path = tmp.path().join("many.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for i in 0..MAX_ZIP_ENTRIES + 10 {
+            writer.start_file(format!("f{i}.md"), options).unwrap();
+        }
+        writer.finish().unwrap();
+        assert_eq!(zip_entry_extensions(&path).len(), MAX_ZIP_ENTRIES);
+    }
 
     fn puae() -> CoreId {
         CoreId::new("puae").unwrap()

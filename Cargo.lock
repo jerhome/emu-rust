@@ -795,6 +795,7 @@ dependencies = [
  "emu-library",
  "emu-runtime",
  "gilrs",
+ "libc",
  "opener",
  "rfd",
  "serde",

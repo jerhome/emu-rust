@@ -297,12 +297,28 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
         }
         // A core that also plays a system without table (genesis_plus_gx, picodrive: Mega Drive / 32X) is not
         // in error for a missing Mega CD BIOS: the exit code only reflects cores that cannot play without it.
-        let playable_without_table = prefs.systems().any(|(system, cores)| {
-            cores.contains(&id) && prefs.required_firmware(&id, system).is_none()
-        });
-        if required_is_problem(&required) && playable_without_table {
+        let system_name = |database: &str| {
+            emu_ui::library_db::systems()
+                .iter()
+                .find(|s| s.database == database)
+                .map_or_else(|| database.to_owned(), |s| s.name.clone())
+        };
+        let (with_table, without_table): (Vec<_>, Vec<_>) = prefs
+            .systems()
+            .filter(|(_, cores)| cores.contains(&id))
+            .map(|(system, _)| system)
+            .partition(|system| prefs.required_firmware(&id, system).is_some());
+        if required_is_problem(&required) && !without_table.is_empty() {
+            let names = |list: &[&str]| {
+                list.iter()
+                    .map(|s| system_name(s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             println!(
-                "  (BIOS requis pour les seuls jeux Mega CD ; Mega Drive et 32X jouables sans)"
+                "  (BIOS requis pour les seuls jeux {} ; {} jouables sans)",
+                names(&with_table),
+                names(&without_table)
             );
         } else {
             required_problem |= required_is_problem(&required);

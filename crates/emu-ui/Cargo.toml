@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 zip = { workspace = true }
+libc = "0.2"
 winit = { workspace = true, features = ["serde"] }
 sys-locale = "0.3"
 # Native file dialog (MIT): on Linux the xdg-desktop-portal through libdbus loaded at run time (zenity fallback),
