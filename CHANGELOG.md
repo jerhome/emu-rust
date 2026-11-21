@@ -2,6 +2,41 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [6.0.0-rc.1] - 2026-11-21
+
+Première pré-release de la 6.0 : **Game Boy Advance**, **32X** et **Mega CD** complété. Guide d'essai :
+`docs/guide-essai-6.0.md`.
+
+### Ajouté
+
+- Game Boy Advance : core `mgba` (`gpsp` et `vbam` au choix), jeux `.gba` (zip accepté), BIOS facultatif
+  (`gba_bios.bin`), réglages GBA en tête des options du core.
+- Sauvegardes GBA (`saves/mgba/<jeu>.srm`) et états.
+- Touches et manette GBA : croix, A / B, L / R, Start / Select (DS4 : Rond = A, Croix = B, L1 / R1 = L / R).
+- 32X : core `picodrive`, BIOS intégrés au core (rien à fournir), jeux `.32x` (zip accepté).
+- Mega CD complété :
+  - BIOS par région (`bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin`) : dialogue générique « BIOS manquant »
+    (nom exact, région, chemin du dossier `system/`, importer, réessayer, lancer quand même) ; un BIOS dont le md5
+    est différent est accepté avec un avertissement ;
+  - jeux à plusieurs CD : `.m3u` ou `(Disc N)`, un seul jeu dans la bibliothèque, menu « CD… » pour changer de
+    disque ;
+  - identification Redump (numéro de série, région) ;
+  - `.chd` conseillé (un fichier par disque) ;
+  - RAM de sauvegarde par jeu (`saves/genesis_plus_gx/<jeu>.brm`).
+- Le message d'erreur du core est affiché quand un jeu ne se charge pas (cause d'origine conservée).
+- Ligne de commande : `--check-bios` par région ; un jeu Mega Drive ou 32X ne demande plus de BIOS CD.
+
+### Modifié
+
+- Bibliothèque : schéma v6 (région du disque), migration automatique sans perte.
+- Les `.bin` 32X sont reclassés « 32X » par leur en-tête (ils étaient classés Mega Drive).
+
+### Limites connues
+
+- Le suffixe `(CD N)` n'est pas reconnu pour regrouper les disques (utiliser `(Disc N)` ou un `.m3u`).
+- La région d'un `.chd` rangé hors de `roms/megacd/` n'est pas lue.
+- Une bibliothèque ouverte par la 6.0 n'est plus lisible par une 5.x (base plus récente refusée, jamais modifiée).
+
 ## [3.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 3.0 : **Amiga** (puae ; puae2021 recommandé sur Mac) et les règles communes des versions

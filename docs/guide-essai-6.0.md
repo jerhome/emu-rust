@@ -1,5 +1,7 @@
 # Guide d'essai — version 6.0 (Game Boy Advance, 32X, Mega CD)
 
+Version : **v6.0-rc.1** (2026-11-21).
+
 Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v6.0.0-rc.1`).
 
 Durée : environ 1 heure. But : vérifier un jeu GBA, un jeu 32X et un jeu Mega CD au clavier 60 % AZERTY (Windows),
@@ -25,6 +27,17 @@ Mega CD (liste de jeux, sans contenu) est téléchargé, avec les autres DAT, pa
 - **Vos fichiers ne sont jamais modifiés** : sauvegardes GBA dans `saves/mgba/<jeu>.srm`, 32X dans
   `saves/picodrive/`, Mega CD dans `saves/genesis_plus_gx/<jeu>.brm` (RAM interne, par jeu) et `cart.brm`
   (cartouche RAM, partagée, jamais effacée).
+
+## Installer les cores
+
+Écran **Cores** → section des cores recommandés → **installer** `mgba`, `picodrive` et `genesis_plus_gx`. Ou en
+ligne de commande : `emu-rust --install-core recommended`. Les cores ne sont jamais fournis avec l'application.
+
+## Limites connues
+
+- Le suffixe `(CD N)` n'est pas reconnu pour regrouper les disques : utiliser `(Disc N)` ou un `.m3u`.
+- La région d'un `.chd` rangé hors de `roms/megacd/` n'est pas lue (le BIOS est alors choisi par le core).
+- Une bibliothèque ouverte par la 6.0 n'est plus lisible par une 5.x : gardez une copie si vous voulez revenir.
 
 ## Partie 1 — Game Boy Advance
 
@@ -92,3 +105,33 @@ l'étiquette du nom. Le BIOS voulu est celui de cette région.
 - `emu-rust --check-bios genesis_plus_gx` : une ligne par région ; code de sortie 1 si aucun BIOS Mega CD n'est
   utilisable.
 - `emu-rust --list-bios` : « fichiers attendus par région » pour le Mega CD.
+
+## Docker (WSLg)
+
+1. Lancer l'image comme pour les versions précédentes (`docker/README.md`). Les données sont dans le volume `/data`.
+2. Cores : `docker compose -f docker/compose.yaml run --rm --no-deps emu-wslg --install-core recommended`
+   (ou écran Cores).
+3. ROMs : `/data/roms/gba`, `/data/roms/32x`, `/data/roms/megacd`. Copie par `docker cp` ou montage
+   `${EMU_HOST_ROMS_DIR}:/data/roms` (voir `docker/compose.yaml`). Le bouton « Ouvrir le dossier des ROMs » affiche
+   le chemin.
+4. BIOS Mega CD : dans `/data/system` (`bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin`). **Importer un BIOS…**
+   ouvre le navigateur intégré : choisir le fichier dans le dossier monté.
+5. Sauvegardes : `/data/saves/mgba/`, `/data/saves/genesis_plus_gx/`, `/data/saves/picodrive/`.
+6. Vérifier un jeu de chaque système, le son et la manette si elle est visible dans WSL.
+
+## macOS (Intel)
+
+1. Dossiers : `~/Library/Application Support/emu-rust/` (`roms/gba`, `roms/32x`, `roms/megacd`, `system/`).
+2. Vos BIOS Mega CD sont sur ce Mac : **Importer un BIOS…** (fenêtre de fichiers macOS) ou copie dans `system/`.
+3. Si le GBA est lent : essayer `gpsp` ou `vbam` (Cores → « Core utilisé par système »).
+4. Noter la fluidité du son pour chaque système.
+
+## En cas de problème
+
+- **« BIOS manquant »** : vérifier le nom exact et la région affichés ; `emu-rust --check-bios genesis_plus_gx`.
+- **Le jeu ne démarre pas** : lire l'erreur du core affichée dans le message ; la copier dans le rapport.
+- **CD refusé en zip** : décompresser ou convertir en CHD (`chdman createcd -i jeu.cue -o jeu.chd`).
+- **Jeu absent après un scan** : « Voir les fichiers non classés » donne le dossier conseillé.
+- **GBA sans logo** : normal sans `gba_bios.bin`.
+- **Rapport** : système (Windows, macOS, Docker), jeu, core, étapes, capture d'écran, et la sortie de
+  `emu-rust --check-bios genesis_plus_gx`.
