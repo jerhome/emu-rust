@@ -109,13 +109,7 @@ fn zz_worker() {
     eprintln!("worker: loading {name}");
     let mut c = Core::load(&lib, config).unwrap_or_else(|e| panic!("load: {e}"));
     eprintln!("worker: loaded");
-    // dosbox_pure: `Core::options()` before a game is loaded crashes (SIGSEGV, reported in PQ2b): its display
-    // update callback needs a game. Skipped so the audit can still run; remove once fixed in emu-libretro.
-    if name == "dosbox_pure" {
-        println!("@@ pre-skipped\tSIGSEGV in options() without a game");
-    } else {
-        dump(&mut c, "pre");
-    }
+    dump(&mut c, "pre");
     let rom = rom_for(&name).map(|r| root().join("tests/roms").join(r));
     match rom {
         Some(rom) if rom.is_file() => match c.load_game(&rom) {

@@ -680,10 +680,17 @@ impl Core {
     }
 
     /// Snapshot of the options declared by the core (legacy, v1 or v2), in declaration order. Calls the
-    /// core's `SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK` first if it registered one.
+    /// core's `SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK` first if it registered one and a game is loaded
+    /// (some cores, e.g. dosbox_pure, dereference game state in it and crash without a game).
     pub fn options(&mut self) -> Vec<CoreOption> {
-        if let Some(update_display) = callbacks::update_display_callback() {
-            // SAFETY: registered by this core, whose library is loaded; called on the owning thread and outside
+        let update_display = if self.game_loaded() {
+            callbacks::update_display_callback()
+        } else {
+            None
+        };
+        if let Some(update_display) = update_display {
+            // SAFETY: registered by this core, whose library is loaded; a game is loaded (cores assume it);
+            // called on the owning thread and outside
             // any environment borrow (it re-enters the environment with SET_CORE_OPTIONS_DISPLAY).
             // The returned value is ignored (u8 on the FFI side: any byte is valid).
             unsafe { update_display() };
