@@ -9,10 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use emu_ui::assets::bios::{
     BiosError, FreeBiosState, ReplacePolicy, builtin_free_bios, find_free_bios,
 };
+use emu_ui::assets::bios::{ReplacePolicy as ImportPolicy, TargetState};
 use emu_ui::assets::cores::{
-    CoreId, CoreManager, CorePreferences, FirmwareState, FirmwareStatus, Origin,
+    CoreId, CoreManager, CorePreferences, FirmwareCheck, FirmwareState, FirmwareStatus,
+    KnownFirmware, Origin, check_core_firmware,
 };
 use emu_ui::assets::http::{CancelToken, Progress};
+use emu_ui::{BiosIdentified, ROM_KEY_NAME};
 use emu_ui::{Config, DataDirs};
 
 use crate::cli::CoresAction;
@@ -139,12 +142,71 @@ fn describe(status: &FirmwareStatus) -> String {
         FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
         FirmwareState::Free { label } => format!("BIOS libre : {label}"),
         FirmwareState::Unreadable(e) => format!("illisible : {e}"),
-        // TODO(U4): wording of the 3.0 states (only produced by `check_required`).
-        FirmwareState::CoreFallback { label } | FirmwareState::Builtin { label } => {
-            format!("intégré au core : {label}")
-        }
+        FirmwareState::CoreFallback { label } => fallback_text(label),
+        FirmwareState::Builtin { label } => format!("intégré au core : {label}"),
     };
     format!("  {} ({kind}) : {state}", status.spec.path)
+}
+
+fn fallback_text(label: &str) -> String {
+    format!(
+        "absent : {label} utilisé à la place (compatibilité limitée, original recommandé ; non bloquant)"
+    )
+}
+
+/// The system whose `required_firmware` table applies to `id` (same rule as the UI launch).
+fn table_system(prefs: &CorePreferences, id: &CoreId) -> Option<String> {
+    let systems: Vec<&str> = prefs
+        .systems()
+        .filter(|(_, cores)| cores.contains(id))
+        .map(|(s, _)| s)
+        .collect();
+    systems
+        .iter()
+        .find(|s| prefs.required_firmware(id, s).is_some())
+        .or_else(|| systems.first())
+        .map(|s| (*s).to_owned())
+}
+
+/// The single 3.0 check (`check_core_firmware`, default variant), when the core has a table or a built-in ROM.
+fn required_check(dirs: &DataDirs, prefs: &CorePreferences, id: &CoreId) -> Option<FirmwareCheck> {
+    let system = table_system(prefs, id)?;
+    match check_core_firmware(
+        &dirs.system,
+        prefs,
+        id,
+        &system,
+        None,
+        &KnownFirmware::builtin(),
+    )? {
+        Ok(check) => Some(check),
+        Err(e) => {
+            eprintln!("{id} : {e}");
+            None
+        }
+    }
+}
+
+fn describe_required(check: &FirmwareCheck) -> String {
+    let wanted = check.wanted.as_deref().unwrap_or("-");
+    let state = match &check.state {
+        FirmwareState::Ok => "présent".to_owned(),
+        FirmwareState::Missing => "absent".to_owned(),
+        FirmwareState::WrongHash { .. } => "empreinte inattendue".to_owned(),
+        FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
+        FirmwareState::Free { label } => format!("BIOS libre : {label}"),
+        FirmwareState::Unreadable(e) => format!("illisible : {e}"),
+        FirmwareState::CoreFallback { label } => fallback_text(label),
+        FirmwareState::Builtin { label } => return format!("  ROM intégrée au core : {label}"),
+    };
+    format!("  modèle par défaut : {wanted} : {state}")
+}
+
+fn required_is_problem(check: &FirmwareCheck) -> bool {
+    matches!(
+        check.state,
+        FirmwareState::Missing | FirmwareState::WrongHash { .. } | FirmwareState::Unreadable(_)
+    )
 }
 
 fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Result<bool, String> {
@@ -153,17 +215,25 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
         None => manager.installed().into_iter().map(|c| c.id).collect(),
     };
     println!("Dossier des BIOS : {}", dirs.system.display());
+    let prefs = CorePreferences::builtin();
     let mut required_problem = false;
     for id in ids {
         let statuses = manager.firmware_status(&id);
-        if statuses.is_empty() {
+        // A core with a 3.0 table is judged by it (design v3.0 §3.5.5); its `.info` list is informative.
+        let required = required_check(dirs, &prefs, &id);
+        if statuses.is_empty() && required.is_none() {
             println!("{id} : aucun BIOS déclaré.");
             continue;
         }
         println!("{id} :");
+        if let Some(check) = &required {
+            println!("{}", describe_required(check));
+            required_problem |= required_is_problem(check);
+        }
         for status in &statuses {
             println!("{}", describe(status));
-            required_problem |= !status.spec.optional
+            required_problem |= required.is_none()
+                && !status.spec.optional
                 && !matches!(
                     status.state,
                     FirmwareState::Ok | FirmwareState::Unverified | FirmwareState::Free { .. }
@@ -202,7 +272,169 @@ fn list_bios(dirs: &DataDirs) -> Result<(), String> {
             println!("  {}{mark} : {}", v.id, v.label);
         }
     }
+    list_required(dirs);
     Ok(())
+}
+
+/// Files expected per model by the `required_firmware` tables (Kickstarts of puae / puae2021): never
+/// downloaded, imported with `--import-bios`.
+fn list_required(dirs: &DataDirs) {
+    let prefs = CorePreferences::builtin();
+    let mut seen = BTreeSet::new();
+    for (system, cores) in prefs.systems() {
+        for core in cores {
+            let Some(req) = prefs.required_firmware(core, system) else {
+                continue;
+            };
+            let mut by_file: std::collections::BTreeMap<&str, Vec<&str>> =
+                std::collections::BTreeMap::new();
+            for (variant, file) in &req.files {
+                by_file
+                    .entry(file.as_str())
+                    .or_default()
+                    .push(variant.as_str());
+            }
+            if !seen.insert((system.to_owned(), by_file.clone())) {
+                continue;
+            }
+            let cores_list: Vec<&str> = cores
+                .iter()
+                .filter(|c| prefs.required_firmware(c, system).is_some())
+                .map(CoreId::as_str)
+                .collect();
+            println!(
+                "{system} ({}) : fichiers attendus par modèle",
+                cores_list.join(", ")
+            );
+            for (file, models) in by_file {
+                let present = if dirs.system.join(file).is_file() {
+                    "présent"
+                } else {
+                    "absent"
+                };
+                println!("  {file} : {} — {present}", models.join(", "));
+            }
+            if let Some(b) = prefs
+                .builtin_firmware(core)
+                .filter(|_| req.fallback.is_some())
+            {
+                println!("  sans fichier : {} (compatibilité limitée)", b.label);
+            }
+        }
+    }
+}
+
+fn hex(md5: &[u8; 16]) -> String {
+    md5.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `--import-bios` (design v3.0 §4): known file ⇒ every expected name; unknown ⇒ `--bios-name` + `--unverified`;
+/// a different user file is only replaced (renamed first) with `--replace-user-bios`.
+fn import_bios_file(
+    dirs: &DataDirs,
+    config: &Config,
+    file: &std::path::Path,
+    name: Option<&str>,
+    unverified: bool,
+    replace: bool,
+) -> Result<bool, String> {
+    // The `.info` of the installed cores add expected names; the catalogue works without them.
+    let manager = open_manager(dirs, config).ok();
+    let catalogue = emu_ui::firmware_catalogue(manager.as_deref());
+    let identified = emu_ui::identify_bios(&dirs.system, file, &catalogue)?;
+    println!("Dossier des BIOS : {}", dirs.system.display());
+    let policy = if replace {
+        ImportPolicy::BackupAndReplace
+    } else {
+        ImportPolicy::Refuse
+    };
+    let (items, md5) = match &identified {
+        BiosIdentified::Known { md5, targets } => {
+            let targets: Vec<_> = match name {
+                Some(n) => {
+                    let t: Vec<_> = targets
+                        .iter()
+                        .filter(|(t, _)| t.name == n)
+                        .cloned()
+                        .collect();
+                    if t.is_empty() {
+                        return Err(format!(
+                            "fichier reconnu, mais pas sous le nom {n} ; noms attendus : {}",
+                            targets
+                                .iter()
+                                .map(|(t, _)| t.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    t
+                }
+                None => targets.clone(),
+            };
+            println!("Fichier reconnu (md5 {}).", hex(md5));
+            let mut kept = false;
+            for (t, state) in &targets {
+                match state {
+                    Ok(TargetState::Same) => println!("{} : déjà installé", t.name),
+                    Ok(TargetState::Other { .. }) if !replace => {
+                        kept = true;
+                        println!(
+                            "{} : un autre fichier existe déjà sous ce nom : conservé \
+                             (--replace-user-bios pour le remplacer ; il sera renommé, jamais effacé)",
+                            t.name
+                        );
+                    }
+                    Err(e) => println!("{} : {e}", t.name),
+                    _ => {}
+                }
+            }
+            let items = emu_ui::known_import_items(&targets, replace);
+            if items.is_empty() {
+                return Ok(!kept);
+            }
+            (items, Some(*md5))
+        }
+        BiosIdentified::Encrypted { suggested, .. } => {
+            if !unverified {
+                return Err(
+                    "ROM chiffrée d'Amiga Forever : relancer avec --unverified [--bios-name <nom>] \
+                     (et importer aussi rom.key)"
+                        .into(),
+                );
+            }
+            let chosen = name
+                .map(str::to_owned)
+                .or_else(|| suggested.clone())
+                .ok_or(
+                    "ROM chiffrée : --bios-name <nom> obligatoire (noms attendus : --list-bios)",
+                )?;
+            let mut item = emu_ui::unverified_item(&identified, &chosen)
+                .ok_or_else(|| format!("nom non attendu par les cores : {chosen}"))?;
+            item.policy = policy;
+            println!("ROM chiffrée d'Amiga Forever : importez aussi le fichier rom.key.");
+            (vec![item], None)
+        }
+        BiosIdentified::Unknown { md5, rom_key, .. } => {
+            let chosen = name.or(rom_key.then_some(ROM_KEY_NAME));
+            let (true, Some(chosen)) = (unverified, chosen) else {
+                return Err(format!(
+                    "fichier inconnu (md5 {}) : il ne correspond à aucun BIOS connu et n'est pas importé.\n\
+                     Pour l'importer quand même : --bios-name <nom attendu> --unverified (noms : --list-bios, \
+                     --check-bios)",
+                    hex(md5)
+                ));
+            };
+            let mut item = emu_ui::unverified_item(&identified, chosen)
+                .ok_or_else(|| format!("nom non attendu par les cores : {chosen}"))?;
+            item.policy = policy;
+            (vec![item], None)
+        }
+    };
+    let report = emu_ui::import_bios(&dirs.system, file, &items, md5);
+    for line in &report.lines {
+        println!("{line}");
+    }
+    Ok(report.failed == 0)
 }
 
 /// Variant: the one asked, else `[computer] emutos_variant`, else the system language (fallback: catalogue).
@@ -269,6 +501,14 @@ pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<boo
             variant,
             replace,
         } => return install_bios(dirs, config, id, variant.as_deref(), *replace).map(|()| true),
+        CoresAction::ImportBios {
+            file,
+            name,
+            unverified,
+            replace,
+        } => {
+            return import_bios_file(dirs, config, file, name.as_deref(), *unverified, *replace);
+        }
         _ => {}
     }
     let manager = open_manager(dirs, config)?;
@@ -319,7 +559,9 @@ pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<boo
             println!("{id} : supprimé (sauvegardes conservées).");
         }
         CoresAction::CheckBios(id) => return check_bios(&manager, dirs, id.as_deref()),
-        CoresAction::ListBios | CoresAction::InstallBios { .. } => {}
+        CoresAction::ListBios
+        | CoresAction::InstallBios { .. }
+        | CoresAction::ImportBios { .. } => {}
     }
     Ok(true)
 }

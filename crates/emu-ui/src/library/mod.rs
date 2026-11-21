@@ -30,6 +30,8 @@ use self::worker::{DatDownloadTask, DatProgress, DatTask, Notify, ScanTask};
 use crate::GameContent;
 use crate::config::{Config, DataDirs};
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
+use crate::launch_firmware::{FirmwareDecision, check_launch_firmware, decide, fallback_option};
+use crate::platform::{FolderOutcome, FolderPlan, plan_open_folder, spawn_open_folder};
 
 const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
 const ERROR: Color32 = Color32::from_rgb(255, 110, 110);
@@ -107,6 +109,38 @@ enum Dialog {
     },
     /// First scan without any DAT: offer the download (ADR 0014 design §1).
     OfferDat,
+    /// 3.0 firmware check (design v3.0 §2.1): fallback warned once per game, wrong or missing file.
+    Firmware3 {
+        request: LaunchRequest,
+        args: LaunchArgs,
+        decision: FirmwareDecision,
+        /// This game's options file (`aros_acknowledged`, « Utiliser AROS »).
+        options_path: PathBuf,
+        /// `(option, value)` that selects the core's built-in ROM, when declared.
+        fallback: Option<(String, String)>,
+    },
+    /// Several ROM folders: which one to open.
+    ChooseFolder(Vec<PathBuf>),
+    /// The folder cannot be opened here (container, no file manager): its path, and the host path if known.
+    FolderPath {
+        path: PathBuf,
+        host_hint: Option<String>,
+        container: bool,
+        copied: bool,
+    },
+    /// Files of a shared extension that the scan could not attribute (design v3.0 §3.5.2).
+    Unclassified(Vec<PathBuf>),
+}
+
+/// What a launch was asked with: enough to start it again after a BIOS import.
+#[derive(Debug, Clone)]
+pub(crate) struct LaunchArgs {
+    game_id: Option<GameId>,
+    title: String,
+    system_id: String,
+    ext: Option<String>,
+    content: GameContent,
+    computer: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,7 +187,7 @@ pub(crate) struct LibraryUi {
     dat_progress: Option<DatProgress>,
     /// DAT download offered once per session.
     dat_offered: bool,
-    /// libretro-database `metadat/no-intro/` (tests: a local server).
+    /// libretro-database root, each DAT source below it (tests: a local server).
     dat_base_url: String,
     status: Option<(String, Level)>,
     dialog: Option<Dialog>,
@@ -167,6 +201,14 @@ pub(crate) struct LibraryUi {
     settings: settings::State,
     pad: pad_settings::PadUi,
     events: Vec<LibraryEvent>,
+    /// `EMU_RUST_CONTAINER=1` (read once): the ROM folder is shown, never opened.
+    container: bool,
+    /// `EMU_HOST_ROMS_DIR` (read once), shown with the path in a container.
+    host_roms_hint: Option<String>,
+    /// « Ouvrir le dossier des ROMs » waiting for the opener (worker thread).
+    folder_task: Option<std::sync::mpsc::Receiver<FolderOutcome>>,
+    /// Unclassified files of the last scan (design v3.0 §3.5.2).
+    unclassified: Vec<PathBuf>,
 }
 
 fn now_unix() -> i64 {
@@ -220,7 +262,7 @@ impl LibraryUi {
             dat_download: None,
             dat_progress: None,
             dat_offered: false,
-            dat_base_url: emu_assets::DAT_BASE_URL.to_owned(),
+            dat_base_url: worker::DAT_REPO_ROOT.to_owned(),
             status: None,
             dialog: None,
             focus_dialog: false,
@@ -231,6 +273,10 @@ impl LibraryUi {
             settings: settings::State::default(),
             pad: pad_settings::PadUi::default(),
             events: Vec::new(),
+            container: crate::platform::running_in_container(),
+            host_roms_hint: crate::platform::host_roms_hint(),
+            folder_task: None,
+            unclassified: Vec::new(),
         };
         ui.reload_games();
         ui
@@ -383,6 +429,13 @@ impl LibraryUi {
                             tracing::info!("scan : {} : {e}", path.display());
                         }
                         self.set_status(text::scan_done(&report), Level::Info);
+                        self.unclassified = report.unclassified_paths.clone();
+                        if report.unclassified > 0 {
+                            tracing::info!(
+                                "scan : {} fichier(s) non classé(s)",
+                                report.unclassified
+                            );
+                        }
                         offer_dat = true;
                     }
                     Some(Err(e)) if cancelled => self.set_status(e, Level::Info),
@@ -484,6 +537,18 @@ impl LibraryUi {
         self.launch_game(game);
     }
 
+    /// Starts again a launch that stopped on a BIOS dialog (after an import).
+    fn relaunch(&mut self, args: LaunchArgs) {
+        self.launch(
+            args.game_id,
+            args.title,
+            &args.system_id,
+            args.ext.as_deref(),
+            args.content,
+            args.computer,
+        );
+    }
+
     fn launch_game(&mut self, game: Game) {
         let system = emu_library::system(&game.system);
         let computer = system.is_some_and(|s| s.kind == SystemKind::Computer);
@@ -551,6 +616,17 @@ impl LibraryUi {
             },
             None => check,
         };
+        let args = LaunchArgs {
+            game_id,
+            title: title.clone(),
+            system_id: system_id.to_owned(),
+            ext: ext.map(str::to_owned),
+            content: content.clone(),
+            computer,
+        };
+        let Some(check) = self.firmware_gate(&prefs, check, args, &request) else {
+            return;
+        };
         match check {
             LaunchCheck::Ready { id, path, warnings } => {
                 let names = firmware_names(&warnings);
@@ -598,6 +674,183 @@ impl LibraryUi {
                 self.open_dialog(Dialog::Message(text::game_failed(&title, &msg)));
             }
         }
+    }
+
+    /// Cores with a `required_firmware` table or a built-in ROM (design v3.0 §2.1, §3.5.5): the single 3.0 check
+    /// replaces the `.info` one. `None`: a dialog took over (the core stays marked in use until it is closed).
+    fn firmware_gate(
+        &mut self,
+        prefs: &emu_assets::cores::CorePreferences,
+        check: LaunchCheck,
+        args: LaunchArgs,
+        request: &dyn Fn(CoreId, PathBuf, Vec<String>) -> LaunchRequest,
+    ) -> Option<LaunchCheck> {
+        let (id, path) = match &check {
+            LaunchCheck::Ready { id, path, .. } | LaunchCheck::FirmwareMissing { id, path, .. } => {
+                (id.clone(), path.clone())
+            }
+            _ => return Some(check),
+        };
+        // Same options path and layers as `App::build`: `resolve_game` gives the per-game options file.
+        let spec = crate::content::content_spec(id.as_str(), &args.content, prefs);
+        let resolved = crate::game_identity::resolve_game(id.as_str(), spec, &self.dirs);
+        let loaded = crate::game_options::GameOptions::load(&resolved.options_path);
+        let global = self
+            .config
+            .core_options
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let Some(lf) = check_launch_firmware(
+            &self.dirs.system,
+            prefs,
+            &id,
+            args.content.first(),
+            &global,
+            &loaded.options.core_options,
+        ) else {
+            // Neither a table nor a built-in ROM: the 1.0 `.info` check stands.
+            return Some(check);
+        };
+        let decision = decide(&lf.check, loaded.options.input.aros_acknowledged);
+        tracing::info!("BIOS de {id} avant lancement : {decision:?}");
+        if decision == FirmwareDecision::Launch {
+            return Some(LaunchCheck::Ready {
+                id,
+                path,
+                warnings: Vec::new(),
+            });
+        }
+        let fallback = fallback_option(prefs, &id, &lf.system);
+        self.open_dialog(Dialog::Firmware3 {
+            request: request(id, path, Vec::new()),
+            args,
+            decision,
+            options_path: resolved.options_path,
+            fallback,
+        });
+        None
+    }
+
+    /// Writes one change to a game's options file (« Continuer avec AROS », « Utiliser AROS »). Capture mode: no.
+    fn update_game_options(
+        &mut self,
+        path: &std::path::Path,
+        change: impl FnOnce(&mut crate::game_options::GameOptions),
+    ) {
+        if self.capture {
+            return;
+        }
+        let mut loaded = crate::game_options::GameOptions::load(path);
+        change(&mut loaded.options);
+        if let Err(e) = loaded.options.save(path, loaded.locked) {
+            self.set_status(text::game_options_failed(&e.to_string()), Level::Warn);
+        }
+    }
+
+    /// « Ouvrir le dossier des ROMs » (design v3.0 §2.3): `<data>/roms` (created if missing) and the library roots.
+    fn open_rom_folder(&mut self) {
+        let roots = self.scan_roots();
+        match roots.as_slice() {
+            [only] => {
+                let only = only.clone();
+                self.open_folder(only);
+            }
+            _ => self.open_dialog(Dialog::ChooseFolder(roots)),
+        }
+    }
+
+    fn open_folder(&mut self, path: PathBuf) {
+        if path == self.dirs.root.join("roms")
+            && !self.capture
+            && let Err(e) = std::fs::create_dir_all(&path)
+        {
+            tracing::warn!("{} non créé : {e}", path.display());
+        }
+        // The container is known before any opener call (WSL2 would otherwise try explorer.exe).
+        match plan_open_folder(
+            &path,
+            self.container || self.capture,
+            self.host_roms_hint.clone(),
+        ) {
+            FolderPlan::ShowPath { path, host_hint } => self.show_folder_path(path, host_hint),
+            FolderPlan::TryOpen => self.folder_task = Some(spawn_open_folder(path)),
+        }
+    }
+
+    fn show_folder_path(&mut self, path: PathBuf, host_hint: Option<String>) {
+        let container = self.container;
+        self.open_dialog(Dialog::FolderPath {
+            path,
+            host_hint,
+            container,
+            copied: false,
+        });
+    }
+
+    fn poll_folder(&mut self) {
+        let Some(rx) = &self.folder_task else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => FolderOutcome::ShowPath {
+                path: self.dirs.root.join("roms"),
+                host_hint: self.host_roms_hint.clone(),
+            },
+        };
+        self.folder_task = None;
+        match outcome {
+            FolderOutcome::Opened => self.set_status(text::FOLDER_OPENED.to_owned(), Level::Info),
+            FolderOutcome::ShowPath { path, host_hint } => self.show_folder_path(path, host_hint),
+        }
+    }
+
+    /// The import dialog closed: a launch waiting on a BIOS dialog starts again when something was installed.
+    fn import_closed(&mut self, installed: bool) {
+        if installed {
+            self.cores.mark_dirty();
+        }
+        if !matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
+            return;
+        }
+        if !installed {
+            self.focus_dialog = true;
+            return;
+        }
+        if let Some(Dialog::Firmware3 { args, .. }) = self.dialog.take() {
+            if let Some(m) = self.cores.manager() {
+                cores_ui::release(m);
+            }
+            self.relaunch(args);
+        }
+    }
+
+    /// « Core utilisé » changed on the cores screen: `[cores.preferred]` written (the built-in first core is the
+    /// default and is not written).
+    fn prefer_core(&mut self, system_db: &str, core: CoreId) {
+        let Some(info) = emu_library::systems()
+            .iter()
+            .find(|s| s.database == system_db)
+        else {
+            return;
+        };
+        let builtin_first = emu_assets::cores::CorePreferences::builtin()
+            .for_system(system_db)
+            .first()
+            .cloned();
+        if builtin_first.as_ref() == Some(&core) {
+            self.config.cores.preferred.remove(&info.id);
+        } else {
+            self.config
+                .cores
+                .preferred
+                .insert(info.id.clone(), core.to_string());
+        }
+        self.save_config();
+        self.cores
+            .set_preferences(cores_ui::preferences(&self.config.cores));
     }
 
     /// Mega CD (design v2.1-megacd-express §2.3): checks the BIOS of the disc's region. `None`: a dialog took
@@ -876,19 +1129,32 @@ impl LibraryUi {
         }
         self.relaunch_after_install();
         self.bios_completed();
+        self.poll_folder();
         match self.page {
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
             Page::Cores => {
                 self.cores.set_modal_open(self.dialog.is_some());
+                let mut event = None;
                 egui::CentralPanel::default().show(ui, |ui| {
-                    if self.cores.show(ui) == Some(CoresEvent::Back) {
-                        self.set_page(Page::Home);
-                    }
+                    event = self.cores.show(ui);
                 });
+                match event {
+                    Some(CoresEvent::Back) => self.set_page(Page::Home),
+                    Some(CoresEvent::PreferCore { system, core }) => {
+                        self.prefer_core(&system, core)
+                    }
+                    None => {}
+                }
             }
         }
-        self.dialog_ui(&ctx);
+        if self.cores.import.is_active() {
+            if let Some(closed) = self.cores.import.show(&ctx) {
+                self.import_closed(closed.installed);
+            }
+        } else {
+            self.dialog_ui(&ctx);
+        }
         std::mem::take(&mut self.events)
     }
 
@@ -1038,6 +1304,15 @@ impl LibraryUi {
         if matches!(self.dialog, Some(Dialog::MegaCdBios { .. })) {
             return self.megacd_dialog(ctx);
         }
+        if matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
+            return self.firmware3_dialog(ctx);
+        }
+        if matches!(
+            self.dialog,
+            Some(Dialog::ChooseFolder(_) | Dialog::FolderPath { .. } | Dialog::Unclassified(_))
+        ) {
+            return self.folder_dialog(ctx);
+        }
         let Some(dialog) = &self.dialog else {
             return;
         };
@@ -1076,9 +1351,12 @@ impl LibraryUi {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
-                Dialog::FreeBios { .. } | Dialog::MegaCdBios { .. } => {
-                    (text::LAUNCH_FAILED_TITLE, String::new())
-                }
+                Dialog::FreeBios { .. }
+                | Dialog::MegaCdBios { .. }
+                | Dialog::Firmware3 { .. }
+                | Dialog::ChooseFolder(_)
+                | Dialog::FolderPath { .. }
+                | Dialog::Unclassified(_) => (text::LAUNCH_FAILED_TITLE, String::new()),
                 Dialog::OfferDat => (text::DAT_OFFER_TITLE, text::DAT_OFFER.to_owned()),
             };
             ui.heading(title);
@@ -1110,7 +1388,11 @@ impl LibraryUi {
                     Dialog::Firmware { .. }
                     | Dialog::Message(_)
                     | Dialog::FreeBios { .. }
-                    | Dialog::MegaCdBios { .. } => None,
+                    | Dialog::MegaCdBios { .. }
+                    | Dialog::Firmware3 { .. }
+                    | Dialog::ChooseFolder(_)
+                    | Dialog::FolderPath { .. }
+                    | Dialog::Unclassified(_) => None,
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
                 let cancel_label = match dialog {
@@ -1157,6 +1439,211 @@ impl LibraryUi {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 3.0 firmware dialog (design v3.0 §2.1). Safe default first: « Importer… », never the launch.
+    fn firmware3_dialog(&mut self, ctx: &egui::Context) {
+        let Some(Dialog::Firmware3 {
+            request,
+            decision,
+            fallback,
+            ..
+        }) = &self.dialog
+        else {
+            return;
+        };
+        let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let (title, body, wanted) = match decision {
+            FirmwareDecision::FallbackFirstTime { label, wanted } => (
+                text::fallback_title(wanted),
+                text::fallback_body(&request.title, label, wanted),
+                wanted.clone(),
+            ),
+            FirmwareDecision::WrongHash { wanted, .. } => (
+                text::LAUNCH_FIRMWARE_TITLE.to_owned(),
+                text::wrong_firmware_body(&request.title, wanted),
+                wanted.clone(),
+            ),
+            FirmwareDecision::Missing { wanted } => (
+                text::LAUNCH_FIRMWARE_TITLE.to_owned(),
+                text::firmware_question(&request.title, std::slice::from_ref(wanted)),
+                wanted.clone(),
+            ),
+            FirmwareDecision::Unreadable { wanted, error } => (
+                text::LAUNCH_FIRMWARE_TITLE.to_owned(),
+                text::unreadable_firmware_body(wanted, error),
+                wanted.clone(),
+            ),
+            FirmwareDecision::Launch => (String::new(), String::new(), String::new()),
+        };
+        let first_time = matches!(decision, FirmwareDecision::FallbackFirstTime { .. });
+        let wrong = matches!(decision, FirmwareDecision::WrongHash { .. });
+        let can_fallback = wrong && fallback.is_some();
+        let kickstart = wanted.to_ascii_lowercase().starts_with("kick");
+        let dir = text::megacd_system_dir(&self.dirs.system);
+        let (mut import, mut cont, mut cancel, mut anyway, mut use_fallback) =
+            (false, false, escape, false, false);
+        egui::Modal::new(egui::Id::unique("library-firmware3-dialog")).show(ctx, |ui| {
+            ui.set_max_width(600.0);
+            ui.heading(&title);
+            ui.label(&body);
+            ui.add(egui::Label::new(RichText::new(&dir).monospace()).selectable(true));
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                let label = if kickstart {
+                    cores_ui::text::IMPORT_KICKSTART
+                } else {
+                    cores_ui::text::IMPORT_BUTTON
+                };
+                let first = ui.button(label);
+                import = first.clicked();
+                if first_time {
+                    cont = ui.button(text::FALLBACK_CONTINUE).clicked();
+                }
+                cancel |= ui.button(text::LAUNCH_CANCEL).clicked();
+                if !first_time {
+                    anyway = ui.button(text::LAUNCH_ANYWAY).clicked();
+                }
+                if can_fallback {
+                    use_fallback = ui.button(text::USE_FALLBACK).clicked();
+                }
+                if focus {
+                    first.request_focus();
+                }
+            });
+            if first_time {
+                weak(ui, text::FALLBACK_NOTE);
+            }
+        });
+        if import {
+            self.cores.import.start(Some(wanted));
+        } else if cont || anyway || use_fallback {
+            let Some(Dialog::Firmware3 {
+                request,
+                options_path,
+                fallback,
+                ..
+            }) = self.dialog.take()
+            else {
+                return;
+            };
+            if cont {
+                self.update_game_options(&options_path, |o| o.input.aros_acknowledged = true);
+            } else if use_fallback && let Some((option, value)) = fallback {
+                self.update_game_options(&options_path, |o| {
+                    o.core_options.insert(option, value);
+                });
+            }
+            self.focus = Some(Focus::Grid);
+            self.events.push(LibraryEvent::Launch(request));
+        } else if cancel {
+            self.dialog = None;
+            self.focus = Some(Focus::Grid);
+            if let Some(m) = self.cores.manager() {
+                cores_ui::release(m);
+            }
+        }
+    }
+
+    /// ROM folder choice, folder path (container, no file manager) and unclassified files of the scan.
+    fn folder_dialog(&mut self, ctx: &egui::Context) {
+        let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let mut close = escape;
+        let mut open = None;
+        let mut copy = None;
+        let Some(dialog) = &self.dialog else {
+            return;
+        };
+        egui::Modal::new(egui::Id::unique("library-folder-dialog")).show(ctx, |ui| {
+            ui.set_max_width(620.0);
+            match dialog {
+                Dialog::ChooseFolder(roots) => {
+                    ui.heading(text::FOLDER_CHOOSE);
+                    for (i, root) in roots.iter().enumerate() {
+                        let r = ui.button(root.display().to_string());
+                        if focus && i == 0 {
+                            r.request_focus();
+                        }
+                        if r.clicked() {
+                            open = Some(root.clone());
+                        }
+                    }
+                    close |= ui.button(text::LAUNCH_CANCEL).clicked();
+                }
+                Dialog::FolderPath {
+                    path,
+                    host_hint,
+                    container,
+                    copied,
+                } => {
+                    ui.heading(text::FOLDER_TITLE);
+                    ui.label(if *container {
+                        text::FOLDER_CONTAINER
+                    } else {
+                        text::FOLDER_NO_MANAGER
+                    });
+                    ui.add(
+                        egui::Label::new(RichText::new(path.display().to_string()).monospace())
+                            .selectable(true),
+                    );
+                    if *container {
+                        match host_hint {
+                            Some(h) => ui.label(text::folder_host(h)),
+                            None => ui.label(text::FOLDER_HOST_UNKNOWN),
+                        };
+                    }
+                    if *copied {
+                        weak(ui, text::MEGACD_PATH_COPIED);
+                    }
+                    ui.horizontal(|ui| {
+                        let ok = ui.button(text::OK);
+                        if focus {
+                            ok.request_focus();
+                        }
+                        close |= ok.clicked();
+                        if ui.button(text::MEGACD_COPY_PATH).clicked() {
+                            copy = Some(path.display().to_string());
+                        }
+                    });
+                }
+                Dialog::Unclassified(paths) => {
+                    ui.heading(text::unclassified_title(paths.len()));
+                    ui.label(text::UNCLASSIFIED_HELP);
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            for p in paths {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(text::unclassified_line(p)).small(),
+                                    )
+                                    .selectable(true),
+                                );
+                            }
+                        });
+                    let ok = ui.button(text::OK);
+                    if focus {
+                        ok.request_focus();
+                    }
+                    close |= ok.clicked();
+                }
+                _ => close = true,
+            }
+        });
+        if let Some(text) = copy {
+            ctx.copy_text(text);
+            if let Some(Dialog::FolderPath { copied, .. }) = &mut self.dialog {
+                *copied = true;
+            }
+        } else if let Some(path) = open {
+            self.dialog = None;
+            self.open_folder(path);
+        } else if close {
+            self.dialog = None;
+            self.focus = Some(Focus::Grid);
         }
     }
 

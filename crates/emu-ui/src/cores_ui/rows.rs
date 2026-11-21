@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use emu_assets::cores::{
-    BuildDate, CoreId, CoreInfo, CorePreferences, FirmwareState, FirmwareStatus, InstalledCore,
-    Origin, RemoteCatalog,
+    BuildDate, CoreId, CoreInfo, CorePreferences, FirmwareCheck, FirmwareState, FirmwareStatus,
+    InstalledCore, Origin, RemoteCatalog,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,6 +39,9 @@ pub(crate) enum CoreState {
 pub(crate) struct Checks {
     pub tampered: BTreeSet<CoreId>,
     pub firmware: BTreeMap<CoreId, Vec<FirmwareStatus>>,
+    /// The 3.0 check (`check_core_firmware`, default variant) of cores that have a `required_firmware` table or
+    /// a built-in ROM: it replaces the `.info` summary of their row.
+    pub required: BTreeMap<CoreId, FirmwareCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +59,8 @@ pub(crate) struct CoreRow {
     pub recommended: bool,
     pub firmware_missing: usize,
     pub firmware_wrong: usize,
+    /// 3.0 check of the row, when the core has one (`Checks::required`).
+    pub required: Option<FirmwareCheck>,
     pub downloadable: bool,
 }
 
@@ -151,7 +156,13 @@ pub(crate) fn rows(
                 }
             };
             let (mut missing, mut wrong) = (0, 0);
-            for f in checks.firmware.get(id).into_iter().flatten() {
+            let required = checks.required.get(id).cloned();
+            let info_checks = if required.is_some() {
+                None
+            } else {
+                checks.firmware.get(id)
+            };
+            for f in info_checks.into_iter().flatten() {
                 if f.spec.optional {
                     continue;
                 }
@@ -175,6 +186,7 @@ pub(crate) fn rows(
                 recommended: recommended.contains(id),
                 firmware_missing: missing,
                 firmware_wrong: wrong,
+                required,
                 downloadable: remote.is_some(),
             })
         })

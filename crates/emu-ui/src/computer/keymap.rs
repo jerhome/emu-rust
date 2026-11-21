@@ -137,12 +137,9 @@ pub(crate) fn retro_key(code: KeyCode) -> Option<RetroKey> {
 
 /// Per-layout overrides of the positional map: the layout file's `[remap]` table (identical on the three OSes),
 /// then the user's `[computer.remap.<layout>]`, which wins. Empty for a layout without any (Atari ST).
-// Used by `ComputerKeyboard` once U4 wires the layout in.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct KeyRemap(BTreeMap<KeyCode, RetroKey>);
 
-#[allow(dead_code)]
 impl KeyRemap {
     /// Entries naming an unknown `KeyCode` or libretro key are skipped with a warning: a typo in the user's
     /// config must not disable the keyboard.
@@ -165,7 +162,6 @@ impl KeyRemap {
     }
 }
 
-#[allow(dead_code)]
 /// winit `KeyCode` from its variant name (`"AltLeft"`).
 fn parse_key_code(name: &str) -> Option<KeyCode> {
     use serde::Deserialize;

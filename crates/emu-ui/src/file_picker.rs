@@ -1,6 +1,6 @@
 //! File selection (design v3.0 §2.2, §4): the system dialog through `rfd` where it works, a built-in egui browser
 //! under Docker and as a fallback. This file holds the dialog and the browser's model (listing, navigation,
-//! typed path); the egui drawing (`FileBrowser::show`) is added by U4.
+//! typed path) and its egui drawing (`FileBrowser::show`, keyboard-first).
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -52,18 +52,8 @@ fn zenity_in_path(path: Option<&std::ffi::OsStr>) -> bool {
     })
 }
 
-/// Native "open file" dialog, modal over `parent`. Blocks until the dialog closes: never call it on the UI
-/// thread's event loop (see [`pick_file_in_background`]). `None` = cancelled.
-pub(crate) fn pick_file_native(
-    parent: &winit::window::Window,
-    title: &str,
-    filters: &[(&str, &[&str])],
-) -> Option<PathBuf> {
-    dialog(title, filters).set_parent(parent).pick_file()
-}
-
-/// Same dialog on a worker thread, without a parent window (the portal and Cocoa parent the dialog to the
-/// application anyway). The receiver yields exactly one value: the file, or `None` if cancelled or if the thread
+/// Native "open file" dialog (`rfd`) on a worker thread, so the UI thread never blocks; no parent window (the
+/// portal and Cocoa parent the dialog to the application anyway). The receiver yields exactly one value: the file, or `None` if cancelled or if the thread
 /// could not start.
 pub(crate) fn pick_file_in_background(
     title: &str,
@@ -114,6 +104,8 @@ pub(crate) struct FileBrowser {
     error: Option<String>,
     /// Content of the path text field.
     pub typed: String,
+    /// Give the keyboard focus to the first entry on the next frame (opening, folder change).
+    focus_first: bool,
 }
 
 impl FileBrowser {
@@ -129,6 +121,7 @@ impl FileBrowser {
             entries: Vec::new(),
             error: None,
             typed: String::new(),
+            focus_first: true,
         };
         b.refresh();
         b
@@ -149,6 +142,7 @@ impl FileBrowser {
     /// Folders first, then files, case-insensitive; hidden entries and files rejected by the filter are skipped.
     pub fn refresh(&mut self) {
         self.typed = self.dir.display().to_string();
+        self.focus_first = true;
         self.entries.clear();
         self.error = None;
         let read = match std::fs::read_dir(&self.dir) {
@@ -236,6 +230,85 @@ impl FileBrowser {
             self.error = Some(format!("introuvable : {text}"));
             None
         }
+    }
+}
+
+impl FileBrowser {
+    /// Draws the browser inside `ui` (a modal of the caller). Keyboard: Tab / arrows move between entries, Entrée
+    /// opens a folder or picks a file, Retour arrière goes up (outside the path field), Échap cancels.
+    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<BrowserOutcome> {
+        use crate::ui::text;
+        let mut outcome = None;
+        let typing = ui.ctx().text_edit_focused();
+        let (escape, back) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Escape),
+                !typing && i.key_pressed(egui::Key::Backspace),
+            )
+        });
+        ui.label(egui::RichText::new(self.dir().display().to_string()).monospace());
+        let mut go_up = back;
+        let mut submit = false;
+        ui.horizontal(|ui| {
+            go_up |= ui.button(text::BROWSER_UP).clicked();
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.typed)
+                    .desired_width(360.0)
+                    .hint_text(text::BROWSER_PATH_HINT),
+            );
+            submit |= field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            submit |= ui.button(text::BROWSER_GO).clicked();
+        });
+        if let Some(e) = self.error() {
+            ui.colored_label(egui::Color32::from_rgb(255, 110, 110), e);
+        }
+        if !self.filter.is_empty() {
+            ui.label(
+                egui::RichText::new(text::browser_filter(&self.filter))
+                    .small()
+                    .weak(),
+            );
+        }
+        let mut activate = None;
+        let focus_first = std::mem::take(&mut self.focus_first);
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                if self.entries().is_empty() && self.error().is_none() {
+                    ui.label(text::BROWSER_EMPTY);
+                }
+                for (i, entry) in self.entries().iter().enumerate() {
+                    let label = if entry.is_dir {
+                        format!("{}/", entry.name)
+                    } else {
+                        entry.name.clone()
+                    };
+                    let r = ui.add(egui::Button::new(label).frame(false));
+                    if focus_first && i == 0 {
+                        r.request_focus();
+                    }
+                    if r.clicked() {
+                        activate = Some(i);
+                    }
+                }
+            });
+        ui.add_space(6.0);
+        let cancel = ui.button(text::BROWSER_CANCEL);
+        if focus_first && self.entries.is_empty() {
+            cancel.request_focus();
+        }
+        if let Some(i) = activate {
+            outcome = self.activate(i);
+        } else if submit {
+            outcome = self.submit_typed();
+        } else if go_up {
+            self.go_up();
+        }
+        if cancel.clicked() || (escape && outcome.is_none()) {
+            outcome = Some(BrowserOutcome::Cancelled);
+        }
+        outcome
     }
 }
 

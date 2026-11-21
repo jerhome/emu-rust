@@ -202,6 +202,7 @@ impl GameOptions {
 }
 
 /// Core option values to apply: later layers override earlier ones. Sorted by key. No computed layer.
+#[cfg(test)]
 pub(crate) fn effective_core_options(
     core_defaults: &[(String, String)],
     frontend: &[(String, String)],

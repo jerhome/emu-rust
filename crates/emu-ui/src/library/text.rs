@@ -139,6 +139,9 @@ pub fn scan_done(r: &ScanReport) -> String {
     if !r.errors.is_empty() {
         s.push_str(&format!(", {} fichiers illisibles", r.errors.len()));
     }
+    if r.unclassified > 0 {
+        s.push_str(&format!(", {} fichiers non classés", r.unclassified));
+    }
     if !r.missing_roots.is_empty() {
         let roots: Vec<String> = r
             .missing_roots
@@ -270,6 +273,93 @@ pub fn game_title(title: &str) -> String {
 
 pub const BIOS_INSTALL_AND_LAUNCH: &str = "Installer et lancer";
 pub const DESKTOP_BUTTON: &str = "Bureau Atari ST";
+pub const AMIGA_DESKTOP_BUTTON: &str = "Workbench / AROS";
+pub const OPEN_ROM_FOLDER: &str = "Ouvrir le dossier des ROMs";
+
+// ---- 3.0 : BIOS avant lancement, dossier des ROMs, fichiers non classés (design v3.0 §2) -------------------
+
+pub const FALLBACK_CONTINUE: &str = "Continuer avec la ROM intégrée";
+pub const USE_FALLBACK: &str = "Utiliser la ROM intégrée";
+pub const FALLBACK_NOTE: &str = "Cet avertissement n'est affiché qu'une fois par jeu. Importer le fichier \
+                                 d'origine le copie dans le dossier ci-dessus (vérifié par son empreinte).";
+
+pub fn fallback_title(wanted: &str) -> String {
+    if wanted.to_ascii_lowercase().starts_with("kick") {
+        format!("Pas de Kickstart ({wanted})")
+    } else {
+        format!("BIOS absent ({wanted})")
+    }
+}
+
+pub fn fallback_body(game: &str, label: &str, wanted: &str) -> String {
+    format!(
+        "« {} » attend {wanted}, absent du dossier des BIOS. Le jeu démarrera avec {} : la compatibilité est \
+         limitée (beaucoup de jeux demandent le Kickstart d'origine).",
+        clean(game),
+        clean(label)
+    )
+}
+
+pub fn wrong_firmware_body(game: &str, wanted: &str) -> String {
+    format!(
+        "« {} » attend {wanted} : le fichier présent ne correspond à aucune version connue. Le jeu peut ne pas \
+         démarrer.",
+        clean(game)
+    )
+}
+
+pub fn unreadable_firmware_body(wanted: &str, error: &str) -> String {
+    format!("{wanted} est illisible : {}", clean(error))
+}
+
+pub fn game_options_failed(e: &str) -> String {
+    format!("Options du jeu non enregistrées : {}", clean(e))
+}
+
+pub const FOLDER_OPENED: &str = "Dossier des ROMs ouvert dans le gestionnaire de fichiers.";
+pub const FOLDER_CHOOSE: &str = "Quel dossier ouvrir ?";
+pub const FOLDER_TITLE: &str = "Dossier des ROMs";
+pub const FOLDER_CONTAINER: &str = "emu-rust tourne dans un conteneur Docker : le dossier ne peut pas s'ouvrir \
+                                    ici. Déposez vos jeux dans ce dossier du conteneur (par exemple avec \
+                                    « docker cp »), ou montez un dossier de votre ordinateur sur /data/roms \
+                                    (variable EMU_HOST_ROMS_DIR de compose.yaml), puis lancez « Scanner ».";
+pub const FOLDER_NO_MANAGER: &str =
+    "Aucun gestionnaire de fichiers n'a pu ouvrir le dossier. Le voici :";
+pub const FOLDER_HOST_UNKNOWN: &str =
+    "Aucun dossier de l'hôte n'est monté (EMU_HOST_ROMS_DIR absent).";
+
+pub fn folder_host(hint: &str) -> String {
+    format!("Sur votre ordinateur, ce dossier est : {}", clean(hint))
+}
+
+pub fn unclassified_title(n: usize) -> String {
+    format!("{n} fichier(s) non classé(s)")
+}
+
+pub const UNCLASSIFIED_HELP: &str = "Ces fichiers ont une extension commune à plusieurs systèmes et ne figurent \
+                                     dans aucune base : rangez chacun dans le dossier de son système, puis \
+                                     relancez « Scanner ».";
+pub const UNCLASSIFIED_SHOW: &str = "Voir les fichiers non classés";
+
+/// One unclassified file and the folders it may go to (`roms/<id>/` of every system accepting its extension).
+pub fn unclassified_line(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let ids: Vec<String> = emu_library::systems()
+        .iter()
+        .filter(|s| s.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext)))
+        .map(|s| format!("roms/{}/", s.id))
+        .collect();
+    let advice = if ids.is_empty() {
+        "roms/<système>/".to_owned()
+    } else {
+        ids.join(" ou ")
+    };
+    format!("{} : rangez ce fichier dans {advice}", path.display())
+}
 
 pub fn desktop_title(system: &str) -> String {
     format!("Bureau {system}")

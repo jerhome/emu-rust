@@ -33,6 +33,7 @@ pub const KEYS_CANCELLED: &str = "Réassignation annulée.";
 pub const KEYS_RESTORED: &str = "Disposition intégrée rétablie.";
 
 pub const OPTIONS_NONE: &str = "Ce core n'a pas d'options.";
+pub const OPTIONS_MAIN: &str = "Principales";
 pub const OPTIONS_GENERAL: &str = "Général";
 pub const OPTIONS_DEFAULTS: &str = "Rétablir les valeurs par défaut";
 pub const OPTIONS_HINT: &str =
@@ -295,9 +296,9 @@ pub const DISKS_EJECT: &str = "Éjecter";
 pub const DISKS_ADD: &str = "Ajouter une image du même dossier :";
 pub const DISKS_RESET: &str = "Réinitialiser les disquettes…";
 pub const DISKS_RESET_CONFIRM: &str = "Les copies de travail (avec la progression enregistrée sur les \
-                                       disquettes), disquettes ajoutées comprises, seront effacées et le jeu \
-                                       redémarré depuis vos fichiers d'origine, qui ne sont jamais modifiés. \
-                                       Confirmer ?";
+                                       disquettes), disquettes ajoutées comprises, ainsi que les disquettes de \
+                                       sauvegarde créées par le core, seront effacées et le jeu redémarré depuis \
+                                       vos fichiers d'origine, qui ne sont jamais modifiés. Confirmer ?";
 pub const DISKS_RESET_YES: &str = "Oui, réinitialiser";
 pub const DISKS_HINT: &str =
     "Entrée sur une disquette : l'insérer. Raccourci : touche hôte + D (suivante).";
@@ -376,6 +377,52 @@ pub fn work_dir_notice(n: &emu_runtime::WorkDirNotice) -> String {
         emu_runtime::WorkDirNotice::SameName => {
             "Autre jeu du même nom : copies de travail séparées".to_owned()
         }
+    }
+}
+
+// ---- built-in file browser (file_picker.rs) ----------------------------------------------------------------
+
+pub const BROWSER_UP: &str = "Dossier parent";
+pub const BROWSER_GO: &str = "Aller";
+pub const BROWSER_CANCEL: &str = "Annuler";
+pub const BROWSER_EMPTY: &str = "Dossier vide.";
+pub const BROWSER_PATH_HINT: &str = "chemin d'un dossier ou d'un fichier";
+
+pub fn browser_filter(extensions: &[String]) -> String {
+    format!("Fichiers affichés : .{}", extensions.join(", ."))
+}
+
+/// OSD shown when a game starts after the pre-launch firmware check (CLI launch, or library launch after its
+/// dialog); `None` when nothing is worth saying.
+pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> Option<String> {
+    use crate::launch_firmware::FirmwareDecision as D;
+    match d {
+        D::Launch => None,
+        D::FallbackFirstTime { label, wanted } => Some(format!(
+            "{wanted} absent : {label}, compatibilité limitée. Importez votre BIOS depuis l'écran « Cores » \
+             (« Importer un BIOS… »)."
+        )),
+        D::WrongHash { wanted, .. } => Some(format!(
+            "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
+        )),
+        D::Missing { wanted } => Some(format!(
+            "BIOS absent : {wanted}. Le jeu peut ne pas démarrer."
+        )),
+        D::Unreadable { wanted, error } => Some(format!("BIOS illisible ({wanted}) : {error}")),
+    }
+}
+
+/// Error of a launch, with what to do for the cases the player can fix.
+pub fn launch_error(e: &crate::UiError) -> String {
+    match e {
+        crate::UiError::Runtime(emu_runtime::RuntimeError::DiskFull { path }) => format!(
+            "Disque plein : la copie de travail ({}) n'a pas pu être écrite. Libérez de la place puis relancez.",
+            path.display()
+        ),
+        crate::UiError::Runtime(emu_runtime::RuntimeError::DiskListFull { .. }) => {
+            DISKS_LIST_FULL.to_owned()
+        }
+        other => other.to_string(),
     }
 }
 
@@ -605,6 +652,10 @@ pub fn disk_error(e: &emu_runtime::RuntimeError) -> String {
     match e {
         emu_runtime::RuntimeError::DiskInserted => DISKS_INSERTED_REFUSED.to_owned(),
         emu_runtime::RuntimeError::DiskListFull { .. } => DISKS_LIST_FULL.to_owned(),
+        emu_runtime::RuntimeError::DiskFull { path } => format!(
+            "Disque plein : {} n'a pas pu être écrit (copie partielle supprimée).",
+            path.display()
+        ),
         other => disk_failed(other),
     }
 }

@@ -11,7 +11,8 @@ use std::thread;
 use emu_assets::http::{HttpClient, HttpConfig};
 use emu_assets::{DatDownload, dat_url, download_dat};
 use emu_library::{
-    Library, ScanOptions, ScanProgress, ScanReport, SystemInfo, load_dat_file, system, systems,
+    DatSource, Library, ScanOptions, ScanProgress, ScanReport, SystemInfo, load_dat_file, system,
+    systems,
 };
 
 use super::grid::detect_dat_system;
@@ -161,7 +162,23 @@ pub(crate) type DatDownloadTask = Task<DatProgress, Result<DatSummary, String>>;
 /// Network errors in a row after which the remaining systems are skipped (each would wait for its timeout).
 const DAT_MAX_NETWORK_ERRORS: usize = 2;
 
-/// Downloads (conditional GET) and imports the No-Intro DAT of every catalog system.
+/// Root of libretro-database: the DAT of a source is under `<root><DatSource::repo_dir>/<database>.dat`
+/// (`emu_assets::DAT_*_BASE_URL`, checked by a test).
+pub(crate) const DAT_REPO_ROOT: &str =
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/";
+
+/// Download folder of one source: TOSEC and WHDLoad (`dat/`) give the Amiga DAT the same file name.
+fn dat_file(dest_dir: &Path, source: DatSource, database: &str) -> PathBuf {
+    dest_dir.join(source.id()).join(format!("{database}.dat"))
+}
+
+/// Base URL of a source under `repo_root` (ends with `/`).
+fn source_base(repo_root: &str, source: DatSource) -> String {
+    format!("{repo_root}{}/", source.repo_dir())
+}
+
+/// Downloads (conditional GET) and imports the DAT of every `(system, source)` of the catalog; `base_url` is the
+/// libretro-database root ([`DAT_REPO_ROOT`]; tests: a local server).
 pub(crate) fn spawn_dat_download(
     db: PathBuf,
     dest_dir: PathBuf,
@@ -199,48 +216,52 @@ pub(crate) fn download_dats(
 ) -> DatSummary {
     let mut summary = DatSummary::default();
     let mut network_errors = 0;
-    let catalog: Vec<&SystemInfo> = catalog
+    let jobs: Vec<(&SystemInfo, DatSource)> = catalog
         .iter()
         .filter(|s| !NO_AUTO_DAT.contains(&s.id.as_str()))
+        .flat_map(|s| s.dats.iter().map(move |d| (s, *d)))
         .collect();
-    for (i, s) in catalog.iter().enumerate() {
+    for (i, (s, source)) in jobs.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
+        // Two sources of one system are told apart in messages (« Amiga (tosec) »).
+        let label = if s.dats.len() > 1 {
+            format!("{} ({})", s.name, source.id())
+        } else {
+            s.name.clone()
+        };
         progress(DatProgress {
             done: i,
-            total: catalog.len(),
-            system: s.name.clone(),
+            total: jobs.len(),
+            system: label.clone(),
         });
-        let dest = dest_dir.join(format!("{}.dat", s.database));
+        let dest = dat_file(dest_dir, *source, &s.database);
         let etag = library
-            .dat_info(&s.id)
+            .dat_info_for(&s.id, *source)
             .ok()
             .flatten()
             .and_then(|info| info.etag)
             .filter(|_| dest.is_file());
-        match download_dat(
-            client,
-            &dat_url(base_url, &s.database),
-            &dest,
-            etag.as_deref(),
-        ) {
+        let base = source_base(base_url, *source);
+        match download_dat(client, &dat_url(&base, &s.database), &dest, etag.as_deref()) {
             Ok(DatDownload::NotModified) => {
                 network_errors = 0;
                 summary.unchanged += 1;
             }
             Ok(DatDownload::Updated { etag, .. }) => {
                 network_errors = 0;
-                let imported = load_dat_file(&dest)
-                    .and_then(|dat| library.import_dat(&s.id, &dat, etag.as_deref()));
+                let imported = load_dat_file(&dest).and_then(|dat| {
+                    library.import_dat_source(&s.id, *source, &dat, etag.as_deref())
+                });
                 match imported {
-                    Ok(n) => summary.updated.push((s.name.clone(), n)),
-                    Err(e) => summary.failed.push((s.name.clone(), e.to_string())),
+                    Ok(n) => summary.updated.push((label, n)),
+                    Err(e) => summary.failed.push((label, e.to_string())),
                 }
             }
             Err(e) => {
                 let transient = e.is_transient();
-                summary.failed.push((s.name.clone(), e.to_string()));
+                summary.failed.push((label, e.to_string()));
                 if transient {
                     network_errors += 1;
                     if network_errors >= DAT_MAX_NETWORK_ERRORS {

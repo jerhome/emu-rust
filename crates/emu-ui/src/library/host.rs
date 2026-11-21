@@ -165,10 +165,9 @@ impl Host {
             }
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
-                let msg = request
-                    .failure_hint
-                    .clone()
-                    .unwrap_or_else(|| text::game_failed(&request.title, &e.to_string()));
+                let msg = request.failure_hint.clone().unwrap_or_else(|| {
+                    text::game_failed(&request.title, &crate::ui::text::launch_error(&e))
+                });
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }
@@ -275,7 +274,7 @@ impl Host {
             self.library.config_from_game(back.config);
             return self.start_game(event_loop, request);
         }
-        let error = back.error.map(|e| e.to_string());
+        let error = back.error.map(|e| crate::ui::text::launch_error(&e));
         self.library.game_over(Some(back.config), error);
         if let Some(event_loop) = event_loop {
             event_loop.set_control_flow(ControlFlow::Wait);
