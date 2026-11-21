@@ -1,4 +1,5 @@
-//! `emu-rust` binary: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
+//! The `emu-rust` program: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
+//! A library since 7.1 (ADR 0023 §3): `emu-rust` and, on Windows, `emu-rust-cli` are thin binaries calling [`run`].
 
 mod cli;
 mod cores_cli;
@@ -6,15 +7,59 @@ mod diagnostics;
 
 use std::process::ExitCode;
 
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+
 const DEFAULT_LOG_FILTER: &str = "warn,emu_app=info,emu_ui=info,emu_runtime=info,emu_libretro=info";
 
+/// Variable set on the `emu-rust-cli.exe` relaunched by `emu-rust.exe` for `[interface] console = true`: the
+/// child never relaunches itself (ADR 0023 §3).
+pub const CONSOLE_CHILD_ENV: &str = "EMU_RUST_CONSOLE_CHILD";
+
+/// Which executable runs the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    /// `emu-rust.exe` on Windows: graphical subsystem, no console of its own.
+    Gui,
+    /// `emu-rust-cli.exe` on Windows, and the only `emu-rust` binary on Linux / macOS.
+    Console,
+}
+
+/// Outcome of [`console_plan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolePlan {
+    /// Run in this process.
+    Stay,
+    /// Spawn the sibling `emu-rust-cli.exe` with the same arguments and [`CONSOLE_CHILD_ENV`]`=1`, then exit 0
+    /// (Windows gives the child a console). A failed spawn is logged and the program stays.
+    Relaunch,
+}
+
+/// Pure decision (ADR 0023 §3): `Relaunch` only for `Gui` + window mode (library or game, not a subcommand) +
+/// no standard output (not redirected) + `[interface] console = true` + not already a relaunched child.
+pub fn console_plan(
+    flavor: Flavor,
+    has_stdout: bool,
+    window_mode: bool,
+    wanted: bool,
+    is_child: bool,
+) -> ConsolePlan {
+    let _ = (flavor, has_stdout, window_mode, wanted, is_child);
+    todo!("FU1: ADR 0023 §3 console decision")
+}
+
+/// stderr output as before, plus the capture layer feeding the « Journal » panel (`emu_ui::log`).
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false),
+        )
+        .with(emu_ui::log::capture_layer())
         .init();
 }
 
@@ -138,7 +183,10 @@ fn report(result: Result<(), emu_ui::UiError>) -> ExitCode {
     }
 }
 
-fn main() -> ExitCode {
+/// The whole program; `flavor` says which executable runs it. Until FU1, both flavors behave as the 7.0 binary
+/// (no relaunch, no dialog).
+pub fn run(flavor: Flavor) -> ExitCode {
+    let _ = flavor;
     init_tracing();
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Help) => {
@@ -180,6 +228,34 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("erreur : {e}\n\n{}", cli::USAGE);
             ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every combination (design v7.1 §5, FU1): a relaunch needs all five conditions.
+    #[test]
+    #[ignore = "FU1: console_plan is a todo!() until then"]
+    fn console_plan_relaunches_only_a_windowed_gui_without_stdout() {
+        for flavor in [Flavor::Gui, Flavor::Console] {
+            for bits in 0u8..16 {
+                let [has_stdout, window_mode, wanted, is_child] =
+                    [0, 1, 2, 3].map(|i| bits & (1 << i) != 0);
+                let expected =
+                    if flavor == Flavor::Gui && !has_stdout && window_mode && wanted && !is_child {
+                        ConsolePlan::Relaunch
+                    } else {
+                        ConsolePlan::Stay
+                    };
+                assert_eq!(
+                    console_plan(flavor, has_stdout, window_mode, wanted, is_child),
+                    expected,
+                    "{flavor:?} stdout={has_stdout} window={window_mode} wanted={wanted} child={is_child}"
+                );
+            }
         }
     }
 }

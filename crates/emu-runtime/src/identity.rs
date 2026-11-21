@@ -913,5 +913,31 @@ fn decode(bytes: &[u8]) -> Option<Vec<Entry>> {
     Some(out)
 }
 
+/// Outcome of [`relocate_identities`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelocateReport {
+    /// `.emu-rust-games` registries rewritten.
+    pub registries: u32,
+    /// Registry entries whose source path changed.
+    pub entries: u32,
+    /// `.disks` manifests (`.emu-rust-disks`) rewritten.
+    pub manifests: u32,
+    /// Unreadable registries or manifests, left as they are, with a French reason.
+    pub skipped: Vec<(PathBuf, String)>,
+}
+
+/// Rewrites the source paths `from -> to` in every `<saves_dir>/<core_id>/.emu-rust-games` and in the `.disks`
+/// manifests (under their lock, atomic) after a ROM tidying (ADR 0023 §4.5 step 5). Paths are compared through
+/// `registry_key` of their canonical form; a path under a moved folder follows it. `from` no longer exists when
+/// this runs: the caller passes paths built from an already canonical root. Unreadable registry: left as is
+/// (reported in `skipped`). Never renames, moves or deletes a save file. Idempotent.
+pub fn relocate_identities(
+    saves_dir: &Path,
+    moves: &[(PathBuf, PathBuf)],
+) -> Result<RelocateReport, RuntimeError> {
+    let _ = (saves_dir, moves);
+    todo!("FR1: registry and manifest rewrite")
+}
+
 #[cfg(test)]
 mod tests;

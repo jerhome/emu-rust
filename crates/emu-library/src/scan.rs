@@ -79,6 +79,9 @@ pub struct ScanReport {
     pub hidden_tracks: u64,
     /// Archives holding images of two different computers (`.dsk` and `.d64`): ignored (design v5.0 §3.4).
     pub ignored_mixed_archives: u64,
+    /// 7.1 (ADR 0023 §4.5): files moved since the last scan whose row was kept (same `id`, favourite, history,
+    /// covers) instead of being removed and added again.
+    pub moved: u64,
 }
 
 /// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).

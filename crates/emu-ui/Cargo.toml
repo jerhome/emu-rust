@@ -33,6 +33,9 @@ rfd = "0.18"
 # Opens the ROM folder in the system file manager (MIT OR Apache-2.0); the path is passed as an argument (on Linux without xdg-open installed, opener
 # runs its embedded script via `sh -c <script> xdg-open <path>`, path positional: no injection).
 opener = { version = "0.9", default-features = false }
+# 7.1 (ADR 0023 §2, §3): window icon decoded from packaging/icon/png/, and the log capture layer (`log.rs`).
+png = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

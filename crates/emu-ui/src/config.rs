@@ -1,6 +1,6 @@
 //! `config.toml` and data directories (ADR 0011). Credentials (ScreenScraper, IGDB) are `Secret`s: file kept 0600, never logged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -46,6 +46,10 @@ pub struct DataDirs {
     pub cores: PathBuf,
     /// Per-game options `game-options/<core_id>/<game>.toml` (ADR 0015 §8).
     pub game_options: PathBuf,
+    /// `<data>/logs`: `emu-rust.log` and `emu-rust.log.1` (ADR 0023 §3). Created when the log file is attached.
+    pub logs: PathBuf,
+    /// `<data>/rangement`: tidy journals and the OS lock file (ADR 0023 §4.5). Created by the first tidy run.
+    pub tidy_journals: PathBuf,
 }
 
 impl DataDirs {
@@ -66,6 +70,8 @@ impl DataDirs {
                 std::env::consts::ARCH
             )),
             game_options: root.join("game-options"),
+            logs: root.join("logs"),
+            tidy_journals: root.join("rangement"),
         }
     }
 
@@ -283,6 +289,9 @@ pub struct Config {
     pub computer: ComputerConfig,
     /// `core_id` → option key → value.
     pub core_options: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[interface]` (7.1, ADR 0023 §3, §5). Absent from 7.0 files and not written while default.
+    #[serde(skip_serializing_if = "InterfaceConfig::is_default")]
+    pub interface: InterfaceConfig,
     /// Unknown top-level keys and tables, written back unchanged.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -290,6 +299,25 @@ pub struct Config {
     /// until `unlock` (explicit user action in the UI).
     #[serde(skip)]
     locked: bool,
+}
+
+/// `[interface]` section (7.1).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterfaceConfig {
+    /// Windows: `emu-rust.exe` relaunches `emu-rust-cli.exe` to get a console (read at start-up: effect after a
+    /// restart). Ignored elsewhere.
+    pub console: bool,
+    /// `"<core_id>/<file>"` of the original-file notices already shown (once per core and file, ADR 0023 §5).
+    pub firmware_hints_seen: BTreeSet<String>,
+    #[serde(flatten)]
+    pub extra: toml::Table,
+}
+
+impl InterfaceConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `message (ligne L, colonne C)` from a TOML error, without the source excerpt its `Display` includes.

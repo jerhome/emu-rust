@@ -19,6 +19,8 @@ mod hotkeys;
 mod keyboard;
 mod launch_firmware;
 mod library;
+/// Log capture for the « Journal » panel and `logs/emu-rust.log` (ADR 0023 §3).
+pub mod log;
 mod pad_mode;
 mod platform;
 mod shutdown;
@@ -31,8 +33,8 @@ pub use crate::bios_import::{
     identify_bios, import_bios, import_error, known_import_items, unverified_item,
 };
 pub use crate::config::{
-    AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
-    MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
+    AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig,
+    InterfaceConfig, MAX_SCALE, MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
 pub use crate::config_computer::{
     ComputerConfig, KeyboardModeChoice, KeyboardModeSetting, emutos_variant_or_system,
@@ -68,6 +70,22 @@ pub use crate::ui::text::sanitize_core_line;
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.
 pub use emu_library as library_db;
+/// Native error box before any window exists (Windows without a console; elsewhere a no-op). ADR 0023 §3.
+pub use emu_runtime::fatal_dialog;
+
+/// Version shown by the footer and `--version` (workspace version).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Credit line of the footer (ADR 0023 §1): `emu-rust <VERSION> — <CREDIT>`.
+pub const CREDIT: &str = "dev by claude@jerhome";
+
+/// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
+/// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
+/// `Library::pending_tidy_identities`. Called when the library opens and before a direct launch (`run`); errors
+/// are logged, never fatal.
+pub fn finish_pending_identities(dirs: &DataDirs) {
+    let _ = dirs;
+    todo!("FU2b: replay of the identity step")
+}
 
 /// Screen to open for a deterministic capture (`--screen`); rendered by the egui layer (task U2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -28,5 +28,10 @@ tracing = { workspace = true }
 winit = { workspace = true }
 zip = { workspace = true }
 
+# 7.1 (ADR 0023 §3): `MessageBoxW` of `dialog::fatal_dialog`, the only Windows call. 0.61.2 is the version already
+# in Cargo.lock (no other one may be added). MIT OR Apache-2.0.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [lints]
 workspace = true

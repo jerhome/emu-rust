@@ -361,6 +361,44 @@ fn md5_file(path: &Path) -> io::Result<[u8; 16]> {
     Ok(hasher.finalize().into())
 }
 
+/// Kind of a [`FirmwareEnhancement`] (ADR 0023 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnhancementKind {
+    /// File of a `required_firmware` table that declares a `fallback`: the core runs a built-in replacement
+    /// meanwhile (PlayStation HLE / OpenBIOS, 3DO, Amiga AROS).
+    Fallback,
+    /// `optional_firmware` entry of `data/cores.toml` listed by the installed `.info`.
+    Optional,
+}
+
+/// An original file, provided by the user, that improves a core for a system. Never downloaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirmwareEnhancement {
+    /// Relative to the system directory.
+    pub file: String,
+    /// Key of the `required_firmware` table (`"europe"`, `"A500"`…); `None` for `Optional`.
+    pub variant: Option<String>,
+    pub kind: EnhancementKind,
+    /// French, shown as is. `Fallback`: « BIOS d'origine : meilleure compatibilité que le remplaçant du core ».
+    pub benefit: String,
+    /// `Ok` / `Missing` / `WrongHash` / `Unverified` (md5 from `firmware.toml`, else the `.info`).
+    pub state: FirmwareState,
+}
+
+/// Original files that improve `core` for `system`: every file of a `required_firmware` table that declares a
+/// `fallback`, then the `optional_firmware` entries that the installed `.info` lists. Nothing is downloaded.
+pub fn firmware_enhancements(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    system: &str,
+    info: Option<&CoreInfo>,
+    system_dir: &Path,
+    known: &KnownFirmware,
+) -> Result<Vec<FirmwareEnhancement>, FirmwareError> {
+    let _ = (prefs, core, system, info, system_dir, known);
+    todo!("FA1: ADR 0023 §5")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,5 +789,26 @@ mod tests {
             Some(Ok(FirmwareCheck::builtin("ROM Amstrad")))
         );
         assert_eq!(FirmwareCheck::builtin("x").wanted, None);
+    }
+
+    #[test]
+    #[ignore = "FA1: firmware_enhancements is a todo!() until then"]
+    fn playstation_fallback_files_are_enhancements() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = CorePreferences::builtin();
+        let core = CoreId::new("pcsx_rearmed").unwrap();
+        let found = firmware_enhancements(
+            &prefs,
+            &core,
+            "Sony - PlayStation",
+            None,
+            dir.path(),
+            &KnownFirmware::builtin(),
+        )
+        .unwrap();
+        assert!(!found.is_empty());
+        assert!(found.iter().all(|e| e.kind == EnhancementKind::Fallback
+            && e.state == FirmwareState::Missing
+            && e.variant.is_some()));
     }
 }

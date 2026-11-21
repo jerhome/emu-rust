@@ -4,10 +4,23 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 publish = false
+# `cargo run -p emu-app` keeps launching the application (two binaries with `cli-bin`).
+default-run = "emu-rust"
 
+# 7.1 (ADR 0023 §3): the program is the library (`emu_app::run`); the binaries are three lines each.
+[lib]
+path = "src/lib.rs"
+
+# Windows: graphical subsystem (no terminal on double-click). Elsewhere: the only binary, console as before.
 [[bin]]
 name = "emu-rust"
 path = "src/main.rs"
+
+# Windows command line (console subsystem): same program, built only with `cli-bin` (Windows packages).
+[[bin]]
+name = "emu-rust-cli"
+path = "src/bin/emu-rust-cli.rs"
+required-features = ["cli-bin"]
 
 [features]
 default = ["audio-cpal", "gamepad"]
@@ -15,6 +28,8 @@ audio-cpal = ["emu-ui/audio-cpal"]
 # Real pads through gilrs (ADR 0016). Linux builds need libudev-dev (runtime: libudev1);
 # `--no-default-features --features audio-cpal` builds without it.
 gamepad = ["emu-ui/gamepad"]
+# Builds `emu-rust-cli` (Windows packages and CI; ADR 0023 §3).
+cli-bin = []
 
 [dependencies]
 # SIGINT / SIGTERM / SIGHUP (and console events on Windows) end the game cleanly: saves written.
@@ -23,6 +38,11 @@ directories = { workspace = true }
 emu-ui = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Icon and version resource of the Windows executables (build.rs). Host cfg: a cross-compilation from Linux
+# builds without the resource. MIT.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

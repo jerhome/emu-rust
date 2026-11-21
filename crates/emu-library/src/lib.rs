@@ -12,6 +12,7 @@ mod hash;
 mod media;
 mod scan;
 mod systems;
+mod tidy;
 
 pub use crate::dat::{Dat, DatEntry, MAX_DAT_SIZE, load_dat_file, parse_clrmamepro};
 pub use crate::db::{
@@ -30,4 +31,8 @@ pub use crate::scan::{MAX_UNCLASSIFIED_PATHS, ScanOptions, ScanProgress, ScanRep
 pub use crate::systems::{
     DatSource, HeaderRule, InputDefault, SystemInfo, SystemKind, system, systems,
     systems_for_extension,
+};
+pub use crate::tidy::{
+    AbsoluteMoves, TidyBlock, TidyJournalInfo, TidyMove, TidyOptions, TidyPlan, TidyProgress,
+    TidyReason, TidyReport, TidyStatus, TidyUnit, create_system_folders, last_tidy,
 };

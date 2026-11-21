@@ -12,8 +12,9 @@ mod select;
 
 pub use archive::{ArchiveError, ExtractLimits, extract_core, read_info_bundle};
 pub use firmware::{
-    FirmwareCheck, FirmwareError, FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE,
-    check_core_firmware, check_firmware, check_required,
+    EnhancementKind, FirmwareCheck, FirmwareEnhancement, FirmwareError, FirmwareState,
+    FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE, check_core_firmware, check_firmware,
+    check_required, firmware_enhancements,
 };
 pub use id::CoreId;
 pub use index::{BuildDate, MAX_INDEX_ENTRIES, RemoteCore, parse_index_extended};
@@ -27,6 +28,6 @@ pub use manager::{
 pub use platform::Platform;
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
-    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, PadDevices, RequiredFirmware,
-    SaveScopePref, choose_core,
+    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, OptionalFirmware, PadDevices,
+    RequiredFirmware, SaveScopePref, choose_core,
 };

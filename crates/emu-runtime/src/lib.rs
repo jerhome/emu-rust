@@ -8,6 +8,7 @@ mod audio_out;
 mod audio_reopen;
 mod audio_ring;
 mod content;
+mod dialog;
 mod diskorder;
 mod emulator;
 mod error;
@@ -40,11 +41,13 @@ pub use crate::audio_ring::{
     AudioConfig, AudioError, AudioStats, OutputSample, RingReader, RingSink, audio_ring,
 };
 pub use crate::content::archive_entry_names;
+pub use crate::dialog::fatal_dialog;
 pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SIZE};
 pub use crate::error::RuntimeError;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
 pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest, SaveScope};
+pub use crate::identity::{RelocateReport, relocate_identities};
 pub use crate::identity::{identity_request_for, resolve_game_identity};
 pub use crate::input::{
     AnalogStick, InputBackend, InputFrame, KeyboardState, MAX_PORTS, MouseButton, MouseState,

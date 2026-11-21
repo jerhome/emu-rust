@@ -24,4 +24,13 @@ pub enum LibraryError {
     UnknownSystem(String),
     #[error("opération annulée")]
     Cancelled,
+    /// 7.1 tidying: the OS lock of `<data>/rangement/lock` is held by another emu-rust.
+    #[error("un rangement des ROMs est déjà en cours dans une autre fenêtre d'emu-rust")]
+    TidyBusy,
+    /// The journal was written for another ROM root: never replayed, nothing touched.
+    #[error("{journal} : journal de rangement d'un autre dossier des ROMs, ignoré")]
+    TidyRootMismatch { journal: PathBuf },
+    /// Unreadable, malformed or too large tidy journal (French message, never its raw content).
+    #[error("{path} : journal de rangement illisible : {message}")]
+    Journal { path: PathBuf, message: String },
 }

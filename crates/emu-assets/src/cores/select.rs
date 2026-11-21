@@ -73,6 +73,9 @@ struct CoreEntry {
     pad_devices: Option<PadDevicesEntry>,
     #[serde(default)]
     save_family: Option<String>,
+    // 7.1 key (ADR 0023 §5).
+    #[serde(default)]
+    optional_firmware: BTreeMap<String, Vec<OptionalFirmware>>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +149,7 @@ struct CoreProps {
     actions: CoreActions,
     pad_devices: Option<PadDevices>,
     save_family: Option<String>,
+    optional_firmware: BTreeMap<String, Vec<OptionalFirmware>>,
 }
 
 /// Identifier of each pad mode of a core (`RETRO_DEVICE_*` as declared through `SET_CONTROLLER_INFO`), from
@@ -265,6 +269,16 @@ impl CorePreferences {
     /// input of [`super::check_required`]. `None`: no table (use `builtin_firmware`, else the 1.0 `.info` check).
     pub fn required_firmware(&self, core: &CoreId, system: &str) -> Option<&RequiredFirmware> {
         self.cores.get(core)?.required_firmware.get(system)
+    }
+
+    /// `[cores.<core>.optional_firmware]."<system>"` of `data/cores.toml` (7.1, ADR 0023 §5): original files the
+    /// user may provide to improve the core. Never downloaded; inert when the installed `.info` does not list the
+    /// file (see [`super::firmware_enhancements`]). Empty when absent.
+    pub fn optional_firmware(&self, core: &CoreId, system: &str) -> &[OptionalFirmware] {
+        self.cores
+            .get(core)
+            .and_then(|p| p.optional_firmware.get(system))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// `builtin_firmware` of `data/cores.toml`: ROMs compiled into the core (AROS in puae; cap32, VICE in 5.0).
@@ -559,6 +573,16 @@ pub struct RequiredFirmware {
     pub fallback: Option<FirmwareFallback>,
 }
 
+/// One entry of `optional_firmware."<system>"` (7.1): `{ file, benefit }`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionalFirmware {
+    /// Relative to the system directory (`is_safe_relative_path`, checked when the file is parsed).
+    pub file: String,
+    /// French, shown as is (« musique Roland MT-32 »).
+    pub benefit: String,
+}
+
 /// ROMs compiled into a core: nothing to provide, nothing downloaded. `notice` is the attribution shown in
 /// the Cores screen and the release README (design v3.0 §3.5.7); never part of `THIRD-PARTY-DATA.txt`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -689,6 +713,18 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
     {
         return Err(format!("save_family invalide pour {core} : {family}"));
     }
+    if let Some(file) = entry
+        .optional_firmware
+        .values()
+        .flatten()
+        .find(|f| !is_safe_relative_path(&f.file))
+    {
+        return Err(format!(
+            "optional_firmware invalide pour {core} : {}",
+            file.file
+        ));
+    }
+    let optional_firmware = entry.optional_firmware;
     Ok(CoreProps {
         media: entry.media.unwrap_or_default(),
         media_direct,
@@ -711,6 +747,7 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         actions,
         pad_devices,
         save_family: entry.save_family,
+        optional_firmware,
     })
 }
 

@@ -824,3 +824,18 @@ fn game_scope_survives_an_unusable_registry() {
     req.scope = SaveScope::Game;
     assert_eq!(req.fallback_identity().core_save_dir, saves.join("Jeu"));
 }
+
+#[test]
+#[ignore = "FR1: relocate_identities is a todo!() until then"]
+fn relocate_identities_without_registry_changes_nothing() {
+    let fx = Fx::new();
+    let moves = [(
+        fx.tmp.path().join("roms/a.sfc"),
+        fx.tmp.path().join("roms/snes/a.sfc"),
+    )];
+    let saves = fx.tmp.path().join("saves");
+    for _ in 0..2 {
+        let report = relocate_identities(&saves, &moves).unwrap();
+        assert_eq!(report, RelocateReport::default());
+    }
+}

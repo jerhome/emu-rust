@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- emu-rust icon, variant B « Croix et boutons » : directional cross and two round buttons, no brand shape. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="#285aa0"/>
+  <!-- directional cross -->
+  <path d="M148 172 h64 a12 12 0 0 1 12 12 v52 h52 a12 12 0 0 1 12 12 v64 a12 12 0 0 1 -12 12 h-52 v52 a12 12 0 0 1 -12 12 h-64 a12 12 0 0 1 -12 -12 v-52 h-52 a12 12 0 0 1 -12 -12 v-64 a12 12 0 0 1 12 -12 h52 v-52 a12 12 0 0 1 12 -12 z" fill="#f2f6fb"/>
+  <!-- buttons -->
+  <circle cx="346" cy="320" r="42" fill="#ffbe50"/>
+  <circle cx="420" cy="226" r="42" fill="#96c8ff"/>
+</svg>
