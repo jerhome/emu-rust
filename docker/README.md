@@ -116,6 +116,30 @@ Depuis WSL, choisissez un chemin du système de fichiers WSL (`/home/...`), bien
 affiche alors ce chemin d'hôte. Notices : les licences des cores (GPL-2.0) et d'AROS sont celles des cores ; aucune
 ROM ni Kickstart n'est dans l'image.
 
+## Amstrad CPC et Commodore 64 (5.0, en développement)
+
+Cores `cap32` (CPC, GPL-2.0), `vice_x64` (C64, GPL-2.0, par défaut) et `vice_x64sc` (C64 précis, environ 5 fois plus
+lent), installés depuis l'écran Cores. Contenus dans `/data/roms/` (de préférence `cpc/` et `c64/`) : CPC `.dsk`, `.cdt`,
+`.voc`, `.sna`, `.cpr`, `.zip`, `.m3u` ; C64 `.d64`, `.d71`, `.d81`, `.g64`, `.nib`, `.t64`, `.tap`, `.prg`, `.p00`,
+`.crt`, `.zip`, `.m3u`. Les écritures se font sur des copies de travail (`/data/saves/<core>/`).
+
+**ROM système** : intégrées aux cores, jamais extraites ni copiées dans l'image ou le volume ; rien à fournir.
+- CPC : "Amstrad has kindly given its permission for its copyrighted material to be redistributed but Amstrad retains
+  its copyright." (partie (c) Locomotive Software, CP/M (c) Digital Research).
+- C64 : KERNAL, BASIC, CHARGEN, DOS 1541 (c) Commodore, fournis par VICE ; statut de licence incertain, usage personnel.
+
+JiffyDOS (commercial, facultatif, jamais fourni) : le copier dans le volume sous `/data/system/vice/`, ou utiliser
+« Importer un BIOS... » après l'avoir déposé dans un dossier visible du conteneur :
+
+```sh
+docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/bios:/in:ro" --entrypoint bash emu-wslg \
+  -c 'mkdir -p /data/system/vice && cp /in/JiffyDOS_*.bin /data/system/vice/'
+```
+
+Mode d'entrée par défaut : **Joystick** ; Ctrl droit + `J` bascule en mode Clavier (60 % AZERTY pris en charge ; clavier
+virtuel `K`). Cassettes : menu Cassette (Lecture, Arrêt, Rembobiner). Les DAT (clean-cpc-db MIT, TOSEC, No-Intro) sont
+téléchargés à la demande et gardent leur licence. Aucune ROM de jeu n'est dans l'image.
+
 ## Manette (2.1)
 
 Le clavier fonctionne toujours. Pour une manette PS4 :

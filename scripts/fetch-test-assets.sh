@@ -33,7 +33,7 @@ Idempotent: files already present and matching their hash are not downloaded aga
 
   --refresh-cores  re-download the cores and record its new SHA256 (TOFU)
   --with-4.0       also fetch the DOS test data and the dosbox_pure core (tests/roms/dos/)
-  --with-5.0       also fetch the Amstrad CPC and C64 test data and the cap32 / vice_x64 cores (tests/roms/cpc/, c64/)
+  --with-5.0       also fetch the Amstrad CPC and C64 test data and the cap32 / vice_x64 / vice_x64sc cores (tests/roms/cpc/, c64/)
   --with-6.0       also fetch the GBA and 32X test data and the picodrive core (tests/roms/gba/, 32x/)
   --with-all       all of the above
   --help           show this help
@@ -468,8 +468,8 @@ fetch_dos() {
 }
 
 # --- 5.0 Amstrad CPC and C64 (--with-5.0) -----------------------------------------------------------------------
-# Cores: cap32, vice_x64. Data: docs/design/donnees-test-4-7.md sections 5 and 6 (raw URLs pinned to a commit).
-CPC_C64_CORES=(cap32_libretro.so vice_x64_libretro.so)
+# Cores: cap32, vice_x64, vice_x64sc (accurate VIC-II, installable alternative). Data: docs/design/donnees-test-4-7.md sections 5 and 6 (raw URLs pinned to a commit).
+CPC_C64_CORES=(cap32_libretro.so vice_x64_libretro.so vice_x64sc_libretro.so)
 RPG_BASE='https://raw.githubusercontent.com/AmstradGameDevChallenge/rpg-adventure/e6b697b142bc4cf4c1c726b56308df3c9812a7be'
 fetch_cpc_c64() {
     fetch_file "$RPG_BASE/c/rpg/rpg.dsk" cpc/rpg.dsk 475870381873dcc570881b792df9ba0ffe2c58d404694769e10639f58505c813

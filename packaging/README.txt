@@ -46,6 +46,28 @@ Licences non embarquées dans le binaire : AROS (AROS Public License 1.1) est fo
 (GPL-2.0) ; les DAT d'identification (No-Intro, TOSEC, WHDLoad) sont téléchargés à la demande depuis leurs dépôts et
 gardent leur propre licence. Aucune ROM, aucun Kickstart ni Workbench n'est distribué avec emu-rust.
 
+0d. Amstrad CPC et Commodore 64 (5.0, en développement)
+-------------------------------------------------------
+Cores (écran Cores, téléchargés depuis le buildbot libretro, HTTPS, vérifiés) : cap32 (Amstrad CPC / GX4000, GPL-2.0) ;
+vice_x64 (C64, GPL-2.0, par défaut) et vice_x64sc (C64, plus précis mais environ 5 fois plus lent : à réserver aux démos
+et jeux à effets de raster ; installable depuis l'écran Cores).
+ROM système : intégrées aux cores, jamais extraites, copiées ni téléchargées par emu-rust ; aucun fichier à fournir
+pour démarrer (l'écran Cores indique « intégrées au core »).
+  CPC : "Amstrad has kindly given its permission for its copyrighted material to be redistributed but Amstrad retains
+  its copyright." (une partie du code est (c) Locomotive Software, CP/M (c) Digital Research ; ROM fournies par cap32).
+  C64 : KERNAL, BASIC, CHARGEN et DOS 1541 (c) Commodore Business Machines, fournis par le core VICE ; statut de licence
+  incertain (aucune permission connue), utilisées ici pour un usage personnel.
+JiffyDOS (commercial, facultatif) : jamais fourni. Si vous le possédez, importez-le (écran Cores, « Importer un
+BIOS... ») : l'application le reconnaît par son empreinte et l'installe dans system/vice/.
+Contenus : CPC .dsk .cdt .voc .sna .cpr .zip .m3u ; C64 .d64 .d71 .d81 .g64 .nib .t64 .tap .prg .p00 .crt .zip .m3u.
+Les écritures sur disquette se font sur des copies de travail (l'original reste intact). Cassettes : menu Cassette
+(Lecture, Arrêt, Rembobiner) ; le chargement est accéléré automatiquement quand le core le permet.
+Mode d'entrée par défaut : Joystick (CPC et C64) ; Ctrl droit + J bascule en mode Clavier. Touche hôte : Ctrl droit.
+Bases d'identification (non embarquées, téléchargées à la demande depuis libretro-database et gardant leur licence) :
+CPC = clean-cpc-db (MIT) puis TOSEC ; C64 = No-Intro. Aucune ROM, disquette ni cassette commerciale n'est distribuée.
+Programmes de test libres (outils de développement seulement) : rpg-adventure (CPC, MIT), uberswap et Kidelyneen
+(C64, licences du dépôt d'origine), Wild Snake Boa (C64, licence du dépôt d'origine).
+
 1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :
