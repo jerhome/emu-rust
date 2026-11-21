@@ -39,5 +39,6 @@
 | Windows | Metroid Fusion (GBA), mgba | ✅ **impeccable** : image, son, manette PS4 |
 | Windows | Zelda Link's Awakening DX (GBC), gambatte | ✅ **impeccable** : image, son, sauvegarde (reprise après relance) |
 | Windows | Final Fight (SNES), snes9x — non-régression | ✅ **impeccable** : son et manette PS4 |
+| Windows | Skate or Die (NES), mesen — non-régression, fichier à la racine de `roms/` | ✅ **impeccable** : son et manette PS4 |
 
 Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
