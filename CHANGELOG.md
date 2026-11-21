@@ -2,6 +2,18 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [6.0.0] - 2026-11-21
+
+Version stable de la 6.0 : contenu de la 6.0.0-rc.1, **validé par l'utilisateur sous Windows** sur les 15 plates-formes
+(Mega Drive, Super Nintendo, NES, Master System, Game Gear, Game Boy, Game Boy Color, Game Boy Advance, 32X, Mega CD,
+Atari ST, Amiga, PC-DOS, Amstrad CPC, Commodore 64 ; son, manette PS4, sauvegardes, changement de disquette).
+
+### Corrigé
+
+- Un jeu CPC en `.zip` passe par l'extraction : cap32 n'insérait aucune disquette depuis un zip (« disc missing »).
+- Un zip de disquettes d'ordinateur devient un jeu multi-disquettes, dans l'ordre logique (« Disk N / Side X »,
+  TOSEC « Disk N of M ») ; les disquettes extraites sont listées dans cet ordre.
+
 ## [6.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 6.0 : **Game Boy Advance**, **32X** et **Mega CD** complété. Guide d'essai :
