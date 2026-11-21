@@ -1,6 +1,6 @@
 # Guide d'essai — version 2.1 (Mega CD express, manette)
 
-Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v2.1.0-rc.1`).
+Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v2.1.0-rc.2`).
 
 Durée : 30 à 45 minutes. But : jouer à **Dune (Mega CD)** sur le Mac Intel avec vos BIOS, vérifier que la partie
 sauvegardée survit à toutes les façons de quitter, puis essayer la manette DS4. Notez pour chaque point « OK » ou
@@ -14,7 +14,7 @@ Journal : pour voir les messages, lancer l'application depuis le Terminal :
 
 ## 1. Mega CD — préparation
 
-1. Installer `v2.1.0-rc.1` (`.app`), l'ouvrir une fois, vérifier que le core **genesis_plus_gx** est installé
+1. Installer `v2.1.0-rc.2` (`.app`), l'ouvrir une fois, vérifier que le core **genesis_plus_gx** est installé
    (écran **Cores** ; c'est le même que pour la Mega Drive).
 2. Copier le BIOS dans `~/Library/Application Support/emu-rust/system/` (Finder : Aller → Aller au dossier…), sous
    le nom **exact** `bios_CD_E.bin` (disque européen), `bios_CD_U.bin` (USA) ou `bios_CD_J.bin` (Japon),
@@ -64,6 +64,13 @@ même nom dans deux dossiers ont maintenant des sauvegardes séparées (§4).
 7. Stick gauche : D-pad sans dérive ; ajuster la zone morte si la manette est usée.
 8. macOS : noter si le bouton PS ouvre autre chose, ou si une autorisation système est demandée.
 9. Si la DS4 n'est pas reconnue : noter USB ou Bluetooth, et si Steam ou un autre utilitaire tournait.
+10. **Réglages → Manette** : l'état de la manette (connectée ou non, nom) est affiché ; la zone morte et le seuil des
+    gâchettes se règlent et agissent tout de suite ; le raccourci (bouton PS) se change.
+11. Remappage par système : choisir un système, cliquer sur une action, **appuyer sur un bouton** de la manette ⇒
+    l'association change ; l'essayer en jeu ; le retour aux valeurs par défaut fonctionne. Un autre système n'est pas
+    touché. Les réglages sont toujours là après un redémarrage.
+12. **Bibliothèque à la manette** : croix ou stick pour se déplacer, Croix = valider, Rond = retour ; maintenir une
+    direction fait défiler en répétition (ni trop lent, ni trop rapide).
 
 ## 4. Jeux homonymes, disquettes ajoutées (identité de jeu)
 
@@ -82,4 +89,5 @@ c'est justement ce qu'on vérifie). Atari ST : core **hatari**.
 | 8 | Ajouter des disquettes jusqu'à la limite (32 au total) | message « Liste pleine : retirez d'abord une disquette ajoutée. » ; rien n'est oublié en silence |
 | 9 | « Nettoyer les copies… » (jeu lancé avec une rc.1 ou après des retraits) | liste des fichiers non utilisés (taille, date) ; **rien n'est coché** ; « Supprimer la sélection » demande confirmation et ne supprime que les lignes cochées ; « Reprendre » remet une copie dans la liste |
 | 10 | Tout au clavier, puis à la manette | Flèches / Tab, Entrée, Espace (cases), Échap revient d'un niveau |
-| 11 | Retour à la 2.0 (facultatif) | les jeux non homonymes retrouvent tout ; les fichiers `G (2).*` sont simplement ignorés |
+| 11 | Verrou en repli (facultatif, seulement si `saves/` est sur un partage réseau) | si le journal affiche « lock not available … concurrent launches are not protected », ne pas lancer deux instances en même temps ; rien n'est supprimé, au pire deux jeux reçoivent le même nom |
+| 12 | Retour à la 2.0 (facultatif) | les jeux non homonymes retrouvent tout ; les fichiers `G (2).*` sont simplement ignorés |
