@@ -347,3 +347,13 @@ fallback = { option = "opera_bios", value = "opera-boot-internal" }
 japan = "panafz10.bin"
 usa = "panafz10.bin"
 europe = "panafz10.bin"
+
+# 7.1 key (ADR 0023 §5): optional_firmware."<system>" = original files the user may provide to improve the core.
+# Never downloaded. Inert when the installed .info does not list the file (names checked against the
+# libretro-super .info: mgba firmware0 = gba_bios.bin; gambatte firmware0/1 = gb_bios.bin / gbc_bios.bin).
+[cores.mgba.optional_firmware]
+"Nintendo - Game Boy Advance" = [{ file = "gba_bios.bin", benefit = "écran de démarrage et comportement du BIOS d'origine" }]
+
+[cores.gambatte.optional_firmware]
+"Nintendo - Game Boy" = [{ file = "gb_bios.bin", benefit = "séquence de démarrage d'origine" }]
+"Nintendo - Game Boy Color" = [{ file = "gbc_bios.bin", benefit = "séquence de démarrage et palettes d'origine" }]

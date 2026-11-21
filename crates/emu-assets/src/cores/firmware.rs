@@ -395,9 +395,61 @@ pub fn firmware_enhancements(
     system_dir: &Path,
     known: &KnownFirmware,
 ) -> Result<Vec<FirmwareEnhancement>, FirmwareError> {
-    let _ = (prefs, core, system, info, system_dir, known);
-    todo!("FA1: ADR 0023 §5")
+    let mut found: Vec<FirmwareEnhancement> = Vec::new();
+    let info_md5 = |file: &str| {
+        info.and_then(|i| i.firmware.iter().find(|s| s.path == file))
+            .and_then(|s| s.md5)
+    };
+    let state_of = |file: &str| {
+        let spec = FirmwareSpec {
+            path: file.to_owned(),
+            description: file.to_owned(),
+            optional: true,
+            md5: info_md5(file),
+        };
+        check_one(system_dir, &spec, known, &[])
+    };
+    if let Some(req) = prefs.required_firmware(core, system)
+        && req.fallback.is_some()
+    {
+        if let Some(path) = req.files.values().find(|p| !is_safe_relative_path(p)) {
+            return Err(FirmwareError::UnsafePath(path.clone()));
+        }
+        // `files` is a BTreeMap: variants come sorted, so the variant kept for a shared file is stable.
+        for (variant, file) in &req.files {
+            if found.iter().any(|e| e.file == *file) {
+                continue;
+            }
+            found.push(FirmwareEnhancement {
+                file: file.clone(),
+                variant: Some(variant.clone()),
+                kind: EnhancementKind::Fallback,
+                benefit: FALLBACK_BENEFIT.to_owned(),
+                state: state_of(file),
+            });
+        }
+    }
+    // Inert unless the installed `.info` lists the file: an unconfirmed name is never proposed.
+    for opt in prefs.optional_firmware(core, system) {
+        if !is_safe_relative_path(&opt.file) {
+            return Err(FirmwareError::UnsafePath(opt.file.clone()));
+        }
+        let listed = info.is_some_and(|i| i.firmware.iter().any(|s| s.path == opt.file));
+        if !listed || found.iter().any(|e| e.file == opt.file) {
+            continue;
+        }
+        found.push(FirmwareEnhancement {
+            file: opt.file.clone(),
+            variant: None,
+            kind: EnhancementKind::Optional,
+            benefit: opt.benefit.clone(),
+            state: state_of(&opt.file),
+        });
+    }
+    Ok(found)
 }
+
+const FALLBACK_BENEFIT: &str = "BIOS d'origine : meilleure compatibilité que le remplaçant du core";
 
 #[cfg(test)]
 mod tests {
@@ -792,7 +844,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "FA1: firmware_enhancements is a todo!() until then"]
     fn playstation_fallback_files_are_enhancements() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = CorePreferences::builtin();
@@ -810,5 +861,131 @@ mod tests {
         assert!(found.iter().all(|e| e.kind == EnhancementKind::Fallback
             && e.state == FirmwareState::Missing
             && e.variant.is_some()));
+    }
+
+    const GBA: &str = "Nintendo - Game Boy Advance";
+
+    fn mgba_info(with_bios: bool) -> CoreInfo {
+        let firmware = if with_bios {
+            "firmware_count = 1\nfirmware0_path = \"gba_bios.bin\"\nfirmware0_opt = \"true\"\n"
+        } else {
+            ""
+        };
+        parse_info(CoreId::new("mgba").unwrap(), firmware).unwrap()
+    }
+
+    fn enhancements(
+        core: &str,
+        system: &str,
+        info: Option<&CoreInfo>,
+        dir: &Path,
+    ) -> Vec<FirmwareEnhancement> {
+        firmware_enhancements(
+            &CorePreferences::builtin(),
+            &CoreId::new(core).unwrap(),
+            system,
+            info,
+            dir,
+            &KnownFirmware::builtin(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn optional_requires_the_info_to_list_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(enhancements("mgba", GBA, None, dir.path()).is_empty());
+        assert!(enhancements("mgba", GBA, Some(&mgba_info(false)), dir.path()).is_empty());
+        let found = enhancements("mgba", GBA, Some(&mgba_info(true)), dir.path());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, "gba_bios.bin");
+        assert_eq!(found[0].kind, EnhancementKind::Optional);
+        assert_eq!(found[0].variant, None);
+        assert_eq!(found[0].state, FirmwareState::Missing);
+        // Another system of the same core: nothing declared.
+        assert!(
+            enhancements(
+                "mgba",
+                "Nintendo - Game Boy",
+                Some(&mgba_info(true)),
+                dir.path()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn optional_state_follows_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = mgba_info(true);
+        std::fs::write(dir.path().join("gba_bios.bin"), b"not a bios").unwrap();
+        // Known md5 for gba_bios.bin in firmware.toml: other content is a wrong hash.
+        let found = enhancements("mgba", GBA, Some(&info), dir.path());
+        assert!(matches!(found[0].state, FirmwareState::WrongHash { .. }));
+        // No reference at all: Unverified.
+        let p = CorePreferences::builtin_from_text_for_tests(
+            "[systems]\n[cores.x.optional_firmware]\n\"S\" = [{ file = \"zz.bin\", benefit = \"b\" }]\n",
+        );
+        let x = CoreId::new("x").unwrap();
+        let info = parse_info(
+            x.clone(),
+            "firmware_count = 1\nfirmware0_path = \"zz.bin\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("zz.bin"), b"data").unwrap();
+        let found = firmware_enhancements(
+            &p,
+            &x,
+            "S",
+            Some(&info),
+            dir.path(),
+            &KnownFirmware::default(),
+        )
+        .unwrap();
+        assert_eq!(found[0].state, FirmwareState::Unverified);
+    }
+
+    #[test]
+    fn fallback_tables_are_deduplicated_and_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let opera = enhancements("opera", "The 3DO Company - 3DO", None, dir.path());
+        assert_eq!(opera.len(), 1);
+        assert_eq!(opera[0].file, "panafz10.bin");
+        assert_eq!(opera[0].variant.as_deref(), Some("europe"));
+        assert_eq!(
+            opera,
+            enhancements("opera", "The 3DO Company - 3DO", None, dir.path())
+        );
+        let puae = enhancements("puae", "Commodore - Amiga", None, dir.path());
+        assert!(!puae.is_empty());
+        let mut files: Vec<_> = puae.iter().map(|e| &e.file).collect();
+        let n = files.len();
+        files.sort();
+        files.dedup();
+        assert_eq!(files.len(), n);
+        assert!(puae.iter().all(|e| e.kind == EnhancementKind::Fallback));
+    }
+
+    #[test]
+    fn required_without_fallback_is_not_an_enhancement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mcd = "Sega - Mega-CD - Sega CD";
+        assert!(enhancements("genesis_plus_gx", mcd, None, dir.path()).is_empty());
+    }
+
+    #[test]
+    fn shipped_optional_firmware_is_consistent() {
+        let prefs = CorePreferences::builtin();
+        let mut seen = 0;
+        for (system, cores) in prefs.systems() {
+            for core in cores {
+                for o in prefs.optional_firmware(core, system) {
+                    seen += 1;
+                    assert!(is_safe_relative_path(&o.file));
+                    assert!(!o.benefit.is_empty());
+                }
+            }
+        }
+        assert!(seen >= 3, "mgba and gambatte entries expected");
     }
 }
