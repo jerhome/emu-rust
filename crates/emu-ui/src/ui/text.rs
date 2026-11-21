@@ -419,6 +419,38 @@ pub fn joyport_switched(port: &str) -> String {
     format!("Joystick sur le port {port}")
 }
 
+/// Menu row of the pad mode (design v7.0 §2.4).
+pub fn pad_mode_row(dualshock: bool) -> String {
+    format!("Manette : {}", pad_mode_name(dualshock))
+}
+
+fn pad_mode_name(dualshock: bool) -> &'static str {
+    if dualshock {
+        "DualShock (analogique)"
+    } else {
+        "Numérique"
+    }
+}
+
+pub fn pad_mode_switched(dualshock: bool) -> String {
+    format!(
+        "Manette {} (retenu pour ce jeu)",
+        if dualshock {
+            "DualShock : sticks analogiques"
+        } else {
+            "numérique : le stick gauche fait la croix"
+        }
+    )
+}
+
+pub const PAD_MODE_REFUSED: &str =
+    "Le core refuse la manette DualShock : manette numérique conservée.";
+
+/// The memory card of this game was copied from another core of the same family (design v7.0 §2.3).
+pub fn memory_card_adopted(source: &str) -> String {
+    format!("Carte mémoire reprise de {}", sanitize_core_text(source))
+}
+
 pub const LAUNCH_COMMAND: &str = "Commande de démarrage…";
 pub const LAUNCH_PROGRAM: &str = "Programme à lancer…";
 pub const LAUNCH_COMMAND_HINT: &str = "Commande tapée au démarrage, par exemple RUN\"DISC (vide : démarrage \
@@ -559,14 +591,30 @@ pub fn browser_filter(extensions: &[String]) -> String {
 
 /// OSD shown when a game starts after the pre-launch firmware check (CLI launch, or library launch after its
 /// dialog); `None` when nothing is worth saying.
+/// The wanted file is an Amiga Kickstart (texts about AROS), not a console BIOS.
+pub fn is_kickstart(wanted: &str) -> bool {
+    wanted.to_ascii_lowercase().starts_with("kick")
+}
+
 pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> Option<String> {
     use crate::launch_firmware::FirmwareDecision as D;
     match d {
         D::Launch => None,
-        D::FallbackFirstTime { label, wanted } => Some(format!(
-            "{wanted} absent : {label}, compatibilité limitée. Importez votre BIOS depuis l'écran « Cores » \
-             (« Importer un BIOS… »)."
-        )),
+        D::FallbackFirstTime {
+            label,
+            wanted,
+            others,
+        } => Some(if is_kickstart(wanted) {
+            format!(
+                "{wanted} absent : {label}, compatibilité limitée. Importez votre BIOS depuis l'écran « Cores » \
+                 (« Importer un BIOS… »)."
+            )
+        } else {
+            format!(
+                "{} Importez votre BIOS depuis l'écran « Cores » (« Importer un BIOS… »).",
+                core_fallback_warning(label, wanted, others)
+            )
+        }),
         D::WrongHash { wanted, .. } => Some(format!(
             "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
         )),
@@ -575,6 +623,30 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
         )),
         D::Unreadable { wanted, error } => Some(format!("BIOS illisible ({wanted}) : {error}")),
     }
+}
+
+/// Warning of `CoreFallback` for a core that replaces the missing BIOS by its own (design v7.0 §3.5; shown once per
+/// game): the wanted file, and the other files of the table already present (`FirmwareCheck::others_present`,
+/// e.g. a BIOS of another region). `label` is the core's `builtin_firmware` label.
+pub fn core_fallback_warning(label: &str, wanted: &str, others_present: &[String]) -> String {
+    let mut text = String::from(
+        "BIOS absent : le core utilise son remplaçant intégré, certains jeux peuvent ne pas fonctionner",
+    );
+    let label = label.trim();
+    if !label.is_empty() {
+        text.push_str(&format!(" ({label})"));
+    }
+    text.push('.');
+    if !wanted.is_empty() {
+        text.push_str(&format!(" Fichier attendu : {wanted}."));
+    }
+    if !others_present.is_empty() {
+        text.push_str(&format!(
+            " Présent mais d'une autre région : {}.",
+            others_present.join(", ")
+        ));
+    }
+    text
 }
 
 /// `retro_load_game` refused, with the core's own explanation (design v6.0 §2.1).
@@ -948,5 +1020,44 @@ mod tests {
         assert_eq!(key_label(KeyCode::F2), "F2");
         assert_eq!(key_label(KeyCode::Numpad4), "4 (pavé num.)");
         assert_eq!(key_label(KeyCode::ArrowUp), "Flèche haut");
+    }
+
+    #[test]
+    fn core_fallback_warning_text() {
+        let t = core_fallback_warning("HLE", "scph5501.bin", &[]);
+        assert!(t.starts_with("BIOS absent : le core utilise son remplaçant intégré"));
+        assert!(t.contains("scph5501.bin") && t.contains("(HLE)") && !t.contains("région"));
+        let t = core_fallback_warning("", "scph5501.bin", &["scph5502.bin".into()]);
+        assert!(t.contains("scph5502.bin") && !t.contains("()"));
+    }
+
+    /// 7.0: the OSD of a console BIOS replaced by the core says so, with the import hint; the Kickstart keeps its
+    /// 3.0 text.
+    #[test]
+    fn fallback_notice_console_and_kickstart() {
+        use crate::launch_firmware::FirmwareDecision as D;
+        let ps = firmware_launch_notice(&D::FallbackFirstTime {
+            label: "BIOS HLE (intégré au core)".into(),
+            wanted: "scph5502.bin".into(),
+            others: vec!["scph5501.bin".into()],
+        })
+        .unwrap();
+        assert!(ps.starts_with("BIOS absent : le core utilise son remplaçant intégré"));
+        assert!(ps.contains("scph5502.bin") && ps.contains("scph5501.bin"));
+        assert!(ps.contains("Importer un BIOS"));
+        let kick = firmware_launch_notice(&D::FallbackFirstTime {
+            label: "AROS".into(),
+            wanted: "kick34005.A500".into(),
+            others: Vec::new(),
+        })
+        .unwrap();
+        assert!(kick.starts_with("kick34005.A500 absent : AROS"));
+        assert!(
+            pad_mode_row(true).contains("DualShock") && pad_mode_row(false).contains("Numérique")
+        );
+        assert_eq!(
+            memory_card_adopted("swanstation"),
+            "Carte mémoire reprise de swanstation"
+        );
     }
 }

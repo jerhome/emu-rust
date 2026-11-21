@@ -439,6 +439,9 @@ mod tests {
             // 6.0: GBA (mgba) and 32X (picodrive).
             "mgba",
             "picodrive",
+            // 7.0: PlayStation (pcsx_rearmed; swanstation and mednafen_psx are alternatives) and 3DO (opera).
+            "pcsx_rearmed",
+            "opera",
         ];
         for expected in expected {
             assert!(names.contains(&expected), "{names:?}");

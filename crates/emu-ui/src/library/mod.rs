@@ -1433,9 +1433,13 @@ impl LibraryUi {
         let escape = ctx.input(|i| i.key_pressed(Key::Escape));
         let focus = std::mem::take(&mut self.focus_dialog);
         let (title, body, wanted) = match decision {
-            FirmwareDecision::FallbackFirstTime { label, wanted } => (
+            FirmwareDecision::FallbackFirstTime {
+                label,
+                wanted,
+                others,
+            } => (
                 text::fallback_title(wanted),
-                text::fallback_body(&request.title, label, wanted),
+                text::fallback_body(&request.title, label, wanted, others),
                 wanted.clone(),
             ),
             FirmwareDecision::WrongHash { wanted, .. } => (

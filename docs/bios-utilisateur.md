@@ -81,12 +81,17 @@ des quatre noms `MT32_CONTROL.ROM`, `MT32_PCM.ROM`, `CM32L_CONTROL.ROM`, `CM32L_
 | Game Boy Advance | `gba_bios.bin` | Facultatif (le core mgba a un BIOS de remplacement intégré) ; logo de démarrage, compatibilité un peu meilleure |
 | 32X | — | Rien à fournir (BIOS intégrés au core picodrive) |
 
-## PlayStation et 3DO (7.0), pour mémoire
+## PlayStation et 3DO (7.0) — recommandés, jamais requis
 
 | Système | Fichier(s) | Intérêt |
 |---|---|---|
-| PlayStation | `scph5501.bin` (US), `scph5502.bin` (EU), `scph5500.bin` (JP) | Requis en pratique, par région (même contrôle que le Mega CD) |
-| 3DO | `panafz10.bin` | Requis |
+| PlayStation | `scph5502.bin` (Europe), `scph5501.bin` (USA), `scph5500.bin` (Japon) | **Recommandé**, par région : compatibilité maximale. Sans lui, les trois cores démarrent avec leur **BIOS de remplacement intégré** (HLE pour PCSX-ReARMed, OpenBIOS pour SwanStation et Beetle PSX) : la plupart des jeux tournent, certains non. Avertissement **une seule fois par jeu**, avec « Importer un BIOS… » ; jamais de refus |
+| 3DO | `panafz10.bin` (Panasonic FZ-10, toutes régions) | **Recommandé**. Sans lui, le core opera utilise **Opera Boot** (libre, GPL-2.0, intégré au core, très récent : compatibilité avec les jeux du commerce non établie). Même avertissement unique |
+
+Les fichiers sont reconnus par leur md5 à l'import (`firmware.toml`) ; un fichier inconnu s'importe « non vérifié »
+sous l'un des noms attendus. `emu-rust --check-bios pcsx_rearmed` (ou `opera`) affiche l'état par région, sans
+jamais signaler d'erreur pour un BIOS absent. Les autres fichiers acceptés par opera (`panafz1.bin`, `goldstar.bin`…)
+se choisissent dans l'option du core « BIOS » (`opera_bios`) une fois déposés.
 
 ## Plus tard (sans version fixée), pour mémoire
 
@@ -96,5 +101,6 @@ des quatre noms `MT32_CONTROL.ROM`, `MT32_PCM.ROM`, `CM32L_CONTROL.ROM`, `CM32L_
 
 ## Ordre d'intérêt (résumé)
 
-1. Kickstart 1.3 et 3.1 (Amiga) · 2. BIOS Mega CD de vos régions (2.1, requis) · 3. MT-32 (DOS) · 4. TOS 1.04 (ST) ·
-5. `capsimg` (ST/Amiga) · 6. BIOS GBC · 7. le reste, surtout cosmétique.
+1. Kickstart 1.3 et 3.1 (Amiga) · 2. BIOS Mega CD de vos régions (2.1, requis) · 3. BIOS PlayStation de vos régions
+(7.0, recommandé) · 4. MT-32 (DOS) · 5. TOS 1.04 (ST) · 6. `capsimg` (ST/Amiga) · 7. `panafz10.bin` (3DO) · 8. BIOS
+GBC · 9. le reste, surtout cosmétique.

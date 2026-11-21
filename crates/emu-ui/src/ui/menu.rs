@@ -135,6 +135,11 @@ pub(super) fn show(
                 actions.push(UiAction::ToggleJoyport);
             }
         }
+        if let Some(dualshock) = data.pad_dualshock
+            && button(ui, &text::pad_mode_row(dualshock), true, &mut false)
+        {
+            actions.push(UiAction::TogglePadMode);
+        }
         if data.computer.is_some() {
             if button(ui, text::VKBD, true, &mut false) {
                 actions.push(UiAction::ToggleVirtualKeyboard);

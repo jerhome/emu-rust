@@ -310,7 +310,16 @@ pub fn fallback_title(wanted: &str) -> String {
     }
 }
 
-pub fn fallback_body(game: &str, label: &str, wanted: &str) -> String {
+/// `others`: files of the same table present (a BIOS of another region, design v7.0 §2.1).
+pub fn fallback_body(game: &str, label: &str, wanted: &str, others: &[String]) -> String {
+    if !crate::ui::text::is_kickstart(wanted) {
+        let others: Vec<String> = others.iter().map(|o| clean(o)).collect();
+        return format!(
+            "« {} » : {}",
+            clean(game),
+            crate::ui::text::core_fallback_warning(&clean(label), &clean(wanted), &others)
+        );
+    }
     format!(
         "« {} » attend {wanted}, absent du dossier des BIOS. Le jeu démarrera avec {} : la compatibilité est \
          limitée (beaucoup de jeux demandent le Kickstart d'origine).",
@@ -515,6 +524,11 @@ pub const PAD_HOTKEY_MODE: &str = "PS";
 pub const PAD_HOTKEY_SELECT: &str = "Share / Select";
 pub const PAD_PAUSE_ON_DISCONNECT: &str = "Mettre le jeu en pause si la manette est débranchée";
 pub const PAD_REMAP_TITLE: &str = "Remappage des boutons";
+pub const PAD_PS_MODE: &str = "Manette PlayStation par défaut :";
+pub const PAD_PS_DIGITAL: &str = "Numérique";
+pub const PAD_PS_DUALSHOCK: &str = "DualShock (analogique)";
+pub const PAD_PS_MODE_NOTE: &str = "Numérique : le stick gauche fait la croix (jeux d'origine). DualShock : sticks \
+                                    analogiques, L3 / R3. Chaque jeu peut changer depuis son menu (« Manette »).";
 pub const PAD_REMAP_NOTE: &str = "Choisir un bouton du jeu, puis appuyer sur le bouton de la manette à lui associer \
                                   (Échap : annuler). Pris en compte au prochain lancement d'un jeu.";
 pub const PAD_REMAP_SYSTEM: &str = "Système :";

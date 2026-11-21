@@ -255,6 +255,8 @@ pub enum UiAction {
     ToggleJoyport,
     /// « Commande de démarrage… » / « Programme à lancer… »: `[media] launch` of this game (empty: removed).
     SetLaunch(String),
+    /// « Manette : Numérique / DualShock » (design v7.0 §2.4): applied at once, kept for this game.
+    TogglePadMode,
 }
 
 /// 8-bit computer entries of the menus (design v5.0 §4).
@@ -383,6 +385,8 @@ pub struct UiData<'a> {
     pub soundfont_hint: bool,
     /// CPC / C64 entries (empty for the other systems).
     pub eightbit: &'a EightBitView,
+    /// Core with pad modes (PlayStation, design v7.0 §2.4): `Some(true)` = DualShock, `Some(false)` = digital pad.
+    pub pad_dualshock: Option<bool>,
 }
 
 /// Overlay state that lives across frames.

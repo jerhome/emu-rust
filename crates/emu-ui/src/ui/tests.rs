@@ -195,6 +195,7 @@ struct Fixture {
     dos: bool,
     hosted: bool,
     eightbit: EightBitView,
+    pad_dualshock: Option<bool>,
 }
 
 impl Fixture {
@@ -223,6 +224,7 @@ impl Fixture {
             dos: false,
             hosted: false,
             eightbit: EightBitView::default(),
+            pad_dualshock: None,
         }
     }
 
@@ -268,6 +270,7 @@ impl Fixture {
             featured: None,
             soundfont_hint: false,
             eightbit: &self.eightbit,
+            pad_dualshock: self.pad_dualshock,
         };
         let mut actions = Vec::new();
         self.ctx
@@ -870,6 +873,26 @@ fn eight_bit_menu_rows_by_keyboard() {
     let mut keys = [Key::Tab; 9].to_vec();
     keys.push(Key::Enter);
     assert!(!f.keys(&mut o, 0, &keys).contains(&UiAction::ToggleJoyport));
+}
+
+/// Design v7.0 §2.4: « Manette : Numérique / DualShock » row of the menu, reached by keyboard; absent for a core
+/// without pad modes.
+#[test]
+fn pad_mode_row_by_keyboard() {
+    let reach = |f: &Fixture| {
+        (0..14).any(|tabs| {
+            let mut o = opened(Screen::Menu, f);
+            let mut keys = vec![Key::Tab; tabs];
+            keys.push(Key::Enter);
+            f.keys(&mut o, 0, &keys).contains(&UiAction::TogglePadMode)
+        })
+    };
+    let mut f = Fixture::new();
+    assert!(!reach(&f));
+    f.pad_dualshock = Some(false);
+    assert!(reach(&f));
+    f.pad_dualshock = Some(true);
+    assert!(reach(&f));
 }
 
 /// « Commande de démarrage… »: typed text, Enter saves it; an invalid text cannot be saved; the menu key cancels.

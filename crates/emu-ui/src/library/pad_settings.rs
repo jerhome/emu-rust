@@ -9,6 +9,7 @@ use super::{Level, LibraryUi, text, weak};
 use crate::config_gamepad::{GamepadConfig, HotkeyButton};
 use crate::gamepad::{PadButton, PadMap, set_binding};
 use crate::keyboard::PadStyle;
+use crate::pad_mode::PadMode;
 
 /// Systems of the remap page: label, core id (profile key base), pad style.
 const SYSTEMS: [(&str, &str, PadStyle); 6] = [
@@ -37,6 +38,37 @@ pub(super) struct PadUi {
     learning: Option<JoypadButton>,
     /// Slider / toggle edited: the host applies the new settings to the live backend.
     settings_changed: bool,
+}
+
+/// Cores whose `pad_devices` offer a DualShock mode (PlayStation), catalog order.
+pub(super) fn dualshock_cores(prefs: &emu_assets::cores::CorePreferences) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, cores) in prefs.systems() {
+        for core in cores {
+            let has = prefs
+                .pad_devices(core)
+                .is_some_and(|d| d.modes.contains_key(PadMode::DualShock.key()));
+            if has && !out.iter().any(|c| c == core.as_str()) {
+                out.push(core.as_str().to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Digital is the default: it is written as no entry at all (a 6.0 `config.toml` stays unchanged).
+pub(super) fn set_dualshock_default(
+    map: &mut std::collections::BTreeMap<String, String>,
+    cores: &[String],
+    dualshock: bool,
+) {
+    for core in cores {
+        if dualshock {
+            map.insert(core.clone(), PadMode::DualShock.key().to_owned());
+        } else {
+            map.remove(core);
+        }
+    }
 }
 
 /// Binds `physical` to `target` for the system. Other physical buttons (not the D-pad) that were bound to
@@ -162,7 +194,35 @@ impl LibraryUi {
             self.settings.dirty = true;
             self.pad.settings_changed = true;
         }
+        self.pad_mode_section(ui);
         self.remap_section(ui);
+    }
+
+    /// « Manette PlayStation » (design v7.0 §2.4): `[input.pad_device]` of every core that has a DualShock mode.
+    /// A game's own choice (menu in game) still wins.
+    fn pad_mode_section(&mut self, ui: &mut Ui) {
+        // `cores.toml` is embedded: parsed once, not on every frame of the page.
+        static CORES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let cores =
+            CORES.get_or_init(|| dualshock_cores(&emu_assets::cores::CorePreferences::builtin()));
+        if cores.is_empty() {
+            return;
+        }
+        let map = &mut self.config.input.pad_device;
+        let before = cores
+            .iter()
+            .all(|c| map.get(c).map(String::as_str) == Some(PadMode::DualShock.key()));
+        let mut dualshock = before;
+        ui.horizontal(|ui| {
+            ui.label(text::PAD_PS_MODE);
+            ui.selectable_value(&mut dualshock, false, text::PAD_PS_DIGITAL);
+            ui.selectable_value(&mut dualshock, true, text::PAD_PS_DUALSHOCK);
+        });
+        weak(ui, text::PAD_PS_MODE_NOTE);
+        if dualshock != before {
+            set_dualshock_default(map, cores, dualshock);
+            self.settings.dirty = true;
+        }
     }
 
     fn remap_section(&mut self, ui: &mut Ui) {
@@ -274,5 +334,19 @@ mod tests {
             }
         }
         assert!(remappable_targets(PadStyle::MegaDrive).contains(&JoypadButton::Start));
+    }
+
+    #[test]
+    fn dualshock_default_covers_the_three_playstation_cores() {
+        let prefs = emu_assets::cores::CorePreferences::builtin();
+        let cores = dualshock_cores(&prefs);
+        assert_eq!(cores, ["pcsx_rearmed", "swanstation", "mednafen_psx"]);
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("other".to_owned(), "x".to_owned());
+        set_dualshock_default(&mut map, &cores, true);
+        assert_eq!(map.len(), 4);
+        assert_eq!(map["swanstation"], "dualshock");
+        set_dualshock_default(&mut map, &cores, false);
+        assert_eq!(map.len(), 1, "digital is written as nothing");
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use emu_assets::cores::{CoreActions, CoreId};
+use emu_assets::cores::{CoreActions, CoreId, PadDevices};
 use emu_library::InputDefault;
 use emu_runtime::{
     AudioConfig, AudioOutput, ContentSpec, CoreOption, CoreOptionCategory, Emulator,
@@ -41,6 +41,7 @@ use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap}
 use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::launch_firmware::{GameFacts, firmware_setup_for};
+use crate::pad_mode::{PAD_PORTS, PadMode};
 use crate::shutdown;
 use crate::ui::{
     self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, EightBitView,
@@ -243,8 +244,12 @@ pub(crate) struct App {
     states_warned: bool,
     /// Core reading DOS game folders (dosbox_pure): boot program and reset entries of the menu.
     dos: bool,
-    /// The core reads the sticks (`cores.toml` `analog`, ADR 0016 amended).
+    /// The core reads the sticks (`cores.toml` `analog`, ADR 0016 amended; DualShock mode for `pad_devices`).
     analog: bool,
+    /// `cores.toml` `pad_devices` of the core (PlayStation): the menu offers « Manette : Numérique / DualShock ».
+    pad_devices: Option<PadDevices>,
+    /// Current pad mode on ports 0 and 1; `None` without `pad_devices`.
+    pad_mode: Option<PadMode>,
     featured: Option<Featured>,
     soundfont_hint: bool,
     /// System of CDs (`disc = true`): the disk menu and its messages say « CD ».
@@ -480,6 +485,33 @@ impl App {
         let core_variables_for_legend = core_variables.clone();
         let identity_banners =
             identity_banners(&identity, &core_id, options_inherited, resolution_failed);
+        // Memory card of another core of the family (design v7.0 §2.3), before the core reads its `.srm`.
+        let adopted_card = match (&typed_id, no_game) {
+            (Some(id), false) => crate::content::adopt_memory_card(
+                &prefs,
+                id,
+                &options.dirs.saves,
+                &identity.save_name,
+            ),
+            _ => None,
+        };
+        let pad_devices = typed_id.as_ref().and_then(|id| prefs.pad_devices(id));
+        let launch_pad = crate::pad_mode::launch_pad_mode(
+            pad_devices.as_ref(),
+            options.pad_device.as_deref(),
+            game_options.options.input.pad_device.as_deref(),
+            options
+                .config
+                .input
+                .pad_device
+                .get(&core_id)
+                .map(String::as_str),
+        );
+        if options.pad_device.is_some() && launch_pad.is_none() {
+            tracing::warn!(
+                "--pad-device sans effet : {core_id} ne déclare pas de types de manette"
+            );
+        }
         let mut emulator = Emulator::load_content_as(
             &options.core,
             spec,
@@ -502,13 +534,28 @@ impl App {
                 variable_state_size: typed_id
                     .as_ref()
                     .is_some_and(|id| prefs.variable_state_size(id)),
-                // PU2: pad mode of the game (design v7.0 §3.5); empty = JOYPAD on every port, as in 6.0.
-                port_devices: Vec::new(),
+                // Pad mode of the game (design v7.0 §2.4); empty = JOYPAD on every port, as in 6.0.
+                port_devices: launch_pad
+                    .map(|(_, id)| crate::pad_mode::port_devices(id))
+                    .unwrap_or_default(),
             },
         )?;
         let dos_core = typed_id
             .as_ref()
             .is_some_and(|id| prefs.folder_policy(id).is_some());
+        // A DualShock id the core did not accept (`port_devices` refused, JOYPAD kept): back to the digital pad.
+        let mut pad_refused = false;
+        let pad_mode = launch_pad.map(|(mode, id)| {
+            if mode == PadMode::DualShock
+                && !emulator.controller_types(0).iter().any(|t| t.id == id)
+            {
+                tracing::warn!("{core_id} : manette DualShock ({id}) refusée, manette numérique");
+                pad_refused = true;
+                PadMode::Digital
+            } else {
+                mode
+            }
+        });
         let table_system = typed_id.as_ref().and_then(|id| {
             crate::launch_firmware::firmware_system_for(&prefs, id, game_database.as_deref())
         });
@@ -651,6 +698,22 @@ impl App {
                 .osd
                 .push(notice, OsdLevel::Warn, Duration::from_secs(12), now);
         }
+        if let Some(source) = adopted_card {
+            overlay.osd.push(
+                text::memory_card_adopted(&source),
+                OsdLevel::Info,
+                Duration::from_secs(8),
+                now,
+            );
+        }
+        if pad_refused {
+            overlay.osd.push(
+                text::PAD_MODE_REFUSED.to_owned(),
+                OsdLevel::Warn,
+                Duration::from_secs(8),
+                now,
+            );
+        }
         for banner in identity_banners {
             overlay
                 .osd
@@ -741,7 +804,13 @@ impl App {
             core_files,
             states_warned: false,
             dos: dos_core,
-            analog: typed_id.as_ref().is_some_and(|id| prefs.analog(id)),
+            // A core with `pad_devices` reads the sticks in DualShock mode only (design v7.0 §3.5).
+            analog: match pad_mode {
+                Some(mode) => mode == PadMode::DualShock,
+                None => typed_id.as_ref().is_some_and(|id| prefs.analog(id)),
+            },
+            pad_devices,
+            pad_mode,
             featured,
             soundfont_hint,
             disc,
@@ -1155,6 +1224,40 @@ impl App {
         self.overlay
             .osd
             .info(text::joyport_switched(next), Instant::now());
+    }
+
+    /// « Manette : Numérique / DualShock » (design v7.0 §2.4): applied at once to ports 0 and 1, kept for this game.
+    /// A device the core refuses changes nothing (OSD).
+    fn toggle_pad_mode(&mut self) {
+        let (Some(devices), Some(current)) = (&self.pad_devices, self.pad_mode) else {
+            return;
+        };
+        let next = current.toggled();
+        let now = Instant::now();
+        let Some(&id) = devices.modes.get(next.key()) else {
+            self.overlay.osd.error(text::PAD_MODE_REFUSED, now);
+            return;
+        };
+        for port in PAD_PORTS {
+            if let Err(e) = self.emulator.set_port_device(port, id) {
+                tracing::warn!("port {port} : périphérique {id} refusé : {e}");
+                if port == PAD_PORTS[0] {
+                    self.overlay.osd.error(text::PAD_MODE_REFUSED, now);
+                    return;
+                }
+            }
+        }
+        self.pad_mode = Some(next);
+        self.analog = next == PadMode::DualShock;
+        if let Some(pad) = &mut self.gamepad {
+            pad.set_analog(self.analog);
+        }
+        self.game_options.options.input.pad_device = Some(next.key().to_owned());
+        self.game_options_dirty = true;
+        self.save_game_options();
+        self.overlay
+            .osd
+            .info(text::pad_mode_switched(self.analog), now);
     }
 
     /// « Commande de démarrage… » / « Programme à lancer… »: `[media] launch` of this game, used from the next
@@ -1724,6 +1827,7 @@ impl App {
                     self.close_overlay();
                 }
                 UiAction::ToggleJoyport => self.toggle_joyport(),
+                UiAction::TogglePadMode => self.toggle_pad_mode(),
                 UiAction::SetLaunch(launch) => self.set_launch(launch),
                 UiAction::UnlockConfig => {
                     self.options.config.unlock();
@@ -1872,11 +1976,16 @@ impl App {
             if event_loop.exiting() || self.ended {
                 return;
             }
-            let computer_only = matches!(
-                action,
-                HotkeyAction::ToggleVirtualKeyboard | HotkeyAction::NextDisk
-            );
-            if computer_only && self.computer.is_none() {
+            // PS + L3: next disk on computers and on CD systems (design v7.0 §3.5; the 3DO core has no disk
+            // interface: nothing to change).
+            let allowed = match action {
+                HotkeyAction::ToggleVirtualKeyboard => self.computer.is_some(),
+                HotkeyAction::NextDisk => {
+                    self.computer.is_some() || (self.disc && self.emulator.disks().is_some())
+                }
+                _ => true,
+            };
+            if !allowed {
                 continue;
             }
             if self.overlay.is_open() {
@@ -2067,6 +2176,7 @@ impl App {
                 featured: self.featured.as_ref(),
                 soundfont_hint: self.soundfont_hint,
                 eightbit: &self.eightbit,
+                pad_dualshock: self.pad_mode.map(|m| m == PadMode::DualShock),
             };
             self.overlay.vkbd_open = vkbd_open;
             let overlay = &mut self.overlay;

@@ -699,11 +699,13 @@ impl CoresUi {
 
     /// 3.0 check of a row: fallback in blue (never red), problems in orange, with the import button.
     /// `notice`: licence notice of ROMs built into the core (`builtin_firmware`), shown under a `Builtin` state.
+    /// `files`: every file of a region table (PlayStation: one BIOS per region), empty otherwise.
     fn required_line(
         &mut self,
         ui: &mut Ui,
         check: &emu_assets::cores::FirmwareCheck,
         notice: Option<&str>,
+        files: &[String],
     ) {
         let wanted = check.wanted.as_deref().unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
@@ -725,7 +727,13 @@ impl CoresUi {
                 FirmwareState::CoreFallback { label } => {
                     ui.colored_label(
                         INFO,
-                        RichText::new(text::core_fallback(label, wanted)).small(),
+                        RichText::new(text::core_fallback_files(
+                            label,
+                            wanted,
+                            files,
+                            &check.others_present,
+                        ))
+                        .small(),
                     );
                     true
                 }
@@ -802,6 +810,9 @@ impl CoresUi {
                                     |i| sanitize_core_text(&i.display_name),
                                 );
                             let mut label = display;
+                            if let Some(hint) = text::core_choice_hint(core.as_str()) {
+                                label.push_str(&format!(" ({hint})"));
+                            }
                             let on = self.prefs.recommended_on(&core);
                             if let Some(r) = text::recommended_on(&on) {
                                 label.push_str(&format!(" ({r})"));
@@ -822,6 +833,17 @@ impl CoresUi {
                             }
                         }
                     });
+                    // The chosen core is not installed: install it from here (7.0: one click for SwanStation or
+                    // Beetle PSX), its row below offers the same.
+                    if let Some(core) = current.filter(|c| !installed.contains(c))
+                        && !self.installs.contains_key(&core)
+                        && ui
+                            .small_button(text::install_chosen(core.as_str()))
+                            .clicked()
+                    {
+                        let ctx = ui.ctx().clone();
+                        self.request_install(core, &ctx);
+                    }
                 }
             });
         event
@@ -905,7 +927,8 @@ impl CoresUi {
             }
             if let Some(check) = &row.required {
                 let notice = self.prefs.builtin_firmware(&row.id).map(|b| b.notice);
-                self.required_line(ui, check, notice.as_deref());
+                let files = region_files(&self.prefs, &row.id);
+                self.required_line(ui, check, notice.as_deref(), &files);
             }
             if let Some(e) = self.errors.get(&row.id) {
                 ui.colored_label(ERROR, e);
@@ -1103,6 +1126,34 @@ impl CoresUi {
         ));
         ui.label(RichText::new(text::DETAIL_FIRMWARE_NOTE).small().weak());
     }
+}
+
+/// Distinct files of the core's region table (Europe, USA, Japan order), when there are several (PlayStation);
+/// empty for a table with one file (3DO) or keyed by model (Amiga).
+pub(crate) fn region_files(prefs: &CorePreferences, core: &CoreId) -> Vec<String> {
+    let Some(system) = crate::launch_firmware::firmware_system_for(prefs, core, None) else {
+        return Vec::new();
+    };
+    let Some(req) = prefs.required_firmware(core, &system) else {
+        return Vec::new();
+    };
+    if req.variant != emu_assets::cores::FirmwareVariant::Region {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for key in ["europe", "usa", "japan"] {
+        if let Some(f) = req.files.get(key)
+            && !out.contains(f)
+        {
+            out.push(f.clone());
+        }
+    }
+    for f in req.files.values() {
+        if !out.contains(f) {
+            out.push(f.clone());
+        }
+    }
+    if out.len() > 1 { out } else { Vec::new() }
 }
 
 #[cfg(test)]

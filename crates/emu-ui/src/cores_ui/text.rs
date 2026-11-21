@@ -125,6 +125,30 @@ pub fn core_fallback(label: &str, wanted: &str) -> String {
     format!("{short} intégré — {kind} recommandé ({wanted})")
 }
 
+/// [`core_fallback`] for a region table (`files`: one BIOS per region, PlayStation) and the files of the table
+/// already present (`others`, another region's BIOS: the core may use it).
+pub fn core_fallback_files(
+    label: &str,
+    wanted: &str,
+    files: &[String],
+    others: &[String],
+) -> String {
+    let mut text = if files.len() > 1 {
+        let short = label.split(" (").next().unwrap_or(label);
+        let (last, first) = files.split_last().unwrap_or((&files[0], &[]));
+        format!(
+            "{short} intégré — BIOS d'origine recommandé ({} ou {last} selon la région)",
+            first.join(", ")
+        )
+    } else {
+        core_fallback(label, wanted)
+    };
+    if !others.is_empty() {
+        text.push_str(&format!(" ; présent : {}", others.join(", ")));
+    }
+    text
+}
+
 pub fn required_ok(wanted: &str) -> String {
     format!("BIOS présent ({wanted})")
 }
@@ -202,6 +226,20 @@ pub fn import_unverified_as(name: &str) -> String {
 
 pub const CORE_CHOICE_TITLE: &str = "Core utilisé par système";
 pub const CORE_NOT_INSTALLED: &str = "non installé";
+
+/// What sets apart the cores of one system in « Core utilisé » (design v7.0 §3.5).
+pub fn core_choice_hint(core: &str) -> Option<&'static str> {
+    match core {
+        "pcsx_rearmed" => Some("rapide, défaut"),
+        "swanstation" => Some("rendu logiciel"),
+        "mednafen_psx" => Some("précis, plus lent"),
+        _ => None,
+    }
+}
+
+pub fn install_chosen(core: &str) -> String {
+    format!("Installer {core}")
+}
 
 pub fn recommended_on(platforms: &[emu_assets::cores::Platform]) -> Option<String> {
     use emu_assets::cores::Platform;

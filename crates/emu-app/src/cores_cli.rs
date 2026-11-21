@@ -173,6 +173,8 @@ fn table_system(prefs: &CorePreferences, id: &CoreId) -> Option<String> {
 struct RequiredLine {
     region: Option<String>,
     check: FirmwareCheck,
+    /// A region table whose regions all want the same file (3DO `panafz10.bin`): checked once.
+    all_regions: bool,
 }
 
 /// The single 3.0 check (`check_core_firmware`), when the core has a table or a built-in ROM: once per region for a
@@ -181,10 +183,18 @@ fn required_checks(dirs: &DataDirs, prefs: &CorePreferences, id: &CoreId) -> Vec
     let Some(system) = table_system(prefs, id) else {
         return Vec::new();
     };
+    let mut all_regions = false;
     let regions: Vec<Option<String>> = match prefs.required_firmware(id, &system) {
         Some(req) if req.variant == FirmwareVariant::Region => {
             let mut keys: Vec<String> = req.files.keys().cloned().collect();
             keys.sort_by_key(|k| region_order(k));
+            let mut files: Vec<&String> = req.files.values().collect();
+            files.sort();
+            files.dedup();
+            if files.len() == 1 && keys.len() > 1 {
+                all_regions = true;
+                keys.truncate(1);
+            }
             keys.into_iter().map(Some).collect()
         }
         _ => vec![None],
@@ -193,7 +203,11 @@ fn required_checks(dirs: &DataDirs, prefs: &CorePreferences, id: &CoreId) -> Vec
     let mut out = Vec::new();
     for region in regions {
         match check_core_firmware(&dirs.system, prefs, id, &system, region.as_deref(), &known) {
-            Some(Ok(check)) => out.push(RequiredLine { region, check }),
+            Some(Ok(check)) => out.push(RequiredLine {
+                region,
+                check,
+                all_regions,
+            }),
             Some(Err(e)) => {
                 eprintln!("{id} : {e}");
                 return Vec::new();
@@ -235,6 +249,7 @@ fn describe_required(line: &RequiredLine) -> String {
         FirmwareState::Builtin { label } => return format!("  ROM intégrée au core : {label}"),
     };
     match &line.region {
+        Some(_) if line.all_regions => format!("  toutes régions : {wanted} : {state}"),
         Some(region) => format!("  région {} : {wanted} : {state}", region_label(region)),
         None => format!("  modèle par défaut : {wanted} : {state}"),
     }
@@ -290,7 +305,8 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
                     "{}",
                     describe_required(&RequiredLine {
                         region: None,
-                        check
+                        check,
+                        all_regions: false,
                     })
                 );
             }
@@ -732,6 +748,40 @@ mod tests {
         // A fake file has an unexpected md5: still no usable BIOS.
         assert!(japan.is_some_and(|l| !usable(&l.check)));
         assert!(required_is_problem(&lines));
+    }
+
+    /// 7.0: PlayStation BIOS per region and the 3DO BIOS (one file for every region): recommended, never a
+    /// problem without them (the cores fall back on their own BIOS).
+    #[test]
+    fn playstation_and_3do_bios_are_recommended() {
+        let (_tmp, dirs) = dirs();
+        let prefs = CorePreferences::builtin();
+        for core in ["pcsx_rearmed", "swanstation", "mednafen_psx"] {
+            let lines = required_checks(&dirs, &prefs, &CoreId::new(core).unwrap());
+            let wanted: Vec<_> = lines.iter().map(|l| l.check.wanted.as_deref()).collect();
+            assert_eq!(
+                wanted,
+                vec![
+                    Some("scph5502.bin"),
+                    Some("scph5501.bin"),
+                    Some("scph5500.bin")
+                ],
+                "{core}"
+            );
+            assert!(
+                describe_required(&lines[0])
+                    .starts_with("  région Europe : scph5502.bin : absent : ")
+            );
+            assert!(!required_is_problem(&lines), "{core}");
+        }
+        let lines = required_checks(&dirs, &prefs, &CoreId::new("opera").unwrap());
+        assert_eq!(lines.len(), 1);
+        let line = describe_required(&lines[0]);
+        assert!(
+            line.starts_with("  toutes régions : panafz10.bin : absent : Opera Boot"),
+            "{line}"
+        );
+        assert!(!required_is_problem(&lines));
     }
 
     #[test]

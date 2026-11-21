@@ -302,6 +302,36 @@ pub(crate) fn game_key(identity: &GameIdentity) -> &str {
     &identity.save_name
 }
 
+/// Memory card of a game for a core of a `save_family` (design v7.0 §2.3): when `<saves>/<core>/<save_name>.srm`
+/// does not exist, the newest card of another core of the family is copied (never overwritten). Returns the
+/// source core for the OSD. Called before the core is loaded; an error is logged and the game starts without.
+pub(crate) fn adopt_memory_card(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    saves_dir: &Path,
+    save_name: &str,
+) -> Option<String> {
+    let family = prefs.save_family(core)?;
+    let cores: Vec<String> = prefs
+        .save_family_cores(&family)
+        .iter()
+        .map(|c| c.as_str().to_owned())
+        .collect();
+    let save_rel = PathBuf::from(format!("{save_name}.srm"));
+    match emu_runtime::adopt_family_save(saves_dir, core.as_str(), &cores, &save_rel) {
+        Ok(source) => {
+            if let Some(source) = &source {
+                tracing::info!("carte mémoire de {save_name} reprise de {source}");
+            }
+            source
+        }
+        Err(e) => {
+            tracing::warn!("carte mémoire non reprise : {e}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,5 +684,59 @@ mod tests {
         game.system = "psx".into();
         assert!(plan_disc_launch(&game, &core, &prefs).is_ok());
         assert!(!LaunchRefusal::ForeignDisc.message().is_empty());
+    }
+
+    /// 7.0: the card of another PlayStation core is copied once; a core without `save_family` copies nothing.
+    #[test]
+    fn memory_card_is_adopted_from_the_family() {
+        let tmp = tempfile::tempdir().unwrap();
+        let saves = tmp.path();
+        let prefs = CorePreferences::builtin();
+        std::fs::create_dir_all(saves.join("pcsx_rearmed")).unwrap();
+        std::fs::write(saves.join("pcsx_rearmed/GTA.srm"), [7u8; 128]).unwrap();
+        let swan = CoreId::new("swanstation").unwrap();
+        assert_eq!(
+            adopt_memory_card(&prefs, &swan, saves, "GTA").as_deref(),
+            Some("pcsx_rearmed")
+        );
+        assert_eq!(
+            std::fs::read(saves.join("swanstation/GTA.srm")).unwrap(),
+            [7u8; 128]
+        );
+        // Present now: nothing more.
+        assert_eq!(adopt_memory_card(&prefs, &swan, saves, "GTA"), None);
+        let opera = CoreId::new("opera").unwrap();
+        assert_eq!(adopt_memory_card(&prefs, &opera, saves, "GTA"), None);
+        assert!(!saves.join("opera").exists());
+    }
+
+    /// 7.0: a `.pbp` (and every PlayStation image) is handed over in place, never copied: single file from the
+    /// CLI, and several discs planned by the library go through `media_direct`.
+    #[test]
+    fn pbp_is_never_copied() {
+        let prefs = CorePreferences::builtin();
+        for core in ["pcsx_rearmed", "swanstation", "mednafen_psx"] {
+            let id = CoreId::new(core).unwrap();
+            let files = GameContent::Files(vec![PathBuf::from("/jeux/FF7 (Disc 1).pbp")]);
+            assert_eq!(
+                content_spec(core, &files, &prefs),
+                ContentSpec::File(PathBuf::from("/jeux/FF7 (Disc 1).pbp")),
+                "{core}"
+            );
+            assert!(prefs.media_direct(&id).iter().any(|e| e == "pbp"), "{core}");
+            let mut game = disc_game(
+                "/jeux/FF7 (Disc 1).pbp",
+                &["/jeux/FF7 (Disc 1).pbp", "/jeux/FF7 (Disc 2).pbp"],
+                None,
+            );
+            game.system = "psx".into();
+            match plan_disc_launch(&game, &id, &prefs).unwrap() {
+                ContentSpec::Media { rules, .. } => {
+                    assert_eq!(rules.policy, MediaPolicy::Direct, "{core}");
+                    assert!(rules.media_direct.iter().any(|e| e == "pbp"), "{core}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }
