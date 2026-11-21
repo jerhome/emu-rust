@@ -12,8 +12,8 @@ pub enum GameContent {
     Files(Vec<PathBuf>),
     /// No content (`SET_SUPPORT_NO_GAME`): the computer's desktop.
     NoGame,
-    /// Unpacked game folder (DOS, design v4.0 §4): launched through `computer::dos::plan_dos_launch` (DU1), never
-    /// through [`content_spec`]. `start`: program chosen for this launch (`[dos] start` or « Lancer un autre
+    /// Unpacked game folder (DOS, design v4.0 §4), checked by `computer::dos::spec_for_content` (folder policy of
+    /// the core, `start` at the root). `start`: program chosen for this launch (`[dos] start` or « Lancer un autre
     /// programme… »).
     Folder { dir: PathBuf, start: Option<String> },
 }
@@ -29,9 +29,10 @@ impl GameContent {
     }
 }
 
+/// `.m3u` or `.m3u8` (same format, UTF-8: design v4.0 §10 n° 14).
 fn is_m3u(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
+        .is_some_and(|e| e.eq_ignore_ascii_case("m3u") || e.eq_ignore_ascii_case("m3u8"))
 }
 
 fn stem(path: &Path) -> String {
@@ -91,10 +92,16 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         GameContent::NoGame => return ContentSpec::NoGame,
         GameContent::Files(f) if f.is_empty() => return ContentSpec::NoGame,
         GameContent::Files(f) => f,
-        GameContent::Folder { .. } => {
-            todo!(
-                "DU1: folders go through plan_dos_launch (the ContentSpec needs the identity's save_name)"
-            )
+        // The runtime names the snapshot after the identity's `save_name`; `name` is the folder's own name.
+        GameContent::Folder { dir, start } => {
+            return ContentSpec::Folder {
+                dir: dir.clone(),
+                name: dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                start: start.clone(),
+            };
         }
     };
     let id = CoreId::new(core_id);
@@ -259,6 +266,12 @@ mod tests {
                 assert_eq!(rules.policy, MediaPolicy::Direct);
                 assert_eq!(set.name, "Game (1990)(Pub)");
                 assert_eq!(set.images.len(), 2);
+            }
+            other => panic!("{other:?}"),
+        }
+        match content_spec("hatari", &files(&["/g/Jeu.m3u8"]), &prefs) {
+            ContentSpec::Media { set, .. } => {
+                assert_eq!(set.playlist, Some(PathBuf::from("/g/Jeu.m3u8")));
             }
             other => panic!("{other:?}"),
         }

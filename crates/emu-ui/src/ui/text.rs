@@ -280,6 +280,39 @@ pub fn sanitize_core_text(s: &str) -> String {
         .collect()
 }
 
+// ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
+
+pub const DOS_CONF_REFUSED: &str =
+    "Les fichiers .conf ne se lancent pas : choisissez le dossier ou le zip du jeu.";
+
+pub fn dos_folder_refused(core: &str) -> String {
+    format!("Le core {core} ne lance pas les dossiers de jeu : choisissez un zip ou une image.")
+}
+
+pub fn dos_start_invalid(name: &str) -> String {
+    format!(
+        "« {} » n'est pas un programme de la racine du jeu (nom court en .exe, .com ou .bat).",
+        sanitize_core_text(name)
+    )
+}
+
+pub fn dos_snapshot_failed(e: &emu_runtime::RuntimeError) -> String {
+    use emu_runtime::RuntimeError as E;
+    match e {
+        E::SnapshotTooLarge { limit } => format!(
+            "Dossier de jeu trop gros pour être préparé (limite : {}).",
+            format_size(*limit)
+        ),
+        E::SnapshotCancelled => "Préparation du jeu annulée.".to_owned(),
+        E::UnrepresentableName(p) => format!(
+            "Nom de fichier impossible à préparer : {}",
+            sanitize_core_text(&p.display().to_string())
+        ),
+        E::InvalidStart(s) => dos_start_invalid(s),
+        other => format!("Préparation du jeu impossible : {other}"),
+    }
+}
+
 // ---- computer systems (ADR 0015) ---------------------------------------------------------------------------
 
 pub const VKBD_CLOSE: &str = "Fermer";

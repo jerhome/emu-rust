@@ -36,12 +36,32 @@ pub struct GameMedia {
     pub extra: toml::Table,
 }
 
+/// `[dos]` (design v4.0 §4): program of a game folder launched by default (`instantané.zip#START.EXE`). Absent:
+/// the core's boot menu, or the program it remembers (`AUTOBOOT.DBP`, which wins over this one).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameDos {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(flatten)]
+    pub extra: toml::Table,
+}
+
+impl GameDos {
+    fn is_empty(&self) -> bool {
+        self.start.is_none() && self.extra.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameOptions {
     pub core_options: BTreeMap<String, String>,
     pub input: GameInput,
     pub media: GameMedia,
+    /// Written only when set: options files of the other systems keep their 3.0 shape.
+    #[serde(skip_serializing_if = "GameDos::is_empty")]
+    pub dos: GameDos,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -305,6 +325,24 @@ mod tests {
         o.input.aros_acknowledged = true;
         let back: GameOptions = toml::from_str(&toml::to_string(&o).unwrap()).unwrap();
         assert!(back.input.aros_acknowledged);
+    }
+
+    /// Design v4.0 §5: `[dos] start` read and written back; absent from the files of the other systems.
+    #[test]
+    fn dos_start_round_trips_and_is_omitted_when_unset() {
+        let o = GameOptions::default();
+        assert!(!toml::to_string(&o).unwrap().contains("[dos]"));
+        let text = "[core_options]\ndosbox_pure_cycles = \"7800\"\n[input]\nkeyboard_mode = \"keyboard\"\n[dos]\nstart = \"MONKEY.EXE\"\n";
+        let o: GameOptions = toml::from_str(text).unwrap();
+        assert_eq!(o.dos.start.as_deref(), Some("MONKEY.EXE"));
+        assert_eq!(o.core_options["dosbox_pure_cycles"], "7800");
+        let back: GameOptions = toml::from_str(&toml::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
+        // A 3.0 file (no `[dos]`) is read unchanged and written without one.
+        let old = "[core_options]\npuae_model = \"A500\"\n[input]\naros_acknowledged = true\n";
+        let o: GameOptions = toml::from_str(old).unwrap();
+        assert_eq!(o.dos, GameDos::default());
+        assert!(!toml::to_string(&o).unwrap().contains("dos"));
     }
 
     #[test]

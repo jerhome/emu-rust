@@ -17,6 +17,7 @@ const HOLD_FRAMES: u8 = 3;
 
 const ATARI_ST: &str = include_str!("../../data/keyboards/atari_st.toml");
 const AMIGA: &str = include_str!("../../data/keyboards/amiga.toml");
+const PC: &str = include_str!("../../data/keyboards/pc.toml");
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LayoutKey {
@@ -79,11 +80,12 @@ struct RawKey {
 }
 
 impl KeyboardLayout {
-    /// Built-in layout by id (`atari_st`, `amiga`); `None` for an unknown id.
+    /// Built-in layout by id (`atari_st`, `amiga`, `pc`); `None` for an unknown id.
     pub fn load(id: &str) -> Option<Self> {
         let text = match id {
             "atari_st" => ATARI_ST,
             "amiga" => AMIGA,
+            "pc" => PC,
             _ => return None,
         };
         match Self::parse(text) {
@@ -147,6 +149,18 @@ pub(crate) fn legend_for_variant(variant: Option<&str>) -> &'static str {
     match variant.map(|v| v.trim_start_matches("192")) {
         Some("fr") => "fr",
         Some("de" | "sg") => "de",
+        _ => "us",
+    }
+}
+
+/// Legend language for a keyboard layout value of a core option (`dosbox_pure_keyboard_layout`: `fr` / `be` /
+/// `sf` → `fr`, `gr` / `sg` → `de`), else `us`: the virtual keyboard shows what the emulated layout types.
+// DU2 (app.rs): legend of the PC keyboard.
+#[allow(dead_code)]
+pub(crate) fn legend_for_layout_value(value: &str) -> &'static str {
+    match value {
+        "fr" | "be" | "sf" => "fr",
+        "gr" | "sg" | "de" => "de",
         _ => "us",
     }
 }
@@ -366,6 +380,49 @@ mod tests {
             KeyboardLayout::parse("id='x'\nname='x'\n[[row]]\nkeys=[{key='nope',label='?'}]")
                 .is_err()
         );
+    }
+
+    /// Design v4.0 §6: PC 102 keys, keypad and F11 / F12 included; `<` of the ISO key is OEM_102 through `[remap]`
+    /// while the global positional map keeps LESS (hatari reads it).
+    #[test]
+    fn pc_layout_has_the_102_keys_and_the_oem_102_remap() {
+        use crate::computer::keymap::{KeyRemap, retro_key};
+        use winit::keyboard::KeyCode;
+        let l = KeyboardLayout::load("pc").unwrap();
+        let all: Vec<&LayoutKey> = l.rows.iter().flatten().collect();
+        for name in [
+            "f11",
+            "f12",
+            "kp0",
+            "kp_enter",
+            "numlock",
+            "print",
+            "scrollock",
+            "pause",
+            "oem_102",
+            "ralt",
+        ] {
+            assert!(all.iter().any(|k| k.key == key(name)), "{name}");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for k in &all {
+            assert!(seen.insert(k.key), "doublon {:?}", k.key.name());
+        }
+        let q = all.iter().find(|k| k.key == key("q")).unwrap();
+        assert_eq!(q.legend("fr"), "A");
+        let remap = KeyRemap::for_layout(&l, &BTreeMap::new());
+        assert_eq!(remap.map(KeyCode::IntlBackslash), Some(key("oem_102")));
+        assert_eq!(retro_key(KeyCode::IntlBackslash), Some(key("less")));
+        assert_eq!(remap.map(KeyCode::KeyQ), Some(key("q")));
+    }
+
+    #[test]
+    fn legends_follow_the_dos_layout_value() {
+        assert_eq!(legend_for_layout_value("fr"), "fr");
+        assert_eq!(legend_for_layout_value("be"), "fr");
+        assert_eq!(legend_for_layout_value("gr"), "de");
+        assert_eq!(legend_for_layout_value("uk"), "us");
+        assert_eq!(legend_for_layout_value("us"), "us");
     }
 
     #[test]
