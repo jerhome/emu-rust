@@ -6,6 +6,8 @@
 
 use std::ffi::{CStr, c_char, c_int};
 use std::panic::catch_unwind;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::sys;
 use crate::types::LogLevel;
@@ -50,29 +52,55 @@ pub(crate) fn emit(level: LogLevel, message: &str, truncated: bool) {
 }
 
 /// Longest `LibretroError::LoadGameFailed::core_error`, in characters (design v6.0 §3.1).
-#[allow(dead_code)] // GF1
 pub(crate) const MAX_CORE_ERROR_CHARS: usize = 512;
 
-/// GF1: starts recording the last `RETRO_LOG_ERROR` line, right before `retro_load_game` (lines logged before are
-/// not kept). Process-global like the other callbacks state (ADR 0008); cores may log from their own threads.
-#[allow(dead_code)] // GF1
+/// Capture state, process-global like the other callbacks state (ADR 0008): cores may log from their own threads.
+/// `CAPTURING` is the cheap check of the hot path; the mutex is taken only for ERROR lines while capturing.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn last_error() -> std::sync::MutexGuard<'static, Option<String>> {
+    // A poisoned lock only means another thread panicked while holding a plain `Option<String>`.
+    LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Starts recording the last `RETRO_LOG_ERROR` line, right before `retro_load_game` (lines logged before are
+/// not kept).
 pub(crate) fn begin_load_error_capture() {
-    todo!("GF1: last ERROR line during retro_load_game (design v6.0 §3.1)")
+    *last_error() = None;
+    CAPTURING.store(true, Ordering::SeqCst);
 }
 
-/// GF1: stops the recording started by [`begin_load_error_capture`] and returns the last ERROR line, cleaned by
+/// Stops the recording started by [`begin_load_error_capture`] and returns the last ERROR line, cleaned by
 /// [`clean_core_error`]; `None` when the core logged none (or only blank lines). Lines logged after are ignored.
-#[allow(dead_code)] // GF1
 pub(crate) fn end_load_error_capture() -> Option<String> {
-    todo!("GF1: last ERROR line during retro_load_game (design v6.0 §3.1)")
+    CAPTURING.store(false, Ordering::SeqCst);
+    last_error().take()
 }
 
-/// GF1: control characters removed, trimmed, truncated to [`MAX_CORE_ERROR_CHARS`] characters (on a char
+fn capture(level: LogLevel, message: &str) {
+    if level != LogLevel::Error || !CAPTURING.load(Ordering::SeqCst) {
+        return;
+    }
+    let cleaned = clean_core_error(message);
+    if !cleaned.is_empty() {
+        *last_error() = Some(cleaned);
+    }
+}
+
+/// Control characters removed, trimmed, truncated to [`MAX_CORE_ERROR_CHARS`] characters (on a char
 /// boundary); paths are kept as is (local log only, never a secret).
-#[allow(dead_code)] // GF1
 pub(crate) fn clean_core_error(line: &str) -> String {
-    let _ = line;
-    todo!("GF1: core_error cleaning (design v6.0 §3.1)")
+    let no_control: String = line
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CORE_ERROR_CHARS + 512)
+        .collect();
+    no_control
+        .trim()
+        .chars()
+        .take(MAX_CORE_ERROR_CHARS)
+        .collect()
 }
 
 /// Called by the C shim only.
@@ -91,7 +119,9 @@ pub unsafe extern "C" fn emu_libretro_log_sink(level: c_int, msg: *const c_char,
         // SAFETY: non-null and NUL-terminated per this function's contract (the shim terminates its buffer);
         // the borrow does not outlive the call.
         let text = unsafe { CStr::from_ptr(msg) }.to_string_lossy();
-        emit(level_from_raw(level), &text, truncated != 0);
+        let level = level_from_raw(level);
+        capture(level, &text);
+        emit(level, &text, truncated != 0);
     });
 }
 
@@ -182,5 +212,40 @@ pub(crate) mod tests {
         // SAFETY: null is allowed.
         unsafe { emu_libretro_log_sink(1, std::ptr::null(), 0) };
         assert!(take().is_empty());
+    }
+
+    #[test]
+    fn clean_core_error_rules() {
+        assert_eq!(clean_core_error("  a\tb\x07c\r\n"), "abc");
+        assert_eq!(clean_core_error(" \n "), "");
+        let long = "é".repeat(MAX_CORE_ERROR_CHARS + 10);
+        assert_eq!(
+            clean_core_error(&long).chars().count(),
+            MAX_CORE_ERROR_CHARS
+        );
+        assert_eq!(
+            clean_core_error("/home/u/bios.bin missing"),
+            "/home/u/bios.bin missing"
+        );
+    }
+
+    #[test]
+    fn capture_keeps_last_error_only_while_active() {
+        let log = log_callback().log;
+        // SAFETY: constant format strings with matching `%s` arguments.
+        let say =
+            |level, text: &std::ffi::CStr| unsafe { log(level, c"%s".as_ptr(), text.as_ptr()) };
+        say(sys::RETRO_LOG_ERROR, c"before");
+        begin_load_error_capture();
+        say(sys::RETRO_LOG_ERROR, c"first");
+        say(sys::RETRO_LOG_ERROR, c"  second \n");
+        say(sys::RETRO_LOG_WARN, c"warn");
+        say(sys::RETRO_LOG_ERROR, c"\n");
+        assert_eq!(end_load_error_capture().as_deref(), Some("second"));
+        say(sys::RETRO_LOG_ERROR, c"after");
+        assert_eq!(end_load_error_capture(), None);
+        begin_load_error_capture();
+        say(sys::RETRO_LOG_INFO, c"info");
+        assert_eq!(end_load_error_capture(), None);
     }
 }

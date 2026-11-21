@@ -6,6 +6,7 @@ use libloading::Library;
 
 use crate::callbacks::{self, EnvInstall, ProcessGuard};
 use crate::error::LibretroError;
+use crate::log;
 use crate::resident::{self, CopyFile};
 use crate::sys;
 use crate::types::{
@@ -426,14 +427,15 @@ impl Core {
             size: data.as_ref().map_or(0, Vec::len),
             meta: std::ptr::null(),
         };
+        log::begin_load_error_capture();
         // SAFETY: `info` and the buffers it points to are valid for the call; `path` and `data` are moved into
         // `self.game` (heap contents do not move) and kept until retro_unload_game.
         let loaded = unsafe { (self.api.load_game)(&raw const info) } != 0;
+        let core_error = log::end_load_error_capture();
         if !loaded {
-            // GF1: `core_error` = last ERROR line captured during the call (log.rs).
             return Err(LibretroError::LoadGameFailed {
                 path: rom,
-                core_error: None,
+                core_error,
             });
         }
         Ok(self.after_load(LoadedGame {
@@ -451,13 +453,15 @@ impl Core {
         if !self.supports_no_game() {
             return Err(LibretroError::NoGameUnsupported);
         }
+        log::begin_load_error_capture();
         // SAFETY: libretro.h allows a NULL `game` once the core announced SET_SUPPORT_NO_GAME (checked above);
         // owning thread.
         let loaded = unsafe { (self.api.load_game)(std::ptr::null()) } != 0;
+        let core_error = log::end_load_error_capture();
         if !loaded {
             return Err(LibretroError::LoadGameFailed {
                 path: PathBuf::new(),
-                core_error: None,
+                core_error,
             });
         }
         Ok(self.after_load(LoadedGame {

@@ -279,13 +279,20 @@ fn load_error(lib: &Path) {
     let dir = out_dir("load-error");
     let mut core = Core::load(lib, config(&dir)).unwrap();
     let err = core.load_game(&dir.join("game.mock")).unwrap_err();
+    // Only the last ERROR logged during the call: not the one from retro_init, not the WARN after it.
     assert!(
-        matches!(err, LibretroError::LoadGameFailed { .. }),
+        matches!(&err, LibretroError::LoadGameFailed { core_error: Some(e), .. }
+            if e == "mock core: a rather long explanation that must be truncated by the frontend"),
         "{err:?}"
     );
     assert!(core.av_info().is_none());
     drop(core);
-    // The refusal does not leak into the next load.
+    // The error logged by retro_deinit is not kept, and a refusal does not leak into the next load.
+    set_protocol(&[("MOCK_LOAD_ERROR", "1")]);
+    let mut core = Core::load(lib, config(&dir)).unwrap();
+    let err = core.load_game(&dir.join("game.mock")).unwrap_err();
+    assert_eq!(err.core_error(), Some("mock core: BIOS file missing"));
+    drop(core);
     set_protocol(&[]);
     let mut core = Core::load(lib, config(&dir)).unwrap();
     core.load_game(&dir.join("game.mock")).unwrap();

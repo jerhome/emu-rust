@@ -920,7 +920,10 @@ impl EnvState {
             sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE
             | sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE
             | sys::RETRO_ENVIRONMENT_GET_LED_INTERFACE
-            | sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE => {
+            | sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE
+            | sys::RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK
+            | sys::RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY
+            | sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT => {
                 self.log_declined(cmd);
                 false
             }
@@ -1398,6 +1401,9 @@ mod tests {
             sys::RETRO_ENVIRONMENT_GET_PERF_INTERFACE,
             sys::RETRO_ENVIRONMENT_GET_VFS_INTERFACE,
             sys::RETRO_ENVIRONMENT_GET_LED_INTERFACE,
+            sys::RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK,
+            sys::RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY,
+            sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT,
             sys::RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE, // `false` case: opt-in off
         ] {
             assert!(!env(cmd, scratch.as_mut_ptr().cast()), "{cmd}");
