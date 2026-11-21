@@ -5,14 +5,16 @@ use std::time::SystemTime;
 
 use emu_libretro::{
     AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride,
-    FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, MemoryKind,
-    RetroKey, SystemInfo, VideoFrame, mouse_id,
+    FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, KeyEvent,
+    KeyModifiers, MemoryKind, RetroKey, SystemInfo, VideoFrame, mouse_id,
 };
 
 use crate::audio::{AudioSink, NullSink};
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
+use std::collections::VecDeque;
+
 use crate::identity::{GameIdentity, SaveScope, identity_request_for, resolve_game_identity};
 use crate::input::{AnalogStick, InputBackend, InputFrame, KeyboardState, MouseState};
 use crate::media::{ContentSpec, Disks, MediaRules, PreparedMedia, prepare_media_with};
@@ -99,6 +101,89 @@ pub struct Emulator {
     /// The core asked for `RETRO_DEVICE_KEYBOARD` / `RETRO_DEVICE_MOUSE` at least once.
     keyboard_polled: bool,
     mouse_polled: bool,
+    /// Simulated key presses (`pulse_key`), played one after the other.
+    pulses: KeyPulses,
+    /// Last `SET_FASTFORWARDING_OVERRIDE` request reported by `Core::run` (env 64).
+    fastforward: Option<FastForwardOverride>,
+}
+
+/// Most pulses waiting at once; more are dropped (a menu action repeated faster than it can be played).
+const MAX_QUEUED_PULSES: usize = 16;
+
+/// Queue of [`Emulator::pulse_key`] requests. A pulse holds its key for `frames` frames, then spends one frame
+/// released (the release event) so that two pulses of the same key are seen as two presses by polling cores.
+#[derive(Debug, Default)]
+struct KeyPulses {
+    queue: VecDeque<(RetroKey, u32)>,
+    active: Option<ActivePulse>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActivePulse {
+    key: RetroKey,
+    /// Frames still to be played with the key held; 0 = this frame is the release frame.
+    held_left: u32,
+}
+
+impl KeyPulses {
+    fn push(&mut self, key: RetroKey, frames: u32) {
+        if self.queue.len() >= MAX_QUEUED_PULSES {
+            tracing::warn!(?key, "too many simulated key presses waiting: dropped");
+            return;
+        }
+        self.queue.push_back((key, frames.max(2)));
+    }
+
+    /// Applies the pulse of this frame to `input` (already polled from the backends): state forced to pressed,
+    /// press event at the first frame, release event after the last one unless the user holds the key. No
+    /// allocation once `key_events` has room for one more event.
+    fn apply(&mut self, input: &mut InputFrame) {
+        if self.active.is_none() {
+            self.active = self.queue.pop_front().map(|(key, frames)| ActivePulse {
+                key,
+                held_left: frames,
+            });
+            if let Some(pulse) = self.active
+                && !input.keyboard.is_pressed(pulse.key)
+            {
+                input.key_events.push(key_event(pulse.key, true));
+            }
+        }
+        let Some(pulse) = self.active.as_mut() else {
+            return;
+        };
+        if pulse.held_left > 0 {
+            input.keyboard.set(pulse.key, true);
+            pulse.held_left -= 1;
+        } else {
+            if !input.keyboard.is_pressed(pulse.key) {
+                input.key_events.push(key_event(pulse.key, false));
+            }
+            self.active = None;
+        }
+    }
+}
+
+/// Records the env 64 request of a run (`None`: none during this run, the previous state holds); `true` when
+/// the state changed.
+fn update_fastforward(
+    state: &mut Option<FastForwardOverride>,
+    request: Option<FastForwardOverride>,
+) -> bool {
+    let changed = request.is_some_and(|ff| *state != Some(ff));
+    if request.is_some() {
+        *state = request;
+    }
+    changed
+}
+
+fn key_event(key: RetroKey, down: bool) -> KeyEvent {
+    KeyEvent {
+        down,
+        key,
+        character: 0,
+        modifiers: KeyModifiers::default(),
+    }
 }
 
 /// Copies the `.srm` file into the core's SRAM (right after `retro_load_game`); returns the resulting SRAM,
@@ -190,7 +275,7 @@ impl Emulator {
         request.scope = options.core_save_scope;
         let identity = resolve_game_identity(&request).unwrap_or_else(|e| {
             tracing::warn!("game identity not resolved ({e}): 2.0 name used");
-            GameIdentity::legacy(&request.base_name, &saves_core_dir)
+            request.fallback_identity()
         });
         Self::load_as(core_path, spec, identity, options, limits)
     }
@@ -312,6 +397,8 @@ impl Emulator {
             limits,
             keyboard_polled: false,
             mouse_polled: false,
+            pulses: KeyPulses::default(),
+            fastforward: None,
         };
         if restore_added_disks {
             crate::added::restore_added(&mut emulator);
@@ -366,6 +453,7 @@ impl Emulator {
         // buffer's capacity (no allocation per frame).
         self.input.clear();
         input.poll(self.frame_count, &mut self.input);
+        self.pulses.apply(&mut self.input);
         // The keyboard callback must not run inside `retro_run` (ADR 0015 §3): delivered first, in order.
         for event in &self.input.key_events {
             self.core.send_key_event(*event);
@@ -396,13 +484,13 @@ impl Emulator {
         {
             self.av_info = *av_info;
         }
+        let fastforward_changed = update_fastforward(&mut self.fastforward, events.fastforward);
         Ok(FrameStatus {
             video_updated,
             av_info_changed: events.av_info_changed,
             shutdown_requested: events.shutdown_requested,
             options_changed: events.options_changed,
-            // CR1: true when `Core::fastforward_override` changed during the frame.
-            fastforward_changed: false,
+            fastforward_changed,
         })
     }
 
@@ -627,14 +715,17 @@ impl Emulator {
     /// end, through the same path as `InputFrame::key_events` (outside `retro_run`, ADR 0015). Queued pulses
     /// follow one another without overlapping; a key really held by the user is not released by the pulse.
     /// Never goes through the host key nor the remapping. Usual value: [`crate::PULSE_FRAMES`].
+    /// Played from the next `run_frame`: the release event comes with the frame after the last held one, and
+    /// the next queued pulse starts one frame later. At most 16 pulses wait at once (more are dropped, logged).
     pub fn pulse_key(&mut self, key: RetroKey, frames: u32) {
-        let _ = (key, frames);
-        todo!("CR1: key pulses (design v5.0 §3.2)")
+        self.pulses.push(key, frames);
     }
 
-    /// `Core::fastforward_override`: last fast-forward request of the core (env 64), `None` without one.
+    /// Last fast-forward request of the core (env 64) as reported by the runs so far (a request sent while
+    /// loading is reported by the first `run_frame`); `None` without one or without
+    /// `EmulatorOptions::fastforward_override`.
     pub fn fastforward_override(&self) -> Option<FastForwardOverride> {
-        todo!("CR1: env 64 state (design v5.0 §3.2)")
+        self.fastforward
     }
 
     /// Forwarded to the core (`GET_FASTFORWARDING`).
@@ -964,5 +1055,155 @@ mod tests {
         bridge.audio_samples(&[5, 6]);
         assert_eq!(frame.pixels(), &[255, 0, 0, 255]);
         assert_eq!(audio.samples, [5, 6]);
+    }
+
+    /// Frames `0..n` of `pulses` over a backend that holds `user` during `held`: (key pressed, events).
+    fn play(
+        pulses: &mut KeyPulses,
+        n: u64,
+        user: RetroKey,
+        held: std::ops::Range<u64>,
+    ) -> Vec<(bool, Vec<(u16, bool)>)> {
+        let mut backend = ScriptedInput::new().key(user, held);
+        let mut input = InputFrame::default();
+        (0..n)
+            .map(|frame| {
+                input.clear();
+                backend.poll(frame, &mut input);
+                pulses.apply(&mut input);
+                (
+                    input.keyboard.is_pressed(user),
+                    input
+                        .key_events
+                        .iter()
+                        .map(|e| (e.key.raw(), e.down))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn key_pulse_holds_then_releases() {
+        let f13 = RetroKey::new(294).unwrap();
+        let mut pulses = KeyPulses::default();
+        pulses.push(f13, crate::PULSE_FRAMES);
+        let frames = play(&mut pulses, 7, f13, 0..0);
+        assert_eq!(
+            frames,
+            [
+                (true, vec![(294, true)]),
+                (true, vec![]),
+                (true, vec![]),
+                (true, vec![]),
+                (false, vec![(294, false)]),
+                (false, vec![]),
+                (false, vec![]),
+            ]
+        );
+        // Fewer than 2 frames: 2.
+        pulses.push(f13, 0);
+        let frames = play(&mut pulses, 4, f13, 0..0);
+        let held: Vec<bool> = frames.iter().map(|f| f.0).collect();
+        assert_eq!(held, [true, true, false, false]);
+        assert_eq!(frames[2].1, [(294, false)]);
+    }
+
+    #[test]
+    fn queued_key_pulses_never_overlap() {
+        let home = RetroKey::new(278).unwrap();
+        let end = RetroKey::new(279).unwrap();
+        let mut pulses = KeyPulses::default();
+        pulses.push(home, 2);
+        pulses.push(home, 2);
+        pulses.push(end, 2);
+        let mut input = InputFrame::default();
+        let mut log = Vec::new();
+        for _ in 0..10 {
+            input.clear();
+            pulses.apply(&mut input);
+            log.push((
+                input.keyboard.is_pressed(home),
+                input.keyboard.is_pressed(end),
+                input
+                    .key_events
+                    .iter()
+                    .map(|e| (e.key.raw(), e.down))
+                    .collect::<Vec<_>>(),
+            ));
+        }
+        assert_eq!(
+            log,
+            [
+                (true, false, vec![(278, true)]),
+                (true, false, vec![]),
+                (false, false, vec![(278, false)]),
+                // The same key again: a frame released in between, so polling cores see two presses.
+                (true, false, vec![(278, true)]),
+                (true, false, vec![]),
+                (false, false, vec![(278, false)]),
+                (false, true, vec![(279, true)]),
+                (false, true, vec![]),
+                (false, false, vec![(279, false)]),
+                (false, false, vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn key_pulse_never_releases_a_key_the_user_holds() {
+        let a = RetroKey::new(97).unwrap();
+        // Held by the user before and after the pulse: no extra event at all.
+        let mut pulses = KeyPulses::default();
+        pulses.push(a, 2);
+        let frames = play(&mut pulses, 4, a, 0..10);
+        assert!(frames.iter().all(|f| f.0));
+        let events: Vec<_> = frames.iter().flat_map(|f| f.1.clone()).collect();
+        assert_eq!(events, [(97, true)], "the user's own press only");
+        // Pressed by the user during the pulse and still held at its end: not released by the pulse.
+        let mut pulses = KeyPulses::default();
+        pulses.push(a, 3);
+        let frames = play(&mut pulses, 5, a, 1..10);
+        assert!(frames.iter().all(|f| f.0));
+        let events: Vec<_> = frames.iter().flat_map(|f| f.1.clone()).collect();
+        assert_eq!(
+            events,
+            [(97, true), (97, true)],
+            "pulse press, then the user's"
+        );
+    }
+
+    #[test]
+    fn key_pulse_queue_is_bounded() {
+        let a = RetroKey::new(97).unwrap();
+        let mut pulses = KeyPulses::default();
+        for _ in 0..MAX_QUEUED_PULSES + 5 {
+            pulses.push(a, 2);
+        }
+        assert_eq!(pulses.queue.len(), MAX_QUEUED_PULSES);
+    }
+
+    fn ff(on: bool, ratio: f32) -> FastForwardOverride {
+        let mut ff = FastForwardOverride::default();
+        ff.fastforward = on;
+        ff.ratio = ratio;
+        ff
+    }
+
+    #[test]
+    fn fastforward_changes_only_on_a_new_request() {
+        let mut state = None;
+        assert!(!update_fastforward(&mut state, None), "no request");
+        assert!(update_fastforward(&mut state, Some(ff(true, 0.0))));
+        assert_eq!(state, Some(ff(true, 0.0)));
+        assert!(
+            !update_fastforward(&mut state, Some(ff(true, 0.0))),
+            "repeated"
+        );
+        assert!(!update_fastforward(&mut state, None), "state kept");
+        assert_eq!(state, Some(ff(true, 0.0)));
+        assert!(update_fastforward(&mut state, Some(ff(true, 3.0))), "ratio");
+        assert!(update_fastforward(&mut state, Some(ff(false, 3.0))));
+        assert_eq!(state, Some(ff(false, 3.0)));
     }
 }

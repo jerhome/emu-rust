@@ -66,13 +66,14 @@ pub struct MediaSet {
     /// Plain images or `.zip` archives holding images; at most [`MAX_MEDIA_IMAGES`]. May be empty when
     /// `playlist` is set. A single `.m3u` here counts as `playlist`.
     pub images: Vec<PathBuf>,
-    /// A user `.m3u`: used as is when the policy is `Direct` (its entries are never rewritten); under
-    /// `WorkingCopy` its entries are copied and a new playlist is generated. Takes precedence over `images`.
+    /// A user `.m3u`: used as is when the policy is `Direct` and the core has no `m3u_launch` (its entries are
+    /// never rewritten); otherwise its entries are copied or referenced and a new playlist is generated with the
+    /// white list of `#` lines. Takes precedence over `images`.
     pub playlist: Option<PathBuf>,
     /// Launch text of the game (`[media] launch`, design v5.0 §3.2): CPC command (`RUN"DISC`) or C64 program
     /// name, written into a generated `.m3u` as [`MediaRules::m3u_launch`] says. `None` or empty: 4.0 behaviour.
     /// Printable ASCII, at most 64 characters, no line break; with `M3uLaunch::Program` also no `:` `|` `#`;
-    /// with `M3uLaunch::None` any text is refused (`RuntimeError::InvalidLaunch`, CR1).
+    /// with `M3uLaunch::None` any text is refused (`RuntimeError::InvalidLaunch`).
     pub launch: Option<String>,
 }
 
@@ -116,7 +117,7 @@ pub struct MediaRules {
     /// A source larger than this is refused (`InvalidMediaSet`) instead of being copied.
     pub max_copy_bytes: u64,
     /// `cores.toml` `m3u_launch`. Anything but `None` also makes every user `.m3u` read back and regenerated
-    /// with the white list, under `Direct` too (design v5.0 §3.2, revue V3a, §10 n° 13; CR1).
+    /// with the white list, under `Direct` too (design v5.0 §3.2, revue V3a, §10 n° 13).
     pub m3u_launch: M3uLaunch,
 }
 
@@ -152,7 +153,8 @@ pub struct PreparedMedia {
     /// Set when this preparation had to start new copies in a suffixed folder instead of `<game>.disks`
     /// (only at that launch; the next ones reuse the new folder silently). The UI should tell the player.
     pub notice: Option<WorkDirNotice>,
-    /// `#` lines of a user `.m3u` dropped by the white list (design v5.0 §3.2): the OSD says so once (CR1).
+    /// `#` lines of a user `.m3u` dropped by the white list (design v5.0 §3.2; `#EXTM3U` not counted): the OSD
+    /// says so once.
     pub dropped_lines: u32,
     /// `Direct` only: private directory holding extracted zip entries and the generated playlist. Removed when
     /// the last clone is dropped, so keep this value alive as long as the core may read the files.
@@ -235,8 +237,14 @@ fn work_dir_candidate(saves_core_dir: &Path, game: &str, n: u32) -> PathBuf {
 /// Generated `.m3u`: names relative to its own folder for copies, absolute paths for everything else. When it
 /// is made from a user `.m3u`, only white-listed `#` lines are kept, at their place (`#SAVEDISK:`, `#LABEL:`),
 /// as is the `|label` of an entry that gives exactly one image; any other `#` line is a comment and is dropped
-/// (`#COMMAND:` included: no core of this version needs it). A user `.m3u` under `Direct` is handed over
-/// untouched (2.0). Out of disk space: [`RuntimeError::DiskFull`], the partial file is removed.
+/// and counted in [`PreparedMedia::dropped_lines`] (`#COMMAND:` included, except a valid one for
+/// `M3uLaunch::Command` without `MediaSet::launch`). A user `.m3u` under `Direct` is handed over untouched (2.0)
+/// only when `rules.m3u_launch` is `None`; otherwise it is regenerated in the private temporary directory.
+///
+/// `MediaSet::launch` (design v5.0 §3.2): validated first ([`RuntimeError::InvalidLaunch`]); when set, a
+/// playlist is always generated, even for one image: `#COMMAND:<launch>` as first line (`Command`) or
+/// `<image>:<launch>` as first entry (`Program`). Out of disk space: [`RuntimeError::DiskFull`], the partial
+/// file is removed.
 pub fn prepare_media(
     set: &MediaSet,
     rules: &MediaRules,
@@ -283,8 +291,12 @@ fn prepare_media_inner(
     if set.images.len() > MAX_MEDIA_IMAGES {
         return Err(too_many());
     }
+    let launch = validate_launch(set.launch.as_deref(), rules.m3u_launch)?;
 
+    // A core declaring `m3u_launch` never gets a user `.m3u` as is: it may carry a `#COMMAND:` (VICE: core
+    // arguments). It is read back with the white list and regenerated below.
     if rules.policy == MediaPolicy::Direct
+        && rules.m3u_launch == M3uLaunch::None
         && let Some(playlist) = playlist
     {
         // Handed over untouched; the entries are only listed for the disk menu.
@@ -302,22 +314,32 @@ fn prepare_media_inner(
         });
     }
 
-    let layout = playlist.as_deref().map(read_playlist).transpose()?;
+    let layout = playlist
+        .as_deref()
+        .map(|p| read_playlist_for(p, rules.m3u_launch, launch.is_some()))
+        .transpose()?;
+    let dropped_lines = layout.as_ref().map_or(0, |l| l.dropped);
+    if dropped_lines > 0 {
+        tracing::warn!(
+            dropped_lines,
+            "`#` lines of the user playlist not passed to the core"
+        );
+    }
+    let shape = Shape {
+        layout: layout.as_ref(),
+        launch: launch.map(|text| (rules.m3u_launch, text)),
+    };
     let sources = match &layout {
         Some(layout) => layout.entries(),
         None => set.images.clone(),
     };
     let all_direct = sources.iter().all(|s| rules.is_direct(s));
     if rules.policy == MediaPolicy::WorkingCopy && !all_direct {
-        return prepare_working_copies(
-            &game,
-            &sources,
-            layout.as_ref(),
-            rules,
-            exts,
-            saves_core_dir,
-            limits,
-        );
+        return prepare_working_copies(&game, &sources, shape, rules, exts, saves_core_dir, limits)
+            .map(|prepared| PreparedMedia {
+                dropped_lines,
+                ..prepared
+            });
     }
     // `Direct`, or only direct sources: nothing is copied, a playlist goes to a private temporary directory.
     let mut stage = Stage::new(MediaPolicy::Direct, exts, limits, PathBuf::new())?;
@@ -329,13 +351,13 @@ fn prepare_media_inner(
         stage.add_source(source, MAX_MEDIA_IMAGES)?;
         ranges.push(start..stage.images.len());
     }
-    let content = stage.content(&game, layout.as_ref(), &ranges)?;
+    let content = stage.content(&game, shape, &ranges)?;
     Ok(PreparedMedia {
         content,
         images: stage.images,
         work_dir: None,
         notice: None,
-        dropped_lines: 0,
+        dropped_lines,
         temp_dir: stage.temp_dir,
     })
 }
@@ -494,7 +516,7 @@ fn choose_work_dir(
 fn prepare_working_copies(
     game: &str,
     sources: &[PathBuf],
-    layout: Option<&UserPlaylist>,
+    shape: Shape<'_>,
     rules: &MediaRules,
     exts: &[String],
     saves_core_dir: &Path,
@@ -578,7 +600,7 @@ fn prepare_working_copies(
     let room = workcopy::MAX_MANIFEST_ENTRIES.saturating_sub(recorded.len());
     let skip = kept.len().saturating_sub(room);
     recorded.extend(kept.into_iter().skip(skip).cloned());
-    let content = stage.content(game, layout, &ranges)?;
+    let content = stage.content(game, shape, &ranges)?;
     workcopy::write(&chosen.dir, &recorded)?;
     Ok(PreparedMedia {
         content,
@@ -595,6 +617,14 @@ fn copy_name(copy: &Path) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned()
+}
+
+/// What a generated playlist holds besides the images: the kept lines and labels of a user playlist, and the
+/// validated launch text with the way the core takes it.
+#[derive(Debug, Clone, Copy)]
+struct Shape<'a> {
+    layout: Option<&'a UserPlaylist>,
+    launch: Option<(M3uLaunch, &'a str)>,
 }
 
 /// A name `disk_file_name` could have produced (manifests are read back from disk).
@@ -854,33 +884,51 @@ impl<'a> Stage<'a> {
     }
 
     /// File given to `retro_load_game`: the only image, or a generated playlist. A user playlist whose kept
-    /// `#` lines must reach the core always gives a playlist.
+    /// `#` lines must reach the core, or a launch text, always gives a playlist.
     fn content(
         &mut self,
         game: &str,
-        layout: Option<&UserPlaylist>,
+        shape: Shape<'_>,
         ranges: &[Range<usize>],
     ) -> Result<PathBuf, RuntimeError> {
         match self.images.as_slice() {
-            [only] if !layout.is_some_and(UserPlaylist::has_directives) => Ok(only.clone()),
-            _ => self.write_playlist(game, layout, ranges),
+            [only]
+                if shape.launch.is_none()
+                    && !shape.layout.is_some_and(UserPlaylist::has_directives) =>
+            {
+                Ok(only.clone())
+            }
+            _ => self.write_playlist(game, shape, ranges),
         }
     }
 
     /// `<game>.m3u` next to the copies (relative names for the copies, absolute paths otherwise) or in the temp
     /// directory (absolute paths). `layout` (a user playlist) puts its kept `#` lines and labels back in place;
-    /// `ranges[k]` are the images given by its `k`-th entry. Rewritten only when its content changes.
+    /// `ranges[k]` are the images given by its `k`-th entry. `launch` (validated by [`validate_launch`]):
+    /// `Command` ⇒ first line `#COMMAND:<launch>`; `Program` ⇒ first entry `<image>:<launch>`. Rewritten only
+    /// when its content changes.
     fn write_playlist(
         &mut self,
         game: &str,
-        layout: Option<&UserPlaylist>,
+        shape: Shape<'_>,
         ranges: &[Range<usize>],
     ) -> Result<PathBuf, RuntimeError> {
+        let Shape { layout, launch } = shape;
         let dir = self.dest_dir()?;
         let path = dir.join(format!("{game}.m3u"));
         let mut text = Vec::new();
         let policy = self.policy;
-        let line =
+        let mut program = match launch {
+            Some((M3uLaunch::Command, command)) => {
+                text.extend_from_slice(COMMAND_DIRECTIVE.as_bytes());
+                text.extend_from_slice(command.as_bytes());
+                text.push(b'\n');
+                None
+            }
+            Some((M3uLaunch::Program, program)) => Some(program),
+            Some((M3uLaunch::None, _)) | None => None,
+        };
+        let mut line =
             |text: &mut Vec<u8>, image: &Path, label: Option<&str>| -> Result<(), RuntimeError> {
                 let entry = match policy {
                     MediaPolicy::WorkingCopy => image.strip_prefix(&dir).unwrap_or(image),
@@ -896,6 +944,10 @@ impl<'a> Stage<'a> {
                     )));
                 }
                 text.extend_from_slice(&bytes);
+                if let Some(program) = program.take() {
+                    text.push(b':');
+                    text.extend_from_slice(program.as_bytes());
+                }
                 if let Some(label) = label {
                     text.push(b'|');
                     text.extend_from_slice(label.as_bytes());
@@ -1052,9 +1104,42 @@ fn copy_file(source: &Path, dest: &Path, max: u64) -> Result<(), RuntimeError> {
 }
 
 /// `#` lines of a user `.m3u` copied into a generated one (design v3.0 §3.5.1, white list): `#SAVEDISK:` (puae:
-/// an empty save disk created by the core, named after the playlist) and `#LABEL:`. `#COMMAND:` is not here: it
-/// is only meant for cores that type it into the machine (5.0), never for cores that read it as arguments.
+/// an empty save disk created by the core, named after the playlist) and `#LABEL:`. [`COMMAND_DIRECTIVE`] is
+/// kept only for `M3uLaunch::Command` (cap32 types it into the machine), never for cores that read it as
+/// arguments (VICE) or ignore it.
 const KEPT_DIRECTIVES: [&str; 2] = ["#SAVEDISK:", "#LABEL:"];
+
+/// Launch command of cap32 (`M3uLaunch::Command`).
+const COMMAND_DIRECTIVE: &str = "#COMMAND:";
+
+/// Usual first line of an `.m3u`: dropped without being counted in `PreparedMedia::dropped_lines`.
+const EXTM3U_HEADER: &str = "#EXTM3U";
+
+/// Longest launch text (`MediaSet::launch`, `#COMMAND:` of a user `.m3u`).
+const MAX_LAUNCH_CHARS: usize = 64;
+
+/// `MediaSet::launch` checked against `mode` (design v5.0 §3.2): `None` when absent or blank; otherwise printable
+/// ASCII (no line break), at most 64 characters, and without `:` `|` `#` for `Program` (they would change the
+/// meaning of the entry). Any text with `M3uLaunch::None` is refused.
+fn validate_launch(launch: Option<&str>, mode: M3uLaunch) -> Result<Option<&str>, RuntimeError> {
+    let Some(text) = launch.filter(|t| !t.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let refuse = |why: &str| Err(RuntimeError::InvalidLaunch(why.to_owned()));
+    if mode == M3uLaunch::None {
+        return refuse("this core takes no launch command");
+    }
+    if !text.chars().all(|c| matches!(c, ' '..='~')) {
+        return refuse("only printable ASCII characters, on one line");
+    }
+    if text.len() > MAX_LAUNCH_CHARS {
+        return refuse("at most 64 characters");
+    }
+    if mode == M3uLaunch::Program && text.contains([':', '|', '#']) {
+        return refuse("a program name cannot contain `:`, `|` or `#`");
+    }
+    Ok(Some(text))
+}
 
 /// Longest `#` line or `|label` kept from a user playlist (longer ones are dropped, not cut).
 const MAX_KEPT_LINE_BYTES: usize = 256;
@@ -1063,6 +1148,8 @@ const MAX_KEPT_LINE_BYTES: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UserPlaylist {
     pub lines: Vec<M3uLine>,
+    /// `#` lines left out by the white list (`#EXTM3U` and a `#COMMAND:` replaced by `MediaSet::launch` excepted).
+    pub dropped: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1104,11 +1191,23 @@ pub(crate) fn parse_playlist(playlist: &Path) -> Result<Vec<PathBuf>, RuntimeErr
     read_playlist(playlist).map(|p| p.entries())
 }
 
+/// [`read_playlist_for`] for a core without `m3u_launch`.
+pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeError> {
+    read_playlist_for(playlist, M3uLaunch::None, false)
+}
+
 /// A user `.m3u` (≤ 64 KiB, ≤ [`MAX_MEDIA_IMAGES`] entries): blank lines skipped, `#` lines kept only when
 /// white-listed ([`KEPT_DIRECTIVES`]), a `|label` suffix kept apart, paths absolute or relative to the playlist's
 /// folder; `..`, and drive or root prefixes on a relative path, are refused, as are non-UTF-8 files and control
 /// characters inside an entry. Backslashes are separators on every platform (playlists made on Windows).
-pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeError> {
+///
+/// `#COMMAND:` (design v5.0 §3.2): kept at its place only with `M3uLaunch::Command`, when no launch text
+/// replaces it (`has_launch`) and its command passes [`validate_launch`] (first one only); dropped otherwise.
+pub(crate) fn read_playlist_for(
+    playlist: &Path,
+    mode: M3uLaunch,
+    has_launch: bool,
+) -> Result<UserPlaylist, RuntimeError> {
     let bytes = read_bounded(playlist, MAX_PLAYLIST_BYTES).map_err(|e| io_error(playlist, e))?;
     if bytes.len() > MAX_PLAYLIST_BYTES {
         return Err(RuntimeError::InvalidMediaSet(format!(
@@ -1122,12 +1221,34 @@ pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeErro
     })?;
     let mut lines = Vec::new();
     let mut count = 0;
+    let mut dropped = 0u32;
+    let mut has_command = false;
     for line in text.lines() {
         let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
         }
         if line.starts_with('#') {
+            if let Some(command) = line.strip_prefix(COMMAND_DIRECTIVE)
+                && mode == M3uLaunch::Command
+            {
+                if has_launch {
+                    // Replaced by the launch text of the game, written first.
+                    continue;
+                }
+                match validate_launch(Some(command), mode) {
+                    Ok(Some(_)) if !has_command => {
+                        has_command = true;
+                        lines.push(M3uLine::Directive(line.to_owned()));
+                    }
+                    Ok(_) => dropped += 1,
+                    Err(e) => {
+                        tracing::warn!("{}: `#COMMAND:` dropped ({e})", playlist.display());
+                        dropped += 1;
+                    }
+                }
+                continue;
+            }
             let kept = KEPT_DIRECTIVES.iter().any(|d| line.starts_with(d));
             if kept && keepable(line) {
                 lines.push(M3uLine::Directive(line.to_owned()));
@@ -1136,6 +1257,9 @@ pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeErro
                     "{}: `#` line dropped (too long or control characters)",
                     playlist.display()
                 );
+                dropped += 1;
+            } else if !line.eq_ignore_ascii_case(EXTM3U_HEADER) {
+                dropped += 1;
             }
             continue;
         }
@@ -1187,7 +1311,7 @@ pub(crate) fn read_playlist(playlist: &Path) -> Result<UserPlaylist, RuntimeErro
             playlist.display()
         )));
     }
-    Ok(UserPlaylist { lines })
+    Ok(UserPlaylist { lines, dropped })
 }
 
 fn playlist_entry_path(entry: &str) -> PathBuf {
@@ -1678,6 +1802,9 @@ fn stage_added_copy(
 }
 
 #[cfg(test)]
+mod launch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::content::tests::build_zip;
@@ -2144,6 +2271,8 @@ mod tests {
         );
         assert_eq!(p.images, [work.join("a.adf"), work.join("b.adf"), ipf]);
         assert_eq!(sha(&[m3u]), before);
+        // `# comment`, `#COMMAND:`, `#EXTINF:` (`#EXTM3U` is not counted).
+        assert_eq!(p.dropped_lines, 3);
 
         // One entry plus `#SAVEDISK:`: the playlist is still generated (the core must see the line).
         let one = f.file("h/One.m3u", b"#SAVEDISK:\nx.adf\n");

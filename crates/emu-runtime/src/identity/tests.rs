@@ -775,3 +775,52 @@ fn game_folders_are_identified_by_their_folder() {
     assert_eq!(changed.save_name, "GAME (2)");
     assert_ne!(changed.game_fp(), second.game_fp());
 }
+
+fn resolve_scoped(fx: &Fx, spec: &ContentSpec, scope: SaveScope) -> GameIdentity {
+    let (saves, states) = (fx.saves(), fx.states());
+    let mut req = identity_request_for(spec, &saves, &states);
+    req.scope = scope;
+    resolve_game_identity(&req).unwrap()
+}
+
+/// Design v5.0 §3.2: `SaveScope::Game` is the homonym branch of 2.1, forced for every game of the core.
+#[test]
+fn game_scope_gives_every_game_its_folder() {
+    let fx = Fx::new();
+    let a = fx.rom("a/Jeu.dsk", b"one");
+    let b = fx.rom("b/Jeu.dsk", b"two");
+    let first = resolve_scoped(&fx, &ContentSpec::File(a.clone()), SaveScope::Game);
+    assert_eq!((first.save_name.as_str(), first.index), ("Jeu", 1));
+    assert_eq!(first.core_save_dir, fx.saves().join("Jeu"));
+    let second = resolve_scoped(&fx, &ContentSpec::File(b), SaveScope::Game);
+    assert_eq!((second.save_name.as_str(), second.index), ("Jeu (2)", 2));
+    assert_eq!(second.core_save_dir, fx.saves().join("Jeu (2)"));
+    // Same registry entry under either scope: only the folder handed to the core differs.
+    let core = resolve_scoped(&fx, &ContentSpec::File(a), SaveScope::Core);
+    assert_eq!(core.save_name, first.save_name);
+    assert_eq!(core.core_save_dir, fx.saves());
+    // Nothing is created by the resolution itself (the emulator creates the folder before `Core::load`).
+    assert!(!fx.saves().join("Jeu").exists());
+
+    // No content: `no-game/`, still outside the registry.
+    let none = resolve_scoped(&fx, &ContentSpec::NoGame, SaveScope::Game);
+    assert_eq!(none.save_name, NO_GAME_NAME);
+    assert_eq!(none.core_save_dir, fx.saves().join(NO_GAME_NAME));
+}
+
+#[test]
+fn game_scope_survives_an_unusable_registry() {
+    let fx = Fx::new();
+    fs::write(fx.saves().join(REGISTRY_NAME), b"not a registry").unwrap();
+    let rom = fx.rom("Jeu.dsk", b"one");
+    let id = resolve_scoped(&fx, &ContentSpec::File(rom.clone()), SaveScope::Game);
+    assert_eq!(id.notice, Some(IdentityNotice::RegistryUnusable));
+    assert_eq!(id.core_save_dir, fx.saves().join("Jeu"));
+    // `fallback_identity` (what a caller uses when the resolution fails) follows the scope too.
+    let spec = ContentSpec::File(rom);
+    let (saves, states) = (fx.saves(), fx.states());
+    let mut req = identity_request_for(&spec, &saves, &states);
+    assert_eq!(req.fallback_identity(), GameIdentity::legacy("Jeu", &saves));
+    req.scope = SaveScope::Game;
+    assert_eq!(req.fallback_identity().core_save_dir, saves.join("Jeu"));
+}

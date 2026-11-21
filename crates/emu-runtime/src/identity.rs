@@ -29,7 +29,8 @@ pub struct GameIdentity {
     pub save_name: String,
     /// 1 = bare name (`save_name == base_name()`).
     pub index: u32,
-    /// `GET_SAVE_DIRECTORY`: `<saves>/<core_id>/` for index 1, `<saves>/<core_id>/<save_name>/` otherwise.
+    /// `GET_SAVE_DIRECTORY`: `<saves>/<core_id>/` for index 1, `<saves>/<core_id>/<save_name>/` otherwise or
+    /// whatever the index under [`SaveScope::Game`].
     pub core_save_dir: PathBuf,
     /// Set only by the launch that attributed the name (or found the registry unusable).
     pub notice: Option<IdentityNotice>,
@@ -88,7 +89,7 @@ pub struct IdentityRequest<'a> {
     /// User `.m3u`, else first image, else the file (the archive for a zip); a CD's `.cue` / `.chd` / `.iso`; the
     /// folder of a game folder (fingerprinted by its file list, design v4.0 §10 n° 4).
     pub primary: Option<&'a Path>,
-    /// [`SaveScope::Game`]: `core_save_dir` is the per-game sub-folder for every game (CR1). Set by the caller
+    /// [`SaveScope::Game`]: `core_save_dir` is the per-game sub-folder for every game. Set by the caller
     /// after [`identity_request_for`], which leaves [`SaveScope::Core`].
     pub scope: SaveScope,
 }
@@ -129,6 +130,27 @@ impl GameIdentity {
     /// Several games of the registry share the base name: a state without `game_fp` may be another one's.
     pub(crate) fn has_homonyms(&self) -> bool {
         self.homonyms
+    }
+}
+
+impl IdentityRequest<'_> {
+    /// 2.0 identity (bare name, no fingerprint) honouring [`Self::scope`]: what [`resolve_game_identity`] gives
+    /// for `NoGame` or an unusable registry, and what a caller should use when resolution fails.
+    pub fn fallback_identity(&self) -> GameIdentity {
+        let base = game_name_from_str(&self.base_name);
+        let mut identity = GameIdentity::legacy(&base, self.saves_core_dir);
+        identity.core_save_dir = core_save_dir(self.saves_core_dir, &base, 1, self.scope);
+        identity
+    }
+}
+
+/// `GET_SAVE_DIRECTORY` of a game: the per-game sub-folder for a homonym, or for every game under
+/// [`SaveScope::Game`] (`no-game/` without content).
+fn core_save_dir(saves_core_dir: &Path, save_name: &str, index: u32, scope: SaveScope) -> PathBuf {
+    if index <= 1 && scope == SaveScope::Core {
+        saves_core_dir.to_path_buf()
+    } else {
+        saves_core_dir.join(save_name)
     }
 }
 
@@ -189,7 +211,7 @@ pub fn resolve_game_identity(req: &IdentityRequest<'_>) -> Result<GameIdentity, 
     let base = game_name_from_str(&req.base_name);
     let saves = req.saves_core_dir;
     let Some(primary) = req.primary else {
-        return Ok(GameIdentity::legacy(&base, saves));
+        return Ok(req.fallback_identity());
     };
     let mut source = Primary::open(primary)?;
     fs::create_dir_all(saves).map_err(|e| io_error(saves, e))?;
@@ -203,7 +225,7 @@ pub fn resolve_game_identity(req: &IdentityRequest<'_>) -> Result<GameIdentity, 
                 registry_path.display()
             );
             keep_corrupt_copy(&registry_path);
-            let mut identity = GameIdentity::legacy(&base, saves);
+            let mut identity = req.fallback_identity();
             identity.notice = Some(IdentityNotice::RegistryUnusable);
             return Ok(identity);
         }
@@ -284,11 +306,7 @@ pub fn resolve_game_identity(req: &IdentityRequest<'_>) -> Result<GameIdentity, 
     Ok(GameIdentity {
         save_name: e.save_name.clone(),
         index: e.index,
-        core_save_dir: if e.index <= 1 {
-            saves.to_path_buf()
-        } else {
-            saves.join(&e.save_name)
-        },
+        core_save_dir: core_save_dir(saves, &e.save_name, e.index, req.scope),
         notice,
         base,
         fingerprint: Some(Fingerprint {
