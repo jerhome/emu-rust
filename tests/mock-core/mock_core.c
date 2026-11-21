@@ -64,6 +64,10 @@
  *   MOCK_ANALOG     set -> retro_run reads RETRO_DEVICE_ANALOG on port <value> (a number, 0 if not numeric): sticks
  *                   (index 0 / 1, ids X / Y) and the 16 analog buttons (index 2, ids 0..15). `mock-analog.txt` is
  *                   rewritten when a value changes: "port=P", "left=x,y", "right=x,y", "buttons=v0,...,v15".
+ *   MOCK_CONTROLLERS comma list of RETRO_DEVICE ids (e.g. "1,517", "1,261"; default list "1,517" when the value is "1")
+ *                   -> at set_environment SET_CONTROLLER_INFO (35) declares those types ("Pad <id>") for ports 0 and 1
+ *                   (array ended by a NULL `types` entry, like pcsx_rearmed / swanstation / mednafen_psx).
+ *                   Every retro_set_controller_port_device call is APPENDED to `mock-controllers.txt`: "port=P device=D".
  *   MOCK_FASTFORWARD comma list: "null" -> at set_environment SET_FASTFORWARDING_OVERRIDE (64) with NULL (support probe);
  *                   "load" -> same call with a struct at load_game; "run" -> struct at frame 5 (on) and frame 10 (off);
  *                   "get" -> GET_FASTFORWARDING (49 | EXPERIMENTAL) each run. `mock-ff.txt`: "null=", "load=", "run_on=",
@@ -143,6 +147,7 @@
 #define RETRO_ENVIRONMENT_SET_VARIABLES 16
 #define RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME 18
 #define RETRO_ENVIRONMENT_GET_LOG_INTERFACE 27
+#define RETRO_ENVIRONMENT_SET_CONTROLLER_INFO 35
 #define RETRO_ENVIRONMENT_GET_PERF_INTERFACE 28
 #define RETRO_ENVIRONMENT_GET_VFS_INTERFACE 45
 #define RETRO_ENVIRONMENT_GET_LED_INTERFACE 46
@@ -1026,6 +1031,35 @@ static unsigned current_state_size(void) {
     return state_size_b && counter >= 20 ? state_size_b : state_size_a;
 }
 
+/* -- SET_CONTROLLER_INFO -- */
+struct ctl_desc { const char *desc; unsigned id; };
+struct ctl_info { const struct ctl_desc *types; unsigned num_types; };
+
+static void declare_controllers(void) {
+    static struct ctl_desc descs[8];
+    static char names[8][16];
+    static struct ctl_info info[3];
+    const char *v = getenv("MOCK_CONTROLLERS");
+    unsigned n = 0;
+    if (!v || !v[0]) return;
+    if (!strcmp(v, "1")) v = "1,517";
+    while (*v && n < 8) {
+        char *end = NULL;
+        unsigned long id = strtoul(v, &end, 10);
+        if (end == v) break;
+        snprintf(names[n], sizeof names[n], "Pad %lu", id);
+        descs[n].desc = names[n];
+        descs[n].id = (unsigned)id;
+        n++;
+        v = *end == ',' ? end + 1 : end;
+    }
+    info[0].types = info[1].types = descs;
+    info[0].num_types = info[1].num_types = n;
+    info[2].types = NULL;
+    info[2].num_types = 0;
+    env_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, info);
+}
+
 /* ---- libretro entry points ---- */
 MOCK_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -1047,6 +1081,7 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
     if (env_probe_on) probe_environment();
     if (vfs_on) vfs_request();
     if (ff_null_on) ff_probe_null();
+    declare_controllers();
     if (state_size_a && !env_flag("MOCK_STATE_SIZE_NOQUIRK")) {
         uint64_t quirks = RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE;
         env_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
@@ -1100,7 +1135,14 @@ MOCK_API void retro_get_system_av_info(struct retro_system_av_info *info) {
     info->timing.sample_rate = 44100.0;
 }
 
-MOCK_API void retro_set_controller_port_device(unsigned port, unsigned device) { (void)port; (void)device; }
+MOCK_API void retro_set_controller_port_device(unsigned port, unsigned device) {
+    char path[1100];
+    FILE *f;
+    if (!env_flag("MOCK_CONTROLLERS") || !save_file_path("mock-controllers.txt", path, sizeof path)) return;
+    if (!(f = fopen(path, "a"))) return;
+    fprintf(f, "port=%u device=%u\n", port, device);
+    fclose(f);
+}
 
 MOCK_API bool retro_load_game(const struct retro_game_info *game) {
     int fmt = PIXEL_FORMAT;

@@ -26,7 +26,7 @@ def parse_cue(text):
         line = line.strip()
         if m := re.fullmatch(r'FILE "([^"]+)" BINARY', line):
             cur_file = m.group(1)
-        elif m := re.fullmatch(r"TRACK (\d\d) (MODE1/2048|MODE1/2352|AUDIO)", line):
+        elif m := re.fullmatch(r"TRACK (\d\d) (MODE1/2048|MODE1/2352|MODE2/2352|AUDIO)", line):
             tracks.append({"file": cur_file, "number": int(m.group(1)), "mode": m.group(2), "indexes": {}})
         elif m := re.fullmatch(r"INDEX (\d\d) (\d\d):(\d\d):(\d\d)", line):
             mm, ss, ff = map(int, m.groups()[1:])
@@ -178,6 +178,137 @@ class Iso9660(unittest.TestCase):
     def test_bad_name(self):
         with self.assertRaises(ValueError):
             mkcd.iso9660({"Long Name.txt": b""})
+
+
+def gen_cmd(cmd, outdir, *args):
+    subprocess.run([sys.executable, "-I", os.path.join(HERE, "mkcd.py"), cmd, outdir, *args], check=True)
+
+
+def iso_files(iso):
+    """Root directory of an image written by mkcd (extent 20): {name without ;1: (lba, size)}."""
+    root = iso[20 * 2048 : 21 * 2048]
+    out, pos = {}, 0
+    while pos < len(root) and root[pos]:
+        n = root[pos]
+        rec = root[pos : pos + n]
+        name = rec[33 : 33 + rec[32]]
+        if name not in (b"\x00", b"\x01"):
+            out[name.decode().split(";")[0]] = (struct.unpack("<I", rec[2:6])[0], struct.unpack("<I", rec[10:14])[0])
+        pos += n
+    return out
+
+
+class Psx(unittest.TestCase):
+    def test_iso_structure(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("psx", d, "--iso", "--region", "E")
+        iso = read(d, "fakepsx.iso")
+        self.assertEqual(len(iso) % 2048, 0)
+        self.assertEqual(iso[16 * 2048 : 16 * 2048 + 6], b"\x01CD001")
+        self.assertEqual(iso[16 * 2048 + 8 : 16 * 2048 + 19], b"PLAYSTATION")
+        self.assertIn(b"Euro pe", iso[4 * 2048 : 5 * 2048])
+        self.assertNotIn(b"Sony", iso[: 16 * 2048])
+        self.assertNotIn(b"Licensed", iso[: 16 * 2048])
+        files = iso_files(iso)
+        self.assertEqual(sorted(files), ["SLES_999.01", "SYSTEM.CNF"])
+        lba, size = files["SYSTEM.CNF"]
+        cnf = iso[lba * 2048 : lba * 2048 + size].decode()
+        self.assertTrue(cnf.startswith("BOOT = cdrom:\\SLES_999.01;1\r\n"), cnf)
+
+    def test_regions_and_serial(self):
+        for region, token, prefix in (("U", b"Amer  ica", "SLUS_999.01"), ("J", b"Inc.", "SLPS_999.01"), ("E", b"Euro pe", "SLES_999.01")):
+            iso = mkcd.psx_iso(region)
+            self.assertIn(token, iso[4 * 2048 : 5 * 2048])
+            self.assertIn(prefix, iso_files(iso))
+        iso = mkcd.psx_iso("U", serial="SLUS-00001")
+        lba, size = iso_files(iso)["SYSTEM.CNF"]
+        self.assertIn(b"cdrom:\\SLUS_000.01;1", iso[lba * 2048 : lba * 2048 + size])
+        for bad in ("SLES99901", "sles-99901", "SLES-999"):
+            with self.assertRaises(ValueError):
+                mkcd.psx_iso("E", serial=bad)
+        with self.assertRaises(ValueError):
+            mkcd.psx_iso("X")
+
+    def test_variants_without_cnf_or_license(self):
+        iso = mkcd.psx_iso("E", system_cnf=False, license_area=False)
+        self.assertEqual(sorted(iso_files(iso)), ["SLES_999.01"])
+        self.assertEqual(iso[: 16 * 2048], bytes(16 * 2048))
+        self.assertEqual(iso[16 * 2048 + 8 : 16 * 2048 + 19], b"PLAYSTATION")
+
+    def test_raw_mode2_and_cue(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("psx", d, "--iso")
+        iso, b = read(d, "fakepsx.iso"), read(d, "fakepsx.bin")
+        self.assertEqual(len(b), len(iso) // 2048 * 2352)
+        self.assertEqual(b[:12], b"\x00" + b"\xff" * 10 + b"\x00")
+        self.assertEqual(b[15], 2)
+        self.assertEqual(b[16:24], bytes([0, 0, 8, 0, 0, 0, 8, 0]))
+        for lba in (0, 4, 16, 17):
+            self.assertEqual(b[lba * 2352 + 24 : lba * 2352 + 24 + 2048], iso[lba * 2048 : (lba + 1) * 2048])
+        self.assertEqual(b[16 * 2352 + 24 + 8 : 16 * 2352 + 24 + 19], b"PLAYSTATION")
+        sec = b[2352:2 * 2352]
+        self.assertEqual(struct.unpack("<I", sec[2072:2076])[0], mkcd.edc(sec[16:2072]))
+        t = parse_cue(read(d, "fakepsx.cue").decode())
+        self.assertEqual(t[0]["file"], "fakepsx.bin")
+
+    def test_mode1(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("psx", d, "--mode", "1")
+        b = read(d, "fakepsx.bin")
+        self.assertEqual(b[15], 1)
+        self.assertEqual(b[16 * 2352 + 16 : 16 * 2352 + 22], b"\x01CD001")
+        self.assertIn(b"MODE1/2352", read(d, "fakepsx.cue"))
+
+    def test_boot_exe_is_stored(self):
+        d = tempfile.mkdtemp()
+        exe = os.path.join(d, "t.exe")
+        payload = b"PS-X EXE" + bytes(range(256)) * 20
+        with open(exe, "wb") as f:
+            f.write(payload)
+        gen_cmd("psx", d, "--psx-boot", exe, "--iso", "--region", "U", "--serial", "SLUS-00001")
+        iso = read(d, "fakepsx.iso")
+        lba, size = iso_files(iso)["SLUS_000.01"]
+        self.assertEqual(size, len(payload))
+        self.assertEqual(iso[lba * 2048 : lba * 2048 + size], payload)
+
+    def test_two_discs_and_m3u(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("psx", d, "--name", "Game", "--discs", "2")
+        self.assertEqual(
+            read(d, "Game.m3u"), b"Game (Disc 1).cue\r\nGame (Disc 2).cue\r\n"
+        )
+        for k in (1, 2):
+            self.assertTrue(os.path.exists(os.path.join(d, "Game (Disc %d).bin" % k)))
+            t = parse_cue(read(d, "Game (Disc %d).cue" % k).decode())
+            self.assertEqual(t[0]["file"], "Game (Disc %d).bin" % k)
+
+    def test_reproducible(self):
+        a, b = tempfile.mkdtemp(), tempfile.mkdtemp()
+        gen_cmd("psx", a, "--iso")
+        gen_cmd("psx", b, "--iso")
+        for n in ("fakepsx.bin", "fakepsx.cue", "fakepsx.iso"):
+            self.assertEqual(hashlib.sha256(read(a, n)).digest(), hashlib.sha256(read(b, n)).digest())
+
+
+class ThreeDo(unittest.TestCase):
+    def test_raw(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("3do", d)
+        b = read(d, "fake3do.bin")
+        self.assertEqual(len(b) % 2352, 0)
+        self.assertEqual(b[16:23], b"\x01ZZZZZ\x01")
+        self.assertEqual(b[12:16], bytes([0, 2, 0, 1]))
+        self.assertIn(b"MODE1/2352", read(d, "fake3do.cue"))
+        self.assertNotIn(b"CD001", b[: 40 * 2352])  # not mistaken for a PlayStation disc
+
+    def test_2048_and_no_portfolio_content(self):
+        d = tempfile.mkdtemp()
+        gen_cmd("3do", d, "--sector", "2048")
+        iso = read(d, "fake3do.iso")
+        self.assertEqual(iso[:7], b"\x01ZZZZZ\x01")
+        self.assertEqual(iso[7:17], b"EMURUST3DO")
+        self.assertEqual(len(iso) % 2048, 0)
+        self.assertFalse(os.path.exists(os.path.join(d, "fake3do.cue")))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,19 @@ usage (python3 -I mkcd.py ...):
                         [--layout multi|mono] [--pregap SECTORS] [--iso] [--discs N] [--m3u]
   mkcd.py orphan OUT.bin        data track alone (SEGADISCSYSTEM, MODE1/2352), no .cue
   mkcd.py 32x OUT.32x           fake 32X ROM header ("SEGA 32X" at 0x100); not bootable
+  mkcd.py psx OUTDIR [--name N] [--region J|U|E] [--serial SLES-99901] [--mode 1|2] [--iso] [--discs N] [--m3u]
+                     [--boot PS-EXE | --psx-boot PS-EXE] [--no-system-cnf] [--no-license]
+                     fake PlayStation disc: ISO 9660 (PLAYSTATION descriptor at sector 16), fake licence area at sector 4,
+                     SYSTEM.CNF "BOOT = cdrom:\\SLES_999.01;1"; NAME.bin (MODE2/2352, or MODE1/2352 with --mode 1) + NAME.cue
+  mkcd.py 3do OUTDIR [--name N] [--sector 2048|2352]   fake 3DO disc: Opera volume header only (not bootable)
   mkcd.py iso9660 OUT.iso [--label L] [--file NAME=PATH ...]   minimal ISO 9660 (PC / DOS discs)
+
+PlayStation disc notes (design v7.0 2.2 / 5): the licence area at sector 4 is NEVER the Sony text; it is a fake line
+containing only the short region token the probe looks for ("Amer  ica" = USA, "Euro pe" = Europe, "Inc." = Japan).
+The series prefix follows the region unless --serial is given (E: SLES, U: SLUS, J: SLPS). With --boot the PS-EXE
+(e.g. ps1-tests gpu/triangle) is stored as the boot file named after the series, so the disc can start; without it the
+boot file is a zero-filled stub (scan only).
+3DO: Opera volume header 01 5A 5A 5A 5A 5A 01 + label, at 0 (2048) or 0x10 (raw sector); no Portfolio content at all.
 
 Output is deterministic; SOURCE_DATE_EPOCH (if set) only changes the ISO 9660 timestamps.
 
@@ -27,6 +39,7 @@ MODE1/2352 sectors: sync, BCD MSF header, 2048 data, EDC (CRC, poly 0xD8018001),
 import argparse
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -75,6 +88,15 @@ def raw_mode1(lba: int, user: bytes) -> bytes:
     m, s, f = msf(lba + 150)
     head = SYNC + bytes([_bcd(m), _bcd(s), _bcd(f), 1]) + user
     return head + struct.pack("<I", edc(head)) + bytes(8) + bytes(276)
+
+
+def raw_mode2(lba: int, user: bytes) -> bytes:
+    """One MODE2/2352 form 1 sector (PlayStation): subheader 00 00 08 00 twice, EDC over subheader+data, ECC zero."""
+    assert len(user) == USER
+    m, s, f = msf(lba + 150)
+    body = bytes([0, 0, 8, 0, 0, 0, 8, 0]) + user
+    head = SYNC + bytes([_bcd(m), _bcd(s), _bcd(f), 2])
+    return head + body + struct.pack("<I", edc(body)) + bytes(276)
 
 
 def _field(text: str, n: int) -> bytes:
@@ -168,7 +190,7 @@ def build_cd(a) -> dict[str, bytes]:
     return files
 
 
-def iso9660(files: dict[str, bytes], label="EMURUST", when=None) -> bytes:
+def iso9660(files: dict[str, bytes], label="EMURUST", when=None, system_id="EMU-RUST", system_area=b"") -> bytes:
     """Minimal ISO 9660 level 1: root directory only, names upper-case 8.3 stored as NAME.EXT;1."""
     when = time.gmtime(when if when is not None else 946684800)  # 2000-01-01 unless given
     both32 = lambda v: struct.pack("<I", v) + struct.pack(">I", v)
@@ -200,7 +222,7 @@ def iso9660(files: dict[str, bytes], label="EMURUST", when=None) -> bytes:
     ptab_m = struct.pack(">BBIH", 1, 0, ROOT_LBA, 1) + b"\x00\x00"
     pvd = bytearray(USER)
     pvd[0:8] = b"\x01CD001\x01\x00"
-    pvd[8:40] = _field("EMU-RUST", 32)
+    pvd[8:40] = _field(system_id, 32)
     pvd[40:72] = _field(label.upper(), 32)
     pvd[80:88] = both32(lba)
     pvd[120:124] = both16(1)
@@ -221,9 +243,77 @@ def iso9660(files: dict[str, bytes], label="EMURUST", when=None) -> bytes:
     pvd[881] = 1
     term = bytearray(USER)
     term[0:8] = b"\xffCD001\x01\x00"
-    out = bytes(16 * USER) + bytes(pvd) + bytes(term)
+    out = system_area.ljust(16 * USER, b"\0") + bytes(pvd) + bytes(term)
     out += ptab_l.ljust(USER, b"\0") + ptab_m.ljust(USER, b"\0") + dirdata.ljust(USER, b"\0") + bytes(body)
     return out
+
+
+PSX_PREFIX = {"E": "SLES", "U": "SLUS", "J": "SLPS"}
+# Only the short token the probe matches: never the Sony licence text.
+PSX_LICENSE_TOKEN = {"E": "Euro pe", "U": "Amer  ica", "J": "Inc."}
+
+
+def psx_serial_ok(serial: str) -> bool:
+    return re.fullmatch(r"[A-Z]{4}-[0-9]{5}", serial) is not None
+
+
+def psx_system_area(region: str) -> bytes:
+    area = bytearray(16 * USER)
+    text = "EMU-RUST FAKE LICENSE AREA, NOT THE SONY TEXT: " + PSX_LICENSE_TOKEN[region]
+    area[4 * USER : 4 * USER + len(text)] = text.encode("ascii")
+    return bytes(area)
+
+
+def psx_iso(region="E", serial=None, boot=None, system_cnf=True, license_area=True, label="EMURUSTPSX") -> bytes:
+    """2048-byte-sector ISO 9660 image of a fake PlayStation disc."""
+    if region not in PSX_PREFIX:
+        raise ValueError("region must be J, U or E")
+    serial = serial or PSX_PREFIX[region] + "-99901"
+    if not psx_serial_ok(serial):
+        raise ValueError("serial must look like SLES-99901")
+    exe = serial[:4] + "_" + serial[5:8] + "." + serial[8:]
+    files = {exe: boot if boot is not None else bytes(2048)}
+    if system_cnf:
+        cnf = "BOOT = cdrom:\\%s;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFF00\r\n" % exe
+        files["SYSTEM.CNF"] = cnf.encode("ascii")
+    return iso9660(files, label, system_id="PLAYSTATION", system_area=psx_system_area(region) if license_area else b"")
+
+
+def psx_files(a) -> dict[str, bytes]:
+    iso = psx_iso(a.region, a.serial, a.boot_data, not a.no_system_cnf, not a.no_license)
+    sectors = [iso[i : i + USER] for i in range(0, len(iso), USER)]
+    raw = raw_mode2 if a.mode == 2 else raw_mode1
+    base = a.disc_name
+    cue = ['FILE "%s.bin" BINARY' % base, "  TRACK 01 MODE%d/2352" % a.mode, "    INDEX 01 00:00:00"]
+    files = {
+        base + ".bin": b"".join(raw(i, u) for i, u in enumerate(sectors)),
+        base + ".cue": ("\r\n".join(cue) + "\r\n").encode(),
+    }
+    if a.iso:
+        files[base + ".iso"] = iso
+    return files
+
+
+OPERA_SIGNATURE = b"\x01ZZZZZ\x01"
+
+
+def fake_3do_sector0(label="EMURUST3DO") -> bytes:
+    s = bytearray(USER)
+    s[0:7] = OPERA_SIGNATURE
+    s[7:39] = _field(label, 32)
+    s[40:0x60] = _field("EMU-RUST FAKE 3DO, NO PORTFOLIO CONTENT", 56)
+    return bytes(s)
+
+
+def fake_3do_files(base: str, sector: int, sectors: int = 32) -> dict[str, bytes]:
+    user = [fake_3do_sector0()] + [_field("EMU-RUST FAKE 3DO SECTOR %d" % i, USER) for i in range(1, sectors)]
+    if sector == USER:
+        return {base + ".iso": b"".join(user)}
+    cue = ['FILE "%s.bin" BINARY' % base, "  TRACK 01 MODE1/2352", "    INDEX 01 00:00:00"]
+    return {
+        base + ".bin": b"".join(raw_mode1(i, u) for i, u in enumerate(user)),
+        base + ".cue": ("\r\n".join(cue) + "\r\n").encode(),
+    }
 
 
 def fake_32x() -> bytes:
@@ -256,6 +346,22 @@ def main(argv):
     m.add_argument("--iso", action="store_true", help="also write NAME.iso (2048-byte data track)")
     m.add_argument("--discs", type=int, default=1, help="N > 1 writes 'NAME (Disc k)' images and NAME.m3u")
     m.add_argument("--m3u", action="store_true")
+    c = sub.add_parser("psx")
+    c.add_argument("outdir")
+    c.add_argument("--name", default="fakepsx")
+    c.add_argument("--region", choices="JUE", default="E")
+    c.add_argument("--serial", default=None)
+    c.add_argument("--mode", type=int, choices=(1, 2), default=2)
+    c.add_argument("--iso", action="store_true", help="also write NAME.iso (2048-byte sectors)")
+    c.add_argument("--discs", type=int, default=1)
+    c.add_argument("--m3u", action="store_true")
+    c.add_argument("--boot", "--psx-boot", dest="boot", default=None, metavar="PS-EXE")
+    c.add_argument("--no-system-cnf", action="store_true")
+    c.add_argument("--no-license", action="store_true")
+    d = sub.add_parser("3do")
+    d.add_argument("outdir")
+    d.add_argument("--name", default="fake3do")
+    d.add_argument("--sector", type=int, choices=(2048, 2352), default=2352)
     o = sub.add_parser("orphan")
     o.add_argument("out")
     x = sub.add_parser("32x")
@@ -278,6 +384,23 @@ def main(argv):
         if a.m3u or a.discs > 1:
             with open(os.path.join(a.outdir, a.name + ".m3u"), "w", newline="") as f:
                 f.write("\r\n".join(cues) + "\r\n")
+    elif a.cmd == "psx":
+        os.makedirs(a.outdir, exist_ok=True)
+        a.boot_data = open(a.boot, "rb").read() if a.boot else None
+        names = [a.name] if a.discs == 1 else ["%s (Disc %d)" % (a.name, k + 1) for k in range(a.discs)]
+        for n in names:
+            a.disc_name = n
+            for fn, data in psx_files(a).items():
+                with open(os.path.join(a.outdir, fn), "wb") as f:
+                    f.write(data)
+        if a.m3u or a.discs > 1:
+            with open(os.path.join(a.outdir, a.name + ".m3u"), "w", newline="") as f:
+                f.write("\r\n".join(n + ".cue" for n in names) + "\r\n")
+    elif a.cmd == "3do":
+        os.makedirs(a.outdir, exist_ok=True)
+        for fn, data in fake_3do_files(a.name, a.sector).items():
+            with open(os.path.join(a.outdir, fn), "wb") as f:
+                f.write(data)
     elif a.cmd == "orphan":
         with open(a.out, "wb") as f:
             f.write(data_track(megacd_sector0(), 16, RAW))
