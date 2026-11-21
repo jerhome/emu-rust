@@ -13,6 +13,11 @@ use emu_runtime::{ContentSpec, SnapshotStatus, snapshot_path, snapshot_status};
 use crate::content::{GameContent, content_spec};
 use crate::ui::text;
 
+/// Option of dosbox_pure listing the MIDI devices found in `system/` (SoundFont, MT-32).
+pub(crate) const MIDI_OPTION: &str = "dosbox_pure_midi";
+/// Free SoundFont of the catalogue (`free_bios.toml`), installed on request only.
+pub(crate) const SOUNDFONT_FILE: &str = "GeneralUser-GS.sf2";
+
 /// What remains to do before `Emulator::load_content_as` (design v4.0 §2.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DosPlan {
@@ -44,6 +49,8 @@ pub(crate) fn game_content(game: &Game, computer: bool, start: Option<&str>) -> 
 
 /// `ContentSpec` of a library game for `core`. A folder needs a core declaring `folders` (`FolderPolicy`) and a
 /// valid `start`; the rest goes through [`content_spec`] (zips and CD images direct, writable images copied).
+/// The library and `App::build` reach it through [`game_content`] + [`spec_for_content`].
+#[cfg(test)]
 pub(crate) fn plan_dos_launch(
     game: &Game,
     prefs: &CorePreferences,
@@ -79,7 +86,10 @@ pub(crate) fn spec_for_content(
                 start: start.clone(),
             })
         }
-        GameContent::Files(files) if files.iter().any(|f| has_ext(f, &["conf"])) => {
+        GameContent::Files(files)
+            if prefs.folder_policy(core).is_some()
+                && files.iter().any(|f| has_ext(f, &["conf"])) =>
+        {
             Err(text::DOS_CONF_REFUSED.to_owned())
         }
         other => Ok(content_spec(core.as_str(), other, prefs)),

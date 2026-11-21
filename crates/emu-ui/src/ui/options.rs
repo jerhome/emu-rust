@@ -3,7 +3,7 @@
 use egui::{Button, Context, Grid, RichText, ScrollArea};
 
 use super::{
-    Overlay, UiAction, UiData, cycle_value, group_options, locked_banner, nav, screen_window,
+    Overlay, UiAction, UiData, cycle_value, group_options_with, locked_banner, nav, screen_window,
     stepper, text,
 };
 
@@ -32,7 +32,7 @@ pub(super) fn show(
                 actions.push(UiAction::SetGameScope(!data.game_scope));
             }
         });
-        let groups = group_options(data.options, data.categories);
+        let groups = group_options_with(data.options, data.categories, data.featured);
         let mut focused_info: Option<String> = None;
         if groups.is_empty() {
             ui.label(text::OPTIONS_NONE);
@@ -69,6 +69,12 @@ pub(super) fn show(
                                     if resp.has_focus() {
                                         focused_info =
                                             opt.info.as_deref().map(text::sanitize_core_text);
+                                    }
+                                    if resp.has_focus()
+                                        && data.soundfont_hint
+                                        && opt.key == crate::computer::dos::MIDI_OPTION
+                                    {
+                                        focused_info = Some(text::DOS_SOUNDFONT_HINT.to_owned());
                                     }
                                     let delta = stepper(ui, &resp);
                                     if delta != 0

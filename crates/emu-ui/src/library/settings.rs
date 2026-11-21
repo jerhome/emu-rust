@@ -134,6 +134,7 @@ impl LibraryUi {
 
     /// Re-reads what the page shows from disk and the database.
     pub(super) fn refresh_settings_cache(&mut self) {
+        self.refresh_dos_cache();
         self.settings.root_exists = self
             .config
             .library
@@ -205,6 +206,8 @@ impl LibraryUi {
                     self.credentials_section(ui);
                     ui.separator();
                     self.gamepad_section(ui);
+                    ui.separator();
+                    self.dos_cache_section(ui);
                 });
         });
         if escape {

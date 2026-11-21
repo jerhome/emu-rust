@@ -29,7 +29,10 @@ fn system_color(id: &str) -> Color32 {
 
 impl LibraryUi {
     pub(super) fn home(&mut self, ui: &mut Ui) {
-        let dialog_open = self.dialog.is_some() || self.cores.import.is_active();
+        let dialog_open = self.dialog.is_some()
+            || self.cores.import.is_active()
+            || self.snapshot_busy()
+            || self.programs_open();
         let mut refilter = false;
         let search_id = Id::unique("library-search");
 
@@ -159,6 +162,9 @@ impl LibraryUi {
                 super::weak(ui, status);
             }
             super::weak(ui, text::HOME_HINT);
+            if self.selected_game().is_some_and(|g| g.is_dir) {
+                super::weak(ui, text::DOS_FOLDER_HINT);
+            }
         });
 
         // Keys that work wherever the focus is (not while typing, not under a dialog).
@@ -233,7 +239,7 @@ impl LibraryUi {
         }
         if !dialog_open && (focused || nothing_focused) {
             let page = self.page_rows;
-            let (navs, enter, fav) = ui.input(|i| {
+            let (navs, enter, fav, programs) = ui.input(|i| {
                 let mut navs = Vec::new();
                 for (key, nav) in [
                     (Key::ArrowLeft, Nav::Left),
@@ -253,6 +259,7 @@ impl LibraryUi {
                     navs,
                     focused && (i.key_pressed(Key::Enter) || i.key_pressed(Key::Space)),
                     focused && i.key_pressed(Key::F) && i.modifiers.is_none(),
+                    focused && i.key_pressed(Key::P) && i.modifiers.is_none(),
                 )
             });
             if !navs.is_empty() && !focused {
@@ -268,6 +275,9 @@ impl LibraryUi {
             }
             if fav {
                 self.toggle_favorite();
+            }
+            if programs {
+                self.open_programs();
             }
         }
 

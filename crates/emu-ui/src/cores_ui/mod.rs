@@ -90,6 +90,12 @@ pub(crate) enum CoresEvent {
         system: String,
         core: CoreId,
     },
+    /// « Utiliser pour tous les jeux DOS »: `[core_options.<core>] <key> = <value>` to write.
+    SetCoreOption {
+        core: String,
+        key: String,
+        value: String,
+    },
 }
 
 struct Snapshot {
@@ -546,6 +552,9 @@ impl CoresUi {
                 event = Some(CoresEvent::Back);
             }
             self.bios.show(ui, &ctx);
+            if let Some((core, key, value)) = self.bios.use_for_all.take() {
+                event = Some(CoresEvent::SetCoreOption { core, key, value });
+            }
             ui.separator();
             if let Some(e) = self.core_choice(ui) {
                 event = Some(e);

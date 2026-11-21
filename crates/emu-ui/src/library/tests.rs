@@ -1019,3 +1019,166 @@ fn preferred_core_is_written_and_cleared() {
     h.ui.prefer_core("Commodore - Amiga", CoreId::new("puae").unwrap());
     assert!(!h.ui.config.cores.preferred.contains_key("amiga"));
 }
+
+fn dos_request(dir: &Path, start: Option<&str>) -> LaunchRequest {
+    LaunchRequest {
+        game: None,
+        title: "Jeu".to_owned(),
+        core: emu_assets::cores::CoreId::new("dosbox_pure").unwrap(),
+        core_path: "/x".into(),
+        content: crate::GameContent::Folder {
+            dir: dir.to_path_buf(),
+            start: start.map(str::to_owned),
+        },
+        computer: true,
+        warnings: Vec::new(),
+        failure_hint: None,
+    }
+}
+
+/// Design v4.0 §2.1: a folder game is held back while its snapshot is built (job, « Préparation du jeu… »), then
+/// launched; the next launch finds the snapshot current and goes straight through.
+#[test]
+fn dos_folder_launch_waits_for_its_snapshot() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    let dir = h._tmp.path().join("roms/dos/Jeu");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("GAME.EXE"), vec![1u8; 300_000]).unwrap();
+    h.ui.events
+        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+    assert!(
+        h.frame(Vec::new()).is_empty(),
+        "held back during the snapshot"
+    );
+    assert!(h.ui.snapshot_busy());
+    let mut launched = Vec::new();
+    for _ in 0..500 {
+        launched = h.frame(Vec::new());
+        if !launched.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        matches!(launched.as_slice(), [LibraryEvent::Launch(r)] if r.title == "Jeu"),
+        "{launched:?}"
+    );
+    assert!(!h.ui.snapshot_busy());
+    assert!(h.ui.dirs.cache_dir().join("dosbox_pure/Jeu.zip").is_file());
+    h.ui.events
+        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+    assert_eq!(
+        h.frame(Vec::new()).len(),
+        1,
+        "current snapshot: immediate launch"
+    );
+    // A program that is not at the root: refused with a message, no launch.
+    h.ui.events
+        .push(LibraryEvent::Launch(dos_request(&dir, Some("NOPE.EXE"))));
+    assert!(h.frame(Vec::new()).is_empty());
+    assert!(matches!(h.ui.dialog, Some(Dialog::Message(_))));
+}
+
+#[test]
+fn dos_snapshot_can_be_cancelled_with_the_keyboard() {
+    let mut h = harness(true);
+    h.frame(Vec::new());
+    let dir = h._tmp.path().join("roms/dos/Gros");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..40 {
+        std::fs::write(dir.join(format!("F{i}.DAT")), vec![0u8; 1 << 20]).unwrap();
+    }
+    std::fs::write(dir.join("GO.EXE"), b"MZ").unwrap();
+    h.ui.events
+        .push(LibraryEvent::Launch(dos_request(&dir, None)));
+    h.frame(Vec::new());
+    assert!(h.ui.snapshot_busy());
+    // « Annuler » has the focus: Escape or Enter cancels.
+    h.key(Key::Escape);
+    let mut events = Vec::new();
+    for _ in 0..500 {
+        events.extend(h.frame(Vec::new()));
+        if !h.ui.snapshot_busy() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.ui.snapshot_busy());
+    // Either cancelled in time (no launch, no residue) or already finished (launch): never a half snapshot.
+    let zip = h.ui.dirs.cache_dir().join("dosbox_pure/Gros.zip");
+    assert_eq!(events.is_empty(), !zip.exists(), "{events:?}");
+}
+
+#[test]
+fn dos_cache_size_and_clear() {
+    let mut h = harness(false);
+    let cache = h.ui.dirs.cache_dir().join("dosbox_pure");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("Jeu.zip"), vec![0u8; 4096]).unwrap();
+    h.ui.refresh_dos_cache();
+    for _ in 0..200 {
+        h.ui.poll_dos_cache();
+        if h.ui.dos_cache.size.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(h.ui.dos_cache.size, Some(4096));
+    // Private copies of the cores (ADR 0022) live next to it and are never touched.
+    let copies = h.ui.dirs.cache_dir().join("core-copies");
+    std::fs::create_dir_all(&copies).unwrap();
+    std::fs::write(copies.join("dosbox_pure.so"), b"core").unwrap();
+    h.ui.clear_dos_cache();
+    assert!(!cache.exists());
+    assert!(copies.join("dosbox_pure.so").is_file());
+    assert_eq!(
+        h.ui.dos_cache.message.as_deref(),
+        Some(text::DOS_CACHE_CLEARED)
+    );
+}
+
+/// « Lancer un autre programme… » (design v4.0 §2.2), keyboard only: P on a folder game, Enter on a program, then
+/// « Par défaut » remembers it in the game's options (`[dos] start`).
+#[test]
+fn dos_programs_dialog_by_keyboard() {
+    let mut h = harness(false);
+    h.frame(Vec::new());
+    let dir = h._tmp.path().join("roms/dos/Jeu");
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["SETUP.EXE", "go.exe", "README.TXT"] {
+        std::fs::write(dir.join(f), b"MZ").unwrap();
+    }
+    let mut g = game(9999, "dos", dir.to_str().unwrap(), None);
+    g.is_dir = true;
+    g.title = "Jeu".into();
+    h.ui.games.push(g);
+    h.ui.visible = vec![h.ui.games.len() - 1];
+    h.ui.selected = 0;
+    h.frame(Vec::new());
+    h.key(Key::P);
+    assert!(h.ui.programs_open());
+    let d = h.ui.programs.as_ref().unwrap();
+    assert_eq!(d.programs, ["GO.EXE", "SETUP.EXE"]);
+    let options_path = d.options_path.clone();
+    h.frame(Vec::new());
+    h.key(Key::Enter); // GO.EXE
+    assert_eq!(
+        h.ui.programs.as_ref().unwrap().chosen.as_deref(),
+        Some("GO.EXE")
+    );
+    h.frame(Vec::new());
+    h.key(Key::Tab); // « Par défaut »
+    h.key(Key::Enter);
+    assert!(!h.ui.programs_open());
+    let saved = crate::game_options::GameOptions::load(&options_path);
+    assert_eq!(saved.options.dos.start.as_deref(), Some("GO.EXE"));
+    // Escape closes without anything.
+    h.frame(Vec::new());
+    h.ui.dialog = None;
+    h.key(Key::P);
+    assert!(h.ui.programs_open());
+    h.frame(Vec::new());
+    h.key(Key::Escape);
+    assert!(!h.ui.programs_open());
+}

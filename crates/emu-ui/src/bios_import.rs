@@ -203,6 +203,10 @@ pub fn import_bios(
             }
         }
     }
+    if report.installed > 0 {
+        // MT-32 ROMs: dosbox_pure lists them only once its MIDI cache is gone (design v4.0 §2.4).
+        crate::dos_launch::invalidate_core_caches(system_dir);
+    }
     report
 }
 

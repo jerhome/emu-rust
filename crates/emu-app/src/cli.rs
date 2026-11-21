@@ -18,7 +18,9 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
                          \x20      emu-rust [--data-dir DIR] --remove-core <ID> | --check-bios [ID] | --list-bios\n\
-                         \x20      emu-rust [--data-dir DIR] --install-bios emutos[:VARIANTE] [--replace-user-bios]\n\
+                         \x20      emu-rust [--data-dir DIR] --install-bios emutos[:VARIANTE] | generaluser-gs\n\
+                         \x20                [--replace-user-bios]\n\
+                         \x20      emu-rust [--data-dir DIR] --clear-dos-cache\n\
                          \x20      emu-rust [--data-dir DIR] --import-bios <fichier> [--bios-name <nom> --unverified]\n\
                          \x20                [--replace-user-bios]\n\
                          \x20      emu-rust --version | --help\n\
@@ -29,6 +31,9 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          --list-bios) et --unverified.\n\
                          --rom répété : disquettes d'un même jeu, dans l'ordre ; sans --rom : démarrage sans\n\
                          contenu (bureau d'un ordinateur, ex. --core hatari).\n\
+                         PC-DOS (--core dosbox_pure) : --rom accepte un zip, une image, un dossier de jeu (copié\n\
+                         dans le cache, jamais modifié) ou JEU/PROGRAMME.EXE ; les fichiers .conf sont refusés.\n\
+                         --clear-dos-cache vide ces copies (sauvegardes conservées).\n\
                          --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
                          PS + R1 / L1 = sauver / charger l'état, PS + R2 maintenu = avance rapide ;\n\
                          ordinateurs : PS + R3 = clavier virtuel, PS + L3 = disquette suivante.\n\
@@ -108,6 +113,8 @@ pub enum CoresAction {
         variant: Option<String>,
         replace: bool,
     },
+    /// `--clear-dos-cache`: snapshots of the DOS folder games (design v4.0 §4).
+    ClearDosCache,
     /// `--import-bios <file>` (design v3.0 §4): `name` = `--bios-name`, `unverified` = `--unverified` (both
     /// needed for an unknown file), `replace` = `--replace-user-bios`.
     ImportBios {
@@ -188,6 +195,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--rom" => roms.push(PathBuf::from(value(&mut it)?)),
             "--no-game" => no_game = true,
             "--list-bios" => actions.push(CoresAction::ListBios),
+            "--clear-dos-cache" => actions.push(CoresAction::ClearDosCache),
             "--replace-user-bios" => replace_user_bios = true,
             "--import-bios" => actions.push(CoresAction::ImportBios {
                 file: PathBuf::from(value(&mut it)?),
@@ -217,7 +225,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                 let ok = |t: &str| looks_like_core_id(t);
                 if !ok(&id) || variant.as_deref().is_some_and(|v| !ok(v)) {
                     return Err(
-                        "--install-bios attend emutos ou emutos:VARIANTE (ex. emutos:192fr)".into(),
+                        "--install-bios attend un identifiant de --list-bios (ex. emutos:192fr, generaluser-gs)"
+                            .into(),
                     );
                 }
                 actions.push(CoresAction::InstallBios {
@@ -525,6 +534,15 @@ mod tests {
     #[test]
     fn bios_commands() {
         assert_eq!(cores(&["--list-bios"]), CoresAction::ListBios);
+        assert_eq!(cores(&["--clear-dos-cache"]), CoresAction::ClearDosCache);
+        assert_eq!(
+            cores(&["--install-bios", "generaluser-gs"]),
+            CoresAction::InstallBios {
+                id: "generaluser-gs".into(),
+                variant: None,
+                replace: false,
+            }
+        );
         assert_eq!(
             cores(&["--install-bios", "emutos"]),
             CoresAction::InstallBios {

@@ -247,7 +247,10 @@ fn zip_entry_names(path: &Path) -> Vec<String> {
 /// Profiles of computer cores (Atari ST, Amiga): the keyboard belongs to the emulated machine, so their joystick
 /// layout is small and the shared `"default"` profile never applies.
 pub fn is_computer_profile(profile: &str) -> bool {
-    matches!(profile, "hatari" | "hatarib" | "hatari2014" | "puae")
+    matches!(
+        profile,
+        "hatari" | "hatarib" | "hatari2014" | "puae" | "puae2021" | "dosbox_pure"
+    )
 }
 
 /// Physical key → (port, libretro button). Serialized by key/button names (see `config.rs`).

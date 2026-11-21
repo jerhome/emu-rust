@@ -9,6 +9,7 @@ mod config_gamepad;
 mod config_library;
 mod content;
 mod cores_ui;
+mod dos_launch;
 mod egui_layer;
 mod file_picker;
 mod game_identity;
@@ -41,6 +42,10 @@ pub use crate::config_library::{
 };
 pub use crate::content::{GameContent, content_spec, media_set_name};
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::dos_launch::{
+    clear_dos_cache, dos_cli_content, invalidate_core_caches, prepare_dos_snapshot,
+    system_cache_names,
+};
 pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad::GilrsSource;
@@ -111,6 +116,10 @@ pub enum UiError {
     Library(#[from] emu_library::LibraryError),
     #[error("event loop error: {0}")]
     EventLoop(String),
+    /// Content refused before loading (DOS: `.conf`, folder for a core that does not read folders, bad start
+    /// program). The message is in French, ready to show.
+    #[error("{0}")]
+    Content(String),
 }
 
 /// Screen to capture in library mode (`--screen library|library-settings`, Xvfb).

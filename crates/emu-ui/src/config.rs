@@ -69,6 +69,11 @@ impl DataDirs {
         }
     }
 
+    /// `<data>/cache`: rebuildable files (DOS folder snapshots under `<cache>/<core_id>/`).
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
     /// Creates the directories. A root created here is private (0700 on Unix); an existing root is left as is.
     pub fn create_all(&self) -> io::Result<()> {
         if !self.root.exists() {

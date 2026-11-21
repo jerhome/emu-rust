@@ -3,6 +3,7 @@
 //! in `worker` threads; only quick SQLite reads/writes (game list, favorite, last played) happen here.
 
 mod covers;
+mod dos;
 mod grid;
 mod home;
 mod host;
@@ -112,7 +113,8 @@ enum Dialog {
     /// 3.0 firmware check (design v3.0 §2.1): fallback warned once per game, wrong or missing file.
     Firmware3 {
         request: LaunchRequest,
-        args: LaunchArgs,
+        /// Boxed: keeps `Dialog` small (a `GameContent` per field).
+        args: Box<LaunchArgs>,
         decision: FirmwareDecision,
         /// This game's options file (`aros_acknowledged`, « Utiliser AROS »).
         options_path: PathBuf,
@@ -209,6 +211,11 @@ pub(crate) struct LibraryUi {
     folder_task: Option<std::sync::mpsc::Receiver<FolderOutcome>>,
     /// Unclassified files of the last scan (design v3.0 §3.5.2).
     unclassified: Vec<PathBuf>,
+    /// DOS folder snapshot being built before a launch (design v4.0 §2.1).
+    snapshot: Option<dos::SnapshotTask>,
+    /// « Lancer un autre programme… » of a DOS folder game.
+    programs: Option<dos::ProgramsDialog>,
+    dos_cache: dos::DosCache,
 }
 
 fn now_unix() -> i64 {
@@ -277,6 +284,9 @@ impl LibraryUi {
             host_roms_hint: crate::platform::host_roms_hint(),
             folder_task: None,
             unclassified: Vec::new(),
+            snapshot: None,
+            programs: None,
+            dos_cache: dos::DosCache::default(),
         };
         ui.reload_games();
         ui
@@ -552,18 +562,15 @@ impl LibraryUi {
     fn launch_game(&mut self, game: Game) {
         let system = emu_library::system(&game.system);
         let computer = system.is_some_and(|s| s.kind == SystemKind::Computer);
-        let files = if computer && !game.media.is_empty() {
-            game.media.clone()
-        } else {
-            vec![game.path.clone()]
-        };
+        // A DOS zip is `path` (never `entry`); a folder game is `Folder` (`[dos] start` applied by `App::build`).
+        let content = crate::computer::dos::game_content(&game, computer, None);
         let ext = grid::launch_extension(&game);
         self.launch(
             Some(game.id),
             game.title.clone(),
             &game.system,
             ext.as_deref(),
-            GameContent::Files(files),
+            content,
             computer,
         );
     }
@@ -724,7 +731,7 @@ impl LibraryUi {
         let fallback = fallback_option(prefs, &id, &lf.system);
         self.open_dialog(Dialog::Firmware3 {
             request: request(id, path, Vec::new()),
-            args,
+            args: Box::new(args),
             decision,
             options_path: resolved.options_path,
             fallback,
@@ -823,7 +830,7 @@ impl LibraryUi {
             if let Some(m) = self.cores.manager() {
                 cores_ui::release(m);
             }
-            self.relaunch(args);
+            self.relaunch(*args);
         }
     }
 
@@ -1144,6 +1151,14 @@ impl LibraryUi {
                     Some(CoresEvent::PreferCore { system, core }) => {
                         self.prefer_core(&system, core)
                     }
+                    Some(CoresEvent::SetCoreOption { core, key, value }) => {
+                        self.config
+                            .core_options
+                            .entry(core)
+                            .or_default()
+                            .insert(key, value);
+                        self.save_config();
+                    }
                     None => {}
                 }
             }
@@ -1152,9 +1167,14 @@ impl LibraryUi {
             if let Some(closed) = self.cores.import.show(&ctx) {
                 self.import_closed(closed.installed);
             }
+        } else if self.snapshot_busy() {
+            self.snapshot_dialog(&ctx);
+        } else if self.programs_open() {
+            self.programs_dialog(&ctx);
         } else {
             self.dialog_ui(&ctx);
         }
+        self.gate_dos_launches(&ctx);
         std::mem::take(&mut self.events)
     }
 

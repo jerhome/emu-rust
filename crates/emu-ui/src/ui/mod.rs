@@ -140,16 +140,33 @@ const PINNED_OPTIONS: &[&str] = &[
     "puae_floppy_multidrive",
 ];
 
+#[cfg(test)]
 pub fn group_options<'a>(
     options: &'a [CoreOption],
     categories: &'a [CoreOptionCategory],
 ) -> Vec<(String, Vec<&'a CoreOption>)> {
+    group_options_with(options, categories, None)
+}
+
+/// [`group_options`] with the options of `cores.toml` `featured_options` for the game's system shown first under
+/// their own title (« Réglages DOS », design v4.0 §4) instead of the built-in pinned list.
+pub fn group_options_with<'a>(
+    options: &'a [CoreOption],
+    categories: &'a [CoreOptionCategory],
+    featured: Option<&Featured>,
+) -> Vec<(String, Vec<&'a CoreOption>)> {
     let known = |c: &str| categories.iter().any(|k| k.key == c);
-    let pinned = |o: &CoreOption| PINNED_OPTIONS.contains(&o.key.as_str());
+    let (main_title, main_keys): (String, Vec<&str>) = match featured {
+        Some(f) if !f.keys.is_empty() => {
+            (f.title.clone(), f.keys.iter().map(String::as_str).collect())
+        }
+        _ => (text::OPTIONS_MAIN.to_owned(), PINNED_OPTIONS.to_vec()),
+    };
+    let pinned = |o: &CoreOption| main_keys.contains(&o.key.as_str());
     let mut groups = vec![
         (
-            text::OPTIONS_MAIN.to_owned(),
-            PINNED_OPTIONS
+            main_title.clone(),
+            main_keys
                 .iter()
                 .filter_map(|k| options.iter().find(|o| o.visible && o.key == *k))
                 .collect::<Vec<_>>(),
@@ -177,6 +194,13 @@ pub fn group_options<'a>(
     }
     groups.retain(|(_, opts)| !opts.is_empty());
     groups
+}
+
+/// Options shown first for the game's system (`CorePreferences::featured_options`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Featured {
+    pub title: String,
+    pub keys: Vec<String>,
 }
 
 /// What the app must do after an egui pass.
@@ -216,6 +240,8 @@ pub enum UiAction {
     ResetDisks,
     /// Restart the game (hosted: options that need it).
     Restart,
+    /// DOS: reset with Shift held, the core shows its boot menu (« Changer de programme de démarrage »).
+    ChangeStartProgram,
     ToggleVirtualKeyboard,
     ToggleKeyboardMode,
     SetAutoCapture(bool),
@@ -314,6 +340,12 @@ pub struct UiData<'a> {
     pub game_scope: bool,
     /// This game's core option overrides.
     pub game_overrides: &'a BTreeMap<String, String>,
+    /// DOS game (dosbox_pure): boot program and « modifications du jeu » entries of the menu.
+    pub dos: bool,
+    /// Options shown first (« Réglages DOS »).
+    pub featured: Option<&'a Featured>,
+    /// Hint shown under the MIDI option when the free SoundFont is not installed.
+    pub soundfont_hint: bool,
 }
 
 /// Overlay state that lives across frames.
@@ -327,6 +359,8 @@ pub struct Overlay {
     notice: Option<String>,
     confirm_unlock: bool,
     confirm_reset: bool,
+    /// « Réinitialiser les modifications du jeu… » asked from the menu (DOS).
+    confirm_dos_reset: bool,
     /// Added disk whose « Retirer » dialog is open.
     disk_forget: Option<PathBuf>,
     /// « Retirer et supprimer la copie » asks first.
@@ -350,6 +384,7 @@ impl Default for Overlay {
             notice: None,
             confirm_unlock: false,
             confirm_reset: false,
+            confirm_dos_reset: false,
             disk_forget: None,
             disk_delete_confirm: false,
             clean: None,
@@ -377,6 +412,7 @@ impl Overlay {
         self.notice = None;
         self.confirm_unlock = false;
         self.confirm_reset = false;
+        self.confirm_dos_reset = false;
         self.disk_forget = None;
         self.disk_delete_confirm = false;
         self.clean = None;
@@ -417,6 +453,10 @@ impl Overlay {
                 } else {
                     self.close();
                 }
+            }
+            Some(Screen::Menu) if self.confirm_dos_reset => {
+                self.confirm_dos_reset = false;
+                self.focus_first = true;
             }
             Some(Screen::Disks) if self.confirm_reset => self.confirm_reset = false,
             Some(Screen::Disks) if self.disk_delete_confirm => {

@@ -259,8 +259,12 @@ fn list_bios(dirs: &DataDirs) -> Result<(), String> {
             ),
             FreeBiosState::Unreadable(e) => format!("illisible : {e}"),
         };
+        let kind = match bios.kind {
+            emu_ui::assets::bios::FreeBiosKind::SoundFont => "SoundFont",
+            _ => "BIOS",
+        };
         println!(
-            "{} : {} {} ({}) pour {}, fichier {} : {state}",
+            "{} : {kind} {} {} ({}) pour {}, fichier {} : {state}",
             bios.id, bios.name, bios.version, bios.license, bios.system, bios.install_as
         );
         for v in &bios.variants {
@@ -481,6 +485,7 @@ fn install_bios(
     match result {
         Ok(path) => {
             println!("Installé : {}", path.display());
+            emu_ui::invalidate_core_caches(&dirs.system);
             Ok(())
         }
         Err(BiosError::UserFileExists(path)) => Err(format!(
@@ -496,6 +501,14 @@ fn install_bios(
 pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<bool, String> {
     match action {
         CoresAction::ListBios => return list_bios(dirs).map(|()| true),
+        CoresAction::ClearDosCache => {
+            let freed = emu_ui::clear_dos_cache(dirs, config)?;
+            println!(
+                "Cache DOS vidé : {} Kio libérés (sauvegardes conservées).",
+                freed / 1024
+            );
+            return Ok(true);
+        }
         CoresAction::InstallBios {
             id,
             variant,
@@ -560,6 +573,7 @@ pub fn run(action: &CoresAction, dirs: &DataDirs, config: &Config) -> Result<boo
         }
         CoresAction::CheckBios(id) => return check_bios(&manager, dirs, id.as_deref()),
         CoresAction::ListBios
+        | CoresAction::ClearDosCache
         | CoresAction::InstallBios { .. }
         | CoresAction::ImportBios { .. } => {}
     }

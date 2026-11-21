@@ -50,13 +50,38 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
         cli::CoreSpec::Managed(id) => cores_cli::managed_core_path(&id, &dirs, &config)?,
     };
     diagnostics::check_core(&core)?;
+    let content = match cli.roms.as_slice() {
+        [] => emu_ui::GameContent::NoGame,
+        // DOS: a game folder (snapshot built here, with progress) or `JEU/START.EXE`; `.conf` refused.
+        [one] => match emu_ui::dos_cli_content(one, &core, &config) {
+            Some(content) => {
+                let content = content?;
+                let mut last = None;
+                let built = emu_ui::prepare_dos_snapshot(
+                    &core,
+                    &content,
+                    &dirs,
+                    &config,
+                    &mut |done, total| {
+                        let percent = done.saturating_mul(100).checked_div(total).unwrap_or(100);
+                        if last != Some(percent) {
+                            last = Some(percent);
+                            eprint!("\rPréparation du jeu : {percent} %   ");
+                        }
+                    },
+                )?;
+                if built {
+                    eprintln!();
+                }
+                content
+            }
+            None => emu_ui::GameContent::Files(cli.roms),
+        },
+        _ => emu_ui::GameContent::Files(cli.roms),
+    };
     Ok(emu_ui::LaunchOptions {
         core,
-        content: if cli.roms.is_empty() {
-            emu_ui::GameContent::NoGame
-        } else {
-            emu_ui::GameContent::Files(cli.roms)
-        },
+        content,
         // Computer cores (hatari…) are recognised by the UI from their id.
         computer: false,
         dirs,
@@ -160,6 +185,7 @@ fn main() -> ExitCode {
                     core: options.core.clone(),
                     roms: match &options.content {
                         emu_ui::GameContent::Files(files) => files.clone(),
+                        emu_ui::GameContent::Folder { dir, .. } => vec![dir.clone()],
                         _ => Vec::new(),
                     },
                     system_dir: options.dirs.system.clone(),

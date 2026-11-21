@@ -46,6 +46,21 @@ pub(super) fn show(
             return;
         }
 
+        if overlay.confirm_dos_reset {
+            ui.label(RichText::new(text::DOS_RESET_TITLE).strong());
+            ui.colored_label(Color32::from_rgb(255, 190, 80), text::DOS_RESET_CONFIRM);
+            if button(ui, text::NO, true, &mut overlay.focus_first) {
+                overlay.confirm_dos_reset = false;
+                overlay.focus_first = true;
+            }
+            if button(ui, text::DOS_RESET_YES, true, &mut false) {
+                overlay.confirm_dos_reset = false;
+                actions.push(UiAction::ResetDisks);
+            }
+            ui.label(RichText::new(text::NAV_HINT).small().weak());
+            return;
+        }
+
         if button(ui, text::RESUME, true, &mut overlay.focus_first) {
             actions.push(UiAction::Resume);
         }
@@ -82,6 +97,16 @@ pub(super) fn show(
         }
         ui.separator();
 
+        if data.dos {
+            if button(ui, text::DOS_CHANGE_PROGRAM, true, &mut false) {
+                actions.push(UiAction::ChangeStartProgram);
+            }
+            // Restarting goes through the library (the game is stopped before its files are deleted).
+            if data.hosted && button(ui, text::DOS_RESET, true, &mut false) {
+                overlay.confirm_dos_reset = true;
+                overlay.focus_first = true;
+            }
+        }
         if data.disks.is_some() && button(ui, text::DISKS, true, &mut false) {
             actions.push(UiAction::Open(Screen::Disks));
         }

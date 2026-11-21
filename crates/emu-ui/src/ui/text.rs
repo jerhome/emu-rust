@@ -283,6 +283,25 @@ pub fn sanitize_core_text(s: &str) -> String {
 
 // ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
 
+pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : ↑ ↓ puis Entrée pour lancer un programme · → : le lancer automatiquement la prochaine fois";
+pub const DOS_CHANGE_PROGRAM: &str = "Changer de programme de démarrage";
+pub const DOS_CHANGE_PROGRAM_DONE: &str =
+    "Menu DOS : choisissez le programme (→ : le lancer automatiquement la prochaine fois)";
+pub const DOS_RESET: &str = "Réinitialiser les modifications du jeu…";
+pub const DOS_RESET_TITLE: &str = "Réinitialiser les modifications du jeu";
+pub const DOS_RESET_CONFIRM: &str = "Les sauvegardes de ce jeu, ses réglages (SETUP), le programme de démarrage \
+                                     choisi et les correspondances de la manette seront effacés. Vos fichiers \
+                                     d'origine ne sont pas touchés. Le jeu redémarre.";
+pub const DOS_RESET_YES: &str = "Oui, tout réinitialiser";
+pub const DOS_SOUNDFONT_HINT: &str = "Musique MIDI : installez le SoundFont libre GeneralUser GS (32 Mo) depuis \
+                                      l'écran Cores de la bibliothèque, ou importez des ROM MT-32, puis redémarrez \
+                                      le jeu.";
+
+/// Title of the options `featured_options` puts first (« Réglages DOS »).
+pub fn featured_title(system: &str) -> String {
+    format!("Réglages {system}")
+}
+
 pub const DOS_CONF_REFUSED: &str =
     "Les fichiers .conf ne se lancent pas : choisissez le dossier ou le zip du jeu.";
 
@@ -446,6 +465,17 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
 }
 
 /// Error of a launch, with what to do for the cases the player can fix.
+/// A core that stays in memory (dosbox_pure) is reloaded from a private copy (ADR 0022); the copy failed.
+// Matched in `launch_error` once `emu_runtime` re-exports `LibretroError` (its `CoreCopy` variant is new).
+#[allow(dead_code)]
+pub fn core_copy_failed(path: &std::path::Path, e: &dyn std::fmt::Display) -> String {
+    format!(
+        "Ce core ne peut pas être rechargé dans cette session (copie impossible dans {} : {e}). Quittez puis \
+         relancez emu-rust.",
+        path.display()
+    )
+}
+
 pub fn launch_error(e: &crate::UiError) -> String {
     match e {
         crate::UiError::Runtime(emu_runtime::RuntimeError::DiskFull { path }) => format!(

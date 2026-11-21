@@ -260,7 +260,7 @@ pub fn no_core_for_system() -> &'static str {
 
 // ---- free BIOS (ADR 0015 §2) -------------------------------------------------------------------------------
 
-pub const BIOS_SECTION: &str = "BIOS libres";
+pub const BIOS_SECTION: &str = "BIOS et SoundFont libres";
 pub const BIOS_VARIANT: &str = "Variante";
 pub const BIOS_INSTALL: &str = "Installer";
 pub const BIOS_REINSTALL: &str = "Installer cette variante";
@@ -278,8 +278,25 @@ pub const BIOS_REMOVED: &str = "BIOS libre supprimé.";
 pub const BIOS_NOT_REMOVED: &str =
     "Rien à supprimer : le fichier n'a pas été installé par emu-rust ou a été modifié.";
 pub const BIOS_INSTALLING: &str = "Téléchargement du BIOS libre…";
-pub const BIOS_NOTE: &str = "Téléchargé depuis SourceForge, vérifié par empreinte SHA-256. La langue fixe aussi \
-                             la disposition du clavier de la machine (français = AZERTY).";
+pub const BIOS_NOTE: &str = "Téléchargés seulement sur votre demande, vérifiés par empreinte SHA-256. EmuTOS \
+                             (SourceForge) : la langue fixe aussi la disposition du clavier de la machine (français = \
+                             AZERTY). GeneralUser GS (GitHub, licence GeneralUser GS v2.0, libre) : musique MIDI des \
+                             jeux DOS ; les ROM MT-32 se placent avec « Importer un BIOS… ».";
+pub const SOUNDFONT_REPLACE_CONFIRM: &str = "Remplacer le SoundFont existant (fichier non installé par emu-rust, ou \
+                                             modifié depuis) ? Votre fichier sera renommé en « .user-<date> », \
+                                             jamais effacé. Confirmer ?";
+pub const SOUNDFONT_INSTALLING: &str = "Téléchargement du SoundFont (32 Mo)…";
+pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS ▸ MIDI » d'un jeu, \
+                                          ou pour tous les jeux DOS ci-dessous.";
+pub const SOUNDFONT_USE_FOR_ALL: &str = "Utiliser pour tous les jeux DOS";
+pub const SOUNDFONT_USED_FOR_ALL: &str = "MIDI réglé sur GeneralUser GS pour tous les jeux DOS (un réglage par jeu \
+                                          reste prioritaire).";
+
+pub fn soundfont_header(name: &str, version: &str, license: &str, file: &str) -> String {
+    format!(
+        "SoundFont {name} {version} ({license}) — musique MIDI des jeux DOS, installé sous {file}"
+    )
+}
 
 pub fn bios_installed(label: &str) -> String {
     format!("installé : {label}")

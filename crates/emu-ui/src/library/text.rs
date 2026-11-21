@@ -512,3 +512,45 @@ pub fn pad_button_label(button: crate::gamepad::PadButton) -> &'static str {
         P::DPadRight => "Croix directionnelle droite",
     }
 }
+
+// ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
+
+pub const DOS_FOLDER_HINT: &str = "P : lancer un autre programme de ce jeu";
+pub const DOS_SNAPSHOT_TITLE: &str = "Préparation du jeu…";
+pub const DOS_SNAPSHOT_NOTE: &str = "Une copie du dossier est rangée dans le cache (vos fichiers ne sont jamais \
+                                     modifiés) ; elle est refaite seulement si le dossier change.";
+pub const DOS_SNAPSHOT_CANCELLED: &str = "Préparation du jeu annulée.";
+pub const DOS_BUSY: &str = "Un jeu DOS est déjà en préparation.";
+pub const DOS_NO_PROGRAM: &str = "Aucun programme (.exe, .com, .bat) à la racine de ce dossier.";
+pub const DOS_PROGRAMS_TITLE: &str = "Lancer un autre programme…";
+pub const DOS_PROGRAMS_HINT: &str = "Flèches / Tab : choisir · Entrée : valider · Échap : retour. Les programmes \
+                                     des sous-dossiers et des images se lancent depuis le menu DOS.";
+pub const DOS_ONCE: &str = "Pour cette fois";
+pub const DOS_BY_DEFAULT: &str = "Par défaut (à chaque lancement)";
+pub const DOS_AUTOBOOT_WINS: &str = "Un programme a été choisi dans le menu DOS (→) : il reste lancé par défaut. \
+                                     Utilisez « Changer de programme de démarrage » dans le menu du jeu.";
+pub const DOS_CLEAR_DEFAULT: &str = "Revenir au menu DOS";
+pub const DOS_DEFAULT_CLEARED: &str = "Programme par défaut retiré : le menu DOS choisira.";
+pub const DOS_CACHE_SECTION: &str = "Jeux DOS";
+pub const DOS_CACHE_NOTE: &str = "Copies des jeux en dossier (refaites au besoin). Vos sauvegardes ne sont pas \
+                                  touchées.";
+pub const DOS_CACHE_CLEARED: &str = "Cache DOS vidé.";
+
+pub fn dos_snapshot_body(game: &str) -> String {
+    format!("Copie de « {game} » dans le cache avant le premier lancement.")
+}
+
+pub fn dos_default_program(program: &str) -> String {
+    format!("Programme par défaut : {program}")
+}
+
+pub fn dos_cache_button(size: Option<u64>) -> String {
+    match size {
+        Some(s) => format!("Vider le cache DOS ({})", crate::ui::text::format_size(s)),
+        None => "Vider le cache DOS (calcul…)".to_owned(),
+    }
+}
+
+pub fn dos_cache_failed(e: &str) -> String {
+    format!("Cache DOS non vidé : {e}")
+}

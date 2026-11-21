@@ -74,6 +74,10 @@ pub(crate) fn system_counts(games: &[Game], catalog: &[SystemInfo]) -> Vec<(Stri
 
 /// Extension used to choose the core: the zip entry's for an archive, else the file's (lower case, no dot).
 pub(crate) fn launch_extension(game: &Game) -> Option<String> {
+    // A folder game's name may contain a dot (`Doom v1.9`): it has no extension.
+    if game.is_dir {
+        return None;
+    }
     let name = game.entry.as_deref().map_or(game.path.as_path(), Path::new);
     name.extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())

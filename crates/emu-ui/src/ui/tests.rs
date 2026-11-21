@@ -192,6 +192,8 @@ struct Fixture {
     computer: Option<ComputerView>,
     disks: Option<DisksView>,
     overrides: BTreeMap<String, String>,
+    dos: bool,
+    hosted: bool,
 }
 
 impl Fixture {
@@ -217,6 +219,8 @@ impl Fixture {
             computer: None,
             disks: None,
             overrides: BTreeMap::new(),
+            dos: false,
+            hosted: false,
         }
     }
 
@@ -247,13 +251,16 @@ impl Fixture {
             slots: &self.slots,
             options: &self.options,
             categories: &self.categories,
-            hosted: false,
+            hosted: self.hosted,
             stats: None,
             now: Instant::now(),
             computer: self.computer.as_ref(),
             disks: self.disks.as_ref(),
             game_scope: false,
             game_overrides: &self.overrides,
+            dos: self.dos,
+            featured: None,
+            soundfont_hint: false,
         };
         let mut actions = Vec::new();
         self.ctx
@@ -311,6 +318,82 @@ fn menu_slot_row_steps_with_left_right() {
     assert_eq!(actions, vec![UiAction::SelectSlot(1)]);
     let actions = f.keys(&mut o, 0, &[Key::ArrowLeft]);
     assert_eq!(actions, vec![UiAction::SelectSlot(9)]);
+}
+
+/// DOS (design v4.0 §2.2-§2.3): boot program and reset of the game's changes, keyboard only; the reset asks
+/// first and « Non » has the focus.
+#[test]
+fn dos_menu_entries_by_keyboard() {
+    let mut f = Fixture::new();
+    f.dos = true;
+    f.hosted = true;
+    let mut o = opened(Screen::Menu, &f);
+    let tabs = [Key::Tab; 5];
+    let mut keys = tabs.to_vec();
+    keys.push(Key::Enter);
+    assert_eq!(f.keys(&mut o, 0, &keys), vec![UiAction::ChangeStartProgram]);
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 6].to_vec();
+    keys.push(Key::Enter);
+    assert!(f.keys(&mut o, 0, &keys).is_empty());
+    assert!(o.confirm_dos_reset);
+    f.pass(&mut o, 0, &[]);
+    // « Non » first.
+    assert!(f.keys(&mut o, 0, &[Key::Enter]).is_empty());
+    assert!(!o.confirm_dos_reset);
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = [Key::Tab; 6].to_vec();
+    keys.extend([Key::Enter, Key::Tab, Key::Enter]);
+    assert_eq!(f.keys(&mut o, 0, &keys), vec![UiAction::ResetDisks]);
+    // Not a DOS game: no such entries.
+    let f = Fixture::new();
+    let mut o = opened(Screen::Menu, &f);
+    let mut keys = tabs.to_vec();
+    keys.push(Key::Enter);
+    assert!(
+        !f.keys(&mut o, 0, &keys)
+            .contains(&UiAction::ChangeStartProgram)
+    );
+}
+
+#[test]
+fn featured_options_come_first_under_their_title() {
+    let options = vec![
+        opt(
+            "dosbox_pure_cycles",
+            Some("performance"),
+            &["auto", "max"],
+            "auto",
+            true,
+        ),
+        opt(
+            "dosbox_pure_midi",
+            Some("audio"),
+            &["disabled"],
+            "disabled",
+            true,
+        ),
+        opt("dosbox_pure_other", None, &["a"], "a", true),
+    ];
+    let cats = vec![cat("performance"), cat("audio")];
+    let featured = Featured {
+        title: "Réglages DOS".into(),
+        keys: vec![
+            "dosbox_pure_midi".into(),
+            "dosbox_pure_cycles".into(),
+            "absent".into(),
+        ],
+    };
+    let groups = group_options_with(&options, &cats, Some(&featured));
+    assert_eq!(groups[0].0, "Réglages DOS");
+    let keys: Vec<&str> = groups[0].1.iter().map(|o| o.key.as_str()).collect();
+    assert_eq!(keys, ["dosbox_pure_midi", "dosbox_pure_cycles"]);
+    // Featured options are not repeated below.
+    assert!(
+        groups[1..]
+            .iter()
+            .all(|(_, o)| o.iter().all(|o| !featured.keys.contains(&o.key)))
+    );
 }
 
 #[test]

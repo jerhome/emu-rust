@@ -3,7 +3,6 @@
 
 pub(crate) mod amiga;
 pub(crate) mod computed;
-#[allow(dead_code)]
 pub(crate) mod dos;
 pub(crate) mod host;
 pub(crate) mod input;

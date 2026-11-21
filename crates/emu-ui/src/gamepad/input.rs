@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
-use emu_runtime::{InputBackend, InputFrame, JoypadButton, MAX_PORTS};
+use emu_runtime::{AnalogStick, InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 
 use super::mapping::{PadButton, PadMap};
 use super::source::{GamepadSource, PadAxis, PadEvent, PadEventKind, PadId};
@@ -114,6 +114,8 @@ struct Pad {
     deadzone: f32,
     held: HashSet<PadButton>,
     stick: (f32, f32),
+    /// Right stick (cores with `analog = true` only).
+    right: (f32, f32),
     /// Stick directions currently counted as pressed (hysteresis memory): up, down, left, right.
     stick_dirs: [bool; 4],
     trigger_l2: bool,
@@ -148,6 +150,28 @@ impl Pad {
     }
 }
 
+/// Stick position for `RETRO_DEVICE_ANALOG` (ADR 0016 amended, design v4.0 §3.2): radial deadzone of the pad, then
+/// the remaining range rescaled to the full `i16` range; pad Y up (+) becomes libretro Y up (−).
+fn analog_axes((x, y): (f32, f32), deadzone: f32) -> (i16, i16) {
+    let x = x.clamp(-1.0, 1.0);
+    let y = y.clamp(-1.0, 1.0);
+    let magnitude = (x * x + y * y).sqrt();
+    if magnitude < deadzone || magnitude <= f32::EPSILON {
+        return (0, 0);
+    }
+    let scaled = ((magnitude - deadzone) / (1.0 - deadzone).max(f32::EPSILON)).min(1.0);
+    let k = scaled / magnitude;
+    #[allow(clippy::cast_possible_truncation)] // clamped to ±32767 just before
+    let to_i16 = |v: f32| (v * k * 32767.0).round().clamp(-32767.0, 32767.0) as i16;
+    (to_i16(x), to_i16(-y))
+}
+
+/// Of two pads on one port, the stick pushed further wins (OR of the buttons).
+fn stronger(a: (i16, i16), b: (i16, i16)) -> (i16, i16) {
+    let m = |(x, y): (i16, i16)| i32::from(x).pow(2) + i32::from(y).pow(2);
+    if m(b) > m(a) { b } else { a }
+}
+
 /// Gamepad `InputBackend`. Port assignment: first connected pad = port 0, second = port 1, others ignored; a freed
 /// port is reused. While the hotkey button is held, other buttons become hotkeys instead of reaching the core
 /// (the hotkey button itself still follows the map when pressed alone, e.g. Share as modifier = Select).
@@ -168,6 +192,8 @@ pub struct GamepadInput<S: GamepadSource> {
     learned: Option<PadButton>,
     /// A menu or the virtual keyboard has the focus: buttons navigate instead of reaching the core.
     ui_capture: bool,
+    /// The running core reads the sticks (`analog = true`): axes sent, no stick → D-pad conversion.
+    analog: bool,
     scratch: Vec<PadEvent>,
 }
 
@@ -186,8 +212,15 @@ impl<S: GamepadSource> GamepadInput<S> {
             learning: false,
             learned: None,
             ui_capture: false,
+            analog: false,
             scratch: Vec::new(),
         }
+    }
+
+    /// Core of the game (`CorePreferences::analog`): `true` sends both sticks as `RETRO_DEVICE_ANALOG` and stops
+    /// converting the left stick into the D-pad (ADR 0016 amended). Menus keep navigating with the stick.
+    pub fn set_analog(&mut self, analog: bool) {
+        self.analog = analog;
     }
 
     /// New settings (configuration edited between two games). Attached pads keep their port and deadzone.
@@ -386,6 +419,7 @@ impl<S: GamepadSource> GamepadInput<S> {
             deadzone,
             held: HashSet::new(),
             stick: (0.0, 0.0),
+            right: (0.0, 0.0),
             stick_dirs: [false; 4],
             trigger_l2: false,
             trigger_r2: false,
@@ -474,7 +508,8 @@ impl<S: GamepadSource> GamepadInput<S> {
                     self.learned = Some(button);
                 }
             }
-            PadAxis::RightX | PadAxis::RightY => {}
+            PadAxis::RightX => pad.right.0 = value,
+            PadAxis::RightY => pad.right.1 = value,
         }
         let before = pad.stick_dirs;
         pad.update_stick_dirs();
@@ -511,6 +546,16 @@ impl<S: GamepadSource> InputBackend for GamepadInput<S> {
                 if pad.is_down(*button) {
                     target.set(*retro, true);
                 }
+            }
+            if self.analog {
+                for (stick, value) in [
+                    (AnalogStick::Left, pad.stick),
+                    (AnalogStick::Right, pad.right),
+                ] {
+                    let (x, y) = stronger(target.analog(stick), analog_axes(value, pad.deadzone));
+                    target.set_analog(stick, x, y);
+                }
+                continue;
             }
             for (down, retro) in pad.stick_dirs.iter().zip([
                 JoypadButton::Up,
@@ -713,6 +758,45 @@ mod tests {
         assert!(poll(&mut i).pads[0].is_pressed(JoypadButton::Right));
         assert!(poll(&mut i).pads[0].is_pressed(JoypadButton::Right)); // hysteresis keeps it
         assert_eq!(poll(&mut i).pads[0].bits(), 0);
+    }
+
+    /// DG1 (ADR 0016 amended): an `analog = true` core gets both sticks, never the D-pad conversion.
+    #[test]
+    fn analog_cores_get_the_sticks_instead_of_the_dpad() {
+        let batches = vec![vec![
+            connected(A, "g"),
+            axis(A, PadAxis::LeftX, 1.0),
+            axis(A, PadAxis::LeftY, 1.0),
+            axis(A, PadAxis::RightX, -0.1),
+            axis(A, PadAxis::RightY, -1.0),
+        ]];
+        let mut i = input(PadStyle::Generic, batches.clone());
+        i.set_analog(true);
+        let f = poll(&mut i);
+        assert_eq!(f.pads[0].bits(), 0, "pas de conversion en croix");
+        let (x, y) = f.pads[0].analog(AnalogStick::Left);
+        assert!(x > 20_000 && y < -20_000, "{x} {y}"); // up = negative for libretro
+        let (rx, ry) = f.pads[0].analog(AnalogStick::Right);
+        assert!(rx < 0 && ry > 30_000, "{rx} {ry}");
+        // Other cores: D-pad from the stick, axes stay at 0.
+        let mut i = input(PadStyle::Generic, batches);
+        let f = poll(&mut i);
+        assert!(f.pads[0].is_pressed(JoypadButton::Right));
+        assert!(f.pads[0].is_pressed(JoypadButton::Up));
+        assert_eq!(f.pads[0].analog(AnalogStick::Left), (0, 0));
+    }
+
+    #[test]
+    fn analog_deadzone_is_radial_and_rescaled() {
+        assert_eq!(analog_axes((0.2, 0.0), 0.25), (0, 0));
+        assert_eq!(analog_axes((0.0, 0.0), 0.25), (0, 0));
+        assert_eq!(analog_axes((1.0, 0.0), 0.25), (32767, 0));
+        assert_eq!(analog_axes((0.0, -1.0), 0.25), (0, 32767));
+        let (x, _) = analog_axes((0.625, 0.0), 0.25);
+        assert!((16_000..=16_800).contains(&x), "{x}");
+        // Out-of-range values from a driver are clamped.
+        assert_eq!(analog_axes((3.0, 0.0), 0.25), (32767, 0));
+        assert_eq!(stronger((100, 0), (0, -200)), (0, -200));
     }
 
     #[test]

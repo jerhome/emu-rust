@@ -77,6 +77,8 @@ impl Env {
             assets_dir: self.dirs.assets.clone(),
             core_variables,
             restore_added_disks: true,
+            cache_dir: self.dirs.root.join("cache"),
+            provide_vfs: false,
         }
     }
 }

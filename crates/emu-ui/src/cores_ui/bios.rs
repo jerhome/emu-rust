@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use egui::{Button, Color32, RichText, Ui};
 use emu_assets::bios::{
-    BiosError, BiosVariant, FreeBios, FreeBiosManager, FreeBiosState, ReplacePolicy,
+    BiosError, BiosVariant, FreeBios, FreeBiosKind, FreeBiosManager, FreeBiosState, ReplacePolicy,
     builtin_free_bios,
 };
 use emu_assets::cores::FirmwareStatus;
@@ -56,6 +56,8 @@ pub(crate) struct BiosUi {
     messages: Vec<Option<(String, Color32)>>,
     done: Vec<BiosDone>,
     dirty: bool,
+    /// « Utiliser pour tous les jeux DOS » clicked: `(core, option, value)` for `[core_options]` (cores screen).
+    pub(crate) use_for_all: Option<(String, String, String)>,
 }
 
 impl BiosUi {
@@ -85,6 +87,7 @@ impl BiosUi {
             messages: vec![None; n],
             done: Vec::new(),
             dirty: true,
+            use_for_all: None,
         }
     }
 
@@ -183,12 +186,20 @@ impl BiosUi {
         let i = install.bios;
         let id = self.catalogue[i].id.clone();
         let error = result.as_ref().err().map(text::bios_error);
+        let soundfont = self.catalogue[i].kind == FreeBiosKind::SoundFont;
         self.messages[i] = Some(match &error {
+            None if soundfont => (text::SOUNDFONT_INSTALLED_OK.to_owned(), GOOD),
             None => (text::BIOS_INSTALLED_OK.to_owned(), GOOD),
             Some(e) => (e.clone(), ERROR),
         });
         match &result {
-            Ok(path) => tracing::info!("BIOS libre installé : {}", path.display()),
+            Ok(path) => {
+                tracing::info!("BIOS libre installé : {}", path.display());
+                // A new SoundFont is listed by dosbox_pure only once its MIDI cache is gone.
+                if let Some(dir) = path.parent() {
+                    crate::dos_launch::invalidate_core_caches(dir);
+                }
+            }
             Err(e) => tracing::warn!("installation du BIOS libre {id} : {e}"),
         }
         self.done.push(BiosDone {
@@ -243,13 +254,23 @@ impl BiosUi {
         let busy = self.install.is_some();
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(text::bios_header(
-                &bios.name,
-                &bios.version,
-                &bios.license,
-                &bios.system,
-                &bios.install_as,
-            ));
+            let soundfont = bios.kind == FreeBiosKind::SoundFont;
+            if soundfont {
+                ui.label(text::soundfont_header(
+                    &bios.name,
+                    &bios.version,
+                    &bios.license,
+                    &bios.install_as,
+                ));
+            } else {
+                ui.label(text::bios_header(
+                    &bios.name,
+                    &bios.version,
+                    &bios.license,
+                    &bios.system,
+                    &bios.install_as,
+                ));
+            }
             let (status, color) = match &state {
                 FreeBiosState::Missing => (text::BIOS_MISSING.to_owned(), Color32::GRAY),
                 FreeBiosState::Installed { variant } => (
@@ -271,15 +292,21 @@ impl BiosUi {
                 FreeBiosState::Unreadable(e) => (text::bios_unreadable(e), ERROR),
             };
             ui.colored_label(color, status);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(text::BIOS_VARIANT);
-                self.variant_picker(ui, i, !busy);
-            });
+            if bios.variants.len() > 1 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(text::BIOS_VARIANT);
+                    self.variant_picker(ui, i, !busy);
+                });
+            }
             if let Some(install) = self.install.as_ref().filter(|x| x.bios == i) {
                 let progress = install.progress;
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(text::BIOS_INSTALLING);
+                    ui.label(if soundfont {
+                        text::SOUNDFONT_INSTALLING
+                    } else {
+                        text::BIOS_INSTALLING
+                    });
                     if let Some(p) = progress {
                         ui.label(text::progress(p.done, p.total));
                     }
@@ -288,7 +315,14 @@ impl BiosUi {
                     }
                 });
             } else if self.confirm_replace == Some(i) {
-                ui.colored_label(WARNING, text::BIOS_REPLACE_CONFIRM);
+                ui.colored_label(
+                    WARNING,
+                    if soundfont {
+                        text::SOUNDFONT_REPLACE_CONFIRM
+                    } else {
+                        text::BIOS_REPLACE_CONFIRM
+                    },
+                );
                 ui.horizontal(|ui| {
                     let no = ui.button(text::CONFIRM_REMOVE_NO);
                     no.request_focus();
@@ -322,6 +356,20 @@ impl BiosUi {
                     {
                         self.remove(i);
                     }
+                    if soundfont
+                        && removable
+                        && let Some(core) = dos_core_for(&bios.system)
+                        && ui
+                            .add_enabled(!busy, Button::new(text::SOUNDFONT_USE_FOR_ALL))
+                            .clicked()
+                    {
+                        self.use_for_all = Some((
+                            core,
+                            crate::computer::dos::MIDI_OPTION.to_owned(),
+                            bios.install_as.clone(),
+                        ));
+                        self.messages[i] = Some((text::SOUNDFONT_USED_FOR_ALL.to_owned(), GOOD));
+                    }
                 });
             }
             if let Some((msg, color)) = &self.messages[i] {
@@ -342,6 +390,17 @@ impl BiosUi {
         });
         self.dirty = true;
     }
+}
+
+/// Core of `system` (libretro database name) whose MIDI option lists the SoundFont: the first core of the system
+/// declaring the folder policy (dosbox_pure).
+fn dos_core_for(system: &str) -> Option<String> {
+    let prefs = emu_assets::cores::CorePreferences::builtin();
+    prefs
+        .for_system(system)
+        .iter()
+        .find(|c| prefs.folder_policy(c).is_some())
+        .map(|c| c.as_str().to_owned())
 }
 
 /// A file the user may care about: replacing it needs confirmation and a backup (never `Refuse`-then-overwrite).
@@ -395,6 +454,21 @@ mod tests {
                 .is_none()
         );
         assert!(!ui.busy());
+    }
+
+    #[test]
+    fn soundfont_is_offered_for_dos_only_as_a_free_resource() {
+        let ui = BiosUi::new(None, None);
+        let sf = ui
+            .catalogue
+            .iter()
+            .find(|b| b.kind == FreeBiosKind::SoundFont)
+            .expect("GeneralUser GS dans le catalogue");
+        assert_eq!(sf.install_as, crate::computer::dos::SOUNDFONT_FILE);
+        assert_eq!(dos_core_for(&sf.system).as_deref(), Some("dosbox_pure"));
+        assert!(dos_core_for("Atari - ST").is_none());
+        // Never proposed for a missing BIOS (it is not one).
+        assert!(ui.for_missing("DOS", &[missing("tos.img")]).is_none());
     }
 
     #[test]

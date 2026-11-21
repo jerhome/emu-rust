@@ -18,10 +18,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, WindowAttributes, WindowId};
 
+use crate::computer::dos;
 use crate::computer::input::{CaptureEffect, CaptureEvent, CaptureState, KeyboardMode, map_button};
 use crate::computer::keymap::KeyRemap;
 use crate::computer::session::{ComputerInputs, ComputerSession, KeyOutcome};
-use crate::computer::vkbd::{KeyboardLayout, VirtualKeyboard, legend_for_variant};
+use crate::computer::vkbd::{
+    KeyboardLayout, VirtualKeyboard, legend_for_layout_value, legend_for_variant,
+};
 use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::config_computer::KeyboardModeChoice;
 use crate::content::content_spec;
@@ -34,8 +37,8 @@ use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::launch_firmware::firmware_setup;
 use crate::shutdown;
 use crate::ui::{
-    self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, OsdLevel, Overlay,
-    StatsView, UiAction, UiData, apply_capture, profile_map, text,
+    self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, Featured, OsdLevel,
+    Overlay, StatsView, UiAction, UiData, apply_capture, profile_map, text,
 };
 use crate::{KeyboardInput, LaunchOptions, ScalingChoice, Screen, SyncChoice, UiError};
 
@@ -231,6 +234,12 @@ pub(crate) struct App {
     /// Save files of the core deleted with the working copies (« Réinitialiser »).
     core_files: Option<CoreGameFiles>,
     states_warned: bool,
+    /// Core reading DOS game folders (dosbox_pure): boot program and reset entries of the menu.
+    dos: bool,
+    /// The core reads the sticks (`cores.toml` `analog`, ADR 0016 amended).
+    analog: bool,
+    featured: Option<Featured>,
+    soundfont_hint: bool,
 }
 
 struct FpsMeter {
@@ -379,7 +388,13 @@ impl App {
     pub(crate) fn build(mut options: LaunchOptions, hosted: bool) -> Result<Self, UiError> {
         let core_id = core_id_from_path(&options.core);
         let prefs = crate::cores_ui::preferences(&options.config.cores);
-        let spec = content_spec(&core_id, &options.content, &prefs);
+        let typed_id = CoreId::new(&core_id);
+        let spec = match &typed_id {
+            Some(id) => {
+                dos::spec_for_content(&options.content, &prefs, id).map_err(UiError::Content)?
+            }
+            None => content_spec(&core_id, &options.content, &prefs),
+        };
         let no_game = spec == ContentSpec::NoGame;
         let working_copy = matches!(
             &spec,
@@ -393,7 +408,7 @@ impl App {
             resolution_failed,
         } = resolve_game(&core_id, spec, &options.dirs);
         let mut game_options = GameOptions::load(&game_options_path);
-        let typed_id = CoreId::new(&core_id);
+        let spec = with_default_start(spec, game_options.options.dos.start.as_deref());
         let frontend_options = typed_id
             .as_ref()
             .map(|id| prefs.frontend_options(id))
@@ -420,6 +435,7 @@ impl App {
             &global_options,
             &game_options.options.core_options,
         );
+        let core_variables_for_legend = core_variables.clone();
         let identity_banners =
             identity_banners(&identity, &core_id, options_inherited, resolution_failed);
         let mut emulator = Emulator::load_content_as(
@@ -432,11 +448,27 @@ impl App {
                 state_dir: options.dirs.states.clone(),
                 assets_dir: options.dirs.assets.clone(),
                 core_variables,
-                cache_dir: options.dirs.root.join("cache"),
-                provide_vfs: false,
+                cache_dir: options.dirs.cache_dir(),
+                provide_vfs: typed_id.as_ref().is_some_and(|id| prefs.provides_vfs(id)),
                 restore_added_disks: true,
             },
         )?;
+        let dos_core = typed_id
+            .as_ref()
+            .is_some_and(|id| prefs.folder_policy(id).is_some());
+        let featured = typed_id.as_ref().and_then(|id| {
+            let system = crate::launch_firmware::firmware_system(&prefs, id)?;
+            let keys = prefs.featured_options(id, &system);
+            (!keys.is_empty()).then(|| Featured {
+                title: text::featured_title(&system),
+                keys,
+            })
+        });
+        let soundfont_hint = dos_core && !options.dirs.system.join(dos::SOUNDFONT_FILE).exists();
+        let dos_first_launch = dos_core
+            && emulator
+                .content_name()
+                .is_some_and(|n| dos::first_launch(&emulator.identity().core_save_dir, n));
         let core_files = typed_id.as_ref().and_then(|id| {
             let patterns = prefs.game_save_patterns(id);
             let content_name = emulator.content_name()?.to_owned();
@@ -477,11 +509,18 @@ impl App {
                 None if no_game => KeyboardModeChoice::Keyboard,
                 None => options.config.computer.default_keyboard_mode,
             };
+            let layout_id = keyboard_layout_id(&core_id);
+            // The PC legend follows the layout the core types with (computed from the language, or chosen).
+            let layout_value = typed_id
+                .as_ref()
+                .and_then(|id| prefs.layout_option(id))
+                .and_then(|opt| emulator_layout_value(&core_variables_for_legend, &opt.option));
             let legend = input
                 .extra
                 .get("keyboard_layout")
                 .and_then(|v| v.as_str())
                 .map(str::to_owned)
+                .or_else(|| layout_value.map(|v| legend_for_layout_value(&v).to_owned()))
                 .unwrap_or_else(|| {
                     legend_for_variant(
                         options
@@ -492,7 +531,6 @@ impl App {
                     )
                     .to_owned()
                 });
-            let layout_id = keyboard_layout_id(&core_id);
             let mut session = ComputerSession::new(
                 options.config.hotkeys.host_key,
                 KeyboardMode::from(mode),
@@ -520,6 +558,14 @@ impl App {
             text::menu_hint(options.config.hotkeys.menu)
         };
         overlay.osd.info(hint, now);
+        if dos_first_launch {
+            overlay.osd.push(
+                text::DOS_FIRST_LAUNCH.to_owned(),
+                OsdLevel::Info,
+                Duration::from_secs(12),
+                now,
+            );
+        }
         if let Some(notice) = firmware.notice {
             overlay
                 .osd
@@ -596,6 +642,10 @@ impl App {
             content_files,
             core_files,
             states_warned: false,
+            dos: dos_core,
+            analog: typed_id.as_ref().is_some_and(|id| prefs.analog(id)),
+            featured,
+            soundfont_hint,
         })
     }
 
@@ -662,6 +712,7 @@ impl App {
             pad.set_settings(GamepadSettings::from_config(config));
             pad.set_map(PadMap::from_config(self.style, &self.profile, config));
             pad.set_ui_capture(false);
+            pad.set_analog(self.analog);
             pad.pump();
             let _ = pad.take_hotkeys();
             let _ = pad.take_nav();
@@ -1341,6 +1392,16 @@ impl App {
                     self.overlay.osd.info(text::RESET_DONE, Instant::now());
                     self.close_overlay();
                 }
+                UiAction::ChangeStartProgram => {
+                    // dosbox_pure reads Shift in `retro_reset`: its boot menu shows even with an autoboot.
+                    if let Some(shift) = emu_runtime::RetroKey::from_name("lshift") {
+                        self.emulator.reset_with_keys(&[shift]);
+                    }
+                    self.overlay
+                        .osd
+                        .info(text::DOS_CHANGE_PROGRAM_DONE, Instant::now());
+                    self.close_overlay();
+                }
                 UiAction::SelectSlot(s) => self.slot = s,
                 UiAction::SaveState => self.save_state(),
                 UiAction::LoadState => {
@@ -1793,6 +1854,9 @@ impl App {
                 disks: self.disks_view.as_ref(),
                 game_scope: self.game_scope,
                 game_overrides: &self.game_options.options.core_options,
+                dos: self.dos,
+                featured: self.featured.as_ref(),
+                soundfont_hint: self.soundfont_hint,
             };
             self.overlay.vkbd_open = vkbd_open;
             let overlay = &mut self.overlay;
@@ -2192,7 +2256,39 @@ impl ApplicationHandler for App {
 fn keyboard_layout_id(core_id: &str) -> &'static str {
     match core_id {
         "puae" | "puae2021" => "amiga",
+        "dosbox_pure" => "pc",
         _ => "atari_st",
+    }
+}
+
+/// Value of the layout option among the effective core options (`None` when absent).
+fn emulator_layout_value(variables: &[(String, String)], key: &str) -> Option<String> {
+    variables
+        .iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+/// `[dos] start` of the game's options for a folder launched without an explicit program (« pour cette fois »
+/// wins). A remembered program that left the folder is ignored (the core's menu then shows).
+fn with_default_start(spec: ContentSpec, start: Option<&str>) -> ContentSpec {
+    match spec {
+        ContentSpec::Folder {
+            dir,
+            name,
+            start: None,
+        } => {
+            let start = start
+                .filter(|s| {
+                    dos::root_executables(&dir)
+                        .iter()
+                        .any(|e| e.eq_ignore_ascii_case(s))
+                })
+                .map(str::to_owned);
+            ContentSpec::Folder { dir, name, start }
+        }
+        other => other,
     }
 }
 

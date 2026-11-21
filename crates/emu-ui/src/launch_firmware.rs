@@ -13,7 +13,7 @@ use emu_assets::cores::{
 use crate::computer::amiga::{
     KickstartPlan, amiga_media_kind, plan_kickstart, resolve_amiga_model,
 };
-use crate::computer::computed::{ComputedContext, computed_options};
+use crate::computer::computed::{ComputedContext, computed_options, system_locale};
 use crate::game_options::GameOptions;
 use crate::{Config, DataDirs, GameContent};
 
@@ -213,6 +213,12 @@ pub(crate) fn firmware_setup(
         .get(core_id)
         .cloned()
         .unwrap_or_default();
+    let locale = system_locale();
+    let extension = first_file
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let Some(lf) = check_launch_firmware(
         &dirs.system,
         prefs,
@@ -221,7 +227,19 @@ pub(crate) fn firmware_setup(
         &global,
         &game.core_options,
     ) else {
-        return FirmwareSetup::default();
+        // No firmware decision, but the other computed defaults (DOS keyboard layout) still apply.
+        let system = firmware_system(prefs, &core).unwrap_or_default();
+        return FirmwareSetup {
+            computed: computed_options(&ComputedContext {
+                prefs,
+                core: &core,
+                system: &system,
+                firmware: None,
+                locale: &locale,
+                extension: &extension,
+            }),
+            ..FirmwareSetup::default()
+        };
     };
     tracing::info!(
         "BIOS de {core_id} ({}, variante {:?}) : {:?}",
@@ -229,12 +247,6 @@ pub(crate) fn firmware_setup(
         lf.variant,
         lf.check.state
     );
-    let locale = sys_locale::get_locale().unwrap_or_default();
-    let extension = first_file
-        .and_then(|p| p.extension())
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
     let computed = computed_options(&ComputedContext {
         prefs,
         core: &core,
