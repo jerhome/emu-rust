@@ -132,6 +132,7 @@ fn future_modes_on_mock_core() {
     reset_with_handler(&lib);
     vfs_declined(&lib);
     vfs_provided(&lib);
+    raw::null_pointers();
     raw::vfs(&lib);
     raw::reset_keys(&lib);
     raw::analog(&lib);
@@ -440,6 +441,8 @@ mod raw {
     static POLLS: AtomicU32 = AtomicU32::new(0);
 
     const EXPERIMENTAL: c_uint = 0x10000;
+    /// The VFS version this mini-host implements.
+    const VFS_VERSION: u32 = 3;
 
     #[repr(C)]
     struct VfsInfo {
@@ -477,8 +480,6 @@ mod raw {
         dirent_is_dir: unsafe extern "C" fn(DirP) -> bool,
         closedir: unsafe extern "C" fn(DirP) -> c_int,
     }
-    // SAFETY: only function pointers.
-    unsafe impl Sync for Vfs {}
 
     fn path_of(p: *const c_char) -> String {
         // SAFETY: the core passes NUL-terminated strings.
@@ -500,12 +501,18 @@ mod raw {
         })
     }
     unsafe extern "C" fn v_close(h: FileP) -> c_int {
-        // SAFETY: `h` comes from `v_open` and is closed once.
+        if h.is_null() {
+            return -1;
+        }
+        // SAFETY: `h` is non-null, comes from `v_open` and is closed once.
         drop(unsafe { Box::from_raw(h) });
         0
     }
     unsafe extern "C" fn v_size(h: FileP) -> i64 {
-        // SAFETY: `h` comes from `v_open`.
+        if h.is_null() {
+            return -1;
+        }
+        // SAFETY: `h` is non-null and comes from `v_open`.
         unsafe { &*h }
             .file
             .metadata()
@@ -519,25 +526,35 @@ mod raw {
     }
     unsafe extern "C" fn v_read(h: FileP, buf: *mut c_void, len: u64) -> i64 {
         use std::io::Read;
-        // SAFETY: `h` from `v_open`; `buf` is writable for `len` bytes (VFS contract).
+        let Ok(len) = usize::try_from(len) else {
+            return -1;
+        };
+        if h.is_null() || buf.is_null() {
+            return -1;
+        }
+        // SAFETY: both pointers are non-null; `h` is from `v_open`; `buf` is writable for `len` bytes (VFS contract).
         let (file, out) = unsafe {
             (
                 &mut *h,
-                std::slice::from_raw_parts_mut(buf.cast::<u8>(), len as usize),
+                std::slice::from_raw_parts_mut(buf.cast::<u8>(), len),
             )
         };
-        file.file.read(out).map_or(-1, |n| n as i64)
+        file.file
+            .read(out)
+            .map_or(-1, |n| i64::try_from(n).unwrap_or(-1))
     }
     unsafe extern "C" fn v_write(h: FileP, buf: *const c_void, len: u64) -> i64 {
         use std::io::Write;
-        // SAFETY: `h` from `v_open`; `buf` is readable for `len` bytes (VFS contract).
-        let (file, data) = unsafe {
-            (
-                &mut *h,
-                std::slice::from_raw_parts(buf.cast::<u8>(), len as usize),
-            )
+        let (Ok(count), Ok(written)) = (usize::try_from(len), i64::try_from(len)) else {
+            return -1;
         };
-        file.file.write_all(data).map_or(-1, |()| len as i64)
+        if h.is_null() || buf.is_null() {
+            return -1;
+        }
+        // SAFETY: both pointers are non-null; `h` is from `v_open`; `buf` is readable for `len` bytes (VFS contract).
+        let (file, data) =
+            unsafe { (&mut *h, std::slice::from_raw_parts(buf.cast::<u8>(), count)) };
+        file.file.write_all(data).map_or(-1, |()| written)
     }
     unsafe extern "C" fn v_flush(_: FileP) -> c_int {
         0
@@ -574,31 +591,44 @@ mod raw {
             .filter_map(Result::ok)
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
-                (include_hidden || !name.starts_with('.'))
-                    .then(|| (CString::new(name).unwrap(), e.path().is_dir()))
+                if !include_hidden && name.starts_with('.') {
+                    return None;
+                }
+                Some((CString::new(name).ok()?, e.path().is_dir()))
             })
             .collect();
         Box::into_raw(Box::new(Dir { entries, pos: None }))
     }
     unsafe extern "C" fn v_readdir(d: DirP) -> bool {
-        // SAFETY: `d` from `v_opendir`.
+        if d.is_null() {
+            return false;
+        }
+        // SAFETY: `d` is non-null and from `v_opendir`.
         let d = unsafe { &mut *d };
         let next = d.pos.map_or(0, |p| p + 1);
         d.pos = Some(next);
         next < d.entries.len()
     }
-    unsafe extern "C" fn v_name(d: DirP) -> *const c_char {
-        // SAFETY: `d` from `v_opendir`; valid after a successful `readdir`.
+    /// Entry under the cursor; `None` before the first / after the last `readdir` or for a null handle.
+    fn current<'a>(d: DirP) -> Option<&'a (CString, bool)> {
+        if d.is_null() {
+            return None;
+        }
+        // SAFETY: `d` is non-null and from `v_opendir` (valid until `v_closedir`, which the core calls last).
         let d = unsafe { &*d };
-        d.entries[d.pos.unwrap()].0.as_ptr()
+        d.entries.get(d.pos?)
+    }
+    unsafe extern "C" fn v_name(d: DirP) -> *const c_char {
+        current(d).map_or(std::ptr::null(), |e| e.0.as_ptr())
     }
     unsafe extern "C" fn v_is_dir(d: DirP) -> bool {
-        // SAFETY: as `v_name`.
-        let d = unsafe { &*d };
-        d.entries[d.pos.unwrap()].1
+        current(d).is_some_and(|e| e.1)
     }
     unsafe extern "C" fn v_closedir(d: DirP) -> c_int {
-        // SAFETY: `d` from `v_opendir`, closed once.
+        if d.is_null() {
+            return -1;
+        }
+        // SAFETY: `d` is non-null, from `v_opendir`, closed once.
         drop(unsafe { Box::from_raw(d) });
         0
     }
@@ -626,7 +656,9 @@ mod raw {
     };
 
     extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
-        let dirs = DIRS.get().unwrap();
+        let Some(dirs) = DIRS.get() else {
+            return false;
+        };
         match cmd {
             9 | 31 => {
                 let dir = if cmd == 9 { &dirs.system } else { &dirs.save };
@@ -636,8 +668,17 @@ mod raw {
             }
             10 => true,
             c if c == 45 | EXPERIMENTAL => {
-                // SAFETY: `struct retro_vfs_interface_info *` from the core.
-                unsafe { (*data.cast::<VfsInfo>()).iface = &raw const VFS };
+                if data.is_null() {
+                    return false;
+                }
+                // SAFETY: non-null `struct retro_vfs_interface_info *` from the core.
+                let info = unsafe { &mut *data.cast::<VfsInfo>() };
+                // Like the real frontend: versions above 3 refused, otherwise the version served is written back.
+                if info.required > VFS_VERSION {
+                    return false;
+                }
+                info.required = VFS_VERSION;
+                info.iface = &raw const VFS;
                 true
             }
             _ => false,
@@ -736,6 +777,31 @@ mod raw {
         });
         let raw = Raw::start(lib, &dir.join("game.mock"));
         (dir, raw)
+    }
+
+    /// The mini-host's callbacks answer an error (never a crash) to null handles and buffers.
+    pub fn null_pointers() {
+        let mut byte = 0u8;
+        let buf = (&raw mut byte).cast::<c_void>();
+        // SAFETY: every call below passes a null handle or buffer, which the callbacks must reject without
+        // dereferencing anything; `buf` is valid for the one byte announced.
+        unsafe {
+            assert_eq!(v_read(std::ptr::null_mut(), buf, 1), -1);
+            assert_eq!(v_write(std::ptr::null_mut(), buf, 1), -1);
+            assert_eq!(v_size(std::ptr::null_mut()), -1);
+            assert_eq!(v_close(std::ptr::null_mut()), -1);
+            assert!(!v_readdir(std::ptr::null_mut()));
+            assert!(v_name(std::ptr::null_mut()).is_null());
+            assert!(!v_is_dir(std::ptr::null_mut()));
+            assert_eq!(v_closedir(std::ptr::null_mut()), -1);
+            // A real handle with a null buffer.
+            let path = CString::new(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+            let h = v_open(path.as_ptr(), 1, 0);
+            assert!(!h.is_null(), "Cargo.toml opens");
+            assert_eq!(v_read(h, std::ptr::null_mut(), 1), -1);
+            assert_eq!(v_write(h, std::ptr::null(), 1), -1);
+            assert_eq!(v_close(h), 0);
+        }
     }
 
     /// The core asks for VFS v3 and uses it for everything: directory listing (hidden entries skipped), write,

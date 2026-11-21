@@ -1,0 +1,16 @@
+# dosbox_pure, generated or free DOS programs, scripted keys only; core sha256 37e7f282e3d99f3a7536fed1ede483dd3538ed90476c9cbe127f01bab3930955
+floppy-bird frame=300 fingerprint=749e9560809e6d56
+freedos-boot frame=3500 fingerprint=c2d6df4ba8c676e3
+freedos-menu frame=600 fingerprint=b2fa05e006ef5afa
+generated-floppy frame=600 fingerprint=0dcb180c1d7bcbc2
+generated-floppy-ima frame=600 fingerprint=0dcb180c1d7bcbc2
+generated-iso frame=600 fingerprint=0dcb180c1d7bcbc2
+hello-folder frame=600 fingerprint=0dcb180c1d7bcbc2
+hello-zip frame=600 fingerprint=0dcb180c1d7bcbc2
+keys-ab frame=400 fingerprint=67a13754f32b9c5c
+menu-folder frame=600 fingerprint=bd855a36a54e8f71
+menu-folder-start-menu1 frame=600 fingerprint=f1a3cff0bd31c24c
+menu-folder-start-menu2 frame=600 fingerprint=873a4eb570ddbbe2
+mouse-moved frame=400 fingerprint=95070127eee2c444
+reset-plain frame=800 fingerprint=0dcb180c1d7bcbc2
+reset-shift frame=800 fingerprint=2393e5746acdbb7a
