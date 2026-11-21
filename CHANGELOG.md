@@ -2,6 +2,36 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [3.0.0-rc.1] - 2026-11-21
+
+Première pré-release de la 3.0 : **Amiga** (puae ; puae2021 recommandé sur Mac) et les règles communes des versions
+suivantes. Guide d'essai : `docs/guide-essai-3.0.md`.
+
+### Ajouté
+
+- Amiga : disquettes ADF (copies de travail, jamais modifiées), IPF, disques durs HDF / WHDLoad (LHA), jeux à plusieurs
+  disquettes (DF0 + DF1), modèle choisi automatiquement (A500 / A1200) ou forcé par jeu.
+- Sans Kickstart : démarrage avec AROS (intégré au core) après un avertissement unique par jeu ; « Importer un
+  Kickstart… » / « Importer un BIOS… » (fichier vérifié par son empreinte, copié sous le nom attendu, jamais
+  d'écrasement d'un fichier existant sans confirmation ; fichier inconnu importable seulement « non vérifié »).
+- Écran Cores : « Core utilisé par système » (puae2021 marqué « recommandé sur Mac »).
+- Clavier Amiga : Alt gauche / Alt droit = Amiga gauche / droite (Alt + F4, Alt + Tab, Alt + Espace restent au
+  système) ; clavier virtuel Amiga 500 ; correspondances réglables (`[computer.remap.amiga]`).
+- Bibliothèque : bouton « Ouvrir le dossier des ROMs » (sous Docker : chemin affiché) ; fichiers non classés listés
+  après un scan avec le dossier conseillé ; DAT téléchargés par source (TOSEC, WHDLoad…).
+- « Réinitialiser » efface aussi les disquettes de sauvegarde créées par le core pour ce jeu.
+- Ligne de commande : `--import-bios`, `--list-bios` par modèle.
+
+### Modifié
+
+- Bibliothèque : schéma v4 (plusieurs DAT par système), migration automatique sans perte depuis la 2.x.
+- Atari ST : le DAT TOSEC est désormais bien utilisé (la 2.x téléchargeait le DAT No-Intro).
+
+### Limites connues
+
+- Une bibliothèque ouverte par la 3.0 n'est plus lisible par une 2.x (base plus récente refusée, jamais modifiée).
+- Fichiers `.ipf` hors du dossier `amiga/` et hors DAT : « non classés ».
+
 ## [2.1.0-rc.2] - 2026-11-21
 
 Deuxième pré-release de la 2.1 : **identité de jeu**, disquettes ajoutées mémorisées, réglages de la manette.
