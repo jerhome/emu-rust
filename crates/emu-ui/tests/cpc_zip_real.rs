@@ -72,6 +72,7 @@ fn options(data: &Path) -> EmulatorOptions {
         core_save_scope: SaveScope::Game,
         fastforward_override: true,
         variable_state_size: false,
+        port_devices: Vec::new(),
     }
 }
 

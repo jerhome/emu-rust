@@ -1616,6 +1616,7 @@ fn disc_analysis(
         rule,
         stem: stem.clone(),
         region,
+        zip_disks: false,
     };
     if !system.disc {
         return Ok(analysis(
