@@ -15,7 +15,7 @@ use crate::db::{
     identify_dos, load_media, sha1_from, to_i64,
 };
 use crate::dos::DosFile;
-use crate::media::{parse_m3u, strip_media_marker};
+use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_media_marker};
 use crate::systems::{Attribution, attribute, systems};
 use crate::{
     DISC_EXTENSIONS, DiscFormat, Identification, LibraryError, MAX_HASH_SIZE, RomHashes,
@@ -155,6 +155,8 @@ struct Analysis {
     hashes: Option<RomHashes>,
     rule: Rule,
     stem: String,
+    /// A zip of several disks of one computer: stored as `media = [the zip]` (see `zip_disk_order`).
+    zip_disks: bool,
 }
 
 enum Failure {
@@ -821,6 +823,14 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
     }
 }
 
+/// A zip stored with itself as only media (see `zip_disk_order`) is unchanged while the file is.
+fn zip_media_agrees(old: &Existing, found: &Found) -> bool {
+    found.media.is_empty()
+        && lower_ext(&found.path).as_deref() == Some("zip")
+        && old.media.len() == 1
+        && old.media[0] == found.key
+}
+
 /// Without hashing: entries needing the DATs always send the playlist to a new analysis.
 fn playlist_agrees(old: &Existing, found: &Found) -> bool {
     let mut systems: Vec<&str> = Vec::new();
@@ -891,6 +901,8 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     // CPC / C64 systems that `attribute` really gives a non-empty entry here (`.dsk` = cpc, `.d64` = c64).
     // Other computers (`.st` + `.prg`) and folder-only extensions outside their folder (`.voc`) never count.
     let mut computers: HashSet<&'static str> = HashSet::new();
+    // Every non-empty entry with a catalog extension: (index, name, size, extension).
+    let mut useful: Vec<(usize, String, u64, String)> = Vec::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_data(index)
@@ -921,6 +933,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         {
             computers.insert(id);
         }
+        if entry.size() > 0 && !candidates.is_empty() {
+            useful.push((index, name.clone(), entry.size(), ext.clone()));
+        }
         if chosen.is_some() {
             // Kept walking to see the programs and discs listed after the chosen entry.
             continue;
@@ -950,6 +965,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                 pinned: folder_dos.is_some(),
             },
             stem: stem_of(&found.path),
+            zip_disks: false,
         });
     }
     if computers.len() > 1 {
@@ -961,6 +977,13 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                 .to_owned()
                 .into(),
         );
+    }
+    let mut zip_disks = false;
+    if let Some(order) = zip_disk_order(&useful) {
+        // The first disk in disk order is the entry (identified and hashed), not the first in the archive.
+        let (index, name, size, ext) = &useful[order[0]];
+        chosen = Some((*index, name.clone(), *size, systems_for_extension(ext)));
+        zip_disks = true;
     }
     let Some((index, name, declared, _)) = chosen else {
         return Err(if saw_empty {
@@ -992,7 +1015,55 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         hashes,
         rule,
         stem: stem_of(&found.path),
+        zip_disks,
     })
+}
+
+/// Disk extensions of the computers that load several floppies (a zip of them is one multi-disk game).
+const DISK_EXTENSIONS: &[&str] = &[
+    "dsk", "d64", "d71", "d81", "g64", "nib", "adf", "adz", "dms", "fdi", "ipf", "st", "msa",
+    "dim", "stx",
+];
+
+/// Indexes into `useful`, in disk order (`Disk N` / `Side X`, else alphabetical), when the archive holds two
+/// disks or more and nothing else of the catalog (a `.prg` next to `.st` files leaves the 5.0 behaviour), all of
+/// them of one computer system.
+fn zip_disk_order(useful: &[(usize, String, u64, String)]) -> Option<Vec<usize>> {
+    if useful.len() < 2 || useful.len() > MAX_MEDIA_IMAGES {
+        return None;
+    }
+    if !useful
+        .iter()
+        .all(|u| DISK_EXTENSIONS.contains(&u.3.as_str()))
+    {
+        return None;
+    }
+    let common = useful
+        .iter()
+        .skip(1)
+        .fold(systems_for_extension(&useful[0].3), |acc, u| {
+            let next = systems_for_extension(&u.3);
+            acc.into_iter()
+                .filter(|s| next.iter().any(|n| n.id == s.id))
+                .collect()
+        });
+    if common.is_empty() || !common.iter().all(|s| s.kind == SystemKind::Computer) {
+        return None;
+    }
+    let names: Vec<PathBuf> = useful.iter().map(|u| PathBuf::from(&u.1)).collect();
+    let (groups, singles) = group_media(&names);
+    let ordered: Vec<PathBuf> = match groups.as_slice() {
+        [g] if singles.is_empty() && g.members.len() == names.len() => g.members.clone(),
+        _ => {
+            let mut sorted = names.clone();
+            sorted.sort_by_key(|n| n.to_string_lossy().to_lowercase());
+            sorted
+        }
+    };
+    ordered
+        .iter()
+        .map(|o| names.iter().position(|n| n == o))
+        .collect()
 }
 
 fn rule_systems(rule: &Rule) -> &[&'static SystemInfo] {
@@ -1141,6 +1212,7 @@ fn analyze_file(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis
         hashes,
         rule,
         stem: stem_of(&found.path),
+        zip_disks: false,
     })
 }
 
@@ -1200,6 +1272,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        zip_disks: false,
     })
 }
 
@@ -1242,6 +1315,7 @@ fn analyze_disc(found: &Found, ext: &str) -> Result<Analysis, Failure> {
         hashes: None,
         rule,
         stem: stem_of(&found.path),
+        zip_disks: false,
     })
 }
 
@@ -1396,7 +1470,8 @@ fn store(
             .map_err(db_error)?;
         return Ok(Stored::Unclassified);
     };
-    let title = if found.media.is_empty() {
+    let zip_media = analysis.zip_disks && found.media.is_empty();
+    let title = if found.media.is_empty() && !zip_media {
         id.title
     } else {
         // The DAT names the first disk `Game (Disk 1 of 2)`: the game is the whole set.
@@ -1431,7 +1506,12 @@ fn store(
         ],
     )
     .map_err(db_error)?;
-    store_media(conn, &found.key, &found.media)?;
+    // A zip of disks lists itself: emu-runtime extracts every disk it holds, in archive order.
+    if zip_media {
+        store_media(conn, &found.key, std::slice::from_ref(&found.key))?;
+    } else {
+        store_media(conn, &found.key, &found.media)?;
+    }
     // Covers are cached by content hash: a different content needs a new lookup.
     if let Some(old) = existing
         && old.sha1 != full.map(|h| h.sha1)
@@ -1531,7 +1611,7 @@ pub(crate) fn run(
         if old.is_some_and(|o| {
             o.file_size == to_i64(f.file_size)
                 && o.mtime == f.mtime
-                && o.media == f.media
+                && (o.media == f.media || zip_media_agrees(o, f))
                 && pin_agrees(o, f)
         }) {
             report.unchanged += 1;

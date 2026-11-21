@@ -220,3 +220,83 @@ fn two_cpc_dats_and_the_c64_dat_identify_by_crc() {
         assert_ne!(g.identification, Identification::Unknown);
     }
 }
+
+fn game_at<'a>(games: &'a [Game], file: &str) -> &'a Game {
+    games
+        .iter()
+        .find(|g| g.path.file_name().is_some_and(|n| n == file))
+        .unwrap_or_else(|| panic!("{file} not in {games:?}"))
+}
+
+/// A zip of several floppies is one game whose `media` is the zip itself (emu-runtime extracts every disk it
+/// holds); `entry` is the first disk in disk order, not the first of the archive.
+#[test]
+fn zip_of_disks_is_one_multi_disk_game() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("roms");
+    // Real TOSEC names, archive order scrambled.
+    let tosec = |n: u8| format!("B.A.T. (1991)(Ubi Soft)(Disk {n} of 4).dsk");
+    zip_of(
+        &root.join("bat.zip"),
+        &[
+            (&tosec(3), &blob(3)),
+            (&tosec(1), &blob(1)),
+            (&tosec(4), &blob(4)),
+            (&tosec(2), &blob(2)),
+        ],
+    );
+    zip_of(
+        &root.join("sides.zip"),
+        &[("Q (Side B).dsk", &blob(6)), ("Q (Side A).dsk", &blob(5))],
+    );
+    zip_of(
+        &root.join("plain.zip"),
+        &[("zeta.dsk", &blob(7)), ("Alpha.dsk", &blob(8))],
+    );
+    zip_of(
+        &root.join("st.zip"),
+        &[("G (Disk 2).st", &blob(9)), ("G (Disk 1).st", &blob(10))],
+    );
+    zip_of(
+        &root.join("amiga.zip"),
+        &[
+            ("H (Disk 2 of 2).adf", &blob(11)),
+            ("H (Disk 1 of 2).adf", &blob(12)),
+        ],
+    );
+    zip_of(&root.join("one.zip"), &[("Only.dsk", &blob(13))]);
+    // Bare TOSEC files group too.
+    for n in 1..=4u8 {
+        write(&root.join(format!("bare/{}", tosec(n))), &blob(20 + n));
+    }
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan(&mut lib, &root);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let games = lib.games().unwrap();
+    for (file, system, first) in [
+        ("bat.zip", "cpc", tosec(1)),
+        ("sides.zip", "cpc", "Q (Side A).dsk".to_owned()),
+        ("plain.zip", "cpc", "Alpha.dsk".to_owned()),
+        ("st.zip", "atarist", "G (Disk 1).st".to_owned()),
+        ("amiga.zip", "amiga", "H (Disk 1 of 2).adf".to_owned()),
+    ] {
+        let g = game_at(&games, file);
+        assert_eq!(g.system, system, "{file}");
+        assert_eq!(g.entry.as_deref(), Some(first.as_str()), "{file}");
+        assert_eq!(g.media, std::slice::from_ref(&g.path), "{file}");
+    }
+    let one = game_at(&games, "one.zip");
+    assert_eq!(one.entry.as_deref(), Some("Only.dsk"));
+    assert!(one.media.is_empty());
+    let bare: Vec<_> = games
+        .iter()
+        .filter(|g| g.path.starts_with(root.join("bare")))
+        .collect();
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].media.len(), 4);
+    assert!(bare[0].media[0].to_string_lossy().contains("Disk 1 of 4"));
+    // Unchanged files are not analysed again.
+    let again = scan(&mut lib, &root);
+    assert_eq!(again.unchanged, 7, "{again:?}");
+    assert_eq!(lib.games().unwrap(), games);
+}
