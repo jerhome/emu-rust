@@ -45,12 +45,13 @@ Dossier des ROMs à indiquer dans les Réglages de la bibliothèque : `/data/rom
 /data/assets/   réservé (non utilisé en 1.0 ; jaquettes dans covers/, DAT dans database/)
 /data/covers/   jaquettes    /data/database/   DAT No-Intro / TOSEC
 /data/game-options/   options par jeu : game-options/<core_id>/<jeu>.toml (2.0)
+/data/cache/    copies de jeux DOS en dossier : cache/dosbox_pure/<jeu>.zip (4.0, supprimable)
 /data/library.sqlite   base de la bibliothèque (créée par l'application)
 /data/config.toml   configuration (touches, options) ; droits 0600, propriétaire `emu`
 ```
 
 Un seul volume porte tout le persistant ; le dossier de données est `EMU_DATA_DIR=/data` (équivalent de
-`--data-dir /data`, voir ADR 0011). L'entrypoint crée `roms/ system/ saves/ states/ assets/ cores/ covers/ database/` s'ils manquent et remet `config.toml`
+`--data-dir /data`, voir ADR 0011). L'entrypoint crée `roms/ system/ saves/ states/ assets/ cores/ covers/ database/ game-options/ cache/` s'ils manquent et remet `config.toml`
 en `0600` (il pourra contenir des identifiants). Sauvegarde du volume :
 
 ```sh
@@ -115,6 +116,27 @@ EMU_HOST_ROMS_DIR=/home/moi/roms docker compose -f docker/compose.yaml run --rm 
 Depuis WSL, choisissez un chemin du système de fichiers WSL (`/home/...`), bien plus rapide que `/mnt/c/...`. Le bouton
 affiche alors ce chemin d'hôte. Notices : les licences des cores (GPL-2.0) et d'AROS sont celles des cores ; aucune
 ROM ni Kickstart n'est dans l'image.
+
+## PC-DOS (4.0, en développement)
+
+Core `dosbox_pure` (GPL-2.0, installé depuis l'écran Cores, buildbot libretro). Aucun jeu, BIOS ni système DOS
+commercial n'est fourni. Rangez chaque jeu **en dossier** (`/data/roms/dos/<jeu>/` contenant ses `.exe`) ou **en `.zip`**
+dans `/data/roms/dos/` (les `.exe` posés directement dans `roms/dos/` sont ignorés) ; images de disquette `.ima`/`.img`
+et CD `.cue`/`.iso` acceptés. Un dossier est d'abord copié dans `/data/cache/dosbox_pure/` (« Préparation du jeu... ») :
+ce cache se supprime sans perte (Réglages > Vider le cache DOS). Le dossier d'origine n'est jamais modifié ; les
+modifications d'un jeu zip vont dans `/data/saves/dosbox_pure/<jeu>.pure.zip`.
+
+**Musique MIDI** : facultative. Le SoundFont libre **GeneralUser GS 2.0.3** (32 Mo, « GeneralUser GS License v2.0 ») est
+téléchargé **uniquement sur votre action** (Réglages DOS > MIDI, ou écran Cores ; HTTPS depuis `raw.githubusercontent.com`,
+URL épinglée au commit `684543d` de `mrbumpy409/GeneralUser-GS`, SHA-256 vérifié) dans `/data/system/GeneralUser-GS.sf2`.
+Il n'est jamais dans l'image. MT-32 / CM-32L : ROM Roland commerciales, jamais téléchargées ; importez les vôtres
+(`/data/system/MT32_CONTROL.ROM`, `MT32_PCM.ROM`, ...). Le DAT `DOS.dat` (libretro-database, CC-BY-SA-4.0) est téléchargé
+à la demande (Réglages > Mettre à jour la base) pour identifier les jeux ; il n'est pas redistribué.
+
+```sh
+docker compose -f docker/compose.yaml run --rm --no-deps -v "$PWD/dos:/in:ro" --entrypoint bash emu-wslg \
+  -c 'mkdir -p /data/roms/dos && cp -r /in/. /data/roms/dos/'
+```
 
 ## Manette (2.1)
 
