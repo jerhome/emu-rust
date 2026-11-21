@@ -37,5 +37,6 @@
 | Windows | B.A.T. (CPC), cap32 | ❌ zip de `.dsk` dans `roms/cpc/` : Ready, `cat` → « Drive A: disc missing » (aucune disquette insérée) ; ✅ les 4 `.dsk` (« Disk N of 4 ») extraits dans `roms/cpc/` : regroupés, fonctionne (« trop beau », jouable à la manette PS4), changement de disquette OK. **Défaut en diagnostic** (zip + cap32 `media = direct`) |
 | Windows | NBA Jam (32X), picodrive | ✅ **impeccable** : image, son, manette PS4 (fichier extrait) ; ❌ zip simple (un seul fichier) non utilisable, l'utilisateur a dû extraire — symptôme à préciser, défaut à diagnostiquer |
 | Windows | Metroid Fusion (GBA), mgba | ✅ **impeccable** : image, son, manette PS4 |
+| Windows | Zelda Link's Awakening DX (GBC), gambatte | ✅ **impeccable** : image, son, sauvegarde (reprise après relance) |
 
 Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
