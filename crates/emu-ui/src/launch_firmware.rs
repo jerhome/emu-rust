@@ -353,7 +353,8 @@ pub(crate) fn fallback_option(
     prefs
         .required_firmware(core, system)
         .and_then(|r| r.fallback.as_ref())
-        .map(|f| (f.option.clone(), f.value.clone()))
+        .and_then(|f| f.option_value())
+        .map(|(option, value)| (option.to_owned(), value.to_owned()))
 }
 
 /// What a launch decides about firmware before loading the core (design v3.0 §2.1, §3.5.4).

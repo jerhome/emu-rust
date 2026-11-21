@@ -158,6 +158,9 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
 pub enum LaunchRefusal {
     /// A CD image inside a zip (never extracted: 300-700 MB, above `MAX_CONTENT_SIZE`).
     ArchivedDisc,
+    /// The disc header names an other known system than the game's (a PlayStation disc under `3do/`): the core
+    /// would stay on its start screen without an error (7.0, design §3.5; produced by PU1).
+    ForeignDisc,
 }
 
 impl LaunchRefusal {
@@ -166,6 +169,9 @@ impl LaunchRefusal {
         match self {
             LaunchRefusal::ArchivedDisc => {
                 "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD."
+            }
+            LaunchRefusal::ForeignDisc => {
+                "Ce disque appartient à un autre système que celui du jeu : rangez-le dans le bon dossier de roms."
             }
         }
     }

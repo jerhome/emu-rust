@@ -17,6 +17,10 @@ pub enum PadStyle {
     Nes,
     /// Game Boy Advance (design v6.0 §3.5): SNES pad without X / Y.
     Gba,
+    /// PlayStation pad (7.0, design §3.5): pcsx_rearmed, swanstation, mednafen_psx; `.pbp`.
+    PlayStation,
+    /// 3DO pad (7.0): opera.
+    ThreeDo,
     Generic,
 }
 
@@ -28,6 +32,8 @@ impl PadStyle {
             "snes9x" | "bsnes" | "mesen-s" => Self::Snes,
             "gambatte" | "sameboy" | "mgba_gb" => Self::GameBoy,
             "mgba" => Self::Gba,
+            // PU1: `pcsx_rearmed` | `swanstation` | `mednafen_psx` => PlayStation, `opera` => ThreeDo (and
+            // `from_extension("pbp")` => PlayStation). Not mapped yet: 6.0 behaviour is unchanged.
             "nestopia" | "fceumm" | "mesen" | "quicknes" => Self::Nes,
             _ => Self::Generic,
         }
@@ -96,6 +102,8 @@ impl PadStyle {
             Self::GameBoy => "gb",
             Self::Nes => "nes",
             Self::Gba => "gba",
+            Self::PlayStation => "ps",
+            Self::ThreeDo => "3do",
             Self::Generic => "generic",
         }
     }
@@ -109,7 +117,13 @@ impl PadStyle {
             (_, B::Left) => "Gauche",
             (_, B::Right) => "Droite",
             (Self::MasterSystem, B::Start) => "Pause",
+            (Self::ThreeDo, B::Start) => "P",
             (_, B::Start) => "Start",
+            // 3DO pad: face buttons A, B, C (libretro Y, B, A), P = play / pause, X = stop.
+            (Self::ThreeDo, B::Y) => "A",
+            (Self::ThreeDo, B::B) => "B",
+            (Self::ThreeDo, B::A) => "C",
+            (Self::ThreeDo, B::Select) => "X",
             (Self::MegaDrive, B::Select) => "Mode",
             (Self::MegaDrive, B::Y) => "A",
             (Self::MegaDrive, B::B) => "B",
@@ -190,6 +204,35 @@ impl PadStyle {
                 B::Select,
                 B::A,
                 B::B,
+                B::L,
+                B::R,
+            ],
+            Self::PlayStation => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::A,
+                B::B,
+                B::X,
+                B::Y,
+                B::L,
+                B::R,
+                B::L2,
+                B::R2,
+            ],
+            Self::ThreeDo => &[
+                B::Up,
+                B::Down,
+                B::Left,
+                B::Right,
+                B::Start,
+                B::Select,
+                B::Y,
+                B::B,
+                B::A,
                 B::L,
                 B::R,
             ],
@@ -310,6 +353,8 @@ impl KeyMap {
             PadStyle::GameBoy | PadStyle::Nes => Self::nintendo_8bit_default(),
             PadStyle::Snes => Self::snes_default(),
             PadStyle::Gba => Self::gba_default(),
+            PadStyle::PlayStation => Self::playstation_default(),
+            PadStyle::ThreeDo => Self::threedo_default(),
             PadStyle::Generic => Self::generic_default(),
         }
     }
@@ -414,6 +459,17 @@ impl KeyMap {
                 (K::KeyL, B::R),
             ],
         )
+    }
+
+    /// Port 0, PlayStation layout (design v7.0 §3.5): SNES layout (J = cross, K = circle, U = square, I = triangle,
+    /// O = L1, L = R1) plus L2 = P, R2 = M (PU1 moves them on a conflict with a shortcut); L3 / R3 unbound.
+    pub fn playstation_default() -> Self {
+        todo!("PU1: PlayStation key layout")
+    }
+
+    /// Port 0, 3DO layout: U = A, J = B, K = C, O = L, L = R, Enter = P, Right Shift = X.
+    pub fn threedo_default() -> Self {
+        todo!("PU1: 3DO key layout")
     }
 
     /// Built-in layout of a keyboard profile: computer cores (joystick mode) get [`KeyMap::computer_default`],

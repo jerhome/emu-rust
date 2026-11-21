@@ -144,6 +144,7 @@ impl Host {
             },
             launch: None,
             auto_fast_load: true,
+            pad_device: None,
             game_system: request.system.clone(),
             region: request.region,
             spec: request.spec.clone(),

@@ -19,6 +19,7 @@ mod hotkeys;
 mod keyboard;
 mod launch_firmware;
 mod library;
+mod pad_mode;
 mod platform;
 mod shutdown;
 mod ui;
@@ -112,6 +113,9 @@ pub struct LaunchOptions {
     /// `false` (`--no-auto-fast-load`): the core's fast-forward requests are refused for this run, whatever
     /// `[computer] auto_fast_load` says.
     pub auto_fast_load: bool,
+    /// `--pad-device` (`digital` | `dualshock`): pad mode of this run, over the game's and the config's; `None`:
+    /// the usual rule (design v7.0 §2.4). Read by PU2.
+    pub pad_device: Option<String>,
     /// libretro database name of the game's system (library entry); `None` (CLI): found from the content's
     /// extension and header. Chooses the firmware table, the « Réglages » section and the « CD » menu.
     pub game_system: Option<String>,

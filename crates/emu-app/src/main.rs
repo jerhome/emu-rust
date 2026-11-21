@@ -95,6 +95,7 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
         dump_window: cli.dump_window,
         launch: cli.launch,
         auto_fast_load: cli.auto_fast_load,
+        pad_device: cli.pad_device,
         game_system: None,
         region: None,
         spec: None,

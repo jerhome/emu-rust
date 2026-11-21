@@ -65,6 +65,7 @@ impl Env {
             core_save_scope: SaveScope::Core,
             fastforward_override: false,
             variable_state_size: false,
+            port_devices: Vec::new(),
         }
     }
 

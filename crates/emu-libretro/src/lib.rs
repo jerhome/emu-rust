@@ -20,7 +20,8 @@ pub use crate::disk::{DiskControl, DiskControlKind};
 pub use crate::error::LibretroError;
 pub use crate::keyboard::{KeyEvent, KeyModifiers, RetroKey, mouse_id};
 pub use crate::types::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, FastForwardOverride,
-    GameGeometry, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, LogLevel,
-    MemoryKind, PixelFormat, SerializationQuirks, SystemInfo, SystemTiming, VideoFrame,
+    AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue,
+    FastForwardOverride, GameGeometry, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK,
+    JoypadButton, LogLevel, MemoryKind, PixelFormat, SerializationQuirks, SystemInfo, SystemTiming,
+    VideoFrame,
 };

@@ -280,6 +280,15 @@ pub enum LogLevel {
     Error,
 }
 
+/// One device type a core declares for a port through `SET_CONTROLLER_INFO` (env 35): `id` is what
+/// `retro_set_controller_port_device` takes (`RETRO_DEVICE_SUBCLASS` ids such as 517 / 261 differ per core).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerType {
+    /// Core's own description, at most 64 characters, control characters removed.
+    pub description: String,
+    pub id: u32,
+}
+
 /// User-facing message from `SET_MESSAGE` / `SET_MESSAGE_EXT` (OSD targets only; log targets go to `tracing`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreMessage {

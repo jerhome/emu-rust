@@ -59,9 +59,13 @@ fn firmware_fallback_options(
     check: Option<&FirmwareCheck>,
     fallback: Option<&FirmwareFallback>,
 ) -> Vec<(String, String)> {
-    match (check.map(|c| &c.state), fallback) {
-        (Some(FirmwareState::CoreFallback { .. }), Some(f)) => {
-            vec![(f.option.clone(), f.value.clone())]
+    // `FirmwareFallback::Core`: the core falls back by itself, nothing to set.
+    match (
+        check.map(|c| &c.state),
+        fallback.and_then(FirmwareFallback::option_value),
+    ) {
+        (Some(FirmwareState::CoreFallback { .. }), Some((option, value))) => {
+            vec![(option.to_owned(), value.to_owned())]
         }
         _ => Vec::new(),
     }
@@ -80,7 +84,7 @@ mod tests {
     }
 
     fn aros() -> FirmwareFallback {
-        FirmwareFallback {
+        FirmwareFallback::Option {
             option: "puae_kickstart".into(),
             value: "aros".into(),
         }

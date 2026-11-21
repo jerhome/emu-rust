@@ -102,6 +102,7 @@ fn cap32_game_folder_and_requested_fast_forward() {
             core_save_scope: SaveScope::Game,
             fastforward_override: true,
             variable_state_size: false,
+            port_devices: Vec::new(),
         },
     )
     .expect("load");

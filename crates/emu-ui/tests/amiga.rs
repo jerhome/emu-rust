@@ -108,6 +108,7 @@ fn emu_options(dirs: &DataDirs, core_variables: Vec<(String, String)>) -> Emulat
         core_save_scope: emu_runtime::SaveScope::Core,
         fastforward_override: false,
         variable_state_size: false,
+        port_devices: Vec::new(),
         cache_dir: dirs.cache_dir(),
         provide_vfs: false,
     }

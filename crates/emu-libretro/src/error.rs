@@ -60,6 +60,10 @@ pub enum LibretroError {
     /// A disk control callback returned `false` (`&'static str` = operation name).
     #[error("core refused disk control operation `{0}`")]
     DiskControlFailed(&'static str),
+    /// `Core::set_controller_device`: `id` is neither `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD` nor declared by the
+    /// core for `port` (design v7.0 §3.1).
+    #[error("controller device {id} is not declared by the core for port {port}")]
+    UnknownControllerDevice { port: u32, id: u32 },
     #[error("core cannot start without content")]
     NoGameUnsupported,
     /// The core library stayed mapped after a previous unload and reloading it needs a private copy (ADR 0022),

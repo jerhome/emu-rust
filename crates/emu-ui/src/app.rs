@@ -502,6 +502,8 @@ impl App {
                 variable_state_size: typed_id
                     .as_ref()
                     .is_some_and(|id| prefs.variable_state_size(id)),
+                // PU2: pad mode of the game (design v7.0 §3.5); empty = JOYPAD on every port, as in 6.0.
+                port_devices: Vec::new(),
             },
         )?;
         let dos_core = typed_id

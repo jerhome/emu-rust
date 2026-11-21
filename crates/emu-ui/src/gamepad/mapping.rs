@@ -175,6 +175,27 @@ impl PadMap {
                 (P::Select, J::Select),
                 (P::Start, J::Start),
             ],
+            // 7.0 (design §3.5): DualShock identity (cross = B, circle = A, square = Y, triangle = X).
+            PadStyle::PlayStation => &[
+                (P::West, J::Y),
+                (P::North, J::X),
+                (P::L1, J::L),
+                (P::R1, J::R),
+                (P::L2, J::L2),
+                (P::R2, J::R2),
+                (P::L3, J::L3),
+                (P::R3, J::R3),
+                (P::Select, J::Select),
+                (P::Start, J::Start),
+            ],
+            // 3DO: square = A (Y), cross = B, circle = C (A), L1 / R1; Share = X (Select), Options = P (Start).
+            PadStyle::ThreeDo => &[
+                (P::West, J::Y),
+                (P::L1, J::L),
+                (P::R1, J::R),
+                (P::Select, J::Select),
+                (P::Start, J::Start),
+            ],
             PadStyle::Generic => &[
                 (P::West, J::Y),
                 (P::North, J::X),

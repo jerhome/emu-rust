@@ -12,6 +12,7 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20                [--data-dir DIR] [--system-dir DIR] [--save-dir DIR] [--scale N]\n\
                          \x20                [--no-audio] [--no-gamepad] [--frames N] [--dump-frame sortie.png]\n\
                          \x20                [--launch <commande|programme>] [--no-auto-fast-load]\n\
+                         \x20                [--pad-device digital|dualshock]\n\
                          \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad]\n\
                          \x20                [--screen library|library-settings|cores|library-launch]\n\
@@ -38,6 +39,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          Amstrad CPC / Commodore 64 : --launch donne la commande de démarrage (ex. RUN\"DISC) ou\n\
                          le programme de la disquette à lancer (ex. INTRO) ; --no-auto-fast-load désactive le\n\
                          chargement accéléré demandé par le core.\n\
+                         PlayStation : --pad-device choisit le pad (numérique ou DualShock analogique) pour cette\n\
+                         session, sans le mémoriser.\n\
                          --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
                          PS + R1 / L1 = sauver / charger l'état, PS + R2 maintenu = avance rapide ;\n\
                          ordinateurs : PS + R3 = clavier virtuel, PS + L3 = disquette suivante.\n\
@@ -91,6 +94,9 @@ pub struct Cli {
     pub launch: Option<String>,
     /// `false` with `--no-auto-fast-load`.
     pub auto_fast_load: bool,
+    /// `--pad-device digital|dualshock` (design v7.0 §3.5): pad mode of this run, over the game's and the
+    /// config's; checked against the core's `pad_devices` when it is loaded.
+    pub pad_device: Option<String>,
 }
 
 /// No `--core`/`--rom`: the library window (also a double-click, or a Finder launch on macOS).
@@ -179,6 +185,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut dump_window = None;
     let mut launch: Option<String> = None;
     let mut auto_fast_load = true;
+    let mut pad_device: Option<String> = None;
     let mut actions: Vec<CoresAction> = Vec::new();
 
     let mut it = args.into_iter().peekable();
@@ -253,6 +260,13 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--no-audio" => audio = false,
             "--no-gamepad" => gamepad = false,
             "--no-auto-fast-load" => auto_fast_load = false,
+            "--pad-device" => {
+                let t = text(&mut it)?;
+                if t != "digital" && t != "dualshock" {
+                    return Err("--pad-device attend digital ou dualshock".into());
+                }
+                pad_device = Some(t);
+            }
             "--launch" => {
                 let t = text(&mut it)?;
                 if t.trim().is_empty() {
@@ -375,6 +389,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             (dump_window.is_some(), "--dump-window"),
             (launch.is_some(), "--launch"),
             (!auto_fast_load, "--no-auto-fast-load"),
+            (pad_device.is_some(), "--pad-device"),
         ]
         .into_iter()
         .filter_map(|(set, name)| set.then_some(name))
@@ -396,8 +411,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         if scale.is_some() || frames.is_some() || dump_frame.is_some() {
             return Err("--scale, --frames et --dump-frame demandent --core et --rom".into());
         }
-        if launch.is_some() || !auto_fast_load {
-            return Err("--launch et --no-auto-fast-load demandent --core".into());
+        if launch.is_some() || !auto_fast_load || pad_device.is_some() {
+            return Err("--launch, --no-auto-fast-load et --pad-device demandent --core".into());
         }
         let screen = match screen {
             None => None,
@@ -448,6 +463,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         dump_window,
         launch,
         auto_fast_load,
+        pad_device,
     })))
 }
 

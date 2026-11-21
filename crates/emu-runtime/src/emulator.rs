@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use emu_libretro::{
-    AvInfo, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride,
-    FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, KeyEvent,
-    KeyModifiers, MemoryKind, RetroKey, SystemInfo, VideoFrame, mouse_id,
+    AvInfo, ControllerType, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory,
+    FastForwardOverride, FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK,
+    JoypadButton, KeyEvent, KeyModifiers, MemoryKind, RetroKey, SystemInfo, VideoFrame, mouse_id,
 };
 
 use crate::audio::{AudioSink, NullSink};
@@ -54,6 +54,9 @@ pub struct EmulatorOptions {
     pub fastforward_override: bool,
     /// `CoreConfig::variable_state_size` (`cores.toml` `variable_state_size`).
     pub variable_state_size: bool,
+    /// `(port, device id)` set after `load_game` (design v7.0 §3.2), e.g. the DualShock id of the core. An id the
+    /// core refuses (`LibretroError::UnknownControllerDevice`) is logged and `RETRO_DEVICE_JOYPAD` is kept.
+    pub port_devices: Vec<(u32, u32)>,
 }
 
 /// Outcome of one emulated frame.
@@ -707,6 +710,17 @@ impl Emulator {
 
     pub fn option_categories(&self) -> Vec<CoreOptionCategory> {
         self.core.option_categories()
+    }
+
+    /// Device types declared by the core for `port` (`SET_CONTROLLER_INFO`); empty when none.
+    pub fn controller_types(&self, port: u32) -> &[ControllerType] {
+        self.core.controller_types(port)
+    }
+
+    /// Switches `port` to the device `id` (`Core::set_controller_device`), e.g. a DualShock; applied at once.
+    /// An id the core did not declare is `LibretroError::UnknownControllerDevice`, nothing changes.
+    pub fn set_port_device(&mut self, port: u32, id: u32) -> Result<(), RuntimeError> {
+        Ok(self.core.set_controller_device(port, id)?)
     }
 
     pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), RuntimeError> {

@@ -36,6 +36,21 @@ impl DiscRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscFormat {
     SegaCd,
+    /// PlayStation: ISO 9660 descriptor with system id `PLAYSTATION` at sector 16 (7.0; recognised by PB1).
+    Psx,
+    /// 3DO (opera): `01 5A 5A 5A 5A 5A 01` at the start of sector 0 (7.0; recognised by PB1).
+    Opera,
+}
+
+impl DiscFormat {
+    /// Id of the system (`systems.toml`) that owns discs of this format.
+    pub fn system_id(self) -> &'static str {
+        match self {
+            DiscFormat::SegaCd => "megacd",
+            DiscFormat::Psx => "psx",
+            DiscFormat::Opera => "3do",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +327,10 @@ pub enum BinKind {
     Sega32x,
     /// `SEGADISCSYSTEM` at 0 or 0x10 ([`disc_info`]): a CD track, never a ROM (orphan ⇒ ignored, 2.1 rule).
     SegaCdTrack,
+    /// Track of a PlayStation disc (7.0; never produced before PB1): masked when a `.cue` names it, else a game.
+    PsxTrack,
+    /// Track of a 3DO disc (7.0; never produced before PB1): same rule as `PsxTrack`.
+    OperaTrack,
     /// Too short to hold a header, or unreadable as such.
     Unknown,
 }
@@ -402,6 +421,8 @@ pub fn disc_serial(path: &Path, format: DiscFormat) -> Result<Option<String>, Li
         DiscFormat::SegaCd => Ok(disc_head(path)?
             .and_then(|(head, offsets)| header_serial_field(&head, offsets))
             .and_then(|field| clean_serial(&field))),
+        // PB1: bounded ISO 9660 walk to SYSTEM.CNF for `Psx`; 3DO discs carry no serial.
+        DiscFormat::Psx | DiscFormat::Opera => Ok(None),
     }
 }
 

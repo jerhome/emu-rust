@@ -76,6 +76,7 @@ fn run(input: &mut dyn InputBackend) -> Vec<u64> {
         core_save_scope: emu_runtime::SaveScope::Core,
         fastforward_override: false,
         variable_state_size: false,
+        port_devices: Vec::new(),
     };
     let mut emu = Emulator::load(&mock_core::build(Variant::Default), &rom, options).unwrap();
     let mut audio = CollectSink::default();

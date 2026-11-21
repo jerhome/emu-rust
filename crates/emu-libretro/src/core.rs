@@ -10,8 +10,8 @@ use crate::log;
 use crate::resident::{self, CopyFile};
 use crate::sys;
 use crate::types::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride, GameSource,
-    InputQuery, MemoryKind, PixelFormat, SerializationQuirks, SystemInfo, VideoFrame,
+    AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, FastForwardOverride,
+    GameSource, InputQuery, MemoryKind, PixelFormat, SerializationQuirks, SystemInfo, VideoFrame,
 };
 
 /// Frontend-side configuration answered through environment callbacks.
@@ -470,6 +470,21 @@ impl Core {
             _path: None,
             _data: None,
         }))
+    }
+
+    /// Device types declared by the core for `port` (`SET_CONTROLLER_INFO`). Empty: none declared, or port out
+    /// of range. Today the command is not read yet (PF1), so the slice is always empty.
+    pub fn controller_types(&self, port: u32) -> &[ControllerType] {
+        let _ = port;
+        todo!("PF1: read SET_CONTROLLER_INFO (bounded: 8 ports, 32 types, 64 characters)")
+    }
+
+    /// `retro_set_controller_port_device`. Accepted: `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD`, or an id the
+    /// core declared for this port. Requires a loaded game ([`LibretroError::NoGame`] otherwise); an other id is
+    /// [`LibretroError::UnknownControllerDevice`].
+    pub fn set_controller_device(&mut self, port: u32, id: u32) -> Result<(), LibretroError> {
+        let _ = (port, id);
+        todo!("PF1: validate against controller_types, then call set_controller_port_device")
     }
 
     /// `SET_SUPPORT_NO_GAME` was received with `true`.

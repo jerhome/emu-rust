@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::error::RuntimeError;
 use crate::fsname::sanitize_component;
 
 /// Savestate slots are `0..STATE_SLOTS`.
@@ -102,6 +103,21 @@ fn sync_dir(dir: &Path) {
 
 #[cfg(not(unix))]
 fn sync_dir(_dir: &Path) {}
+
+/// Copies the newest `<saves>/<other>/<save_rel>` among the cores of `family` (other than `core_id`) to
+/// `<saves>/<core_id>/<save_rel>` when the latter does not exist (design v7.0 §3.2): `create_new`, never
+/// overwrites, links never followed, at most 1 MiB, `save_rel` a single plain file name. Returns the id of the
+/// source core, `None` when nothing was copied. Called by the UI before `Emulator::load_content`, never during
+/// a session.
+pub fn adopt_family_save(
+    saves_dir: &Path,
+    core_id: &str,
+    family: &[String],
+    save_rel: &Path,
+) -> Result<Option<String>, RuntimeError> {
+    let _ = (saves_dir, core_id, family, save_rel);
+    todo!("PR1: copy the newest family save (memory card) when the target does not exist")
+}
 
 /// Stable identifier of a core from its library path: file stem, `_libretro` suffix and a leading `lib`
 /// (if the rest still ends with `_libretro`) removed, characters outside `[A-Za-z0-9_-]` replaced by `_`.

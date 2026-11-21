@@ -68,6 +68,7 @@ struct CoreEntry {
     m3u_launch: Option<M3uLaunchPref>,
     #[serde(default)]
     actions: Option<ActionsEntry>,
+    // 7.0 keys `pad_devices` / `save_family` (design v7.0 §3.3): added to this struct and to `CoreProps` by PA1.
 }
 
 #[derive(Deserialize)]
@@ -132,6 +133,16 @@ struct CoreProps {
     options_by_extension: BTreeMap<String, Vec<(String, String)>>,
     m3u_launch: Option<M3uLaunchPref>,
     actions: CoreActions,
+}
+
+/// Identifier of each pad mode of a core (`RETRO_DEVICE_*` as declared through `SET_CONTROLLER_INFO`), from
+/// `pad_devices` of `data/cores.toml` (design v7.0 §3.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PadDevices {
+    /// Mode key (`"digital"`, `"dualshock"`) → device id (≤ 0xFFFF).
+    pub modes: BTreeMap<String, u32>,
+    /// Key of `modes` used when neither the game nor the config chooses.
+    pub default: String,
 }
 
 /// Ordered core preferences per system, from the embedded `data/cores.toml`, plus user overrides
@@ -337,6 +348,24 @@ impl CorePreferences {
         self.cores.get(core)?.m3u_launch
     }
 
+    /// `pad_devices` of `data/cores.toml`: device id per pad mode; `None` for a core without the key.
+    pub fn pad_devices(&self, core: &CoreId) -> Option<PadDevices> {
+        let _ = core;
+        todo!("PA1: parse `pad_devices` (default must be a key of modes, ids <= 0xFFFF)")
+    }
+
+    /// `save_family` of `data/cores.toml`: cores of one family have interchangeable `SAVE_RAM` files.
+    pub fn save_family(&self, core: &CoreId) -> Option<String> {
+        let _ = core;
+        todo!("PA1: parse `save_family`")
+    }
+
+    /// Installed or not, every core declaring `save_family = family` (catalog order).
+    pub fn save_family_cores(&self, family: &str) -> Vec<CoreId> {
+        let _ = family;
+        todo!("PA1: filter cores by save_family")
+    }
+
     /// `[cores.<core>.actions]` of `data/cores.toml`: keys pressed by the « Cassette » menu. Names checked when
     /// the file is parsed against the libretro key names. All `None` without the table.
     pub fn actions(&self, core: &CoreId) -> CoreActions {
@@ -449,11 +478,56 @@ pub enum FirmwareVariant {
 
 /// Core option that switches to the ROM built into the core when the wanted file is absent
 /// (`("puae_kickstart", "aros")`): applied by the UI as a computed default, never written (design v3.0 §3.5.4).
+/// TOML: a table `{ option, value }` (unchanged since 3.0) or the string `"core"` (7.0).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "FirmwareFallbackRepr")]
+pub enum FirmwareFallback {
+    /// Core option set to a value that selects the built-in ROM.
+    Option { option: String, value: String },
+    /// `fallback = "core"`: the core falls back by itself (PlayStation cores: HLE / OpenBIOS), nothing to set.
+    Core,
+}
+
+impl FirmwareFallback {
+    /// `(option, value)` to apply as a computed default; `None` for [`FirmwareFallback::Core`].
+    pub fn option_value(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Option { option, value } => Some((option, value)),
+            Self::Core => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FirmwareFallbackRepr {
+    Marker(FallbackMarker),
+    Table(FallbackTable),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FallbackMarker {
+    Core,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FirmwareFallback {
-    pub option: String,
-    pub value: String,
+struct FallbackTable {
+    option: String,
+    value: String,
+}
+
+impl From<FirmwareFallbackRepr> for FirmwareFallback {
+    fn from(repr: FirmwareFallbackRepr) -> Self {
+        match repr {
+            FirmwareFallbackRepr::Marker(FallbackMarker::Core) => Self::Core,
+            FirmwareFallbackRepr::Table(t) => Self::Option {
+                option: t.option,
+                value: t.value,
+            },
+        }
+    }
 }
 
 /// One `[cores.<core>.required_firmware."<system>"]` table (design v3.0 §3.5.5). Data only: later versions
@@ -865,7 +939,9 @@ fn check_required_table(
         if !has_builtin {
             return Err(format!("{context} : fallback sans builtin_firmware"));
         }
-        if !is_option_key(&fallback.option) || fallback.value.trim().is_empty() {
+        if let Some((option, value)) = fallback.option_value()
+            && (!is_option_key(option) || value.trim().is_empty())
+        {
             return Err(format!("{context} : fallback invalide"));
         }
     }
@@ -1138,7 +1214,7 @@ mod tests {
             assert_eq!(req.default, "A500");
             assert_eq!(
                 req.fallback,
-                Some(FirmwareFallback {
+                Some(FirmwareFallback::Option {
                     option: "puae_kickstart".into(),
                     value: "aros".into()
                 })

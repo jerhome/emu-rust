@@ -102,6 +102,10 @@ pub struct SystemInfo {
     /// CD system (design v6.0 §3.4; `systems.toml` `disc`, default `false`; `megacd`): game named after its
     /// `.cue` / `.chd` / `.iso` / `.m3u`, Redump identification, region of the game, « CD » label in the UI.
     pub disc: bool,
+    /// `(Disc N)` files of one title are grouped into one game with a generated `.m3u` (`systems.toml`
+    /// `group_discs`, default `true`; `3do`: `false`, opera has neither disk interface nor `.m3u`; design v7.0
+    /// §3.4). Only meaningful when `disc` is set.
+    pub group_discs: bool,
 }
 
 /// `systems.toml` `default_input` (user decision of 2026-11-21: Joystick for CPC and C64).
@@ -189,6 +193,12 @@ struct RawSystem {
     default_input: RawInput,
     #[serde(default)]
     disc: bool,
+    #[serde(default = "default_true")]
+    group_discs: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize, Default)]
@@ -281,6 +291,7 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 RawInput::Joystick => InputDefault::Joystick,
             },
             disc: s.disc,
+            group_discs: s.group_discs,
         });
     }
     Ok(out)

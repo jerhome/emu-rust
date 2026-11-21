@@ -256,6 +256,7 @@ fn load_in(t: Target, data: &Path, rom: &Path, variables: &[(&str, &str)]) -> Em
         core_save_scope: emu_runtime::SaveScope::Core,
         fastforward_override: false,
         variable_state_size: false,
+        port_devices: Vec::new(),
     };
     fs::create_dir_all(&options.system_dir).unwrap();
     fs::create_dir_all(&options.save_dir).unwrap();

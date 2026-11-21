@@ -169,6 +169,7 @@ fn options(data: &Path, machine: Machine) -> EmulatorOptions {
         },
         fastforward_override: true,
         variable_state_size: machine == Machine::C64,
+        port_devices: Vec::new(),
     }
 }
 

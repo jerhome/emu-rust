@@ -588,7 +588,7 @@ mod tests {
                 ("A600".to_owned(), "sub/kick.A600".to_owned()),
             ]),
             default: "A500".into(),
-            fallback: fallback.then(|| crate::cores::FirmwareFallback {
+            fallback: fallback.then(|| crate::cores::FirmwareFallback::Option {
                 option: "puae_kickstart".into(),
                 value: "aros".into(),
             }),

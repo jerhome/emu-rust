@@ -66,6 +66,7 @@ impl Env {
             core_save_scope: emu_runtime::SaveScope::Core,
             fastforward_override: false,
             variable_state_size: false,
+            port_devices: Vec::new(),
         }
     }
 

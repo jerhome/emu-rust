@@ -79,6 +79,7 @@ fn emulator() -> Emulator {
         core_save_scope: emu_runtime::SaveScope::Core,
         fastforward_override: false,
         variable_state_size: false,
+        port_devices: Vec::new(),
     };
     fs::create_dir_all(&options.system_dir).unwrap();
     fs::create_dir_all(&options.save_dir).unwrap();
@@ -332,6 +333,7 @@ fn load_in(data: &Path, rom: &Path) -> Emulator {
         core_save_scope: emu_runtime::SaveScope::Core,
         fastforward_override: false,
         variable_state_size: false,
+        port_devices: Vec::new(),
     };
     Emulator::load(&core_path(), rom, options).expect("load core and content")
 }

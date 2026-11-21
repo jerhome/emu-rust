@@ -815,13 +815,9 @@ fn entry_attribution(found: &Found, entry: &Path) -> Option<Attribution> {
         && ext != "chd"
         && DISC_EXTENSIONS.contains(&ext.as_str())
         && let Ok(Some(info)) = disc_info(entry)
+        && let Some(s) = crate::system(info.format.system_id())
     {
-        let system = match info.format {
-            DiscFormat::SegaCd => crate::system("megacd"),
-        };
-        if let Some(s) = system {
-            return Some(Attribution::Candidates(vec![s]));
-        }
+        return Some(Attribution::Candidates(vec![s]));
     }
     Some(attribution)
 }
@@ -1061,7 +1057,8 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                     rule = r;
                 }
             }
-            BinKind::MegaDrive | BinKind::Unknown => {}
+            // PB1 gives these their own rule (orphan track = a game); nothing produces them before.
+            BinKind::MegaDrive | BinKind::Unknown | BinKind::PsxTrack | BinKind::OperaTrack => {}
         }
     }
     let hashes = if declared > max {
@@ -1368,9 +1365,7 @@ fn analyze_disc(
                 disc_info(&found.path)
                     .ok()
                     .flatten()
-                    .and_then(|i| match i.format {
-                        DiscFormat::SegaCd => crate::system("megacd"),
-                    })
+                    .and_then(|i| crate::system(i.format.system_id()))
             };
             let by_name = || {
                 (ext == "chd")

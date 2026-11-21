@@ -24,9 +24,9 @@ mod timing;
 mod workcopy;
 
 pub use emu_libretro::{
-    AvInfo, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue, DiskControlKind,
-    FastForwardOverride, GameGeometry, JoypadButton, KeyEvent, KeyModifiers, LibretroError,
-    LogLevel, MemoryKind, RetroKey, SystemInfo, SystemTiming, mouse_id,
+    AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue,
+    DiskControlKind, FastForwardOverride, GameGeometry, JoypadButton, KeyEvent, KeyModifiers,
+    LibretroError, LogLevel, MemoryKind, RetroKey, SystemInfo, SystemTiming, mouse_id,
 };
 
 pub use crate::added::{AddedDisk, OrphanCopy, OrphanKind};
@@ -59,6 +59,7 @@ pub use crate::pacing::{
 };
 pub use crate::resample::{MAX_RATE_ADJUST, StereoResampler, rate_adjust};
 pub use crate::saves::StateOrigin;
+pub use crate::saves::adopt_family_save;
 pub use crate::saves::{
     FileMode, STATE_FORMAT_VERSION, STATE_MAGIC, STATE_SLOTS, StateFileError, StateHeader,
     core_id_from_path, decode_state, encode_state, game_name_from_path, sram_path, state_path,
