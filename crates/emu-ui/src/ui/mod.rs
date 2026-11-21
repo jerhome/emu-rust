@@ -13,12 +13,14 @@ mod options;
 mod osd;
 pub(crate) mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use egui::{Align2, Color32, Context, EventFilter, Id, Key, LayerId, Order, Response, Ui};
-use emu_runtime::{AudioStatus, CoreOption, CoreOptionCategory, DiskSlot, JoypadButton};
+use emu_runtime::{
+    AudioStatus, CoreOption, CoreOptionCategory, DiskSlot, JoypadButton, OrphanCopy,
+};
 use winit::keyboard::KeyCode;
 
 pub use self::osd::{Osd, OsdLevel};
@@ -162,6 +164,8 @@ pub enum UiAction {
     SelectSlot(u8),
     SaveState,
     LoadState,
+    /// Load slot `n` after the player confirmed a state that may come from another file of the same name.
+    ConfirmLoadState(u8),
     Open(Screen),
     Back,
     Quit,
@@ -176,6 +180,15 @@ pub enum UiAction {
     InsertDisk(u32),
     EjectDisk,
     AddDisk(PathBuf),
+    /// Remove an added disk from the list (and delete its copy with `delete`, after confirmation).
+    ForgetDisk {
+        copy: PathBuf,
+        delete: bool,
+    },
+    /// « Reprendre »: an unreferenced copy becomes an added disk again.
+    AdoptOrphan(String),
+    /// Delete the checked unreferenced copies (after confirmation).
+    CleanCopies(Vec<String>),
     /// Delete the working copies and restart the game (after confirmation).
     ResetDisks,
     /// Restart the game (hosted: options that need it).
@@ -206,6 +219,39 @@ pub struct DisksView {
     pub addable: Vec<PathBuf>,
     /// Working copies exist and the game can be restarted (library).
     pub can_reset: bool,
+    /// Disks added from the menu (this session or restored), in order of addition.
+    pub added: Vec<AddedDiskView>,
+    /// Unreferenced files of the working-copy folder; `None` without such a folder.
+    pub orphans: Option<Vec<OrphanCopy>>,
+}
+
+/// One added disk of the disk menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddedDiskView {
+    pub copy: PathBuf,
+    pub name: String,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    /// The file it was copied from is gone (the progress lives in the copy).
+    pub source_missing: bool,
+    pub inserted: bool,
+}
+
+/// « Nettoyer les copies… » dialog: nothing is checked by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanDialog {
+    pub selected: BTreeSet<String>,
+    pub confirm: bool,
+}
+
+/// A state load waiting for the player's answer (default « Non »).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmLoad {
+    pub slot: u8,
+    /// Asked from the menu: « Non » goes back to it; from a shortcut: « Non » resumes the game.
+    pub from_menu: bool,
+    /// The game has disks (the warning says they may be modified).
+    pub has_disks: bool,
 }
 
 /// F3 overlay figures.
@@ -258,6 +304,12 @@ pub struct Overlay {
     notice: Option<String>,
     confirm_unlock: bool,
     confirm_reset: bool,
+    /// Added disk whose « Retirer » dialog is open.
+    disk_forget: Option<PathBuf>,
+    /// « Retirer et supprimer la copie » asks first.
+    disk_delete_confirm: bool,
+    clean: Option<CleanDialog>,
+    confirm_load: Option<ConfirmLoad>,
     pub osd: Osd,
     /// Set by the app each frame: the virtual keyboard covers the bottom, the toasts move to the top.
     pub vkbd_open: bool,
@@ -275,6 +327,10 @@ impl Default for Overlay {
             notice: None,
             confirm_unlock: false,
             confirm_reset: false,
+            disk_forget: None,
+            disk_delete_confirm: false,
+            clean: None,
+            confirm_load: None,
             osd: Osd::default(),
             vkbd_open: false,
             show_stats: false,
@@ -298,6 +354,25 @@ impl Overlay {
         self.notice = None;
         self.confirm_unlock = false;
         self.confirm_reset = false;
+        self.disk_forget = None;
+        self.disk_delete_confirm = false;
+        self.clean = None;
+        self.confirm_load = None;
+    }
+
+    /// Opens the confirmation of a state load on the menu screen (call after `open(Screen::Menu)` when asked
+    /// from a shortcut). The safe answer gets the focus.
+    pub fn ask_load_confirmation(&mut self, confirm: ConfirmLoad) {
+        self.confirm_load = Some(confirm);
+        self.focus_first = true;
+    }
+
+    /// Closes the disk sub-dialogs after an action was applied (list refreshed by the app).
+    pub fn end_disk_dialog(&mut self) {
+        self.disk_forget = None;
+        self.disk_delete_confirm = false;
+        self.clean = None;
+        self.focus_first = true;
     }
 
     pub fn close(&mut self) {
@@ -312,7 +387,33 @@ impl Overlay {
             return;
         }
         match self.screen {
+            Some(Screen::Menu) if self.confirm_load.is_some() => {
+                let from_menu = self.confirm_load.take().is_some_and(|c| c.from_menu);
+                if from_menu {
+                    self.focus_first = true;
+                } else {
+                    self.close();
+                }
+            }
             Some(Screen::Disks) if self.confirm_reset => self.confirm_reset = false,
+            Some(Screen::Disks) if self.disk_delete_confirm => {
+                self.disk_delete_confirm = false;
+                self.focus_first = true;
+            }
+            Some(Screen::Disks) if self.disk_forget.is_some() => {
+                self.disk_forget = None;
+                self.focus_first = true;
+            }
+            Some(Screen::Disks) if self.clean.as_ref().is_some_and(|c| c.confirm) => {
+                if let Some(c) = &mut self.clean {
+                    c.confirm = false;
+                }
+                self.focus_first = true;
+            }
+            Some(Screen::Disks) if self.clean.is_some() => {
+                self.clean = None;
+                self.focus_first = true;
+            }
             Some(Screen::Keys | Screen::CoreOptions | Screen::Disks | Screen::Computer) => {
                 self.open(Screen::Menu);
             }

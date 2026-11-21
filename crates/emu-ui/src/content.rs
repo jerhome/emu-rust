@@ -47,6 +47,18 @@ fn is_console_file(path: &Path) -> bool {
         })
 }
 
+/// §2.4 (design v2.1-identite-disques): a `.zip` whose retained entries (non-empty files) all have a console
+/// extension is a console ROM archive. Only the central directory is read; an unreadable or empty zip is not.
+fn is_console_zip(path: &Path) -> bool {
+    let is_zip = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    is_zip
+        && emu_runtime::archive_entry_names(path).is_ok_and(|names| {
+            !names.is_empty() && names.iter().all(|n| is_console_file(Path::new(n)))
+        })
+}
+
 fn is_known(prefs: &CorePreferences, id: &CoreId) -> bool {
     prefs
         .systems()
@@ -80,9 +92,12 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         Some(CoreMediaPolicy::WorkingCopy) => MediaPolicy::WorkingCopy,
         // Unknown core (renamed file, `--core /x/hatari-old.so`): it may write into its disks, so anything
         // that is not surely a console file (floppies, hard disks, `.m3u`, unknown extensions) gets a working
-        // copy. Cores known to the preferences keep their explicit policy.
+        // copy. A zip of console ROMs only is a cartridge too (§2.4). Cores known to the preferences keep their
+        // explicit policy.
         _ if id.as_ref().is_none_or(|id| !is_known(prefs, id))
-            && !files.iter().all(|f| is_console_file(f)) =>
+            && !files
+                .iter()
+                .all(|f| is_console_file(f) || is_console_zip(f)) =>
         {
             MediaPolicy::WorkingCopy
         }
@@ -111,19 +126,9 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
     }
 }
 
-/// Key of the game's options file and working copies, known before loading (same rules as the runtime).
-pub(crate) fn game_key(spec: &ContentSpec) -> String {
-    match spec {
-        ContentSpec::File(p) => emu_runtime::game_name_from_path(p),
-        ContentSpec::Media { set, .. } => set.name.clone(),
-        _ => emu_runtime::NO_GAME_NAME.to_owned(),
-    }
-}
-
-/// 2.1 key of the game's options file: `GameIdentity::save_name` (design v2.1-identite-disques §3.2). Replaces
-/// [`game_key`] once `App::build` resolves the identity first (task I3, which then renames it `game_key`).
-#[allow(dead_code)] // wired into App::build by I3
-pub(crate) fn game_key_of(identity: &GameIdentity) -> &str {
+/// Key of the game's options file (design v2.1-identite-disques §3.2): `GameIdentity::save_name`, the same name as
+/// its SRAM, states and working copies.
+pub(crate) fn game_key(identity: &GameIdentity) -> &str {
     &identity.save_name
 }
 
@@ -241,5 +246,72 @@ mod tests {
             media_set_name(&[PathBuf::from("/a/x.st"), PathBuf::from("/a/y.st")]),
             "x"
         );
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, data) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn policy_of(spec: &ContentSpec) -> Option<MediaPolicy> {
+        match spec {
+            ContentSpec::Media { policy, .. } => Some(*policy),
+            _ => None,
+        }
+    }
+
+    /// §2.4: unknown core + zip of console ROMs ⇒ 1.0 path; floppies, mixed, unknown or unreadable ⇒ copy.
+    #[test]
+    fn unknown_core_zip_is_inspected() {
+        let prefs = CorePreferences::builtin();
+        let dir = tempfile::tempdir().unwrap();
+        let zip = |name: &str, entries: &[(&str, &[u8])]| {
+            let path = dir.path().join(name);
+            write_zip(&path, entries);
+            path
+        };
+        let snes = zip("snes.zip", &[("Game.sfc", b"rom"), ("empty.txt", b"")]);
+        assert_eq!(
+            content_spec("mystery", &GameContent::Files(vec![snes.clone()]), &prefs),
+            ContentSpec::File(snes)
+        );
+        let st = zip("st.zip", &[("disk1.st", b"disk")]);
+        let mixed = zip("mixed.zip", &[("Game.sfc", b"rom"), ("disk1.st", b"disk")]);
+        let unknown = zip("unknown.zip", &[("readme.xyz", b"x")]);
+        let empty = zip("empty.zip", &[]);
+        let broken = dir.path().join("broken.zip");
+        std::fs::write(&broken, b"not a zip").unwrap();
+        for path in [st, mixed, unknown, empty, broken] {
+            let spec = content_spec("mystery", &GameContent::Files(vec![path.clone()]), &prefs);
+            assert_eq!(
+                policy_of(&spec),
+                Some(MediaPolicy::WorkingCopy),
+                "{}",
+                path.display()
+            );
+        }
+        // A known core never needs the inspection: its explicit policy decides.
+        let st = dir.path().join("st.zip");
+        assert_eq!(
+            policy_of(&content_spec(
+                "hatari",
+                &GameContent::Files(vec![st]),
+                &prefs
+            )),
+            Some(MediaPolicy::WorkingCopy)
+        );
+    }
+
+    #[test]
+    fn game_key_is_the_save_name() {
+        let id = GameIdentity::legacy("Jeu", Path::new("/s/hatari"));
+        assert_eq!(game_key(&id), "Jeu");
     }
 }

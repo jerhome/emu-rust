@@ -22,18 +22,19 @@ use crate::computer::session::{ComputerInputs, ComputerSession, KeyOutcome};
 use crate::computer::vkbd::{VirtualKeyboard, legend_for_variant};
 use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::config_computer::KeyboardModeChoice;
-use crate::content::{content_spec, game_key};
+use crate::content::content_spec;
 use crate::egui_layer::EguiLayer;
-use crate::game_options::{
-    GameOptions, LoadedGameOptions, effective_core_options, game_options_path,
+use crate::game_identity::{
+    ResolvedGame, resolve_game, session_work_dir, state_load_needs_confirmation,
 };
+use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options};
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::shutdown;
 use crate::ui::{
-    self, CaptureOutcome, ComputerView, DisksView, OsdLevel, Overlay, StatsView, UiAction, UiData,
-    apply_capture, profile_map, text,
+    self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, OsdLevel, Overlay,
+    StatsView, UiAction, UiData, apply_capture, profile_map, text,
 };
 use crate::{KeyboardInput, LaunchOptions, ScalingChoice, Screen, SyncChoice, UiError};
 
@@ -197,6 +198,8 @@ pub(crate) struct App {
     frontend_options: Vec<(String, String)>,
     disks_view: Option<DisksView>,
     working_copy: bool,
+    /// `Direct` disk set: no working-copy folder (no added disks to remember, nothing to clean).
+    media_direct: bool,
     /// The files the game was launched with (disk menu: « ajouter une image du même dossier »).
     content_files: Vec<PathBuf>,
     states_warned: bool,
@@ -357,8 +360,20 @@ impl App {
                 ..
             }
         );
-        let game_options_path =
-            game_options_path(&options.dirs.game_options, &core_id, &game_key(&spec));
+        let media_direct = matches!(
+            spec,
+            ContentSpec::Media {
+                policy: MediaPolicy::Direct,
+                ..
+            }
+        );
+        let ResolvedGame {
+            spec,
+            identity,
+            options_path: game_options_path,
+            options_inherited,
+            resolution_failed,
+        } = resolve_game(&core_id, spec, &options.dirs);
         let game_options = GameOptions::load(&game_options_path);
         let frontend_options = CoreId::new(&core_id)
             .map(|id| prefs.frontend_options(&id))
@@ -374,9 +389,12 @@ impl App {
                 .unwrap_or_default(),
             &game_options.options.core_options,
         );
-        let mut emulator = Emulator::load_content(
+        let identity_banners =
+            identity_banners(&identity, &core_id, options_inherited, resolution_failed);
+        let mut emulator = Emulator::load_content_as(
             &options.core,
             spec,
+            identity,
             EmulatorOptions {
                 system_dir: options.dirs.system.clone(),
                 save_dir: options.dirs.saves.clone(),
@@ -452,6 +470,11 @@ impl App {
             text::menu_hint(options.config.hotkeys.menu)
         };
         overlay.osd.info(hint, now);
+        for banner in identity_banners {
+            overlay
+                .osd
+                .push(banner, OsdLevel::Warn, Duration::from_secs(12), now);
+        }
         if let Some(notice) = emulator.prepared_media().and_then(|p| p.notice.as_ref()) {
             overlay.osd.push(
                 text::work_dir_notice(notice),
@@ -515,6 +538,7 @@ impl App {
             frontend_options,
             disks_view: None,
             working_copy,
+            media_direct,
             content_files,
             states_warned: false,
         })
@@ -699,13 +723,135 @@ impl App {
             .map(|e| e.to_ascii_lowercase())
             .collect();
         let can_reset = self.hosted && self.working_copy;
-        let content = self.content_files.clone();
-        self.disks_view = self.emulator.disks().map(|mut d| DisksView {
-            slots: d.slots(),
-            current: d.current(),
-            addable: addable_images(&content, &extensions),
-            can_reset,
+        let saves_core_dir = self.options.dirs.saves.join(&self.core_id);
+        let work_dir = self.work_dir();
+        let orphans = work_dir.as_ref().filter(|d| d.is_dir()).map(|dir| {
+            emu_runtime::orphan_copies(&saves_core_dir, dir).unwrap_or_else(|e| {
+                tracing::warn!("copies non utilisées non listées : {e}");
+                Vec::new()
+            })
         });
+        let mut content = self.content_files.clone();
+        self.disks_view = self.emulator.disks().map(|mut d| {
+            let current = d.current();
+            let added: Vec<AddedDiskView> = d
+                .added()
+                .into_iter()
+                .map(|a| {
+                    // A restored disk's source is in the list already: not proposed again.
+                    content.extend(a.source.clone());
+                    AddedDiskView {
+                        name: a
+                            .copy
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        modified: std::fs::metadata(&a.copy).and_then(|m| m.modified()).ok(),
+                        size: a.size,
+                        source_missing: a.source.is_some() && !a.source_present,
+                        inserted: a.index.is_some() && a.index == current,
+                        copy: a.copy,
+                    }
+                })
+                .collect();
+            DisksView {
+                slots: d.slots(),
+                current,
+                addable: addable_images(&content, &extensions),
+                can_reset,
+                added,
+                orphans,
+            }
+        });
+    }
+
+    /// Working-copy folder of the session (`<saves>/<core>/<save_name>.disks` or the one `prepare_media` chose).
+    fn work_dir(&self) -> Option<PathBuf> {
+        session_work_dir(
+            &self.options.dirs.saves.join(&self.core_id),
+            self.media_direct,
+            self.emulator
+                .prepared_media()
+                .map(|p| p.work_dir.as_deref()),
+            self.emulator.game_name(),
+        )
+    }
+
+    fn forget_disk(&mut self, copy: &Path, delete: bool) {
+        let name = copy
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let result = self
+            .emulator
+            .disks()
+            .map(|mut d| d.forget_added(copy, delete));
+        match result {
+            Some(Ok(())) => {
+                tracing::info!("disquette ajoutée retirée : {}", copy.display());
+                self.overlay.end_disk_dialog();
+                self.overlay.set_notice(if delete {
+                    text::disk_copy_deleted(&name)
+                } else {
+                    text::disk_forgotten(&name)
+                });
+            }
+            Some(Err(e)) => {
+                tracing::warn!("disquette ajoutée non retirée : {e}");
+                self.overlay.end_disk_dialog();
+                self.overlay.set_notice(text::disk_error(&e));
+            }
+            None => self.overlay.set_notice(text::NO_DISK_CONTROL),
+        }
+        // Indexes after the removed disk moved down by one.
+        self.reset_last_disk();
+        self.refresh_disks();
+    }
+
+    /// `media.last_disk` follows the inserted disk after the list changed.
+    fn reset_last_disk(&mut self) {
+        let current = self.emulator.disks().and_then(|mut d| d.current());
+        let media = &mut self.game_options.options.media;
+        if media.last_disk.is_some() && media.last_disk != current {
+            media.last_disk = current;
+            self.game_options_dirty = true;
+        }
+    }
+
+    fn adopt_orphan(&mut self, name: &str) {
+        let result = self.emulator.disks().map(|mut d| d.adopt_orphan(name));
+        match result {
+            Some(Ok(_)) => {
+                self.overlay.end_disk_dialog();
+                self.overlay.set_notice(text::disk_adopted(name));
+            }
+            Some(Err(e)) => {
+                tracing::warn!("copie {name} non reprise : {e}");
+                self.overlay.set_notice(text::disk_error(&e));
+            }
+            None => self.overlay.set_notice(text::NO_DISK_CONTROL),
+        }
+        self.refresh_disks();
+    }
+
+    fn clean_copies(&mut self, names: &[String]) {
+        let saves_core_dir = self.options.dirs.saves.join(&self.core_id);
+        let Some(dir) = self.work_dir() else {
+            return;
+        };
+        match emu_runtime::remove_orphan_copies(&saves_core_dir, &dir, names) {
+            Ok(bytes) => {
+                tracing::info!("{} copie(s) non utilisée(s) supprimée(s)", names.len());
+                self.overlay.end_disk_dialog();
+                self.overlay
+                    .set_notice(text::copies_removed(names.len(), bytes));
+            }
+            Err(e) => {
+                tracing::warn!("nettoyage des copies : {e}");
+                self.overlay.set_notice(text::clean_failed(&e));
+            }
+        }
+        self.refresh_disks();
     }
 
     fn computer_view(&self) -> Option<ComputerView> {
@@ -1032,6 +1178,32 @@ impl App {
         }
     }
 
+    /// Load of the selected slot asked from the menu (`from_menu`), a keyboard shortcut or the pad. A state that
+    /// may come from another file of the same name asks first (default « Non »). `true` if the state was loaded.
+    fn request_load_state(&mut self, from_menu: bool) -> bool {
+        if !state_load_needs_confirmation(self.emulator.state_origin(self.slot)) {
+            return self.load_state();
+        }
+        if self.egui.is_none() {
+            // No menu to ask in (GL too old for egui): the safe answer.
+            self.overlay
+                .osd
+                .error(text::STATE_LOAD_UNCONFIRMED, Instant::now());
+            return false;
+        }
+        if !from_menu {
+            self.open_screen(Screen::Menu);
+        }
+        let has_disks = self.emulator.disks().is_some();
+        self.overlay.ask_load_confirmation(ConfirmLoad {
+            slot: self.slot,
+            from_menu,
+            has_disks,
+        });
+        self.request_redraw();
+        false
+    }
+
     fn load_state(&mut self) -> bool {
         self.warn_states_once();
         let now = Instant::now();
@@ -1131,8 +1303,16 @@ impl App {
                 UiAction::SelectSlot(s) => self.slot = s,
                 UiAction::SaveState => self.save_state(),
                 UiAction::LoadState => {
+                    if self.request_load_state(true) {
+                        self.close_overlay();
+                    }
+                }
+                UiAction::ConfirmLoadState(slot) => {
+                    self.slot = slot;
                     if self.load_state() {
                         self.close_overlay();
+                    } else {
+                        self.refresh_slots();
                     }
                 }
                 UiAction::Open(screen) => self.open_screen(screen),
@@ -1205,11 +1385,14 @@ impl App {
                             self.content_files.push(path);
                             self.overlay.set_notice(text::disk_added(&name));
                         }
-                        Some(Err(e)) => self.overlay.set_notice(text::disk_failed(&e)),
+                        Some(Err(e)) => self.overlay.set_notice(text::disk_error(&e)),
                         None => self.overlay.set_notice(text::NO_DISK_CONTROL),
                     }
                     self.refresh_disks();
                 }
+                UiAction::ForgetDisk { copy, delete } => self.forget_disk(&copy, delete),
+                UiAction::AdoptOrphan(name) => self.adopt_orphan(&name),
+                UiAction::CleanCopies(names) => self.clean_copies(&names),
                 UiAction::ResetDisks => self.restart_game(event_loop, true),
                 UiAction::Restart => self.restart_game(event_loop, false),
                 UiAction::ToggleVirtualKeyboard => {
@@ -1292,7 +1475,7 @@ impl App {
             }
             HotkeyAction::SaveState => self.save_state(),
             HotkeyAction::LoadState => {
-                self.load_state();
+                self.request_load_state(false);
             }
             HotkeyAction::PrevSlot | HotkeyAction::NextSlot => {
                 let delta = if action == HotkeyAction::NextSlot {
@@ -1653,6 +1836,27 @@ impl App {
     }
 }
 
+/// OSD banners of a launch (design v2.1-identite-disques §3.2): failed resolution, identity notice (homonym
+/// separated, registry unusable), options inherited from the shared 2.0 name.
+fn identity_banners(
+    identity: &emu_runtime::GameIdentity,
+    core_id: &str,
+    options_inherited: bool,
+    resolution_failed: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if resolution_failed {
+        out.push(text::IDENTITY_FALLBACK.to_owned());
+    }
+    if let Some(notice) = &identity.notice {
+        out.push(text::identity_notice(notice, identity.base_name(), core_id));
+    }
+    if options_inherited {
+        out.push(text::options_inherited(identity.base_name()));
+    }
+    out
+}
+
 /// Directory entries examined at most (the folder may be huge).
 const MAX_SCANNED: usize = 4096;
 
@@ -1965,6 +2169,25 @@ fn modifier_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_banners_of_a_launch() {
+        let mut id = emu_runtime::GameIdentity::legacy("Game", Path::new("/s/hatari"));
+        assert!(identity_banners(&id, "hatari", false, false).is_empty());
+        assert_eq!(
+            identity_banners(&id, "hatari", false, true),
+            vec![text::IDENTITY_FALLBACK.to_owned()]
+        );
+        id.notice = Some(emu_runtime::IdentityNotice::Homonym {
+            first: PathBuf::from("/jeux/a/Game.st"),
+            sram_copied: true,
+            legacy_states: true,
+        });
+        let banners = identity_banners(&id, "hatari", true, false);
+        assert_eq!(banners.len(), 2);
+        assert!(banners[0].starts_with("Deux jeux portent le même nom"));
+        assert_eq!(banners[1], text::options_inherited("Game"));
+    }
 
     #[test]
     fn pad_poll_is_slow_without_pad() {

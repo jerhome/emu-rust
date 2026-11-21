@@ -295,8 +295,9 @@ pub const DISKS_EJECT: &str = "Éjecter";
 pub const DISKS_ADD: &str = "Ajouter une image du même dossier :";
 pub const DISKS_RESET: &str = "Réinitialiser les disquettes…";
 pub const DISKS_RESET_CONFIRM: &str = "Les copies de travail (avec la progression enregistrée sur les \
-                                       disquettes) seront effacées et le jeu redémarré depuis vos fichiers \
-                                       d'origine, qui ne sont jamais modifiés. Confirmer ?";
+                                       disquettes), disquettes ajoutées comprises, seront effacées et le jeu \
+                                       redémarré depuis vos fichiers d'origine, qui ne sont jamais modifiés. \
+                                       Confirmer ?";
 pub const DISKS_RESET_YES: &str = "Oui, réinitialiser";
 pub const DISKS_HINT: &str =
     "Entrée sur une disquette : l'insérer. Raccourci : touche hôte + D (suivante).";
@@ -401,6 +402,223 @@ pub fn host_key_line(host: KeyCode) -> String {
     )
 }
 
+// ---- game identity, added disks (2.1, design v2.1-identite-disques) ---------------------------------------------
+
+pub const IDENTITY_FALLBACK: &str = "Registre des jeux inutilisable : sauvegardes nommées comme en 2.0 pour cette \
+                                     session (le registre n'est pas modifié).";
+
+/// Banner of the launch that separated a homonym, or found the registry unusable.
+pub fn identity_notice(notice: &emu_runtime::IdentityNotice, base: &str, core_id: &str) -> String {
+    match notice {
+        emu_runtime::IdentityNotice::Homonym {
+            first,
+            sram_copied,
+            legacy_states,
+        } => {
+            let base = sanitize_core_text(base);
+            // An empty `first`: the game that keeps the bare name is not known (registry entry without path).
+            let first = (!first.as_os_str().is_empty())
+                .then(|| sanitize_core_text(&first.display().to_string()));
+            let mut msg = match &first {
+                Some(_) => format!(
+                    "Deux jeux portent le même nom « {base} » : leurs sauvegardes sont maintenant séparées."
+                ),
+                None => format!(
+                    "Un autre jeu porte déjà le nom « {base} » : les sauvegardes de celui-ci sont séparées \
+                     (nom « {base} » suivi d'un numéro)."
+                ),
+            };
+            if *sram_copied {
+                msg.push_str(" La sauvegarde du jeu a été copiée pour celui-ci.");
+            }
+            if *legacy_states {
+                let owner = first.map_or_else(|| "l'autre jeu".to_owned(), |first| first.clone());
+                msg.push_str(&format!(
+                    " Les états antérieurs ne sont pas copiés : ils restent attachés à {owner} \
+                     (states/{core_id}/{base}.state*)."
+                ));
+            }
+            msg
+        }
+        emu_runtime::IdentityNotice::RegistryUnusable => IDENTITY_FALLBACK.to_owned(),
+    }
+}
+
+pub fn options_inherited(base: &str) -> String {
+    format!(
+        "Options du jeu reprises de « {} » (même nom).",
+        sanitize_core_text(base)
+    )
+}
+
+pub const STATE_CONFIRM_TITLE: &str = "Charger cet état ?";
+pub const STATE_OTHER_CONTENT_DISKS: &str = "Cet état peut venir d'un autre fichier du même nom : le charger peut \
+                                             modifier les disquettes de ce jeu.";
+pub const STATE_OTHER_CONTENT: &str = "Cet état peut venir d'un autre fichier du même nom.";
+pub const STATE_LOAD_YES: &str = "Oui, charger";
+pub const STATE_LOAD_UNCONFIRMED: &str = "Cet état peut venir d'un autre fichier du même nom : chargement \
+                                          annulé (menu indisponible pour confirmer).";
+
+pub fn state_confirm(slot: u8, has_disks: bool) -> String {
+    let what = if has_disks {
+        STATE_OTHER_CONTENT_DISKS
+    } else {
+        STATE_OTHER_CONTENT
+    };
+    format!("État {slot} : {what}")
+}
+
+pub const DISKS_ADDED: &str = "Disquettes ajoutées (Entrée : retirer…) :";
+pub const DISKS_FORGET: &str = "Retirer de la liste (la copie est gardée)";
+pub const DISKS_FORGET_DELETE: &str = "Retirer et supprimer la copie…";
+pub const DISKS_FORGET_DELETE_YES: &str = "Oui, supprimer la copie";
+pub const CANCEL: &str = "Annuler";
+pub const DISKS_INSERTED_REFUSED: &str =
+    "Cette disquette est dans le lecteur : éjectez-la d'abord pour la retirer.";
+pub const DISKS_LIST_FULL: &str = "Liste pleine : retirez d'abord une disquette ajoutée.";
+pub const DISKS_CLEAN: &str = "Nettoyer les copies…";
+pub const DISKS_CLEAN_TITLE: &str = "Copies non utilisées";
+pub const DISKS_CLEAN_INTRO: &str = "Fichiers du dossier des copies que rien n'utilise (anciennes versions, \
+                                     disquettes oubliées). Une copie peut contenir une disquette de \
+                                     sauvegarde : rien n'est supprimé sans votre choix.";
+pub const DISKS_CLEAN_NONE: &str = "Aucune copie inutilisée.";
+pub const DISKS_ADOPT: &str = "Reprendre";
+pub const DISKS_CLEAN_YES: &str = "Oui, supprimer";
+pub const STALE_PLAYLIST: &str = "ancienne liste .m3u";
+
+/// `1,4 Mo`, `720 Ko`, `12 octets`.
+pub fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    let tenths = |unit: u64| {
+        let t = (u128::from(bytes) * 10 + u128::from(unit) / 2) / u128::from(unit);
+        format!("{},{}", t / 10, t % 10)
+    };
+    if bytes >= MB {
+        format!("{} Mo", tenths(MB))
+    } else if bytes >= KB {
+        format!("{} Ko", bytes.div_ceil(KB))
+    } else {
+        format!("{bytes} octets")
+    }
+}
+
+fn format_time(t: Option<std::time::SystemTime>) -> String {
+    t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or_else(
+            || "date inconnue".to_owned(),
+            |d| format!("{} UTC", format_unix_utc(d.as_secs())),
+        )
+}
+
+/// Row of an added disk: name, size, and whether its source file is gone (the progress is in the copy).
+pub fn added_disk_label(name: &str, size: u64, source_missing: bool, inserted: bool) -> String {
+    let mut label = format!("{} — {}", sanitize_core_text(name), format_size(size));
+    if source_missing {
+        label.push_str(" — fichier d'origine absent");
+    }
+    if inserted {
+        label.push_str(&format!(" ({DISKS_CURRENT})"));
+    }
+    label
+}
+
+pub fn forget_title(name: &str) -> String {
+    format!("Disquette ajoutée : {}", sanitize_core_text(name))
+}
+
+pub fn forget_delete_confirm(
+    name: &str,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+) -> String {
+    format!(
+        "Supprimer définitivement la copie {} ({}, modifiée le {}) ? La progression enregistrée sur cette \
+         disquette sera perdue ; votre fichier d'origine n'est pas touché.",
+        sanitize_core_text(name),
+        format_size(size),
+        format_time(modified)
+    )
+}
+
+pub fn disk_forgotten(name: &str) -> String {
+    format!(
+        "Disquette retirée de la liste : {}",
+        sanitize_core_text(name)
+    )
+}
+
+pub fn disk_copy_deleted(name: &str) -> String {
+    format!(
+        "Disquette retirée, copie supprimée : {}",
+        sanitize_core_text(name)
+    )
+}
+
+pub fn disk_adopted(name: &str) -> String {
+    format!("Copie reprise dans la liste : {}", sanitize_core_text(name))
+}
+
+pub fn orphan_label(
+    name: &str,
+    stale_playlist: bool,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+) -> String {
+    let kind = if stale_playlist {
+        format!(" ({STALE_PLAYLIST})")
+    } else {
+        String::new()
+    };
+    format!(
+        "{}{kind} — {} — {}",
+        sanitize_core_text(name),
+        format_size(size),
+        format_time(modified)
+    )
+}
+
+pub fn clean_delete_button(count: usize) -> String {
+    format!("Supprimer la sélection ({count})…")
+}
+
+pub fn clean_confirm(count: usize, bytes: u64) -> String {
+    format!(
+        "Supprimer définitivement {count} fichier(s) ({}) ? Une copie peut contenir une disquette de sauvegarde.",
+        format_size(bytes)
+    )
+}
+
+pub fn copies_removed(count: usize, bytes: u64) -> String {
+    format!(
+        "{count} fichier(s) supprimé(s) ({} libérés).",
+        format_size(bytes)
+    )
+}
+
+pub fn clean_failed(e: &dyn std::fmt::Display) -> String {
+    format!("Nettoyage impossible : {e}")
+}
+
+/// Disk operation error, with the actions the player can take for the known cases.
+pub fn disk_error(e: &emu_runtime::RuntimeError) -> String {
+    match e {
+        emu_runtime::RuntimeError::DiskInserted => DISKS_INSERTED_REFUSED.to_owned(),
+        emu_runtime::RuntimeError::InvalidMediaSet(msg) if is_list_full(msg) => {
+            DISKS_LIST_FULL.to_owned()
+        }
+        other => disk_failed(other),
+    }
+}
+
+/// The runtime's « list full » refusal (`media.rs`, `list_full`); matched on its message, no dedicated variant.
+fn is_list_full(msg: &str) -> bool {
+    msg.starts_with(&format!(
+        "at most {} disk images",
+        emu_runtime::MAX_MEDIA_IMAGES
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +646,71 @@ mod tests {
         assert_eq!(format_unix_utc(0), "1970-01-01 00:00");
         assert_eq!(format_unix_utc(951_782_400), "2000-02-29 00:00");
         assert_eq!(format_unix_utc(1_795_100_400), "2026-11-19 15:00");
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(format_size(12), "12 octets");
+        assert_eq!(format_size(737_280), "720 Ko");
+        assert_eq!(format_size(1_474_560), "1,4 Mo");
+    }
+
+    #[test]
+    fn disk_errors_tell_what_to_do() {
+        let full = emu_runtime::RuntimeError::InvalidMediaSet(format!(
+            "at most {} disk images: remove an added disk first",
+            emu_runtime::MAX_MEDIA_IMAGES
+        ));
+        assert_eq!(disk_error(&full), DISKS_LIST_FULL);
+        assert_eq!(
+            disk_error(&emu_runtime::RuntimeError::DiskInserted),
+            DISKS_INSERTED_REFUSED
+        );
+        let other = emu_runtime::RuntimeError::InvalidMediaSet("other".into());
+        assert!(disk_error(&other).starts_with("Changement de disquette impossible"));
+    }
+
+    #[test]
+    fn identity_banners() {
+        use emu_runtime::IdentityNotice;
+        let homonym = IdentityNotice::Homonym {
+            first: "/jeux/a/Game.st".into(),
+            sram_copied: true,
+            legacy_states: true,
+        };
+        let msg = identity_notice(&homonym, "Game", "hatari");
+        assert!(
+            msg.contains("Deux jeux portent le même nom « Game »"),
+            "{msg}"
+        );
+        assert!(msg.contains("copiée"), "{msg}");
+        assert!(msg.contains("ne sont pas copiés") && msg.contains("/jeux/a/Game.st"));
+        assert!(msg.contains("states/hatari/Game.state*"), "{msg}");
+        let plain = IdentityNotice::Homonym {
+            first: "/x".into(),
+            sram_copied: false,
+            legacy_states: false,
+        };
+        let msg = identity_notice(&plain, "Game", "hatari");
+        assert!(!msg.contains("copiée") && !msg.contains("états"), "{msg}");
+        let unknown = IdentityNotice::Homonym {
+            first: std::path::PathBuf::new(),
+            sram_copied: false,
+            legacy_states: true,
+        };
+        let msg = identity_notice(&unknown, "Game", "hatari");
+        assert!(
+            msg.starts_with("Un autre jeu porte déjà le nom « Game »"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("attachés à l'autre jeu (states/hatari/Game.state*)"),
+            "{msg}"
+        );
+        assert_eq!(
+            identity_notice(&IdentityNotice::RegistryUnusable, "G", "c"),
+            IDENTITY_FALLBACK
+        );
     }
 
     #[test]

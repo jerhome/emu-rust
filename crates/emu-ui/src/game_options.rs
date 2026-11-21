@@ -74,15 +74,39 @@ pub(crate) fn game_options_path(dir: &Path, core_id: &str, game: &str) -> PathBu
 /// Copies `<from>.toml` to `<to>.toml` in the core's folder of `dir` (`DataDirs::game_options`) when the target
 /// is absent (homonym inheriting the shared 2.0 options, `GameIdentity::inherits_legacy`). `Ok(true)` if a copy
 /// was written; `Ok(false)` if the source is missing or the target exists. Atomic; never overwrites.
-#[allow(dead_code)] // wired into App::build by I3
 pub(crate) fn inherit_game_options(
     dir: &Path,
     core_id: &str,
     from: &str,
     to: &str,
 ) -> io::Result<bool> {
-    let _ = (dir, core_id, from, to);
-    todo!("I3: game_options_path(from) -> game_options_path(to), target absent only")
+    let source = game_options_path(dir, core_id, from);
+    let target = game_options_path(dir, core_id, to);
+    if source == target {
+        return Ok(false);
+    }
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    // A link or an oversized file is not an options file we wrote: not copied.
+    match std::fs::symlink_metadata(&source) {
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_FILE_SIZE => {}
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    let mut data = Vec::new();
+    io::Read::read_to_end(
+        &mut io::Read::take(std::fs::File::open(&source)?, MAX_FILE_SIZE + 1),
+        &mut data,
+    )?;
+    if data.len() as u64 > MAX_FILE_SIZE {
+        return Ok(false);
+    }
+    write_atomic(&target, &data, FileMode::Default)?;
+    Ok(true)
 }
 
 /// One path component: separators, control and reserved characters become `_`; never empty, never `.` / `..`.
@@ -301,5 +325,31 @@ mod tests {
         let path = dir.path().join("g.toml");
         std::fs::write(&path, vec![b'#'; (MAX_FILE_SIZE + 10) as usize]).unwrap();
         assert!(GameOptions::load(&path).locked);
+    }
+
+    #[test]
+    fn inherit_copies_only_when_the_target_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game-options");
+        // No source: nothing.
+        assert!(!inherit_game_options(&root, "hatari", "G", "G (2)").unwrap());
+        let source = game_options_path(&root, "hatari", "G");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "[core_options]\nk = \"v\"\n").unwrap();
+        assert!(inherit_game_options(&root, "hatari", "G", "G (2)").unwrap());
+        let target = game_options_path(&root, "hatari", "G (2)");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        // Never overwritten.
+        std::fs::write(&target, "mine").unwrap();
+        assert!(!inherit_game_options(&root, "hatari", "G", "G (2)").unwrap());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+        assert!(!inherit_game_options(&root, "hatari", "G", "G").unwrap());
+        // Oversized source: not copied.
+        std::fs::write(&source, vec![b'#'; 300 * 1024]).unwrap();
+        assert!(!inherit_game_options(&root, "hatari", "G", "G (3)").unwrap());
+        assert!(!game_options_path(&root, "hatari", "G (3)").exists());
     }
 }

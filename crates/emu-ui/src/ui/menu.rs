@@ -1,6 +1,6 @@
 //! In-game menu (menu key).
 
-use egui::{Button, Context, RichText};
+use egui::{Button, Color32, Context, RichText};
 
 use super::{Overlay, UiAction, UiData, nav, screen_window, stepper, text};
 use crate::Screen;
@@ -22,6 +22,29 @@ pub(super) fn show(
             nav(&resp, focus);
             resp.clicked()
         };
+
+        if let Some(confirm) = overlay.confirm_load {
+            ui.label(RichText::new(text::STATE_CONFIRM_TITLE).strong());
+            ui.colored_label(
+                Color32::from_rgb(255, 190, 80),
+                text::state_confirm(confirm.slot, confirm.has_disks),
+            );
+            // The safe answer comes first and has the focus.
+            if button(ui, text::NO, true, &mut overlay.focus_first) {
+                overlay.confirm_load = None;
+                if confirm.from_menu {
+                    overlay.focus_first = true;
+                } else {
+                    actions.push(UiAction::Resume);
+                }
+            }
+            if button(ui, text::STATE_LOAD_YES, true, &mut false) {
+                overlay.confirm_load = None;
+                actions.push(UiAction::ConfirmLoadState(confirm.slot));
+            }
+            ui.label(RichText::new(text::NAV_HINT).small().weak());
+            return;
+        }
 
         if button(ui, text::RESUME, true, &mut overlay.focus_first) {
             actions.push(UiAction::Resume);

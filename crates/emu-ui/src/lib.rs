@@ -9,6 +9,7 @@ mod config_library;
 mod content;
 mod cores_ui;
 mod egui_layer;
+mod game_identity;
 mod game_options;
 mod gamepad;
 mod hotkeys;
@@ -32,6 +33,7 @@ pub use crate::config_library::{
 };
 pub use crate::content::{GameContent, content_spec, media_set_name};
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad::GilrsSource;
 pub use crate::gamepad::{

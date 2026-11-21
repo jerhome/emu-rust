@@ -48,8 +48,8 @@ Si le jeu refuse de démarrer : relever le message affiché (il nomme le BIOS at
 `Unable to open CD BIOS` du journal.
 
 Limites connues : pas de jeu à plusieurs CD ; pas d'import de BIOS par bouton (3.0) ; pas d'identification
-automatique (jaquette trouvée seulement si le fichier porte le nom Redump, ex. `Dune (Europe).cue`) ; deux `.cue` de
-même nom dans deux dossiers partagent leur sauvegarde tant que l'identité de jeu n'est pas livrée.
+automatique (jaquette trouvée seulement si le fichier porte le nom Redump, ex. `Dune (Europe).cue`). Deux `.cue` de
+même nom dans deux dossiers ont maintenant des sauvegardes séparées (§4).
 
 ## 3. Manette PS4 (DualShock 4)
 
@@ -64,3 +64,22 @@ même nom dans deux dossiers partagent leur sauvegarde tant que l'identité de j
 7. Stick gauche : D-pad sans dérive ; ajuster la zone morte si la manette est usée.
 8. macOS : noter si le bouton PS ouvre autre chose, ou si une autorisation système est demandée.
 9. Si la DS4 n'est pas reconnue : noter USB ou Bluetooth, et si Steam ou un autre utilitaire tournait.
+
+## 4. Jeux homonymes, disquettes ajoutées (identité de jeu)
+
+Avant de commencer : **copier** le dossier `saves/` et `states/` (sauvegarde de sécurité ; rien ne doit être perdu,
+c'est justement ce qu'on vérifie). Atari ST : core **hatari**.
+
+| # | Point | Attendu |
+|---|---|---|
+| 1 | Jeux déjà joués en 2.0 (un seul de ce nom) | sauvegardes, états et options retrouvés comme avant ; aucun message ; aucun fichier renommé dans `saves/` ni `states/` |
+| 2 | Deux jeux homonymes : `Jeu1/disk1.st` et `Jeu2/disk1.st` (ou deux `Game.sfc` de dossiers différents). Lancer le premier, sauvegarder dans le jeu et un état, quitter ; lancer le second | au premier lancement du second, bandeau « Deux jeux portent le même nom « disk1 » : leurs sauvegardes sont maintenant séparées. » ; dans `saves/<core>/`, fichiers `disk1 (2).*` et dossier `disk1 (2)/` ; le premier garde ses fichiers |
+| 3 | Homonymes **déjà joués ensemble en 2.0** (ils partageaient `G.srm`) | le second jeu reçoit une **copie** de la sauvegarde et des options (bandeau « La sauvegarde du jeu a été copiée… », « Options du jeu reprises… ») ; les **états ne sont pas copiés** : le bandeau dit à quel jeu ils restent attachés |
+| 4 | Relancer chacun des deux | chacun retrouve sa partie ; plus de bandeau |
+| 5 | État d'un autre fichier du même nom (remplacer la ROM par une autre version au même endroit, puis F4 / Ctrl+L, PS + L1, ou « Charger l'état » du menu) | question « Cet état peut venir d'un autre fichier du même nom… » ; **Non** a le focus (Entrée = ne rien charger) ; « Oui, charger » charge. Un état ancien d'un jeu sans homonyme se charge sans question |
+| 6 | Atari ST : menu Disquettes → ajouter une image du même dossier ; quitter ; relancer | la disquette ajoutée est de nouveau dans la liste (section « Disquettes ajoutées »), même ordre, sans être insérée ; la disquette réinsérée au démarrage est la bonne |
+| 7 | « Disquettes ajoutées » → Entrée sur une disquette | « Annuler » (focus), « Retirer de la liste (la copie est gardée) », « Retirer et supprimer la copie… » (nouvelle confirmation, taille et date affichées). Sur la disquette dans le lecteur : message « éjectez-la d'abord » |
+| 8 | Ajouter des disquettes jusqu'à la limite (32 au total) | message « Liste pleine : retirez d'abord une disquette ajoutée. » ; rien n'est oublié en silence |
+| 9 | « Nettoyer les copies… » (jeu lancé avec une rc.1 ou après des retraits) | liste des fichiers non utilisés (taille, date) ; **rien n'est coché** ; « Supprimer la sélection » demande confirmation et ne supprime que les lignes cochées ; « Reprendre » remet une copie dans la liste |
+| 10 | Tout au clavier, puis à la manette | Flèches / Tab, Entrée, Espace (cases), Échap revient d'un niveau |
+| 11 | Retour à la 2.0 (facultatif) | les jeux non homonymes retrouvent tout ; les fichiers `G (2).*` sont simplement ignorés |
