@@ -109,6 +109,11 @@ fn sync_dir(_dir: &Path) {}
 /// overwrites, links never followed, at most 1 MiB, `save_rel` a single plain file name. Returns the id of the
 /// source core, `None` when nothing was copied. Called by the UI before `Emulator::load_content`, never during
 /// a session.
+///
+/// Known limit: the checks (`symlink_metadata` then `open`, folder check then publication) are not atomic, so
+/// a local process able to swap files in the saves folder could race them. That is not a privilege boundary
+/// (same user), and `create_new` / `hard_link` never overwrite an existing file. The target appears complete
+/// or not at all.
 pub fn adopt_family_save(
     saves_dir: &Path,
     core_id: &str,
@@ -176,23 +181,55 @@ pub fn adopt_family_save(
         Ok(_) => {}
         Err(_) => fs::create_dir_all(&target_dir).map_err(|e| io_err(&target_dir, e))?,
     }
-    let mut out = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
+    match publish_new_file(&target_dir, name, &data) {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
         Err(e) => return Err(io_err(&target, e)),
-    };
-    let written = out.write_all(&data).and_then(|()| out.sync_all());
-    if let Err(e) = written {
-        drop(out);
-        let _ = fs::remove_file(&target);
-        return Err(io_err(&target, e));
     }
     tracing::info!("{} adopted from {}", target.display(), source.display());
     Ok(Some(source_id.to_owned()))
+}
+
+/// Writes `data` as `<dir>/<name>` only if it does not exist: temporary file in `dir` (`create_new`, unique
+/// name), `sync_all`, then published without overwriting (`hard_link`, temporary removed). A kill while writing
+/// leaves at worst a `.tmp` file, never a truncated target. Where hard links are unavailable, `rename` is used
+/// after checking the target is still absent (small window between check and rename, accepted: it is not a
+/// privilege boundary). `Ok(false)`: the target appeared meanwhile, left untouched.
+fn publish_new_file(dir: &Path, name: &std::ffi::OsStr, data: &[u8]) -> io::Result<bool> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target = dir.join(name);
+    let mut attempt = 0;
+    let (tmp, mut file) = loop {
+        let mut tmp_name = OsString::from(".");
+        tmp_name.push(name);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tmp_name.push(format!(".adopt-{}-{n}.tmp", std::process::id()));
+        let tmp = dir.join(tmp_name);
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => break (tmp, f),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 8 => attempt += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    let published = written.and_then(|()| match fs::hard_link(&tmp, &target) {
+        Ok(()) => {
+            let _ = fs::remove_file(&tmp);
+            Ok(true)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(_) if fs::symlink_metadata(&target).is_ok() => Ok(false),
+        // No hard links (some network or FAT filesystems).
+        Err(_) => fs::rename(&tmp, &target).map(|()| true),
+    });
+    if !matches!(published, Ok(true)) {
+        let _ = fs::remove_file(&tmp);
+    }
+    if matches!(published, Ok(true)) {
+        sync_dir(dir);
+    }
+    published
 }
 
 /// Largest save adopted from another core (a PS1 memory card is 128 KiB).
@@ -630,6 +667,28 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn adopt_leaves_no_temporary_file() {
+        let tmp = tempdir();
+        let root = tmp.path();
+        put(root, "pcsx", "Game.srm", b"card");
+        adopt_family_save(root, "swan", &family(), Path::new("Game.srm")).unwrap();
+        assert_eq!(entries(&root.join("swan")), ["Game.srm"]);
+    }
+
+    #[test]
+    fn publish_new_file_never_overwrites_and_cleans_up() {
+        let tmp = tempdir();
+        let dir = tmp.path();
+        let name = std::ffi::OsStr::new("A.srm");
+        assert!(publish_new_file(dir, name, b"one").unwrap());
+        assert!(!publish_new_file(dir, name, b"two").unwrap());
+        assert_eq!(fs::read(dir.join("A.srm")).unwrap(), b"one");
+        assert_eq!(entries(dir), ["A.srm"]);
+        // Folder missing: error, nothing created.
+        assert!(publish_new_file(&dir.join("nope"), name, b"x").is_err());
     }
 
     #[cfg(unix)]

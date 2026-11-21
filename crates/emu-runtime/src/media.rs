@@ -1347,8 +1347,13 @@ pub fn reset_working_copies(saves_core_dir: &Path, game: &str) -> Result<bool, R
 /// folders `[a-z0-9_]+` walked without following links): `{game}` stands for `content_name` (the content name handed to
 /// the core), at most one `*` matches any run of characters other than `.` (so that the files of a game whose
 /// name extends this one, `X.saveY` for `X`, are never matched). A pattern holding a backslash, `..`, a folder that is not
-/// a plain literal, more than two folders, or more than one `*` is refused (`InvalidMediaSet`), nothing is deleted. Only regular files directly inside
-/// `saves_core_dir` are looked at (not recursive, links never followed).
+/// a plain literal, more than two folders, or more than one `*` is refused (`InvalidMediaSet`), nothing is
+/// deleted. Only regular files directly inside `saves_core_dir` or one of the literal sub-folders of a pattern
+/// are looked at (never a recursive walk, links never followed).
+///
+/// Known limit: a file is checked (`symlink_metadata`) then removed later, so a local process could swap it for
+/// a link in between; `remove_file` removes a link itself, never its target, and this is not a privilege
+/// boundary (same user).
 pub fn reset_core_game_files(
     saves_core_dir: &Path,
     content_name: &str,
