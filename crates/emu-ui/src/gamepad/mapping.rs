@@ -108,6 +108,28 @@ pub fn retropad_from_name(name: &str) -> Option<JoypadButton> {
         .find(|b| retropad_name(*b) == name)
 }
 
+/// Records the remap of `button` in `[input.gamepad.bindings.<profile_key>]`. `target = None` unbinds (`"none"`).
+/// An entry equal to the system default is removed, so the file only keeps real overrides.
+pub fn set_binding(
+    config: &mut GamepadConfig,
+    style: PadStyle,
+    profile_key: &str,
+    button: PadButton,
+    target: Option<JoypadButton>,
+) {
+    let default = PadMap::default_for(style).target(button);
+    let table = config.bindings.entry(profile_key.to_owned()).or_default();
+    if target == default {
+        table.remove(button.config_name());
+    } else {
+        let value = target.map_or("none", retropad_name);
+        table.insert(button.config_name().to_owned(), value.to_owned());
+    }
+    if table.is_empty() {
+        config.bindings.remove(profile_key);
+    }
+}
+
 /// `PadButton` -> RetroPad button for one profile. A button without entry goes nowhere (ADR 0016 table).
 /// At most one target per physical button.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,5 +368,30 @@ mod tests {
         assert_eq!(m.target(PadButton::East), Some(JoypadButton::A));
         let other = PadMap::from_config(PadStyle::GameBoy, "other", &cfg);
         assert_eq!(other, PadMap::default_for(PadStyle::GameBoy));
+    }
+
+    #[test]
+    fn set_binding_keeps_only_real_overrides() {
+        let mut c = GamepadConfig::default();
+        let key = "genesis_plus_gx";
+        let style = PadStyle::MegaDrive;
+        set_binding(&mut c, style, key, PadButton::South, Some(JoypadButton::X));
+        assert_eq!(c.bindings[key]["south"], "x");
+        set_binding(&mut c, style, key, PadButton::East, None);
+        assert_eq!(c.bindings[key]["east"], "none");
+        let map = PadMap::from_config(style, key, &c);
+        assert_eq!(map.target(PadButton::South), Some(JoypadButton::X));
+        assert_eq!(map.target(PadButton::East), None);
+        let default_south = PadMap::default_for(style).target(PadButton::South);
+        set_binding(&mut c, style, key, PadButton::South, default_south);
+        set_binding(
+            &mut c,
+            style,
+            key,
+            PadButton::East,
+            PadMap::default_for(style).target(PadButton::East),
+        );
+        assert!(c.bindings.is_empty());
+        assert!(c.is_default());
     }
 }

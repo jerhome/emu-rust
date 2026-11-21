@@ -114,6 +114,33 @@ pub(crate) fn bios_verdict(
     }
 }
 
+/// CLI failure hint (`--core genesis_plus_gx --rom disc.cue` refused by the core): the Mega CD message with the
+/// BIOS expected for the disc's region and the `system/` folder, when the disc looks like a Mega CD one and the
+/// BIOS is really absent. `None`: not a Mega CD launch, or the BIOS is there (the generic advice applies).
+/// Plain file presence only: the CLI has no core manager.
+pub fn cli_failure_hint(
+    core: &Path,
+    roms: &[std::path::PathBuf],
+    system_dir: &Path,
+) -> Option<String> {
+    let stem = core.file_stem()?.to_string_lossy().to_ascii_lowercase();
+    if !stem.contains("genesis_plus_gx") {
+        return None;
+    }
+    let disc = roms.first()?;
+    let ext = disc.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !matches!(ext.as_str(), "cue" | "chd" | "iso") {
+        return None;
+    }
+    match bios_verdict(region_of(disc), &[], system_dir) {
+        BiosVerdict::Missing { wanted, .. } => {
+            let title = disc.file_stem()?.to_string_lossy().into_owned();
+            Some(super::text::megacd_load_failed(&title, &wanted, system_dir))
+        }
+        _ => None,
+    }
+}
+
 /// Header probe, then file-name tag; I/O errors are logged and give `None`.
 pub(crate) fn region_of(game_path: &Path) -> Option<DiscRegion> {
     match disc_info(game_path) {
@@ -284,5 +311,21 @@ mod tests {
             region_of(&dir.path().join("Absent (Japan).cue")),
             Some(DiscRegion::Japan)
         );
+    }
+
+    #[test]
+    fn cli_hint_names_the_bios_and_folder_only_for_a_mega_cd_launch() {
+        let sys = empty_dir();
+        let disc = std::path::PathBuf::from("Dune (Europe).cue");
+        let core = Path::new("/cores/genesis_plus_gx_libretro.so");
+        let hint = cli_failure_hint(core, std::slice::from_ref(&disc), sys.path()).unwrap();
+        assert!(hint.contains("bios_CD_E.bin") && hint.contains(&sys.path().display().to_string()));
+        // Not the Mega CD core, not a disc, or the BIOS is present: generic advice.
+        let other = Path::new("/cores/snes9x_libretro.so");
+        assert!(cli_failure_hint(other, std::slice::from_ref(&disc), sys.path()).is_none());
+        let rom = std::path::PathBuf::from("Sonic.md");
+        assert!(cli_failure_hint(core, &[rom], sys.path()).is_none());
+        std::fs::write(sys.path().join("bios_CD_E.bin"), b"x").unwrap();
+        assert!(cli_failure_hint(core, &[disc], sys.path()).is_none());
     }
 }

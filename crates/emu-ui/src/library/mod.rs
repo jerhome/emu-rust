@@ -7,6 +7,8 @@ mod grid;
 mod home;
 mod host;
 mod megacd;
+pub use megacd::cli_failure_hint as megacd_cli_hint;
+mod pad_settings;
 mod settings;
 pub(crate) mod text;
 mod worker;
@@ -163,6 +165,7 @@ pub(crate) struct LibraryUi {
     /// The cover worker is spawned on the first frame (it needs the egui context to wake the loop).
     covers_started: bool,
     settings: settings::State,
+    pad: pad_settings::PadUi,
     events: Vec<LibraryEvent>,
 }
 
@@ -226,6 +229,7 @@ impl LibraryUi {
             covers: Box::new(Placeholder),
             covers_started: false,
             settings: settings::State::default(),
+            pad: pad_settings::PadUi::default(),
             events: Vec::new(),
         };
         ui.reload_games();

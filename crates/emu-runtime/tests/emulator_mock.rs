@@ -60,6 +60,7 @@ impl Env {
             state_dir: data.join("states"),
             assets_dir: data.join("assets"),
             core_variables: Vec::new(),
+            restore_added_disks: false,
         }
     }
 
@@ -297,8 +298,13 @@ fn sram_persists_between_sessions() {
         assert_eq!(&expected[..5], &[20, 0, 0, 0, 0xA5]);
     }
     assert_eq!(fs::read(&sram_path).unwrap(), expected);
+    // The game-identity registry (2.1) and its lock live there too.
+    let names: BTreeSet<String> = dir_names(sram_path.parent().unwrap())
+        .into_iter()
+        .filter(|n| !n.starts_with(".emu-rust-games"))
+        .collect();
     assert_eq!(
-        dir_names(sram_path.parent().unwrap()),
+        names,
         BTreeSet::from(["Game (World).srm".into(), "mock-was-here.txt".into()]),
         "no temporary file left"
     );

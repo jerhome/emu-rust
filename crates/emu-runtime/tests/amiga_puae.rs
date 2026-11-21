@@ -68,6 +68,7 @@ fn options(dir: &Path) -> EmulatorOptions {
         state_dir: dir.join("states"),
         assets_dir: dir.join("assets"),
         core_variables: Vec::new(),
+        restore_added_disks: false,
     }
 }
 

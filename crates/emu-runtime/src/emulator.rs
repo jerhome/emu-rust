@@ -13,15 +13,12 @@ use crate::audio::AudioSink;
 use crate::content::{self, Limits};
 use crate::error::RuntimeError;
 use crate::frame::{FrameRgba, convert_frame};
-use crate::identity::GameIdentity;
+use crate::identity::{GameIdentity, identity_request_for, resolve_game_identity};
 use crate::input::{InputBackend, InputFrame, MouseState};
-use crate::media::{
-    ContentSpec, Disks, MediaRules, NO_GAME_NAME, PreparedMedia, prepare_media_with,
-};
+use crate::media::{ContentSpec, Disks, MediaRules, PreparedMedia, prepare_media_with};
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, StateOrigin, core_id_from_path,
-    decode_state, encode_state, game_name_from_path, game_name_from_str, read_bounded,
-    read_state_header, write_atomic,
+    decode_state, encode_state, read_bounded, read_state_header, write_atomic,
 };
 
 /// Largest content accepted from an archive (declared or actually decompressed size): 512 MiB.
@@ -43,6 +40,8 @@ pub struct EmulatorOptions {
     pub cache_dir: PathBuf,
     /// `CoreConfig::provide_vfs` (`cores.toml` `vfs = true`, `CorePreferences::provides_vfs`).
     pub provide_vfs: bool,
+    /// Re-add disks added from the menu in earlier sessions (design §2.3).
+    pub restore_added_disks: bool,
 }
 
 /// Outcome of one emulated frame.
@@ -66,9 +65,11 @@ pub struct Emulator {
     input: InputFrame,
     frame_count: u64,
     pub(crate) core_id: String,
+    /// `identity.save_name`: SRAM, states, working-copy folder of `File` / `NoGame` sessions.
     pub(crate) game_name: String,
-    /// 2.1 identity. Until I1, `load_content` builds `GameIdentity::legacy(game_name)` (2.0 behaviour).
     pub(crate) identity: GameIdentity,
+    /// Stem of the `GameSource::Path` handed to `retro_load_game`.
+    content_name: Option<String>,
     pub(crate) save_root: PathBuf,
     state_root: PathBuf,
     /// SRAM as last restored or written; `flush_sram` writes only when the core's copy differs.
@@ -140,6 +141,8 @@ impl Emulator {
 
     /// 2.0 entry point (ADR 0015): one file, a disk set (prepared by [`crate::prepare_media`] once the core is
     /// loaded, with the extensions the binary accepts) or no content at all.
+    /// Resolves the game identity itself ([`crate::resolve_game_identity`]); if that fails, the 2.0 name is used
+    /// (logged).
     pub fn load_content(
         core: &Path,
         content: ContentSpec,
@@ -159,8 +162,7 @@ impl Emulator {
         identity: GameIdentity,
         options: EmulatorOptions,
     ) -> Result<Self, RuntimeError> {
-        let _ = (core, content, identity, options);
-        todo!("I1: load_with_limits taking the identity")
+        Self::load_as(core, content, identity, options, Limits::DEFAULT)
     }
 
     pub(crate) fn load_with_limits(
@@ -170,25 +172,36 @@ impl Emulator {
         limits: Limits,
     ) -> Result<Self, RuntimeError> {
         let core_id = core_id_from_path(core_path);
-        let game_name = match &spec {
-            ContentSpec::File(rom) => game_name_from_path(rom),
-            ContentSpec::Media { set, .. } => game_name_from_str(&set.name),
-            ContentSpec::NoGame => NO_GAME_NAME.to_owned(),
-            ContentSpec::Folder { .. } => {
-                todo!(
-                    "DR1: game name = `name`; snapshot (crate::snapshot) then load `<snapshot>.zip[#START]`"
-                )
-            }
-        };
-        let core_save_dir = options.save_dir.join(&core_id);
+        let saves_core_dir = options.save_dir.join(&core_id);
+        let states_core_dir = options.state_dir.join(&core_id);
+        let request = identity_request_for(&spec, &saves_core_dir, &states_core_dir);
+        let identity = resolve_game_identity(&request).unwrap_or_else(|e| {
+            tracing::warn!("game identity not resolved ({e}): 2.0 name used");
+            GameIdentity::legacy(&request.base_name, &saves_core_dir)
+        });
+        Self::load_as(core_path, spec, identity, options, limits)
+    }
+
+    fn load_as(
+        core_path: &Path,
+        spec: ContentSpec,
+        identity: GameIdentity,
+        options: EmulatorOptions,
+        limits: Limits,
+    ) -> Result<Self, RuntimeError> {
+        let core_id = core_id_from_path(core_path);
+        let game_name = identity.save_name.clone();
+        let saves_core_dir = options.save_dir.join(&core_id);
+        fs::create_dir_all(&saves_core_dir).map_err(io_err(&saves_core_dir))?;
+        let core_save_dir = identity.core_save_dir.clone();
         fs::create_dir_all(&core_save_dir).map_err(io_err(&core_save_dir))?;
-        let identity = GameIdentity::legacy(&game_name, &core_save_dir);
         let core_state_dir = options.state_dir.join(&core_id);
         fs::create_dir_all(&core_state_dir).map_err(io_err(&core_state_dir))?;
+        let restore_added_disks = options.restore_added_disks;
 
         let config = CoreConfig {
             system_dir: options.system_dir,
-            save_dir: core_save_dir.clone(),
+            save_dir: core_save_dir,
             assets_dir: options.assets_dir,
             variables: options.core_variables,
             provide_vfs: options.provide_vfs,
@@ -203,9 +216,12 @@ impl Emulator {
                 content_dir = content.temp_dir;
                 Some(content.source)
             }
-            ContentSpec::Media { set, rules } => {
+            ContentSpec::Media { mut set, rules } => {
+                set.name.clone_from(&game_name);
                 let exts = &core.system_info().valid_extensions;
-                let media = prepare_media_with(&set, &rules, exts, &core_save_dir, limits)?;
+                // Working copies stay flat under `<saves>/<core_id>/` (`<save_name>.disks`), whatever the save
+                // directory handed to the core (2.1 identity design §2.1).
+                let media = prepare_media_with(&set, &rules, exts, &saves_core_dir, limits)?;
                 let source = GameSource::Path(media.content.clone());
                 prepared = Some(media);
                 media_rules = Some(rules);
@@ -213,6 +229,12 @@ impl Emulator {
             }
             ContentSpec::NoGame => None,
             ContentSpec::Folder { .. } => todo!("DR1: GameSource::Path(<snapshot>.zip[#START])"),
+        };
+        let content_name = match &source {
+            Some(GameSource::Path(path)) => {
+                path.file_stem().map(|s| s.to_string_lossy().into_owned())
+            }
+            _ => None,
         };
         let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
         let loaded = match source {
@@ -246,7 +268,7 @@ impl Emulator {
             sample_rate = av_info.timing.sample_rate,
             "game loaded"
         );
-        Ok(Self {
+        let mut emulator = Self {
             core,
             av_info,
             frame: FrameRgba::default(),
@@ -255,6 +277,7 @@ impl Emulator {
             core_id,
             game_name,
             identity,
+            content_name,
             save_root: options.save_dir,
             state_root: options.state_dir,
             sram_snapshot,
@@ -264,13 +287,23 @@ impl Emulator {
             limits,
             keyboard_polled: false,
             mouse_polled: false,
-        })
+        };
+        if restore_added_disks {
+            crate::added::restore_added(&mut emulator);
+        }
+        Ok(emulator)
     }
 
     /// `None` when the core registered no disk control interface.
     pub fn disks(&mut self) -> Option<Disks<'_>> {
         self.core.disk_control()?;
         Some(Disks { emulator: self })
+    }
+
+    /// Working-copy folder of the session: `None` for a `Direct` set; else the prepared one, else
+    /// `<saves>/<core_id>/<save_name>.disks`. Returned owned (the fallback is computed).
+    pub fn work_dir(&self) -> Option<PathBuf> {
+        crate::added::session_work_dir(self)
     }
 
     /// Images prepared at load time (`ContentSpec::Media`), for the disk menu and « réinitialiser ».
@@ -384,7 +417,7 @@ impl Emulator {
         &self.core_id
     }
 
-    /// `game_name_from_path` of the content path given to `load`.
+    /// Name keying SRAM and states: [`GameIdentity::save_name`] (the 1.0 / 2.0 name unless the game has a homonym).
     pub fn game_name(&self) -> &str {
         &self.game_name
     }
@@ -397,14 +430,21 @@ impl Emulator {
     /// Stem of the path handed to `retro_load_game` (`{game}` of the 3.0 `game_saves` patterns): differs from
     /// `save_name` for a single image under a working copy (`disk1`). `None` for `NoGame` or an in-memory load.
     pub fn content_name(&self) -> Option<&str> {
-        todo!("I1: stem of the GameSource::Path given to the core")
+        self.content_name.as_deref()
     }
 
     /// Origin of slot `slot` relative to the running game (`game_fp` of its header vs. the identity's).
     /// `None`: empty, unreadable or invalid slot.
     pub fn state_origin(&self, slot: u8) -> Option<StateOrigin> {
-        let _ = slot;
-        todo!("I1: compare StateHeader::game_fp (design §2.1, « États »)")
+        let (header, _) = self.state_info(slot)?;
+        Some(match (header.game_fp, self.identity.game_fp()) {
+            (Some(saved), Some(current)) if saved == current => StateOrigin::Same,
+            (Some(_), Some(_)) => StateOrigin::OtherContent,
+            // No fingerprint of the running game (registry unusable): nothing to compare.
+            (Some(_), None) => StateOrigin::Unknown,
+            (None, _) if self.identity.has_homonyms() => StateOrigin::Ambiguous,
+            (None, _) => StateOrigin::Unknown,
+        })
     }
 
     /// Where SRAM is persisted (whether or not the core exposes any).
