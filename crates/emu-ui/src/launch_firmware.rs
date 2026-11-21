@@ -22,6 +22,15 @@ const MODEL_DEFAULT: &str = "auto";
 const MODEL_FD_DEFAULT: &str = "A500";
 const MODEL_HD_DEFAULT: &str = "A1200";
 
+/// What the library knows of the game being launched (design v6.0 §3.5); `Default` = no game known.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct GameFacts<'a> {
+    /// libretro database name of the game's system (`Game::system` resolved to `database`).
+    pub database: Option<&'a str>,
+    /// `Game::region`.
+    pub region: Option<emu_library::DiscRegion>,
+}
+
 /// Result of the pre-launch check of one game.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LaunchFirmware {
@@ -30,6 +39,8 @@ pub(crate) struct LaunchFirmware {
     /// Variant the table was keyed with (resolved Amiga model); `None` = the table's default.
     pub variant: Option<String>,
     pub check: FirmwareCheck,
+    /// The `region` variant was found (always `true` for a table that is not keyed by region).
+    pub variant_known: bool,
 }
 
 /// What to do with a [`LaunchFirmware`]. `Missing` and `Unreadable` are decided before `plan_kickstart` (which
@@ -73,26 +84,44 @@ pub(crate) fn firmware_system(prefs: &CorePreferences, core: &CoreId) -> Option<
 /// `game_database` when the core lists that system (a Mega Drive game with genesis_plus_gx gets no Mega CD table
 /// nor « Mega CD » section; a 32X game with picodrive gets its `Builtin`, not the Mega CD table), else
 /// [`firmware_system`] (no game: computer desktop, CLI without library).
-#[allow(dead_code)] // GU1 (replaces `firmware_system` in `check_launch_firmware`, `App::build`)
 pub(crate) fn firmware_system_for(
     prefs: &CorePreferences,
     core: &CoreId,
     game_database: Option<&str>,
 ) -> Option<String> {
-    let _ = (prefs, core, game_database);
-    todo!("GU1: firmware system of the game (design v6.0 §3.5)")
+    let listed = |system: &str| {
+        prefs
+            .systems()
+            .any(|(s, cores)| s == system && cores.contains(core))
+    };
+    match game_database {
+        Some(db) if listed(db) => Some(db.to_owned()),
+        _ => firmware_system(prefs, core),
+    }
 }
 
 /// Variant key of a `variant = "region"` table (design v6.0 §2.2, GU1): `region` (`Game::region`) when known,
 /// else the header probe of `first_file` (`emu_library::disc_info`: base not rescanned since v5), else its name tag
 /// (`region_from_name`); `None` = unknown (the table's default applies and `variant_known` is `false`).
-#[allow(dead_code)] // GU1 (arm `FirmwareVariant::Region` of `launch_variant`)
 pub(crate) fn region_variant(
     region: Option<emu_library::DiscRegion>,
     first_file: Option<&Path>,
 ) -> Option<&'static str> {
-    let _ = (region, first_file);
-    todo!("GU1: region variant (design v6.0 §2.2)")
+    if let Some(region) = region {
+        return Some(region.key());
+    }
+    let first_file = first_file?;
+    let probed = emu_library::disc_info(first_file)
+        .ok()
+        .flatten()
+        .and_then(|info| info.region);
+    let named = || {
+        first_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(emu_library::region_from_name)
+    };
+    probed.or_else(named).map(emu_library::DiscRegion::key)
 }
 
 /// Effective value of a core option before the computed layer: game > config > `cores.toml` > `default`.
@@ -117,10 +146,11 @@ fn option_value<'a>(
 }
 
 /// Variant of the table for this launch. `Model`: the resolved Amiga model (option > tags of the path > model
-/// for floppies / hard disks). `Region` (6.0): not known yet, the table's default applies.
+/// for floppies / hard disks). `Region` (6.0): [`region_variant`], `None` = the table's default applies.
 pub(crate) fn launch_variant(
     variant: FirmwareVariant,
     first_file: Option<&Path>,
+    region: Option<emu_library::DiscRegion>,
     frontend: &[(String, String)],
     global: &BTreeMap<String, String>,
     game: &BTreeMap<String, String>,
@@ -137,7 +167,7 @@ pub(crate) fn launch_variant(
                 get("puae_model_hd", MODEL_HD_DEFAULT),
             ))
         }
-        _ => None,
+        FirmwareVariant::Region => region_variant(region, first_file).map(str::to_owned),
     }
 }
 
@@ -148,20 +178,23 @@ pub(crate) fn check_launch_firmware(
     prefs: &CorePreferences,
     core: &CoreId,
     first_file: Option<&Path>,
+    facts: GameFacts<'_>,
     global: &BTreeMap<String, String>,
     game: &BTreeMap<String, String>,
 ) -> Option<LaunchFirmware> {
-    let system = firmware_system(prefs, core)?;
+    let system = firmware_system_for(prefs, core, facts.database)?;
     let frontend = prefs.frontend_options(core);
-    let variant = prefs
-        .required_firmware(core, &system)
-        .and_then(|req| launch_variant(req.variant, first_file, &frontend, global, game));
+    let table_variant = prefs.required_firmware(core, &system).map(|r| r.variant);
+    let variant = table_variant
+        .and_then(|v| launch_variant(v, first_file, facts.region, &frontend, global, game));
+    let variant_known = table_variant != Some(FirmwareVariant::Region) || variant.is_some();
     let known = KnownFirmware::builtin();
     match check_core_firmware(system_dir, prefs, core, &system, variant.as_deref(), &known)? {
         Ok(check) => Some(LaunchFirmware {
             system,
             variant,
             check,
+            variant_known,
         }),
         Err(e) => {
             tracing::warn!("contrôle du BIOS de {core} impossible : {e}");
@@ -223,9 +256,32 @@ pub struct FirmwareSetup {
 }
 
 /// [`FirmwareSetup`] of a launch, `game` being this game's options (updated, not saved). Used by `App::build`.
+/// Without facts about the game: see [`firmware_setup_for`].
 pub(crate) fn firmware_setup(
     core_id: &str,
     first_file: Option<&Path>,
+    dirs: &DataDirs,
+    config: &Config,
+    prefs: &CorePreferences,
+    game: &mut GameOptions,
+) -> FirmwareSetup {
+    firmware_setup_for(
+        core_id,
+        first_file,
+        GameFacts::default(),
+        dirs,
+        config,
+        prefs,
+        game,
+    )
+}
+
+/// [`firmware_setup`] for a game whose system and region are known (`GameFacts`): a Mega Drive game under
+/// genesis_plus_gx gets no Mega CD table. `App::build` switches to it in GU2.
+pub(crate) fn firmware_setup_for(
+    core_id: &str,
+    first_file: Option<&Path>,
+    facts: GameFacts<'_>,
     dirs: &DataDirs,
     config: &Config,
     prefs: &CorePreferences,
@@ -250,11 +306,12 @@ pub(crate) fn firmware_setup(
         prefs,
         &core,
         first_file,
+        facts,
         &global,
         &game.core_options,
     ) else {
         // No firmware decision, but the other computed defaults (DOS keyboard layout) still apply.
-        let system = firmware_system(prefs, &core).unwrap_or_default();
+        let system = firmware_system_for(prefs, &core, facts.database).unwrap_or_default();
         return FirmwareSetup {
             computed: computed_options(&ComputedContext {
                 prefs,
@@ -357,7 +414,7 @@ mod tests {
         let path = Path::new("roms/amiga/Game (AGA).adf");
         let none = BTreeMap::new();
         let v = |global: &BTreeMap<String, String>, game: &BTreeMap<String, String>| {
-            launch_variant(FirmwareVariant::Model, Some(path), &[], global, game)
+            launch_variant(FirmwareVariant::Model, Some(path), None, &[], global, game)
         };
         assert_eq!(v(&none, &none).as_deref(), Some("A1200"));
         let global = opts(&[("puae_model", "A600")]);
@@ -369,6 +426,7 @@ mod tests {
             launch_variant(
                 FirmwareVariant::Model,
                 Some(Path::new("Game.adf")),
+                None,
                 &[],
                 &fd,
                 &none
@@ -377,11 +435,11 @@ mod tests {
             Some("A600")
         );
         assert_eq!(
-            launch_variant(FirmwareVariant::Model, None, &[], &none, &none).as_deref(),
+            launch_variant(FirmwareVariant::Model, None, None, &[], &none, &none).as_deref(),
             Some("A500")
         );
         assert_eq!(
-            launch_variant(FirmwareVariant::Region, Some(path), &[], &none, &none),
+            launch_variant(FirmwareVariant::Region, Some(path), None, &[], &none, &none),
             None
         );
     }
@@ -396,6 +454,7 @@ mod tests {
             &prefs,
             &puae(),
             Some(Path::new("Game.adf")),
+            GameFacts::default(),
             &none,
             &none,
         )
@@ -419,7 +478,16 @@ mod tests {
         std::fs::write(dir.path().join("kick34005.A500"), b"not a kickstart").unwrap();
         let prefs = CorePreferences::builtin();
         let none = BTreeMap::new();
-        let lf = check_launch_firmware(dir.path(), &prefs, &puae(), None, &none, &none).unwrap();
+        let lf = check_launch_firmware(
+            dir.path(),
+            &prefs,
+            &puae(),
+            None,
+            GameFacts::default(),
+            &none,
+            &none,
+        )
+        .unwrap();
         // The md5 is known from System.dat: a fake file is a wrong hash.
         assert!(matches!(
             decide(&lf.check, true),
@@ -465,6 +533,156 @@ mod tests {
         let prefs = CorePreferences::builtin();
         let none = BTreeMap::new();
         let gambatte = CoreId::new("gambatte").unwrap();
-        assert!(check_launch_firmware(dir.path(), &prefs, &gambatte, None, &none, &none).is_none());
+        assert!(
+            check_launch_firmware(
+                dir.path(),
+                &prefs,
+                &gambatte,
+                None,
+                GameFacts::default(),
+                &none,
+                &none
+            )
+            .is_none()
+        );
+    }
+
+    const MEGA_DRIVE: &str = "Sega - Mega Drive - Genesis";
+    const MEGA_CD: &str = "Sega - Mega-CD - Sega CD";
+
+    fn facts(database: &str) -> GameFacts<'_> {
+        GameFacts {
+            database: Some(database),
+            region: None,
+        }
+    }
+
+    #[test]
+    fn firmware_system_follows_the_game() {
+        let prefs = CorePreferences::builtin();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let pico = CoreId::new("picodrive").unwrap();
+        for core in [&gpgx, &pico] {
+            assert_eq!(
+                firmware_system_for(&prefs, core, Some(MEGA_DRIVE)).as_deref(),
+                Some(MEGA_DRIVE)
+            );
+            assert_eq!(
+                firmware_system_for(&prefs, core, Some(MEGA_CD)).as_deref(),
+                Some(MEGA_CD)
+            );
+        }
+        assert_eq!(
+            firmware_system_for(&prefs, &pico, Some("Sega - 32X")).as_deref(),
+            Some("Sega - 32X")
+        );
+        // A system the core does not list, or no game: the table system.
+        assert_eq!(
+            firmware_system_for(&prefs, &puae(), Some(MEGA_DRIVE)).as_deref(),
+            Some("Commodore - Amiga")
+        );
+        assert_eq!(
+            firmware_system_for(&prefs, &puae(), None).as_deref(),
+            Some("Commodore - Amiga")
+        );
+    }
+
+    #[test]
+    fn mega_drive_and_32x_games_ask_for_no_cd_bios() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = CorePreferences::builtin();
+        let none = BTreeMap::new();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let pico = CoreId::new("picodrive").unwrap();
+        let rom = Some(Path::new("Sonic.md"));
+        assert!(
+            check_launch_firmware(
+                dir.path(),
+                &prefs,
+                &gpgx,
+                rom,
+                facts(MEGA_DRIVE),
+                &none,
+                &none
+            )
+            .is_none()
+        );
+        let lf = check_launch_firmware(
+            dir.path(),
+            &prefs,
+            &pico,
+            Some(Path::new("Doom.32x")),
+            facts("Sega - 32X"),
+            &none,
+            &none,
+        )
+        .expect("picodrive has built-in BIOS");
+        assert_eq!(lf.check.wanted, None);
+        assert_eq!(decide(&lf.check, false), FirmwareDecision::Launch);
+        let lf = check_launch_firmware(
+            dir.path(),
+            &prefs,
+            &pico,
+            rom,
+            facts(MEGA_DRIVE),
+            &none,
+            &none,
+        )
+        .expect("builtin");
+        assert_eq!(decide(&lf.check, false), FirmwareDecision::Launch);
+    }
+
+    #[test]
+    fn mega_cd_game_wants_the_bios_of_its_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = CorePreferences::builtin();
+        let none = BTreeMap::new();
+        let gpgx = CoreId::new("genesis_plus_gx").unwrap();
+        let ask = |region| {
+            let facts = GameFacts {
+                database: Some(MEGA_CD),
+                region,
+            };
+            check_launch_firmware(
+                dir.path(),
+                &prefs,
+                &gpgx,
+                Some(Path::new("/nonexistent/Dune.cue")),
+                facts,
+                &none,
+                &none,
+            )
+            .expect("table")
+        };
+        let eu = ask(Some(emu_library::DiscRegion::Europe));
+        assert_eq!(eu.variant.as_deref(), Some("europe"));
+        assert_eq!(eu.check.wanted.as_deref(), Some("bios_CD_E.bin"));
+        assert!(eu.variant_known);
+        let unknown = ask(None);
+        assert_eq!(unknown.variant, None);
+        assert!(!unknown.variant_known);
+        assert_eq!(unknown.check.wanted.as_deref(), Some("bios_CD_U.bin"));
+    }
+
+    #[test]
+    fn region_variant_order_is_base_then_probe_then_name() {
+        use emu_library::DiscRegion as R;
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("Dune (Japan).iso");
+        let mut head = vec![0u8; 0x220];
+        head[..14].copy_from_slice(b"SEGADISCSYSTEM");
+        head[0x20B] = 0x64; // Europe
+        std::fs::write(&iso, &head).unwrap();
+        assert_eq!(region_variant(Some(R::Usa), Some(&iso)), Some("usa"));
+        let probed = region_variant(None, Some(&iso));
+        assert!(matches!(probed, Some("europe" | "usa" | "japan")));
+        let named = dir.path().join("Dune (Japan).chd");
+        std::fs::write(&named, b"x").unwrap();
+        assert_eq!(region_variant(None, Some(&named)), Some("japan"));
+        assert_eq!(
+            region_variant(None, Some(Path::new("/nonexistent/x.cue"))),
+            None
+        );
+        assert_eq!(region_variant(None, None), None);
     }
 }

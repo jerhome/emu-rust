@@ -168,8 +168,13 @@ impl PadMap {
                 (P::Select, J::Select),
                 (P::Start, J::Start),
             ],
-            // GU1: ADR 0016 GBA column (Cross = B, Circle = A, L1 / R1 = L / R, Share = Select, Options = Start).
-            PadStyle::Gba => todo!("GU1: gamepad mapping of PadStyle::Gba"),
+            // ADR 0016 GBA column: Cross = B, Circle = A (face_ab), L1 / R1 = L / R; no X / Y.
+            PadStyle::Gba => &[
+                (P::L1, J::L),
+                (P::R1, J::R),
+                (P::Select, J::Select),
+                (P::Start, J::Start),
+            ],
             PadStyle::Generic => &[
                 (P::West, J::Y),
                 (P::North, J::X),
@@ -395,5 +400,21 @@ mod tests {
         );
         assert!(c.bindings.is_empty());
         assert!(c.is_default());
+    }
+
+    #[test]
+    fn gba_column() {
+        use JoypadButton as J;
+        use PadButton as P;
+        let s = PadStyle::Gba;
+        assert_eq!(t(s, P::South), Some(J::B));
+        assert_eq!(t(s, P::East), Some(J::A));
+        assert_eq!(t(s, P::L1), Some(J::L));
+        assert_eq!(t(s, P::R1), Some(J::R));
+        assert_eq!(t(s, P::Select), Some(J::Select));
+        assert_eq!(t(s, P::Start), Some(J::Start));
+        for none in [P::West, P::North, P::L2, P::R2] {
+            assert_eq!(t(s, none), None);
+        }
     }
 }

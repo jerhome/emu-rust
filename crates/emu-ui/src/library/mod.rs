@@ -32,7 +32,9 @@ use self::worker::{DatDownloadTask, DatProgress, DatTask, Notify, ScanTask};
 use crate::GameContent;
 use crate::config::{Config, DataDirs};
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
-use crate::launch_firmware::{FirmwareDecision, check_launch_firmware, decide, fallback_option};
+use crate::launch_firmware::{
+    FirmwareDecision, GameFacts, check_launch_firmware, decide, fallback_option,
+};
 use crate::platform::{FolderOutcome, FolderPlan, plan_open_folder, spawn_open_folder};
 
 const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
@@ -718,6 +720,8 @@ impl LibraryUi {
             prefs,
             &id,
             args.content.first(),
+            // GU2: thread the game's system and region from the library entry.
+            GameFacts::default(),
             &global,
             &loaded.options.core_options,
         ) else {

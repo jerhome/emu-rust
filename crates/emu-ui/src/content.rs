@@ -180,8 +180,31 @@ pub fn plan_disc_launch(
     core: &CoreId,
     prefs: &CorePreferences,
 ) -> Result<ContentSpec, LaunchRefusal> {
-    let _ = (game, core, prefs);
-    todo!("GU1: plan_disc_launch (design v6.0 §2.1)")
+    let is_zip = game.entry.is_some()
+        || game
+            .path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if is_zip {
+        return Err(LaunchRefusal::ArchivedDisc);
+    }
+    // A `.m3u` game keeps the user's playlist as its single content (`media` lists its discs).
+    if game.media.len() < 2 || is_m3u(&game.path) {
+        return Ok(ContentSpec::File(game.path.clone()));
+    }
+    // Discs are never copied: `Direct` whatever the core's default policy.
+    let mut rules = MediaRules::new(MediaPolicy::Direct);
+    rules.media_direct = prefs.media_direct(core);
+    rules.m3u_launch = m3u_launch(prefs, core);
+    Ok(ContentSpec::Media {
+        set: MediaSet {
+            name: media_set_name(&game.media),
+            images: game.media.clone(),
+            playlist: None,
+            launch: None,
+        },
+        rules,
+    })
 }
 
 /// `cores.toml` `m3u_launch` of a core as the runtime takes it (`None` without the key).
@@ -516,6 +539,62 @@ mod tests {
         }
         match content_spec("hatari", &files(&["/g/Nova.st"]), &prefs) {
             ContentSpec::Media { rules, .. } => assert_eq!(rules.m3u_launch, M3uLaunch::None),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn disc_game(path: &str, media: &[&str], entry: Option<&str>) -> emu_library::Game {
+        emu_library::Game {
+            id: emu_library::GameId(1),
+            system: "megacd".into(),
+            path: PathBuf::from(path),
+            entry: entry.map(str::to_owned),
+            title: "Dune".into(),
+            identification: emu_library::Identification::Unknown,
+            size: 0,
+            crc32: None,
+            sha1: None,
+            favorite: false,
+            last_played_unix: None,
+            play_count: 0,
+            media: media.iter().map(PathBuf::from).collect(),
+            is_dir: false,
+            region: None,
+        }
+    }
+
+    #[test]
+    fn plan_disc_launch_cases() {
+        let prefs = CorePreferences::builtin();
+        let core = CoreId::new("genesis_plus_gx").unwrap();
+        let plan = |g| plan_disc_launch(&g, &core, &prefs);
+        assert_eq!(
+            plan(disc_game("/g/Dune.cue", &[], None)),
+            Ok(ContentSpec::File(PathBuf::from("/g/Dune.cue")))
+        );
+        assert_eq!(
+            plan(disc_game("/g/Dune.m3u", &["/g/a.cue", "/g/b.cue"], None)),
+            Ok(ContentSpec::File(PathBuf::from("/g/Dune.m3u")))
+        );
+        assert_eq!(
+            plan(disc_game("/g/Dune.zip", &[], Some("Dune.cue"))),
+            Err(LaunchRefusal::ArchivedDisc)
+        );
+        assert_eq!(
+            plan(disc_game("/g/Dune.ZIP", &[], None)),
+            Err(LaunchRefusal::ArchivedDisc)
+        );
+        match plan(disc_game(
+            "/g/Lunar (Disc 1).cue",
+            &["/g/Lunar (Disc 1).cue", "/g/Lunar (Disc 2).cue"],
+            None,
+        )) {
+            Ok(ContentSpec::Media { set, rules }) => {
+                assert_eq!(rules.policy, MediaPolicy::Direct);
+                assert_eq!(rules.media_direct, ["cue", "chd", "iso"]);
+                assert_eq!(set.images.len(), 2);
+                assert_eq!(set.playlist, None);
+            }
             other => panic!("{other:?}"),
         }
     }

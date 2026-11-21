@@ -316,7 +316,9 @@ mod tests {
         assert_eq!(find(&r, "handmade").state, CoreState::Manual);
         assert_eq!(find(&r, "genesis_plus_gx").state, CoreState::NotInstalled);
         assert!(find(&r, "gambatte").recommended);
-        assert!(!find(&r, "picodrive").recommended);
+        // picodrive is the first (recommended) core of the 32X since 6.0; vbam stays a non-first core.
+        assert!(find(&r, "picodrive").recommended);
+        assert!(!find(&r, "vbam").recommended);
     }
 
     #[test]
@@ -434,6 +436,9 @@ mod tests {
             "dosbox_pure",
             "cap32",
             "vice_x64",
+            // 6.0: GBA (mgba) and 32X (picodrive).
+            "mgba",
+            "picodrive",
         ];
         for expected in expected {
             assert!(names.contains(&expected), "{names:?}");

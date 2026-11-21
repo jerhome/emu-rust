@@ -15,8 +15,7 @@ pub enum PadStyle {
     Snes,
     GameBoy,
     Nes,
-    /// Game Boy Advance (design v6.0 §3.5): SNES pad without X / Y. Produced by `from_core_id("mgba")` and
-    /// `from_extension("gba")` once GU1 wires it.
+    /// Game Boy Advance (design v6.0 §3.5): SNES pad without X / Y.
     Gba,
     Generic,
 }
@@ -28,6 +27,7 @@ impl PadStyle {
             "genesis_plus_gx" | "picodrive" => Self::MegaDrive,
             "snes9x" | "bsnes" | "mesen-s" => Self::Snes,
             "gambatte" | "sameboy" | "mgba_gb" => Self::GameBoy,
+            "mgba" => Self::Gba,
             "nestopia" | "fceumm" | "mesen" | "quicknes" => Self::Nes,
             _ => Self::Generic,
         }
@@ -40,8 +40,9 @@ impl PadStyle {
             "sms" => Some(Self::MasterSystem),
             "gg" => Some(Self::GameGear),
             "gb" | "gbc" => Some(Self::GameBoy),
+            "gba" => Some(Self::Gba),
             "nes" | "fds" | "unf" | "unif" => Some(Self::Nes),
-            "md" | "gen" | "bin" | "smd" => Some(Self::MegaDrive),
+            "md" | "gen" | "bin" | "smd" | "32x" => Some(Self::MegaDrive),
             "sfc" | "smc" => Some(Self::Snes),
             _ => None,
         }
@@ -402,7 +403,17 @@ impl KeyMap {
     /// Port 0, Game Boy Advance layout (mgba; design v6.0 §3.5): the SNES layout without X / Y — J = B, K = A,
     /// O = L, L = R, Enter = Start, Right Shift = Select, WASD (ZQSD on AZERTY) + arrows.
     pub fn gba_default() -> Self {
-        todo!("GU1: gba_default (design v6.0 §3.5)")
+        use JoypadButton as B;
+        use KeyCode as K;
+        Self::with_faces(
+            true,
+            &[
+                (K::KeyJ, B::B),
+                (K::KeyK, B::A),
+                (K::KeyO, B::L),
+                (K::KeyL, B::R),
+            ],
+        )
     }
 
     /// Built-in layout of a keyboard profile: computer cores (joystick mode) get [`KeyMap::computer_default`],
@@ -531,13 +542,14 @@ impl InputBackend for KeyboardInput {
 
 #[cfg(test)]
 mod tests {
-    const ALL_STYLES: [PadStyle; 7] = [
+    const ALL_STYLES: [PadStyle; 8] = [
         PadStyle::MegaDrive,
         PadStyle::MasterSystem,
         PadStyle::GameGear,
         PadStyle::Snes,
         PadStyle::GameBoy,
         PadStyle::Nes,
+        PadStyle::Gba,
         PadStyle::Generic,
     ];
 
@@ -814,5 +826,25 @@ mod tests {
         let mut frame = InputFrame::default();
         kb.poll(0, &mut frame);
         assert_eq!(frame.pads[0].bits(), 0);
+    }
+
+    #[test]
+    fn gba_layout_and_detection() {
+        use JoypadButton as B;
+        let m = KeyMap::gba_default();
+        assert_eq!(m.keys_for(0, B::A), vec![KeyCode::KeyK]);
+        assert_eq!(m.keys_for(0, B::B), vec![KeyCode::KeyJ]);
+        assert_eq!(m.keys_for(0, B::L), vec![KeyCode::KeyO]);
+        assert_eq!(m.keys_for(0, B::R), vec![KeyCode::KeyL]);
+        assert_eq!(m.keys_for(0, B::Select), vec![KeyCode::ShiftRight]);
+        assert!(m.keys_for(0, B::X).is_empty() && m.keys_for(0, B::Y).is_empty());
+        assert_eq!(PadStyle::from_core_id("mgba"), PadStyle::Gba);
+        assert_eq!(PadStyle::from_extension("GBA"), Some(PadStyle::Gba));
+        assert_eq!(PadStyle::from_extension("32x"), Some(PadStyle::MegaDrive));
+        assert_eq!(
+            PadStyle::detect("mgba", Path::new("/r/Game.gba")),
+            PadStyle::Gba
+        );
+        assert_eq!(PadStyle::Gba.profile_key("mgba"), "mgba");
     }
 }
