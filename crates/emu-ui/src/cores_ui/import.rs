@@ -547,6 +547,12 @@ mod tests {
         let mut ui = ImportUi::new(system.clone(), None).with_builtin_browser(pick);
         ui.start(Some("kick34005.A500".into()));
         assert!(matches!(ui.state, State::Browser(_)));
+        // The listing is asynchronous: wait for it, then one more frame so the first entry takes the focus.
+        wait(
+            &ctx,
+            &mut ui,
+            |s| matches!(s, State::Browser(b) if !b.entries().is_empty()),
+        );
         frame(&ctx, &mut ui, Vec::new());
         // The first entry has the focus: Entrée picks it.
         key(&ctx, &mut ui, Key::Enter);
