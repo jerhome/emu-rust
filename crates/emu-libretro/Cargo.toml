@@ -10,6 +10,10 @@ libloading = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# Reads crates/emu-assets/data/cores.toml in tests/featured_options_real.rs.
+toml = { workspace = true }
+
 [build-dependencies]
 # MIT OR Apache-2.0. Compiles src/log_shim.c (ADR 0009).
 cc = "1.2"
