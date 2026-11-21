@@ -1,6 +1,4 @@
 //! Pure rules of the 8-bit computers (CPC, C64; design v5.0 §4): initial keyboard mode, tape keys, joystick port.
-// Wired by `app.rs` in CU2.
-#![allow(dead_code)]
 
 use std::path::Path;
 
@@ -36,7 +34,7 @@ pub(crate) fn initial_keyboard_mode(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TapeAction {
+pub enum TapeAction {
     Play,
     Stop,
     Rewind,

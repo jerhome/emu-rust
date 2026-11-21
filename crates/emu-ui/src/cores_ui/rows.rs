@@ -423,7 +423,7 @@ mod tests {
         let all = recommended_missing(&prefs, &[]);
         let names: Vec<&str> = all.iter().map(CoreId::as_str).collect();
         // Mega CD (2.1) shares genesis_plus_gx with the Mega Drive; the Amiga (3.0) adds puae, the PC (4.0)
-        // dosbox_pure.
+        // dosbox_pure, the 5.0 cap32 (CPC) and vice_x64 (C64).
         let expected = [
             "genesis_plus_gx",
             "snes9x",
@@ -432,6 +432,8 @@ mod tests {
             "hatari",
             "puae",
             "dosbox_pure",
+            "cap32",
+            "vice_x64",
         ];
         for expected in expected {
             assert!(names.contains(&expected), "{names:?}");

@@ -244,12 +244,20 @@ fn zip_entry_names(path: &Path) -> Vec<String> {
     read(path).unwrap_or_default()
 }
 
-/// Profiles of computer cores (Atari ST, Amiga): the keyboard belongs to the emulated machine, so their joystick
+/// Profiles of computer cores (Atari ST, Amiga, PC, CPC, C64): the keyboard belongs to the emulated machine, so their joystick
 /// layout is small and the shared `"default"` profile never applies.
 pub fn is_computer_profile(profile: &str) -> bool {
     matches!(
         profile,
-        "hatari" | "hatarib" | "hatari2014" | "puae" | "puae2021" | "dosbox_pure"
+        "hatari"
+            | "hatarib"
+            | "hatari2014"
+            | "puae"
+            | "puae2021"
+            | "dosbox_pure"
+            | "cap32"
+            | "vice_x64"
+            | "vice_x64sc"
     )
 }
 

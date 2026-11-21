@@ -16,7 +16,7 @@ const MAX_FILE_SIZE: u64 = 256 * 1024;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameInput {
-    /// Absent: `[computer] default_keyboard_mode`.
+    /// Absent: `[computer] keyboard_mode`, else the system's `default_input` (`eightbit::initial_keyboard_mode`).
     pub keyboard_mode: Option<KeyboardModeChoice>,
     /// Absent: `[computer] auto_capture`.
     pub auto_capture: Option<bool>,

@@ -207,6 +207,8 @@ impl LibraryUi {
                     ui.separator();
                     self.gamepad_section(ui);
                     ui.separator();
+                    self.computers_section(ui);
+                    ui.separator();
                     self.dos_cache_section(ui);
                 });
         });
@@ -413,6 +415,37 @@ impl LibraryUi {
             self.covers.retry_missing();
             self.set_status(text::COVERS_RETRY_DONE.to_owned(), Level::Info);
         }
+    }
+
+    /// Computers (design v5.0 §4): initial input mode of a game without a remembered one, automatic fast loading.
+    fn computers_section(&mut self, ui: &mut Ui) {
+        use crate::config_computer::KeyboardModeSetting as Mode;
+        ui.label(RichText::new(text::COMPUTERS_TITLE).strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(text::DEFAULT_INPUT_MODE);
+            for (mode, label) in [
+                (Mode::Auto, text::INPUT_MODE_AUTO),
+                (Mode::Keyboard, text::INPUT_MODE_KEYBOARD),
+                (Mode::Joystick, text::INPUT_MODE_JOYSTICK),
+            ] {
+                let current = self.config.computer.keyboard_mode == mode;
+                if ui.selectable_label(current, label).clicked() && !current {
+                    self.config.computer.keyboard_mode = mode;
+                    self.settings.dirty = true;
+                }
+            }
+        });
+        weak(ui, text::DEFAULT_INPUT_MODE_NOTE);
+        if ui
+            .checkbox(
+                &mut self.config.computer.auto_fast_load,
+                text::AUTO_FAST_LOAD,
+            )
+            .changed()
+        {
+            self.settings.dirty = true;
+        }
+        weak(ui, text::AUTO_FAST_LOAD_NOTE);
     }
 
     fn credentials_section(&mut self, ui: &mut Ui) {

@@ -4,6 +4,7 @@ use egui::{Button, Color32, Context, RichText};
 
 use super::{Overlay, UiAction, UiData, nav, screen_window, stepper, text};
 use crate::Screen;
+use crate::computer::eightbit::TapeAction;
 use crate::hotkeys::step_slot;
 
 const ROW_HEIGHT: f32 = 28.0;
@@ -109,6 +110,28 @@ pub(super) fn show(
         }
         if data.disks.is_some() && button(ui, text::DISKS, true, &mut false) {
             actions.push(UiAction::Open(Screen::Disks));
+        }
+        if data.eightbit.tape {
+            ui.horizontal(|ui| {
+                ui.label(text::TAPE);
+                for (action, label) in [
+                    (TapeAction::Play, text::TAPE_PLAY),
+                    (TapeAction::Stop, text::TAPE_STOP),
+                    (TapeAction::Rewind, text::TAPE_REWIND),
+                ] {
+                    let resp = ui.add(Button::new(label).min_size([0.0, ROW_HEIGHT].into()));
+                    nav(&resp, &mut false);
+                    if resp.clicked() {
+                        actions.push(UiAction::Tape(action));
+                    }
+                }
+            });
+        }
+        if let Some(joy) = data.eightbit.joyport {
+            let label = text::joyport_row(joy.forced.unwrap_or(joy.port), joy.forced.is_some());
+            if button(ui, &label, joy.forced.is_none(), &mut false) {
+                actions.push(UiAction::ToggleJoyport);
+            }
         }
         if data.computer.is_some() {
             if button(ui, text::VKBD, true, &mut false) {

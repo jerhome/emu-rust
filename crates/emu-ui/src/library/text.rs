@@ -142,6 +142,12 @@ pub fn scan_done(r: &ScanReport) -> String {
     if r.unclassified > 0 {
         s.push_str(&format!(", {} fichiers non classés", r.unclassified));
     }
+    if r.ignored_mixed_archives > 0 {
+        s.push_str(&format!(
+            ", {} archives ignorées (images de deux ordinateurs différents)",
+            r.ignored_mixed_archives
+        ));
+    }
     if !r.missing_roots.is_empty() {
         let roots: Vec<String> = r
             .missing_roots
@@ -274,6 +280,19 @@ pub fn game_title(title: &str) -> String {
 pub const BIOS_INSTALL_AND_LAUNCH: &str = "Installer et lancer";
 pub const DESKTOP_BUTTON: &str = "Bureau Atari ST";
 pub const AMIGA_DESKTOP_BUTTON: &str = "Workbench / AROS";
+pub const COMPUTERS_TITLE: &str = "Ordinateurs";
+pub const DEFAULT_INPUT_MODE: &str = "Mode par défaut :";
+pub const INPUT_MODE_AUTO: &str = "Automatique (selon le système)";
+pub const INPUT_MODE_KEYBOARD: &str = "Clavier";
+pub const INPUT_MODE_JOYSTICK: &str = "Joystick";
+pub const DEFAULT_INPUT_MODE_NOTE: &str = "Automatique : joystick pour l'Amstrad CPC et le Commodore 64, clavier \
+                                           pour les autres. Le mode choisi en jeu (touche hôte + J) est retenu \
+                                           pour ce jeu.";
+pub const AUTO_FAST_LOAD: &str = "Chargement accéléré automatique";
+pub const AUTO_FAST_LOAD_NOTE: &str = "Le core accélère l'émulation pendant les chargements de cassette ou de \
+                                       disquette (son coupé pendant ce temps).";
+pub const CPC_BASIC_BUTTON: &str = "Amstrad CPC (BASIC)";
+pub const C64_BASIC_BUTTON: &str = "Commodore 64 (BASIC)";
 pub const OPEN_ROM_FOLDER: &str = "Ouvrir le dossier des ROMs";
 
 // ---- 3.0 : BIOS avant lancement, dossier des ROMs, fichiers non classés (design v3.0 §2) -------------------
@@ -361,8 +380,12 @@ pub fn unclassified_line(path: &Path) -> String {
     format!("{} : rangez ce fichier dans {advice}", path.display())
 }
 
-pub fn desktop_title(system: &str) -> String {
-    format!("Bureau {system}")
+/// Title of a launch without content: « Bureau Atari ST », « Amstrad CPC (BASIC) » for the 8-bit computers.
+pub fn desktop_title(system_id: &str, system: &str) -> String {
+    match system_id {
+        "cpc" | "c64" => format!("{system} (BASIC)"),
+        _ => format!("Bureau {system}"),
+    }
 }
 
 pub fn desktop_needs_core(core: &str) -> String {

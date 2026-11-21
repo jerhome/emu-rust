@@ -328,3 +328,8 @@ pub fn bios_offer(name: &str, license: &str, game: &str) -> String {
          Sinon, copiez votre propre TOS sous le nom tos.img dans le dossier des BIOS."
     )
 }
+
+/// Licence notice of the ROMs built into a core (design v3.0 §3.5.7, v5.0 §4): text of `cores.toml`, shown as is.
+pub fn builtin_notice(notice: &str) -> String {
+    format!("Licence : {notice}")
+}

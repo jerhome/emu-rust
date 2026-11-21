@@ -683,7 +683,13 @@ impl CoresUi {
     }
 
     /// 3.0 check of a row: fallback in blue (never red), problems in orange, with the import button.
-    fn required_line(&mut self, ui: &mut Ui, check: &emu_assets::cores::FirmwareCheck) {
+    /// `notice`: licence notice of ROMs built into the core (`builtin_firmware`), shown under a `Builtin` state.
+    fn required_line(
+        &mut self,
+        ui: &mut Ui,
+        check: &emu_assets::cores::FirmwareCheck,
+        notice: Option<&str>,
+    ) {
         let wanted = check.wanted.as_deref().unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
             let importable = match &check.state {
@@ -716,6 +722,9 @@ impl CoresUi {
                     true
                 }
             };
+            if let (FirmwareState::Builtin { .. }, Some(notice)) = (&check.state, notice) {
+                ui.label(RichText::new(text::builtin_notice(notice)).small().weak());
+            }
             if importable {
                 let label = if wanted.to_ascii_lowercase().starts_with("kick") {
                     text::IMPORT_KICKSTART
@@ -880,7 +889,8 @@ impl CoresUi {
                 ui.colored_label(WARNING, RichText::new(fw).small());
             }
             if let Some(check) = &row.required {
-                self.required_line(ui, check);
+                let notice = self.prefs.builtin_firmware(&row.id).map(|b| b.notice);
+                self.required_line(ui, check, notice.as_deref());
             }
             if let Some(e) = self.errors.get(&row.id) {
                 ui.colored_label(ERROR, e);

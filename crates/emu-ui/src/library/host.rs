@@ -142,6 +142,8 @@ impl Host {
             } else {
                 None
             },
+            launch: None,
+            auto_fast_load: true,
         };
         tracing::info!("lancement de « {} » avec {}", request.title, request.core);
         match App::build(options, true) {

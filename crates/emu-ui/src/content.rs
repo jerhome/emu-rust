@@ -2,8 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use emu_assets::cores::{CoreId, CoreMediaPolicy, CorePreferences};
-use emu_runtime::{ContentSpec, GameIdentity, MediaPolicy, MediaRules, MediaSet};
+use emu_assets::cores::{CoreId, CoreMediaPolicy, CorePreferences, M3uLaunchPref, SaveScopePref};
+use emu_runtime::{
+    ContentSpec, GameIdentity, M3uLaunch, MediaPolicy, MediaRules, MediaSet, SaveScope,
+};
 
 /// What to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +125,7 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
     let mut rules = MediaRules::new(policy);
     if let Some(id) = &id {
         rules.media_direct = prefs.media_direct(id);
+        rules.m3u_launch = m3u_launch(prefs, id);
     }
     if files.len() == 1 && is_m3u(&files[0]) {
         return ContentSpec::Media {
@@ -147,6 +150,74 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
         },
         rules,
     }
+}
+
+/// `cores.toml` `m3u_launch` of a core as the runtime takes it (`None` without the key).
+pub(crate) fn m3u_launch(prefs: &CorePreferences, id: &CoreId) -> M3uLaunch {
+    match prefs.m3u_launch(id) {
+        Some(M3uLaunchPref::Command) => M3uLaunch::Command,
+        Some(M3uLaunchPref::Program) => M3uLaunch::Program,
+        None => M3uLaunch::None,
+    }
+}
+
+/// `cores.toml` `save_scope` of a core (`Core` for an unknown core).
+pub(crate) fn save_scope(prefs: &CorePreferences, core_id: &str) -> SaveScope {
+    match CoreId::new(core_id).map(|id| prefs.save_scope(&id)) {
+        Some(SaveScopePref::Game) => SaveScope::Game,
+        _ => SaveScope::Core,
+    }
+}
+
+/// Puts the launch text of a game (`[media] launch`, or `--launch`) into its content (design v5.0 §2.1-§2.2). The
+/// text must have passed `computer::eightbit::validate_launch` for `kind`. A single file of a `direct` core becomes
+/// a one-image set (the runtime then generates the `.m3u` carrying the command). VICE matches the program name
+/// against the lower-case PETSCII directory as read from the host, so a `Program` text is lower-cased (an
+/// upper-case `INTRO` gives `?FILE NOT FOUND` on the real core). Blank text, no content or a game folder:
+/// unchanged.
+pub(crate) fn with_launch(
+    spec: ContentSpec,
+    text: Option<&str>,
+    kind: M3uLaunch,
+    rules_for_file: impl FnOnce() -> MediaRules,
+) -> ContentSpec {
+    let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return spec;
+    };
+    let text = if kind == M3uLaunch::Program {
+        text.to_ascii_lowercase()
+    } else {
+        text.to_owned()
+    };
+    match spec {
+        ContentSpec::Media { mut set, rules } => {
+            set.launch = Some(text);
+            ContentSpec::Media { set, rules }
+        }
+        ContentSpec::File(file) => {
+            let files = vec![file];
+            ContentSpec::Media {
+                set: MediaSet {
+                    name: media_set_name(&files),
+                    images: files,
+                    playlist: None,
+                    launch: Some(text),
+                },
+                rules: rules_for_file(),
+            }
+        }
+        other => other,
+    }
+}
+
+/// Rules of a single file of a `direct` core turned into a set by [`with_launch`].
+pub(crate) fn direct_rules(prefs: &CorePreferences, core_id: &str) -> MediaRules {
+    let mut rules = MediaRules::new(MediaPolicy::Direct);
+    if let Some(id) = CoreId::new(core_id) {
+        rules.media_direct = prefs.media_direct(&id);
+        rules.m3u_launch = m3u_launch(prefs, &id);
+    }
+    rules
 }
 
 /// Key of the game's options file (design v2.1-identite-disques §3.2): `GameIdentity::save_name`, the same name as
@@ -356,5 +427,64 @@ mod tests {
     fn game_key_is_the_save_name() {
         let id = GameIdentity::legacy("Jeu", Path::new("/s/hatari"));
         assert_eq!(game_key(&id), "Jeu");
+    }
+
+    /// Design v5.0 §2.1-§2.2: `m3u_launch` and `save_scope` from `cores.toml`; the launch text turns a single CPC
+    /// file into a set and is lower-cased for VICE.
+    #[test]
+    fn eight_bit_rules_and_launch_text() {
+        let prefs = CorePreferences::builtin();
+        assert_eq!(save_scope(&prefs, "cap32"), SaveScope::Game);
+        assert_eq!(save_scope(&prefs, "vice_x64"), SaveScope::Core);
+        assert_eq!(save_scope(&prefs, "nope"), SaveScope::Core);
+        let cpc = content_spec("cap32", &files(&["/g/Sorcery.dsk"]), &prefs);
+        assert_eq!(cpc, ContentSpec::File(PathBuf::from("/g/Sorcery.dsk")));
+        let with = with_launch(
+            cpc.clone(),
+            Some(" RUN\"SORCERY "),
+            M3uLaunch::Command,
+            || direct_rules(&prefs, "cap32"),
+        );
+        match with {
+            ContentSpec::Media { set, rules } => {
+                assert_eq!(set.launch.as_deref(), Some("RUN\"SORCERY"));
+                assert_eq!(set.images, vec![PathBuf::from("/g/Sorcery.dsk")]);
+                assert_eq!(set.name, "Sorcery");
+                assert_eq!(rules.policy, MediaPolicy::Direct);
+                assert_eq!(rules.m3u_launch, M3uLaunch::Command);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            with_launch(
+                cpc.clone(),
+                Some("  "),
+                M3uLaunch::Command,
+                || unreachable!()
+            ),
+            cpc
+        );
+        assert_eq!(
+            with_launch(
+                ContentSpec::NoGame,
+                Some("RUN"),
+                M3uLaunch::Command,
+                || unreachable!()
+            ),
+            ContentSpec::NoGame
+        );
+        let c64 = content_spec("vice_x64", &files(&["/g/Game.d64"]), &prefs);
+        match with_launch(c64, Some("INTRO"), M3uLaunch::Program, || unreachable!()) {
+            ContentSpec::Media { set, rules } => {
+                assert_eq!(set.launch.as_deref(), Some("intro"));
+                assert_eq!(rules.policy, MediaPolicy::WorkingCopy);
+                assert_eq!(rules.m3u_launch, M3uLaunch::Program);
+            }
+            other => panic!("{other:?}"),
+        }
+        match content_spec("hatari", &files(&["/g/Nova.st"]), &prefs) {
+            ContentSpec::Media { rules, .. } => assert_eq!(rules.m3u_launch, M3uLaunch::None),
+            other => panic!("{other:?}"),
+        }
     }
 }

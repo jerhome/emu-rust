@@ -579,8 +579,10 @@ impl LibraryUi {
 
     /// « Bureau Atari ST »: the machine without a disk (`ContentSpec::NoGame`), keyboard mode.
     fn launch_desktop(&mut self, system_id: &str) {
-        let title = emu_library::system(system_id)
-            .map_or_else(|| system_id.to_owned(), |s| text::desktop_title(&s.name));
+        let title = emu_library::system(system_id).map_or_else(
+            || system_id.to_owned(),
+            |s| text::desktop_title(system_id, &s.name),
+        );
         self.launch(None, title, system_id, None, GameContent::NoGame, true);
     }
 

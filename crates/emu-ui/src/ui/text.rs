@@ -299,7 +299,12 @@ pub const DOS_SOUNDFONT_HINT: &str = "Musique MIDI : installez le SoundFont libr
 
 /// Title of the options `featured_options` puts first (« Réglages DOS »).
 pub fn featured_title(system: &str) -> String {
-    format!("Réglages {system}")
+    let short = match system {
+        "Amstrad - CPC" => "CPC",
+        "Commodore - 64" => "C64",
+        other => other,
+    };
+    format!("Réglages {short}")
 }
 
 pub const DOS_CONF_REFUSED: &str =
@@ -373,6 +378,61 @@ pub const MODE_SWITCHED_KEYBOARD: &str = "Mode clavier : toutes les touches vont
 pub const MODE_SWITCHED_JOYSTICK: &str =
     "Mode joystick : ZQSD / flèches et J, K pilotent le joystick.";
 pub const MOUSE_RELEASED: &str = "Souris libérée.";
+
+// ---- 8-bit computers (CPC, C64; design v5.0 §2.3-§2.5, §4) -------------------------------------------------------
+
+pub const TAPE: &str = "Cassette :";
+pub const TAPE_PLAY: &str = "Lecture";
+pub const TAPE_STOP: &str = "Arrêt";
+pub const TAPE_REWIND: &str = "Rembobiner";
+pub const TAPE_PLAYING: &str = "Cassette : lecture";
+pub const TAPE_STOPPED: &str = "Cassette : arrêt";
+pub const TAPE_REWOUND: &str = "Cassette : rembobinage";
+pub const FAST_LOAD_ON: &str = "Chargement accéléré";
+pub const FAST_LOAD_OFF: &str = "Chargement terminé : vitesse normale";
+pub const FAST_FORWARD_INHIBITED: &str =
+    "Avance rapide indisponible pendant le chargement accéléré.";
+
+pub fn joyport_row(port: u8, forced: bool) -> String {
+    if forced {
+        format!("Port joystick : {port} (fixé par le nom du fichier)")
+    } else {
+        format!("Port joystick : {port}")
+    }
+}
+
+pub fn joyport_switched(port: &str) -> String {
+    format!("Joystick sur le port {port}")
+}
+
+pub const LAUNCH_COMMAND: &str = "Commande de démarrage…";
+pub const LAUNCH_PROGRAM: &str = "Programme à lancer…";
+pub const LAUNCH_COMMAND_HINT: &str = "Commande tapée au démarrage, par exemple RUN\"DISC (vide : démarrage \
+                                       automatique du core).";
+pub const LAUNCH_PROGRAM_HINT: &str = "Nom du programme de la disquette à lancer, par exemple INTRO (vide : \
+                                       premier programme).";
+pub const LAUNCH_SAVE: &str = "Enregistrer";
+pub const LAUNCH_SAVED: &str = "Enregistré pour ce jeu : pris en compte au prochain lancement.";
+pub const LAUNCH_CLEARED: &str = "Commande de démarrage retirée pour ce jeu (prochain lancement).";
+
+pub fn launch_row(label: &str, current: Option<&str>) -> String {
+    match current {
+        Some(t) if !t.is_empty() => format!("{label}  ({t})"),
+        _ => label.to_owned(),
+    }
+}
+
+pub fn launch_ignored(error: &str) -> String {
+    format!("Commande de démarrage de ce jeu ignorée : {error}")
+}
+
+/// OSD of a launch in joystick mode (design v5.0 §4): how to type on the machine's keyboard.
+pub fn joystick_launch_hint(host: KeyCode) -> String {
+    format!(
+        "Joystick : ZQSD + J / K · {} + J : clavier",
+        key_label(host)
+    )
+}
 pub const MOUSE_FALLBACK: &str =
     "Souris sans capture (mode de repli) : gardez le pointeur sur l'image.";
 pub const STATES_DISKS_WARNING: &str = "Attention : l'état sauvegardé ne contient pas les disquettes ; \

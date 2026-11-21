@@ -1,11 +1,13 @@
 //! Core options screen: v2 categories, values changed with Left / Right and applied immediately.
 
-use egui::{Button, Context, Grid, RichText, ScrollArea};
+use egui::{Button, Color32, Context, Grid, Key, RichText, ScrollArea, TextEdit};
+use emu_runtime::M3uLaunch;
 
 use super::{
-    Overlay, UiAction, UiData, cycle_value, group_options_with, locked_banner, nav, screen_window,
-    stepper, text,
+    LaunchView, Overlay, UiAction, UiData, cycle_value, group_options_with, locked_banner, nav,
+    screen_window, stepper, text,
 };
+use crate::computer::eightbit::validate_launch;
 
 const ROW_HEIGHT: f32 = 24.0;
 
@@ -18,6 +20,11 @@ pub(super) fn show(
     screen_window(ctx, text::CORE_OPTIONS, |ui, max_height| {
         locked_banner(ui, data, overlay, actions);
         let w = ui.available_width();
+        if let Some(launch) = &data.eightbit.launch
+            && launch_editor(ui, overlay, launch, w, actions)
+        {
+            return;
+        }
         let scope = if data.game_scope {
             text::SCOPE_GAME
         } else {
@@ -32,6 +39,21 @@ pub(super) fn show(
                 actions.push(UiAction::SetGameScope(!data.game_scope));
             }
         });
+        if let Some(launch) = &data.eightbit.launch {
+            let label = match launch.kind {
+                M3uLaunch::Program => text::LAUNCH_PROGRAM,
+                _ => text::LAUNCH_COMMAND,
+            };
+            let resp = ui.add(
+                Button::new(text::launch_row(label, launch.current.as_deref()))
+                    .min_size([w, ROW_HEIGHT].into()),
+            );
+            nav(&resp, &mut false);
+            if resp.clicked() {
+                overlay.launch_edit = Some(launch.current.clone().unwrap_or_default());
+                overlay.focus_first = true;
+            }
+        }
         let groups = group_options_with(data.options, data.categories, data.featured);
         let mut focused_info: Option<String> = None;
         if groups.is_empty() {
@@ -115,4 +137,54 @@ pub(super) fn show(
         }
         ui.label(RichText::new(text::NAV_HINT).small().weak());
     });
+}
+
+/// Edits the launch text of the game while `overlay.launch_edit` is set; `true` while the editor is shown. Enter
+/// saves a valid text, the menu key cancels (`Overlay::back`).
+fn launch_editor(
+    ui: &mut egui::Ui,
+    overlay: &mut Overlay,
+    launch: &LaunchView,
+    w: f32,
+    actions: &mut Vec<UiAction>,
+) -> bool {
+    let Some(buffer) = overlay.launch_edit.as_mut() else {
+        return false;
+    };
+    let (title, hint) = match launch.kind {
+        M3uLaunch::Program => (text::LAUNCH_PROGRAM, text::LAUNCH_PROGRAM_HINT),
+        _ => (text::LAUNCH_COMMAND, text::LAUNCH_COMMAND_HINT),
+    };
+    ui.label(RichText::new(title).strong());
+    ui.label(RichText::new(hint).weak());
+    let resp = ui.add(
+        TextEdit::singleline(buffer)
+            .char_limit(64)
+            .desired_width(w)
+            .font(egui::TextStyle::Monospace),
+    );
+    if std::mem::take(&mut overlay.focus_first) {
+        resp.request_focus();
+    }
+    let checked = validate_launch(launch.kind, buffer.trim());
+    if let Err(e) = &checked {
+        ui.colored_label(Color32::from_rgb(255, 190, 80), e);
+    }
+    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    let save = ui.add_enabled(
+        checked.is_ok(),
+        Button::new(text::LAUNCH_SAVE).min_size([w, ROW_HEIGHT].into()),
+    );
+    if (save.clicked() || enter) && checked.is_ok() {
+        actions.push(UiAction::SetLaunch(buffer.trim().to_owned()));
+        overlay.launch_edit = None;
+        overlay.focus_first = true;
+    }
+    let back = ui.add(Button::new(text::BACK).min_size([w, ROW_HEIGHT].into()));
+    if back.clicked() {
+        overlay.launch_edit = None;
+        overlay.focus_first = true;
+    }
+    ui.label(RichText::new(text::NAV_HINT).small().weak());
+    true
 }

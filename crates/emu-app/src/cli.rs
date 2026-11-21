@@ -11,6 +11,7 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust --core <ID|chemin> [--rom <fichier> [--rom <disquette 2> ...] | --no-game]\n\
                          \x20                [--data-dir DIR] [--system-dir DIR] [--save-dir DIR] [--scale N]\n\
                          \x20                [--no-audio] [--no-gamepad] [--frames N] [--dump-frame sortie.png]\n\
+                         \x20                [--launch <commande|programme>] [--no-auto-fast-load]\n\
                          \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad]\n\
                          \x20                [--screen library|library-settings|cores|library-launch]\n\
@@ -34,6 +35,9 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          PC-DOS (--core dosbox_pure) : --rom accepte un zip, une image, un dossier de jeu (copié\n\
                          dans le cache, jamais modifié) ou JEU/PROGRAMME.EXE ; les fichiers .conf sont refusés.\n\
                          --clear-dos-cache vide ces copies (sauvegardes conservées).\n\
+                         Amstrad CPC / Commodore 64 : --launch donne la commande de démarrage (ex. RUN\"DISC) ou\n\
+                         le programme de la disquette à lancer (ex. INTRO) ; --no-auto-fast-load désactive le\n\
+                         chargement accéléré demandé par le core.\n\
                          --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
                          PS + R1 / L1 = sauver / charger l'état, PS + R2 maintenu = avance rapide ;\n\
                          ordinateurs : PS + R3 = clavier virtuel, PS + L3 = disquette suivante.\n\
@@ -83,6 +87,10 @@ pub struct Cli {
     pub dump_frame: Option<PathBuf>,
     pub screen: Option<Screen>,
     pub dump_window: Option<PathBuf>,
+    /// `--launch` (design v5.0 §4): checked against the core when it is loaded.
+    pub launch: Option<String>,
+    /// `false` with `--no-auto-fast-load`.
+    pub auto_fast_load: bool,
 }
 
 /// No `--core`/`--rom`: the library window (also a double-click, or a Finder launch on macOS).
@@ -169,6 +177,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut dump_frame = None;
     let mut screen = None;
     let mut dump_window = None;
+    let mut launch: Option<String> = None;
+    let mut auto_fast_load = true;
     let mut actions: Vec<CoresAction> = Vec::new();
 
     let mut it = args.into_iter().peekable();
@@ -242,6 +252,14 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--save-dir" => save_dir = Some(PathBuf::from(value(&mut it)?)),
             "--no-audio" => audio = false,
             "--no-gamepad" => gamepad = false,
+            "--no-auto-fast-load" => auto_fast_load = false,
+            "--launch" => {
+                let t = text(&mut it)?;
+                if t.trim().is_empty() {
+                    return Err("--launch attend une commande ou un nom de programme".into());
+                }
+                launch = Some(t);
+            }
             "--screen" => {
                 screen = Some(match value(&mut it)?.to_string_lossy().as_ref() {
                     "menu" => ScreenArg::Game(Screen::Menu),
@@ -355,6 +373,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             (frames.is_some(), "--frames"),
             (dump_frame.is_some(), "--dump-frame"),
             (dump_window.is_some(), "--dump-window"),
+            (launch.is_some(), "--launch"),
+            (!auto_fast_load, "--no-auto-fast-load"),
         ]
         .into_iter()
         .filter_map(|(set, name)| set.then_some(name))
@@ -375,6 +395,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     if core.is_none() && rom.is_none() {
         if scale.is_some() || frames.is_some() || dump_frame.is_some() {
             return Err("--scale, --frames et --dump-frame demandent --core et --rom".into());
+        }
+        if launch.is_some() || !auto_fast_load {
+            return Err("--launch et --no-auto-fast-load demandent --core".into());
         }
         let screen = match screen {
             None => None,
@@ -407,6 +430,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             );
         }
     };
+    if launch.is_some() && rom.is_none() {
+        return Err("--launch demande --rom".into());
+    }
     Ok(Command::Run(Box::new(Cli {
         core: core.ok_or("--core est obligatoire")?,
         roms,
@@ -420,6 +446,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         dump_frame,
         screen,
         dump_window,
+        launch,
+        auto_fast_load,
     })))
 }
 
@@ -593,6 +621,33 @@ mod tests {
         assert!(p(&["--install-bios", "../x"]).is_err());
         assert!(p(&["--install-bios", "emutos:a/b"]).is_err());
         assert!(p(&["--install-bios", "emutos", "--rom", "r"]).is_err());
+    }
+
+    #[test]
+    fn launch_and_fast_load() {
+        let Command::Run(o) = p(&[
+            "--core",
+            "cap32",
+            "--rom",
+            "s.dsk",
+            "--launch",
+            "RUN\"SORCERY",
+            "--no-auto-fast-load",
+        ])
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(o.launch.as_deref(), Some("RUN\"SORCERY"));
+        assert!(!o.auto_fast_load);
+        let Command::Run(o) = p(&["--core", "c", "--rom", "r"]).unwrap() else {
+            panic!()
+        };
+        assert!(o.launch.is_none() && o.auto_fast_load);
+        assert!(p(&["--core", "cap32", "--launch", "RUN"]).is_err());
+        assert!(p(&["--core", "cap32", "--rom", "r", "--launch", " "]).is_err());
+        assert!(p(&["--launch", "RUN"]).is_err());
+        assert!(p(&["--check-bios", "--no-auto-fast-load"]).is_err());
+        assert!(USAGE.contains("--launch") && USAGE.contains("--no-auto-fast-load"));
     }
 
     #[test]

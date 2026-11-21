@@ -19,12 +19,13 @@ use std::time::{Instant, SystemTime};
 
 use egui::{Align2, Color32, Context, EventFilter, Id, Key, LayerId, Order, Response, Ui};
 use emu_runtime::{
-    AudioStatus, CoreOption, CoreOptionCategory, DiskSlot, JoypadButton, OrphanCopy,
+    AudioStatus, CoreOption, CoreOptionCategory, DiskSlot, JoypadButton, M3uLaunch, OrphanCopy,
 };
 use winit::keyboard::KeyCode;
 
 pub use self::osd::{Osd, OsdLevel};
 use crate::Screen;
+use crate::computer::eightbit::TapeAction;
 use crate::computer::input::KeyboardMode;
 use crate::config::{Config, DEFAULT_PROFILE, Hotkeys};
 use crate::hotkeys::HotkeyAction;
@@ -248,6 +249,38 @@ pub enum UiAction {
     StepSensitivity(i32),
     /// `true`: core option changes go to this game's options file.
     SetGameScope(bool),
+    /// « Cassette » menu (design v5.0 §2.3): the core's tape key is pulsed.
+    Tape(TapeAction),
+    /// « Port joystick » (VICE, design v5.0 §2.5): 1 ⇄ 2, saved for this game.
+    ToggleJoyport,
+    /// « Commande de démarrage… » / « Programme à lancer… »: `[media] launch` of this game (empty: removed).
+    SetLaunch(String),
+}
+
+/// 8-bit computer entries of the menus (design v5.0 §4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EightBitView {
+    /// The core declares tape keys (`cores.toml` `actions`): « Cassette » row.
+    pub tape: bool,
+    /// VICE: « Port joystick » row.
+    pub joyport: Option<JoyportView>,
+    /// The core takes a launch text (`m3u_launch`): « Commande de démarrage… » / « Programme à lancer… ».
+    pub launch: Option<LaunchView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoyportView {
+    /// Value of `vice_joyport` (1 or 2).
+    pub port: u8,
+    /// `(j1)` / `(j2)` in the file name: the core ignores the option until it restarts.
+    pub forced: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchView {
+    pub kind: M3uLaunch,
+    /// `[media] launch` of this game.
+    pub current: Option<String>,
 }
 
 /// Computer settings shown by the menus.
@@ -346,6 +379,8 @@ pub struct UiData<'a> {
     pub featured: Option<&'a Featured>,
     /// Hint shown under the MIDI option when the free SoundFont is not installed.
     pub soundfont_hint: bool,
+    /// CPC / C64 entries (empty for the other systems).
+    pub eightbit: &'a EightBitView,
 }
 
 /// Overlay state that lives across frames.
@@ -367,6 +402,8 @@ pub struct Overlay {
     disk_delete_confirm: bool,
     clean: Option<CleanDialog>,
     confirm_load: Option<ConfirmLoad>,
+    /// Launch text being edited on the options screen (design v5.0 §4).
+    launch_edit: Option<String>,
     pub osd: Osd,
     /// Set by the app each frame: the virtual keyboard covers the bottom, the toasts move to the top.
     pub vkbd_open: bool,
@@ -389,6 +426,7 @@ impl Default for Overlay {
             disk_delete_confirm: false,
             clean: None,
             confirm_load: None,
+            launch_edit: None,
             osd: Osd::default(),
             vkbd_open: false,
             show_stats: false,
@@ -417,6 +455,7 @@ impl Overlay {
         self.disk_delete_confirm = false;
         self.clean = None;
         self.confirm_load = None;
+        self.launch_edit = None;
     }
 
     /// Opens the confirmation of a state load on the menu screen (call after `open(Screen::Menu)` when asked
@@ -456,6 +495,10 @@ impl Overlay {
             }
             Some(Screen::Menu) if self.confirm_dos_reset => {
                 self.confirm_dos_reset = false;
+                self.focus_first = true;
+            }
+            Some(Screen::CoreOptions) if self.launch_edit.is_some() => {
+                self.launch_edit = None;
                 self.focus_first = true;
             }
             Some(Screen::Disks) if self.confirm_reset => self.confirm_reset = false,

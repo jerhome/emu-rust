@@ -91,32 +91,53 @@ pub fn step_slot(current: u8, delta: i8) -> u8 {
 }
 
 /// Pause and fast-forward flags → pacer speed and audio state.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SpeedState {
     pub paused: bool,
+    /// Held by the user (fast-forward key, PS + R2).
     pub fast_forward: bool,
+    /// Requested by the core while it loads (env 64, design v5.0 §2.4): the ratio to run at.
+    pub core_fast_forward_ratio: Option<f64>,
 }
 
 impl SpeedState {
-    /// Pause wins over fast-forward.
+    /// Pause wins over fast-forward; the user's fast-forward (at `ratio`) wins over the core's request.
     pub fn speed(self, ratio: f64) -> Speed {
         if self.paused {
             Speed::Paused
         } else if self.fast_forward {
+            Speed::FastForward { ratio }
+        } else if let Some(ratio) = self.core_fast_forward_ratio {
             Speed::FastForward { ratio }
         } else {
             Speed::Normal
         }
     }
 
-    /// Audio is silent while paused or fast-forwarding (ADR 0010).
-    pub fn audio_paused(self) -> bool {
-        self.paused || self.fast_forward
+    fn fast(self) -> bool {
+        self.fast_forward || self.core_fast_forward_ratio.is_some()
     }
 
-    /// What `Core::set_fast_forwarding` should be told.
+    /// Audio is silent while paused or fast-forwarding (ADR 0010).
+    pub fn audio_paused(self) -> bool {
+        self.paused || self.fast()
+    }
+
+    /// What `Core::set_fast_forwarding` should be told (`GET_FASTFORWARDING`: the effective state).
     pub fn core_fast_forward(self) -> bool {
-        self.fast_forward && !self.paused
+        self.fast() && !self.paused
+    }
+}
+
+/// Ratio of a fast-forward requested by the core: its own when it asks for more than real time, else the
+/// frontend's (`[speed] fast_forward_ratio`); a ratio of 0 means « the frontend's pace », and the pacer would
+/// read 0 or 1 as unlimited.
+pub fn core_fast_forward_ratio(requested: f32, frontend: f64) -> f64 {
+    let requested = f64::from(requested);
+    if requested.is_finite() && requested > 1.0 {
+        requested
+    } else {
+        frontend
     }
 }
 
@@ -191,5 +212,25 @@ mod tests {
         s.paused = true;
         assert_eq!(s.speed(4.0), Speed::Paused);
         assert!(!s.core_fast_forward());
+    }
+
+    /// Design v5.0 §2.4: the core's request speeds up and mutes; the user's held key wins; pause wins over both.
+    #[test]
+    fn core_requested_fast_forward() {
+        let mut s = SpeedState {
+            core_fast_forward_ratio: Some(core_fast_forward_ratio(0.0, 4.0)),
+            ..SpeedState::default()
+        };
+        assert_eq!(s.speed(3.0), Speed::FastForward { ratio: 4.0 });
+        assert!(s.audio_paused() && s.core_fast_forward());
+        s.fast_forward = true;
+        assert_eq!(s.speed(3.0), Speed::FastForward { ratio: 3.0 });
+        s.fast_forward = false;
+        s.paused = true;
+        assert_eq!(s.speed(3.0), Speed::Paused);
+        assert!(!s.core_fast_forward());
+        assert_eq!(core_fast_forward_ratio(8.0, 4.0), 8.0);
+        assert_eq!(core_fast_forward_ratio(1.0, 4.0), 4.0);
+        assert_eq!(core_fast_forward_ratio(f32::NAN, 4.0), 4.0);
     }
 }
