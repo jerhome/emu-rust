@@ -2,6 +2,7 @@
 
 use egui::{Button, Color32, Context, RichText};
 
+use super::log_panel::LogEvent;
 use super::{Overlay, UiAction, UiData, nav, screen_window, stepper, text};
 use crate::Screen;
 use crate::computer::eightbit::TapeAction;
@@ -16,6 +17,16 @@ pub(super) fn show(
     actions: &mut Vec<UiAction>,
 ) {
     let title = format!("{} — {}", text::MENU_TITLE, data.game);
+    if overlay.log_open {
+        screen_window(ctx, text::LOG_TITLE, |ui, max_height| {
+            ui.set_height(max_height.min(420.0));
+            if overlay.log_panel.show(ui, false) == Some(LogEvent::Close) {
+                overlay.log_open = false;
+                overlay.focus_first = true;
+            }
+        });
+        return;
+    }
     screen_window(ctx, &title, |ui, _| {
         let w = ui.available_width();
         let button = |ui: &mut egui::Ui, label: &str, enabled: bool, focus: &mut bool| {
@@ -164,5 +175,10 @@ pub(super) fn show(
             actions.push(UiAction::Quit);
         }
         ui.label(RichText::new(text::NAV_HINT).small().weak());
+        ui.separator();
+        if super::footer::contents(ui) {
+            overlay.log_panel.open();
+            overlay.log_open = true;
+        }
     });
 }

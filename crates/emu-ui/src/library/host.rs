@@ -11,7 +11,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{WindowAttributes, WindowId};
+use winit::window::WindowId;
 
 use super::{LaunchRequest, Level, LibraryEvent, LibraryUi, Page, text};
 use crate::app::{App, Restart, open_gamepad, pad_poll_interval};
@@ -65,6 +65,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
     match options.screen {
         Some(LibraryScreen::Settings) => library.set_page(Page::Settings),
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
+        Some(LibraryScreen::Log) => library.open_log(),
         _ => {}
     }
     let mut host = Host {
@@ -357,8 +358,7 @@ impl ApplicationHandler<Wake> for Host {
         if self.window.is_some() || self.game.is_some() {
             return;
         }
-        let attrs = WindowAttributes::default()
-            .with_title("emu-rust")
+        let attrs = crate::platform::window_attributes("emu-rust")
             .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1));
         let window = match GlWindow::new(event_loop, attrs) {
             Ok(w) => w,

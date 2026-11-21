@@ -9,7 +9,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{WindowAttributes, WindowId};
+use winit::window::WindowId;
 
 use super::{CoresEvent, CoresUi};
 use crate::egui_layer::EguiLayer;
@@ -103,8 +103,7 @@ impl ApplicationHandler for CaptureApp {
         if self.window.is_some() {
             return;
         }
-        let attrs = WindowAttributes::default()
-            .with_title("emu-rust — cores")
+        let attrs = crate::platform::window_attributes("emu-rust — cores")
             .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1));
         let window = match GlWindow::new(event_loop, attrs) {
             Ok(w) => w,

@@ -135,15 +135,78 @@ pub(crate) const WINDOW_ICON_PNGS: [(u32, &[u8]); 3] = [
 
 /// Icon of every window (game, library, cores): decoded from [`WINDOW_ICON_PNGS`] with `png`. `None` (logged) if
 /// decoding fails. Wayland has no window icon (`app_id` = `emu-rust` lets the `.desktop` apply); macOS ignores it.
-#[expect(dead_code, reason = "FU1 applies it to the three window creations")]
 pub(crate) fn window_icon() -> Option<winit::window::Icon> {
-    let _ = WINDOW_ICON_PNGS;
-    todo!("FU1: decode WINDOW_ICON_PNGS")
+    // The largest image: the window manager scales it down (X11 takes one `_NET_WM_ICON`; Windows rescales).
+    let (_, bytes) = WINDOW_ICON_PNGS.iter().max_by_key(|(size, _)| *size)?;
+    match decode_icon(bytes) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            tracing::warn!("icône de fenêtre indisponible : {e}");
+            None
+        }
+    }
+}
+
+/// PNG (8-bit RGB or RGBA) to a winit icon.
+fn decode_icon(bytes: &[u8]) -> Result<winit::window::Icon, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("image trop grande")?];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let data = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => data.to_vec(),
+        png::ColorType::Rgb => data
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => data
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return Err("PNG indexé non pris en charge".to_owned()),
+    };
+    winit::window::Icon::from_rgba(rgba, info.width, info.height).map_err(|e| e.to_string())
+}
+
+/// Window attributes shared by the three windows: title, icon, `app_id` / class `emu-rust` (the `.desktop` file
+/// applies on Wayland; X11 class).
+pub(crate) fn window_attributes(title: &str) -> winit::window::WindowAttributes {
+    let attrs = winit::window::WindowAttributes::default()
+        .with_title(title)
+        .with_window_icon(window_icon());
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let attrs = {
+        // Both traits have a `with_name`: called by path.
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        use winit::platform::x11::WindowAttributesExtX11;
+        WindowAttributesExtWayland::with_name(
+            WindowAttributesExtX11::with_name(attrs, "emu-rust", "emu-rust"),
+            "emu-rust",
+            "emu-rust",
+        )
+    };
+    attrs
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_icons_decode() {
+        for (size, bytes) in WINDOW_ICON_PNGS {
+            assert!(decode_icon(bytes).is_ok(), "{size}");
+        }
+        assert!(window_icon().is_some());
+        assert!(decode_icon(b"not a png").is_err());
+    }
 
     #[test]
     fn container_only_for_exactly_one() {

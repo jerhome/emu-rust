@@ -37,6 +37,7 @@ use crate::launch_firmware::{
     fallback_option,
 };
 use crate::platform::{FolderOutcome, FolderPlan, plan_open_folder, spawn_open_folder};
+use crate::ui::log_panel::{LogEvent, LogPanel};
 
 const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
 const ERROR: Color32 = Color32::from_rgb(255, 110, 110);
@@ -220,6 +221,9 @@ pub(crate) struct LibraryUi {
     /// `--screen` capture: no scan, no network, nothing written.
     capture: bool,
     page: Page,
+    /// « Journal » panel (footer button) replaces the page while open.
+    log_open: bool,
+    log_panel: LogPanel,
     db: Option<Library>,
     /// Persistent banner: base recovered or unavailable.
     db_banner: Option<String>,
@@ -328,6 +332,8 @@ impl LibraryUi {
             dat_base_url: worker::DAT_REPO_ROOT.to_owned(),
             status: None,
             dialog: None,
+            log_open: false,
+            log_panel: LogPanel::default(),
             focus_dialog: false,
             cores,
             awaiting_core: None,
@@ -346,6 +352,11 @@ impl LibraryUi {
         };
         ui.reload_games();
         ui
+    }
+
+    pub(crate) fn open_log(&mut self) {
+        self.log_panel.open();
+        self.log_open = true;
     }
 
     pub(crate) fn config(&self) -> &Config {
@@ -1095,6 +1106,39 @@ impl LibraryUi {
         self.relaunch_after_install();
         self.bios_completed();
         self.poll_folder();
+        // Added first so the footer stays the lowest panel of every page.
+        let open_log = crate::ui::footer::panel(ui);
+        if open_log && !self.log_open {
+            self.log_panel.open();
+            self.log_open = true;
+        }
+        if self.log_open {
+            let mut closed = false;
+            egui::CentralPanel::default().show(ui, |ui| {
+                closed = self.log_panel.show(ui, true) == Some(LogEvent::Close);
+            });
+            if closed {
+                self.log_open = false;
+            }
+        } else {
+            self.show_page(ui);
+        }
+        if self.cores.import.is_active() {
+            if let Some(closed) = self.cores.import.show(&ctx) {
+                self.import_closed(closed.installed);
+            }
+        } else if self.snapshot_busy() {
+            self.snapshot_dialog(&ctx);
+        } else if self.programs_open() {
+            self.programs_dialog(&ctx);
+        } else {
+            self.dialog_ui(&ctx);
+        }
+        self.gate_dos_launches(&ctx);
+        std::mem::take(&mut self.events)
+    }
+
+    fn show_page(&mut self, ui: &mut Ui) {
         match self.page {
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
@@ -1121,19 +1165,6 @@ impl LibraryUi {
                 }
             }
         }
-        if self.cores.import.is_active() {
-            if let Some(closed) = self.cores.import.show(&ctx) {
-                self.import_closed(closed.installed);
-            }
-        } else if self.snapshot_busy() {
-            self.snapshot_dialog(&ctx);
-        } else if self.programs_open() {
-            self.programs_dialog(&ctx);
-        } else {
-            self.dialog_ui(&ctx);
-        }
-        self.gate_dos_launches(&ctx);
-        std::mem::take(&mut self.events)
     }
 
     fn status_line(&self, ui: &mut Ui) {

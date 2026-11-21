@@ -180,6 +180,8 @@ pub enum LibraryScreen {
     Settings,
     /// Core manager screen (`--screen cores`, no network).
     Cores,
+    /// « Journal » panel (`--screen library-log`).
+    Log,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

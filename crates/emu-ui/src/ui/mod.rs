@@ -7,7 +7,9 @@
 
 mod computer;
 mod disks;
+pub(crate) mod footer;
 mod keys;
+pub(crate) mod log_panel;
 mod menu;
 mod options;
 mod osd;
@@ -407,6 +409,9 @@ pub struct Overlay {
     /// « Retirer et supprimer la copie » asks first.
     disk_delete_confirm: bool,
     clean: Option<CleanDialog>,
+    /// « Journal » panel shown in place of the menu.
+    log_open: bool,
+    log_panel: log_panel::LogPanel,
     confirm_load: Option<ConfirmLoad>,
     /// Launch text being edited on the options screen (design v5.0 §4).
     launch_edit: Option<String>,
@@ -431,6 +436,8 @@ impl Default for Overlay {
             disk_forget: None,
             disk_delete_confirm: false,
             clean: None,
+            log_open: false,
+            log_panel: log_panel::LogPanel::default(),
             confirm_load: None,
             launch_edit: None,
             osd: Osd::default(),
@@ -460,6 +467,7 @@ impl Overlay {
         self.disk_forget = None;
         self.disk_delete_confirm = false;
         self.clean = None;
+        self.log_open = false;
         self.confirm_load = None;
         self.launch_edit = None;
     }
@@ -488,6 +496,11 @@ impl Overlay {
     pub fn back(&mut self) {
         if self.capture.take().is_some() {
             self.notice = Some(text::KEYS_CANCELLED.to_owned());
+            return;
+        }
+        if self.log_open {
+            self.log_open = false;
+            self.focus_first = true;
             return;
         }
         match self.screen {

@@ -18,7 +18,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Fullscreen, WindowAttributes, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, WindowId};
 
 use crate::computer::dos;
 use crate::computer::eightbit::{
@@ -2347,9 +2347,7 @@ impl ApplicationHandler for App {
         // Logical pixels: the window keeps the same apparent size on HiDPI screens.
         let (width, height) = window_size(base_height, aspect, scale);
         let size = LogicalSize::new(width, height);
-        let attrs = WindowAttributes::default()
-            .with_title("emu-rust")
-            .with_inner_size(size);
+        let attrs = crate::platform::window_attributes("emu-rust").with_inner_size(size);
         let fps = av.timing.fps;
         let window = match GlWindow::new(event_loop, attrs) {
             Ok(w) => w,

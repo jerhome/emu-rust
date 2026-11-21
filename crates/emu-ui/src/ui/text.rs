@@ -920,6 +920,45 @@ pub fn disk_error(e: &emu_runtime::RuntimeError) -> String {
     }
 }
 
+// ---- Footer and « Journal » panel (design v7.1 §3.5) ---------------------------------------------------------
+
+pub const LOG_BUTTON: &str = "Journal";
+pub const LOG_TITLE: &str = "Journal";
+pub const LOG_FILTER_ERRORS: &str = "Erreurs";
+pub const LOG_FILTER_WARNINGS: &str = "Avertissements";
+pub const LOG_FILTER_ALL: &str = "Tout";
+pub const LOG_OPEN_FOLDER: &str = "Ouvrir le dossier des journaux";
+pub const LOG_EMPTY: &str = "Aucun message pour ce filtre.";
+pub const LOG_HINT: &str = "PgUp / PgDn : défiler · Échap : retour";
+
+/// Footer line: `emu-rust <version> — dev by claude@jerhome`.
+pub fn footer_credit(version: &str, credit: &str) -> String {
+    format!("emu-rust {version} — {credit}")
+}
+
+/// Label of the footer button: the unread errors and warnings, when there are some.
+pub fn log_button_label(errors: u32, warnings: u32) -> String {
+    match (errors, warnings) {
+        (0, 0) => LOG_BUTTON.to_owned(),
+        (e, 0) => format!("{LOG_BUTTON} ({e} erreur{})", plural(e)),
+        (0, w) => format!("{LOG_BUTTON} ({w} avertissement{})", plural(w)),
+        (e, w) => format!(
+            "{LOG_BUTTON} ({e} erreur{}, {w} avertissement{})",
+            plural(e),
+            plural(w)
+        ),
+    }
+}
+
+fn plural(n: u32) -> &'static str {
+    if n > 1 { "s" } else { "" }
+}
+
+/// Where the log folder is when it cannot be opened (container, no file manager).
+pub fn log_folder_path(path: &str) -> String {
+    format!("Dossier des journaux : {path}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
