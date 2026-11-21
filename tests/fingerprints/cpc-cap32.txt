@@ -1,0 +1,6 @@
+# cap32, generated media, no input; machine ROMs built into the core; core sha256 f223b3fb1d30a4df888d90ab710c8886cc0ba0467d109e00d3d2eda3aaf0bfeb
+basic frame=300 fingerprint=ce3f524d8e55b8f3
+hello-cdt frame=2400 fingerprint=05699055ed20e6bb
+hello-dsk frame=600 fingerprint=f3fb912272e3b8df
+second-launch frame=600 fingerprint=37847cca9dce228b
+second-m3u frame=600 fingerprint=37847cca9dce228b

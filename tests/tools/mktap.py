@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a C64 .tap (KERNAL turbo-less format) holding the hello.prg BASIC program (public domain, original).
 
-usage: mktap.py hello.prg out.tap
+usage: mktap.py hello.prg out.tap [NAME]   (NAME: file name on the tape, default HELLO; the default output is SHA-256 pinned)
 Pulse lengths are in units of 8 CPU cycles (S=0x30, M=0x42, L=0x56), as written by the KERNAL SAVE routine.
 """
 import struct
@@ -37,10 +37,14 @@ def block(payload: bytes, header: bool) -> list[int]:
     return out
 
 
-prg = open(sys.argv[1], "rb").read()
-load, body = struct.unpack("<H", prg[:2])[0], prg[2:]
-hdr = bytes([1]) + struct.pack("<HH", load, load + len(body)) + b"HELLO".ljust(16) + b" " * 171
-assert len(hdr) == 192
-pulses = block(hdr, True) + [S] * 0x100 + block(body, False)
-data = bytes(min(p, 255) for p in pulses)
-open(sys.argv[2], "wb").write(b"C64-TAPE-RAW" + bytes([0, 0, 0, 0]) + struct.pack("<I", len(data)) + data)
+def tap(prg: bytes, name: str = "HELLO") -> bytes:
+    load, body = struct.unpack("<H", prg[:2])[0], prg[2:]
+    hdr = bytes([1]) + struct.pack("<HH", load, load + len(body)) + name.encode("ascii")[:16].ljust(16) + b" " * 171
+    assert len(hdr) == 192
+    pulses = block(hdr, True) + [S] * 0x100 + block(body, False)
+    data = bytes(min(p, 255) for p in pulses)
+    return b"C64-TAPE-RAW" + bytes([0, 0, 0, 0]) + struct.pack("<I", len(data)) + data
+
+
+if __name__ == "__main__":
+    open(sys.argv[2], "wb").write(tap(open(sys.argv[1], "rb").read(), *sys.argv[3:4]))

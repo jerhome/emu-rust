@@ -1,0 +1,3 @@
+# vice_x64sc, generated media, no input; machine ROMs built into the core; core sha256 38e040fe354a5e19ce737b57eb71be9acbb6f8adce36204d26a99eaeee76ee27
+basic frame=300 fingerprint=62e45c4bf3dbcf89
+hello-d64 frame=1500 fingerprint=d97433b242f3c42d

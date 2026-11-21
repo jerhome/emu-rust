@@ -73,6 +73,8 @@
  *                   GET_SAVE_DIRECTORY string and (cells 4-7) of GET_SYSTEM_DIRECTORY, queried at every run (0 if absent).
  *   MOCK_STATE_SIZE "A" or "A,B" (>= 64) -> retro_serialize_size returns A (B once the frame counter reaches 20) and the
  *                   core announces SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE (44).
+ *   MOCK_STATE_SIZE_NOQUIRK set (with MOCK_STATE_SIZE) -> the same variable size but the quirk is NOT announced (VICE-like:
+ *                   exercises CoreConfig::variable_state_size).
  *   MOCK_LOAD_ERROR set -> logs ERROR "mock core: error before load" at retro_init; at retro_load_game logs ERROR
  *                   "mock core: first error during load", ERROR <value> ("1" = "mock core: BIOS file missing"), WARN, then
  *                   fails; at retro_deinit logs ERROR "mock core: error after load".
@@ -1042,7 +1044,7 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
     if (env_probe_on) probe_environment();
     if (vfs_on) vfs_request();
     if (ff_null_on) ff_probe_null();
-    if (state_size_a) {
+    if (state_size_a && !env_flag("MOCK_STATE_SIZE_NOQUIRK")) {
         uint64_t quirks = RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE;
         env_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
     }
