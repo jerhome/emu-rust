@@ -57,8 +57,8 @@ impl LibraryUi {
                 LibraryEvent::Launch(request)
                     if matches!(request.content, GameContent::Folder { .. }) =>
                 {
-                    if let Some(request) = self.dos_gate(request, ctx) {
-                        self.events.push(LibraryEvent::Launch(request));
+                    if let Some(request) = self.dos_gate(*request, ctx) {
+                        self.events.push(LibraryEvent::Launch(Box::new(request)));
                     }
                 }
                 other => self.events.push(other),
@@ -163,7 +163,8 @@ impl LibraryUi {
                         report.files,
                         report.bytes
                     );
-                    self.events.push(LibraryEvent::Launch(task.request));
+                    self.events
+                        .push(LibraryEvent::Launch(Box::new(task.request)));
                 }
                 Err(RuntimeError::SnapshotCancelled) => {
                     if let Some(m) = self.cores.manager() {
@@ -384,12 +385,13 @@ impl LibraryUi {
 
     /// Measures the DOS cache on a worker thread (settings page opened, cache cleared).
     pub(super) fn refresh_dos_cache(&mut self) {
-        let dir = self.dirs.cache_dir();
+        let prefs = cores_ui::preferences(&self.config.cores);
+        let dirs = dos::clearable_cache_dirs(&prefs, &self.dirs.cache_dir());
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("emu-dos-cache".into())
             .spawn(move || {
-                let _ = tx.send(dos::cache_size(&dir));
+                let _ = tx.send(dirs.iter().map(|d| dos::cache_size(d)).sum());
             });
         if spawned.is_ok() {
             self.dos_cache.rx = Some(rx);
@@ -411,7 +413,7 @@ impl LibraryUi {
     }
 
     /// « Vider le cache DOS » of the settings page. The library page is only shown with no game running, so no
-    /// snapshot is open (Windows could not delete it otherwise); a snapshot being built is cancelled first.
+    /// snapshot is open (Windows could not delete it otherwise); while a snapshot is being built it refuses (`DOS_BUSY`).
     pub(super) fn clear_dos_cache(&mut self) {
         if self.snapshot.is_some() {
             self.dos_cache.message = Some(text::DOS_BUSY.to_owned());
@@ -419,8 +421,8 @@ impl LibraryUi {
         }
         let prefs = cores_ui::preferences(&self.config.cores);
         let mut result = Ok(());
-        for core in prefs.for_system("DOS") {
-            if let Err(e) = dos::clear_cache(&dos::dos_cache_dir(&self.dirs.cache_dir(), core)) {
+        for dir in dos::clearable_cache_dirs(&prefs, &self.dirs.cache_dir()) {
+            if let Err(e) = dos::clear_cache(&dir) {
                 result = Err(e);
             }
         }
