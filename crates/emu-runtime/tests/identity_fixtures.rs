@@ -1,5 +1,6 @@
 // The mock core only builds on Unix.
 #![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+#![cfg(unix)]
 // `std::env::set_var` is `unsafe` (edition 2024): the mock core reads its protocol with getenv().
 #![allow(unsafe_code)]
 //! 2.1 « no loss » fixtures (`docs/design/v2.1-identite-disques.md` §2.2, §5): realistic 1.0 / 2.0 / rc.1 save

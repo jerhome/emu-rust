@@ -1,5 +1,6 @@
 // The mock core only builds on Unix; on Windows most helpers are unused.
 #![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+#![cfg(unix)]
 // `std::env::set_var` is `unsafe` (edition 2024): the mock core reads its protocol with getenv().
 #![allow(unsafe_code)]
 //! 2.1 disks added from the menu (`docs/design/v2.1-identite-disques.md` §2.3) on the mock core: restored at the
