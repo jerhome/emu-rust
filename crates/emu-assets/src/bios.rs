@@ -20,7 +20,7 @@ mod import;
 
 pub use import::{
     ExpectedFirmware, FirmwareCatalogue, Identification, ImportOutcome, MAX_FIRMWARE_BYTES,
-    TargetState, identify_firmware, import_firmware, target_state,
+    TargetState, identify_firmware, import_firmware, import_firmware_expecting, target_state,
 };
 
 use std::collections::BTreeSet;
@@ -427,6 +427,10 @@ pub enum BiosError {
     /// Import with `ReplacePolicy::Refuse`: another file already has this name; nothing was written.
     #[error("un autre fichier existe déjà sous ce nom : {0}")]
     TargetExists(String),
+    /// Import with an expected md5: the source no longer has it (changed since its identification); nothing
+    /// was written and no user file was moved aside.
+    #[error("le fichier source a changé depuis son identification")]
+    Changed,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

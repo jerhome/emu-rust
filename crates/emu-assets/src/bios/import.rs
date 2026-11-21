@@ -277,6 +277,20 @@ pub fn import_firmware(
     policy: ReplacePolicy,
     verified: bool,
 ) -> Result<ImportOutcome, BiosError> {
+    import_firmware_expecting(system_dir, src, name, policy, verified, None)
+}
+
+/// Like [`import_firmware`], with the md5 given by [`identify_firmware`]: when the md5 recomputed on the copy
+/// differs (the source changed in between), `BiosError::Changed` is returned before anything is installed or
+/// moved aside; the temporary file is removed.
+pub fn import_firmware_expecting(
+    system_dir: &Path,
+    src: &Path,
+    name: &str,
+    policy: ReplacePolicy,
+    verified: bool,
+    expected_md5: Option<[u8; 16]>,
+) -> Result<ImportOutcome, BiosError> {
     validate_target_name(name)?;
     fs::create_dir_all(system_dir).map_err(|source| BiosError::Io {
         path: system_dir.to_path_buf(),
@@ -327,6 +341,9 @@ pub fn import_firmware(
         }
         md5
     };
+    if expected_md5.is_some_and(|expected| expected != md5) {
+        return Err(BiosError::Changed);
+    }
 
     // Same lock as the free BIOS manager: the manifest update below must not interleave with an install.
     let _guard = super::lock_manifests();
@@ -933,6 +950,42 @@ mod tests {
         assert_ne!(out.md5, md5);
         assert_eq!(out.md5, md5_of(b"changed"));
         assert_eq!(imported(&system)["kick.A500"].md5, hex(&md5_of(b"changed")));
+    }
+
+    #[test]
+    fn changed_source_is_refused_before_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("system");
+        fs::create_dir(&system).unwrap();
+        write(&system, "kick.A500", b"mine");
+        let src = write(dir.path(), "ks.rom", b"ks13");
+        let expected = md5_of(b"ks13");
+        write(dir.path(), "ks.rom", b"changed");
+        let err = import_firmware_expecting(
+            &system,
+            &src,
+            "kick.A500",
+            ReplacePolicy::BackupAndReplace,
+            true,
+            Some(expected),
+        )
+        .unwrap_err();
+        assert!(matches!(err, BiosError::Changed));
+        assert_eq!(listing(&system), ["kick.A500"], "no backup, no temporary");
+        assert_eq!(fs::read(system.join("kick.A500")).unwrap(), b"mine");
+        // Matching md5: installed as usual.
+        write(dir.path(), "ks.rom", b"ks13");
+        let out = import_firmware_expecting(
+            &system,
+            &src,
+            "kick.A500",
+            ReplacePolicy::BackupAndReplace,
+            true,
+            Some(expected),
+        )
+        .unwrap();
+        assert!(out.backup.is_some());
+        assert_eq!(out.md5, expected);
     }
 
     #[test]
