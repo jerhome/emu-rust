@@ -27,7 +27,7 @@
 | Hôte | Jeu | Résultat |
 |---|---|---|
 | Linux sous WSL2 (binaire Linux, WSLg) | Dune II (Mega Drive), clavier | **OK**, impeccable |
-| idem | son | absent : ALSA non redirigé vers PulseAudio WSLg (`libasound2-plugins` + `~/.asoundrc`), configuration de l'hôte |
+| idem | son | **OK** après `libasound2-plugins` + `~/.asoundrc` (configuration de l'hôte, documentée) |
 | idem | manette | non vue : WSL2 ne voit pas l'USB sans `usbipd-win` (attendu) |
 
-Suites : rendre le conseil son WSL visible au démarrage quand aucune sortie audio n'est trouvée ; essai Docker WSLg à faire ; Dune Mega CD sur Mac à faire.
+Suites : essais Windows prévus par l'utilisateur (C64 Maniac Mansion, Mega CD Dune, Amiga Hunter, DOS Storm Master, manette) ; essai Docker WSLg à faire. PS1 non disponible (7.0 non commencée).
