@@ -34,5 +34,6 @@
 | Windows | Hunter (Amiga, `.ipf`) + `capsimg.dll` dans `system/` | ❌ reste sur l'écran « disquette Workbench » (IPF non lu) — mis de côté, voir questions-ouvertes |
 | Windows | Another World (Amiga, ADF), Kickstart 1.3 | ✅ **OK** : mode joystick et son |
 | Windows | Maniac Mansion (C64), vice_x64 | ❌→✅ installation refusée (CRC : index buildbot en retard, voir questions-ouvertes) → DLL posée à la main ; chargement long ; pointeur immobile sur le port 2 par défaut → **OK au port 1** (menu « Port joystick »), son OK, changement de face par le raccourci OK. Piste : le jeu/la DAT pourrait mémoriser le port connu par jeu, ou le guide le signaler |
+| Windows | B.A.T. (CPC), cap32 | ❌ zip de `.dsk` dans `roms/cpc/` : Ready, `cat` → « Drive A: disc missing » (aucune disquette insérée) ; ✅ `.dsk` extrait dans `roms/cpc/` : fonctionne. **Défaut en diagnostic** (zip + cap32 `media = direct`) |
 
-Suites : essais Windows prévus par l'utilisateur (C64 Maniac Mansion, Mega CD Dune, Amiga Hunter, DOS Storm Master, manette) ; essai Docker WSLg à faire. PS1 non disponible (7.0 non commencée).
+Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).
