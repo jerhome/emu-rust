@@ -162,6 +162,20 @@ Mode d'entrée par défaut : **Joystick** ; Ctrl droit + `J` bascule en mode Cla
 virtuel `K`). Cassettes : menu Cassette (Lecture, Arrêt, Rembobiner). Les DAT (clean-cpc-db MIT, TOSEC, No-Intro) sont
 téléchargés à la demande et gardent leur licence. Aucune ROM de jeu n'est dans l'image.
 
+## Game Boy Advance, 32X et Mega CD (6.0, en développement)
+
+- **GBA** : core `mgba` (MPL-2.0), installé depuis l'écran Cores ; contenus `.gba` (ou `.zip`) dans `/data/roms/gba/`.
+  Le BIOS `gba_bios.bin` est **facultatif** (mgba en intègre un équivalent) : s'il est déposé dans `/data/system/`, il est
+  simplement utilisé, sans avertissement s'il manque. Sauvegardes `.srm` dans `/data/saves/mgba/`.
+- **32X** : core `picodrive` (licence non commerciale), contenus `.32x` dans `/data/roms/32x/`. **Aucun BIOS à fournir** :
+  les BIOS 32X sont intégrés au core. Sauvegardes `.srm` dans `/data/saves/picodrive/`.
+- **Mega CD** : BIOS **par région, fourni par vous**, jamais téléchargé : `bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin`
+  dans `/data/system/` (voir « Mega CD (2.1) »). Le BIOS de la région du disque est contrôlé avant le lancement ; format
+  conseillé : `.chd` (ou `.cue` avec toutes ses pistes ; `.m3u` pour les jeux à plusieurs disques).
+- Données de test (non embarquées, récupérées par `scripts/fetch-test-assets.sh --with-6.0`, SHA256 épinglés) : `hello.gba`
+  et les ROM de sauvegarde `sram`/`flash64`/`flash128`/`none` de jsmolka/gba-tests (MIT), 240p Test Suite mini (GPL-2.0),
+  hexgl32x (MIT), 240p Test Suite Sega CD (GPL-2.0). Aucune ROM ni BIOS commercial.
+
 ## Manette (2.1)
 
 Le clavier fonctionne toujours. Pour une manette PS4 :

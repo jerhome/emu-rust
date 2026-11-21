@@ -83,6 +83,16 @@ CPC = clean-cpc-db (MIT) puis TOSEC ; C64 = No-Intro. Aucune ROM, disquette ni c
 Programmes de test libres (outils de développement seulement) : rpg-adventure (CPC, MIT), uberswap et Kidelyneen
 (C64, licences du dépôt d'origine), Wild Snake Boa (C64, licence du dépôt d'origine).
 
+Game Boy Advance (mgba, 6.0) : fichiers .gba (ou .zip). Le BIOS gba_bios.bin (dossier system/) est FACULTATIF : mgba en
+  intègre un équivalent ; s'il est présent il est utilisé, s'il manque aucun avertissement. Sauvegardes .srm par jeu.
+32X (picodrive, 6.0) : fichiers .32x (ou .bin reconnu par son en-tête). AUCUN BIOS à fournir (BIOS 32X intégrés au core).
+Mega CD (6.0) : le BIOS dépend de la région du disque et n'est jamais téléchargé : à vous de le déposer (system/,
+  bios_CD_E.bin / bios_CD_U.bin / bios_CD_J.bin). Format conseillé : .chd ; .cue avec toutes ses pistes, .m3u (multi-disques).
+Licences non embarquées (rien de plus dans THIRD-PARTY-DATA.txt) : mgba MPL-2.0 ; picodrive et genesis_plus_gx : licences
+  non commerciales de leurs auteurs (cores téléchargés à la demande) ; DAT Redump téléchargé à la demande, il garde sa licence.
+Données de test libres (outils de développement seulement, jamais distribuées) : gba-tests de jsmolka (MIT), 240p Test Suite
+  mini et Sega CD (GPL-2.0), hexgl32x (MIT).
+
 1. Alternative manuelle : télécharger un core (buildbot libretro officiel, puis dézipper)
 ------------------------------------------------------------------
 Mega Drive (genesis_plus_gx) :
