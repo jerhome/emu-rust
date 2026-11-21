@@ -935,8 +935,157 @@ pub fn relocate_identities(
     saves_dir: &Path,
     moves: &[(PathBuf, PathBuf)],
 ) -> Result<RelocateReport, RuntimeError> {
-    let _ = (saves_dir, moves);
-    todo!("FR1: registry and manifest rewrite")
+    let mut report = RelocateReport::default();
+    let table: Vec<Relocation> = moves
+        .iter()
+        .map(|(from, to)| Relocation {
+            from: components_keys(&canonical_or_ancestor(from)),
+            to: canonical_or_ancestor(to),
+        })
+        .collect();
+    let cores = match fs::read_dir(saves_dir) {
+        Ok(cores) => cores,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(report),
+        Err(e) => return Err(io_error(saves_dir, e)),
+    };
+    let mut dirs: Vec<PathBuf> = cores
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    if table.is_empty() {
+        return Ok(report);
+    }
+    for dir in dirs {
+        relocate_core_dir(&dir, &table, &mut report)?;
+    }
+    Ok(report)
+}
+
+/// One move, `from` already split into comparable components.
+struct Relocation {
+    from: Vec<Vec<u8>>,
+    to: PathBuf,
+}
+
+/// Canonical form of a path that may be gone: the nearest existing ancestor is canonicalized, the rest appended.
+fn canonical_or_ancestor(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut head = path;
+    loop {
+        if let Ok(real) = fs::canonicalize(head) {
+            return rest.iter().rev().fold(real, |acc, name| acc.join(name));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                head = parent;
+            }
+            _ => return canonical(path),
+        }
+    }
+}
+
+/// Components compared through `registry_key` (case and `\\?\` prefix on Windows).
+fn components_keys(path: &Path) -> Vec<Vec<u8>> {
+    path.components()
+        .map(|c| registry_key(&path_key(Path::new(c.as_os_str()))))
+        .collect()
+}
+
+/// New raw key of the stored source `raw`, if it is a moved path or lies under a moved folder (longest `from`
+/// wins).
+fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
+    if raw.is_empty() {
+        return None;
+    }
+    let path = path_from_key(raw);
+    let comps = components_keys(&path);
+    let hit = table
+        .iter()
+        .filter(|m| !m.from.is_empty() && comps.starts_with(&m.from))
+        .max_by_key(|m| m.from.len())?;
+    let mut out = hit.to.clone();
+    out.extend(
+        path.components()
+            .skip(hit.from.len())
+            .map(|c| c.as_os_str()),
+    );
+    let key = path_key(&out);
+    (key != raw).then_some(key)
+}
+
+fn any_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\'])
+}
+
+fn relocate_core_dir(
+    dir: &Path,
+    table: &[Relocation],
+    report: &mut RelocateReport,
+) -> Result<(), RuntimeError> {
+    let registry = dir.join(REGISTRY_NAME);
+    let has_registry = fs::symlink_metadata(&registry).is_ok();
+    let mut disks: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| io_error(dir, e))?
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_string_lossy().ends_with(".disks")
+                && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .map(|e| e.path())
+        .collect();
+    disks.sort();
+    if !has_registry && disks.is_empty() {
+        return Ok(());
+    }
+    let _lock = RegistryLock::acquire(dir)?;
+    if has_registry {
+        match read_registry(&registry)? {
+            Registry::Unusable(why) => report.skipped.push((
+                registry.clone(),
+                format!("registre inutilisable ({why}), laissé tel quel"),
+            )),
+            Registry::Entries(mut entries) => {
+                let mut changed = 0u32;
+                for e in &mut entries {
+                    if let Some(key) = moved_key(&e.path, table) {
+                        e.path = key;
+                        changed += 1;
+                    }
+                }
+                if changed > 0 {
+                    write_registry(&registry, &entries)?;
+                    report.registries += 1;
+                    report.entries += changed;
+                }
+            }
+        }
+    }
+    for folder in disks {
+        match workcopy::inspect(&folder, any_name)? {
+            DirState::Manifest(mut entries) => {
+                let mut changed = false;
+                for e in &mut entries {
+                    if let Some(key) = moved_key(e.source_key(), table) {
+                        e.set_source_key(key);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    workcopy::write(&folder, &entries)?;
+                    report.manifests += 1;
+                }
+            }
+            DirState::Unreadable => report.skipped.push((
+                folder.join(workcopy::MANIFEST_NAME),
+                "manifeste illisible, laissé tel quel".to_owned(),
+            )),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

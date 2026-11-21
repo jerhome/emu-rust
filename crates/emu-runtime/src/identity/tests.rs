@@ -826,7 +826,6 @@ fn game_scope_survives_an_unusable_registry() {
 }
 
 #[test]
-#[ignore = "FR1: relocate_identities is a todo!() until then"]
 fn relocate_identities_without_registry_changes_nothing() {
     let fx = Fx::new();
     let moves = [(
@@ -838,4 +837,124 @@ fn relocate_identities_without_registry_changes_nothing() {
         let report = relocate_identities(&saves, &moves).unwrap();
         assert_eq!(report, RelocateReport::default());
     }
+}
+
+fn top_saves(fx: &Fx) -> PathBuf {
+    fx.tmp.path().join("saves")
+}
+
+fn move_rom(fx: &Fx, from: &Path, rel: &str) -> PathBuf {
+    let to = fx.tmp.path().join("roms").join(rel);
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    fs::rename(from, &to).unwrap();
+    to
+}
+
+#[test]
+fn relocation_follows_a_moved_file_and_is_idempotent() {
+    let fx = Fx::new();
+    let rom = fx.rom("a.sfc", b"rom a");
+    let other = fx.rom("b.sfc", b"rom b");
+    let id = fx.resolve(&rom);
+    fx.resolve(&other);
+    let (from, to) = (rom.clone(), move_rom(&fx, &rom, "snes/a.sfc"));
+    let moves = [(from, to.clone())];
+    let report = relocate_identities(&top_saves(&fx), &moves).unwrap();
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (1, 1, 0)
+    );
+    assert!(report.skipped.is_empty());
+    let after = fx.tree();
+    assert_eq!(
+        relocate_identities(&top_saves(&fx), &moves).unwrap(),
+        RelocateReport::default()
+    );
+    assert_eq!(fx.tree(), after, "second run changes nothing");
+    // Rule 1 now: same path, same save name, no fingerprint work or notice.
+    let again = fx.resolve(&to);
+    assert_eq!(
+        (again.save_name, again.index, again.notice),
+        (id.save_name, 1, None)
+    );
+}
+
+#[test]
+fn relocation_follows_a_moved_folder_and_rewrites_manifests() {
+    let fx = Fx::new();
+    let rom = fx.rom("old/Game.st", b"disk a");
+    rc2_manifest(&fx.saves().join("Game.disks"), &rom, b"disk a");
+    fx.resolve(&rom);
+    let moved = fx.tmp.path().join("roms/new");
+    fs::rename(fx.tmp.path().join("roms/old"), &moved).unwrap();
+    let moves = [(fx.tmp.path().join("roms/old"), moved.clone())];
+    let report = relocate_identities(&top_saves(&fx), &moves).unwrap();
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (1, 1, 1)
+    );
+    let want = path_key(&fs::canonicalize(moved.join("Game.st")).unwrap());
+    let DirState::Manifest(entries) =
+        workcopy::inspect(&fx.saves().join("Game.disks"), |_| true).unwrap()
+    else {
+        panic!("manifest");
+    };
+    assert_eq!(entries[0].source_key(), want.as_slice());
+    let id = fx.resolve(&moved.join("Game.st"));
+    assert_eq!((id.save_name.as_str(), id.index), ("Game", 1));
+    assert_eq!(
+        relocate_identities(&top_saves(&fx), &moves).unwrap(),
+        RelocateReport::default()
+    );
+}
+
+#[test]
+fn an_unreadable_registry_is_skipped_untouched() {
+    let fx = Fx::new();
+    fs::write(fx.saves().join(REGISTRY_NAME), b"garbage").unwrap();
+    let moves = [(fx.tmp.path().join("roms/a"), fx.tmp.path().join("roms/b"))];
+    let report = relocate_identities(&top_saves(&fx), &moves).unwrap();
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(fx.registry(), b"garbage");
+}
+
+#[cfg(unix)]
+#[test]
+fn relocation_with_a_root_under_a_symlink() {
+    let fx = Fx::new();
+    let real = fx.tmp.path().join("real");
+    fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, fx.tmp.path().join("link")).unwrap();
+    let rom = real.join("a.sfc");
+    fs::write(&rom, b"rom").unwrap();
+    // Identity is recorded from the canonical path; the caller speaks through the link.
+    fx.resolve(&rom);
+    fs::create_dir_all(real.join("snes")).unwrap();
+    fs::rename(&rom, real.join("snes/a.sfc")).unwrap();
+    let link = fx.tmp.path().join("link");
+    let moves = [(link.join("a.sfc"), link.join("snes/a.sfc"))];
+    let report = relocate_identities(&top_saves(&fx), &moves).unwrap();
+    assert_eq!(report.entries, 1);
+    let id = fx.resolve(&real.join("snes/a.sfc"));
+    assert_eq!((id.save_name.as_str(), id.index, id.notice), ("a", 1, None));
+}
+
+#[test]
+fn a_new_file_at_the_old_place_does_not_steal_the_moved_game_saves() {
+    let fx = Fx::new();
+    let rom = fx.rom("Game.sfc", b"first game");
+    let id = fx.resolve(&rom);
+    assert_eq!(id.save_name, "Game");
+    let srm = fx.saves().join("Game.srm");
+    fs::write(&srm, b"progress").unwrap();
+    let to = move_rom(&fx, &rom, "snes/Game.sfc");
+    relocate_identities(&top_saves(&fx), &[(rom.clone(), to.clone())]).unwrap();
+    // Another game dropped under the same name where the first one was.
+    fs::write(&rom, b"another game").unwrap();
+    let thief = fx.resolve(&rom);
+    assert_ne!(thief.save_name, "Game");
+    assert_eq!(thief.index, 2);
+    let moved = fx.resolve(&to);
+    assert_eq!((moved.save_name.as_str(), moved.index), ("Game", 1));
+    assert_eq!(fs::read(&srm).unwrap(), b"progress");
 }

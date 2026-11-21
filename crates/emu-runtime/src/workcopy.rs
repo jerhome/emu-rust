@@ -90,6 +90,11 @@ impl ManifestEntry {
         (!self.path.is_empty()).then(|| path_from_key(&self.path))
     }
 
+    /// Replaces the recorded source path (`relocate_identities`); size, date and CRC32 stay valid for a moved file.
+    pub fn set_source_key(&mut self, key: Vec<u8>) {
+        self.path = key;
+    }
+
     /// Size and CRC32 of the recorded source (rule 3 of the game identity, `identity.rs`).
     pub fn source_size_crc(&self) -> (u64, u32) {
         (self.size, self.crc)
