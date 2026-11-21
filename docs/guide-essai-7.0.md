@@ -1,8 +1,13 @@
 # Guide d'essai — version 7.0 (PlayStation, 3DO)
 
-Version : **v7.0-rc.1** (à venir).
+Version : **v7.0.0-rc.1** (2026-11-21).
 
 Builds : https://github.com/jerhome/emu-rust/releases (pré-release `v7.0.0-rc.1`).
+
+Cette rc contient aussi les correctifs issus des essais de la 6.0 : un **jeu CPC en `.zip`** reçoit enfin sa
+disquette (plus de « disc missing »), les zips de plusieurs disquettes (« Disk N of M ») sont regroupés dans
+l'ordre, et `dosbox_pure` ne plante plus à la lecture des options sans jeu. Si vous avez un zip CPC (B.A.T.),
+réessayez-le tel quel.
 
 Durée : environ 1 h 30. But : vérifier GTA (PlayStation) **avec et sans** votre BIOS `scph5502.bin` (Europe), le
 mode **DualShock**, le **changement de core**, puis Road Rash (3DO) **avec et sans** `panafz10.bin`, au clavier
@@ -110,7 +115,9 @@ Menu : Ctrl droit (clavier) ou bouton PS (manette).
 
 ## Windows
 
-Dossiers : `%APPDATA%\emu-rust\data\` (`roms\psx`, `roms\3do`, `system\`). Essayer GTA au clavier AZERTY puis à la DS4.
+Dossiers : `%APPDATA%\emu-rust\data\roms\psx`, `%APPDATA%\emu-rust\data\roms\3do` et
+`%APPDATA%\emu-rust\data\system\` (BIOS : `scph5502.bin`, `panafz10.bin`). Essayer GTA (PlayStation) au clavier
+AZERTY puis à la DS4, puis Road Rash (3DO).
 
 ## macOS (Intel)
 

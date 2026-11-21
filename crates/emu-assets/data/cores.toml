@@ -272,6 +272,7 @@ cores = ["opera"]                                          # modified LGPL, non-
 [cores.pcsx_rearmed]
 media_direct = ["cue", "chd", "iso", "pbp", "bin"]
 options = { pcsx_rearmed_memcard2 = "none" }
+game_saves = ["{game}.srm"]                            # memory card 1 (SAVE_RAM, written by the frontend)
 save_family = "psx-memcard"
 pad_devices = { digital = 1, dualshock = 517, default = "digital" }
 builtin_firmware = { label = "BIOS HLE (intégré au core)", notice = "BIOS HLE de PCSX-ReARMed (GPLv2), fourni par le core." }
@@ -291,6 +292,7 @@ europe = "scph5502.bin"
 [cores.swanstation]
 media_direct = ["cue", "chd", "iso", "pbp", "bin"]
 options = { swanstation_GPU_Renderer = "Software" }        # hardware rendering is out of scope (ADR 0021 §1)
+game_saves = ["{game}.srm"]                            # memory card 1 (SAVE_RAM, written by the frontend)
 save_family = "psx-memcard"
 pad_devices = { digital = 1, dualshock = 261, default = "digital" }
 builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence MIT (pcsx-redux/nugget) (ADR 0021)." }
@@ -310,7 +312,7 @@ europe = "scph5502.bin"
 [cores.mednafen_psx]
 media_direct = ["cue", "chd", "iso", "pbp", "bin"]        # `iso` accepted by the binary (absent from the `.info`)
 options = { beetle_psx_enable_memcard1 = "disabled" }
-game_saves = ["{game}.*.mcr"]
+game_saves = ["{game}.srm", "{game}.*.mcr"]       # SAVE_RAM card 1 + mednafen-method cards
 save_family = "psx-memcard"
 pad_devices = { digital = 1, dualshock = 517, default = "digital" }
 builtin_firmware = { label = "OpenBIOS (intégré au core)", notice = "OpenBIOS (projet PCSX-Redux), fourni par le core ; licence MIT (pcsx-redux/nugget) (ADR 0021)." }

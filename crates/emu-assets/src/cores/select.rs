@@ -1833,6 +1833,15 @@ mod tests {
             v.sort();
             v
         });
+        // « Réinitialiser les sauvegardes » must reach the memory card of every PS1 core.
+        for c in ids {
+            assert!(
+                prefs
+                    .game_save_patterns(&id(c))
+                    .contains(&"{game}.srm".to_owned()),
+                "{c}"
+            );
+        }
         for c in ids {
             let c = id(c);
             let req = prefs.required_firmware(&c, psx).unwrap();

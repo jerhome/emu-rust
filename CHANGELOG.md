@@ -2,6 +2,53 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.0.0-rc.1] - 2026-11-21
+
+Première pré-release de la 7.0 : **PlayStation** et **3DO** (rendu logiciel). Guide d'essai :
+`docs/guide-essai-7.0.md`. Contient aussi les correctifs des zips CPC et de l'ordre des disquettes (voir « Corrigé »).
+
+### Ajouté
+
+- PlayStation : core `pcsx_rearmed` par défaut ; `swanstation` (rendu logiciel seulement) et `mednafen_psx`
+  (Beetle PSX, plus précis, plus lent) au choix.
+- Jeux PlayStation : `.cue` + `.bin`, `.chd`, `.iso`, `.pbp`, `.m3u`, piste `.bin` seule ; exécutables PS-EXE
+  (`--rom programme.exe`) ; jeux à plusieurs CD regroupés en un seul jeu (menu « CD… », PS + L3 à la manette) ;
+  identification Redump par numéro de série et région ; fichier `.sbi` (LibCrypt) accepté à côté de l'image.
+- BIOS PlayStation par région (`scph5500.bin`, `scph5501.bin`, `scph5502.bin`) : **facultatifs et jamais
+  téléchargés** ; sans eux, le core utilise son remplaçant intégré (BIOS HLE, OpenBIOS sous licence MIT) et
+  l'application le signale **une seule fois par jeu** (importer un BIOS ou continuer).
+- Manette PlayStation : mode **numérique** (par défaut) ou **DualShock** (analogique), réglable globalement
+  (Réglages → Manette, `--pad-device`), par jeu et à chaud depuis le menu ; clavier et DS4 mappés.
+- Cartes mémoire PlayStation par jeu (`saves/<core>/<jeu>.srm`), communes aux disques d'un même jeu et
+  **reprises d'un core PS1 à l'autre** (copie unique, message à l'écran).
+- 3DO : core `opera`, jeux `.cue`, `.chd`, `.iso`, `.bin` ; **Opera Boot** intégré au core, `panafz10.bin` préféré
+  s'il est présent (importable) ; NVRAM par jeu ; touches clavier et DS4 3DO.
+- Bibliothèque : systèmes « PlayStation » et « 3DO » reconnus par le contenu des disques (descripteur, `SYSTEM.CNF`,
+  en-tête Opera) ; un `.chd` ambigu reste non classé jusqu'à son rangement dans le bon dossier.
+- `--check-bios` pour PlayStation (par région) et 3DO ; réglages de cores PlayStation / 3DO en tête des options.
+- Écran Cores : ligne « BIOS HLE intégré — BIOS d'origine recommandé » (information, pas une erreur).
+
+### Corrigé
+
+- Un jeu CPC en `.zip` passe par l'extraction : cap32 n'insérait aucune disquette depuis un zip (« disc missing »).
+- Un zip de disquettes d'ordinateur devient un jeu multi-disquettes, dans l'ordre logique (« Disk N / Side X »,
+  TOSEC « Disk N of M ») ; les disquettes extraites sont listées dans cet ordre dans le menu.
+- `dosbox_pure` ne plante plus quand les options du core sont lues sans jeu chargé.
+- « Réinitialiser les sauvegardes » d'un jeu PlayStation n'est plus annulé par la reprise d'une carte mémoire d'un
+  autre core.
+- Une piste audio `.bin` d'une base 6.0 est purgée au rescan ; un gros `.bin` sans en-tête n'est plus haché.
+
+### Limites connues
+
+- Rendu logiciel seulement : pas de haute résolution ni de PGXP (SwanStation compris).
+- Pas de vibration de manette.
+- 3DO : pas de changement de disque (un jeu par disque, jeux à plusieurs CD non regroupés).
+- Compatibilité des BIOS de remplacement (HLE, OpenBIOS, Opera Boot) inférieure à celle des BIOS d'origine : certains
+  jeux peuvent mal démarrer sans BIOS.
+- `.chd` et `.pbp` reconnus par leur nom ; jamais de CD dans un zip.
+- Cartes mémoire copiées une fois d'un core à l'autre, non synchronisées.
+- Sega CD 32X (Mega CD + 32X) : prévu en 7.2.
+
 ## [6.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 6.0 : **Game Boy Advance**, **32X** et **Mega CD** complété. Guide d'essai :
