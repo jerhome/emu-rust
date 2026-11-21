@@ -187,3 +187,111 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-21 | 7.1 | Erreur fatale avant l'ouverture de la fenêtre, sans console | Windows : boîte de message native ; macOS / Linux : journal + `stderr` seulement (boîte native macOS : plus tard si l'essai le demande). | défaut |
 | 2026-11-21 | 7.1 | États sauvegardés après rangement, pour les cores qui mémorisent le chemin du média (CD, `media_direct`) | À mesurer par `qa-systems` (FQ3) ; si un core le fait : le dire dans le guide d'essai (réinsérer le disque par le menu « CD ») ; l'annulation remet les chemins. | à faire |
 | 2026-11-21 | 7.1 | Rangement : autre volume, exFAT / FAT, `roms/<id>` lié ou monté ailleurs ; seconde instance en jeu | **Pas de copie entre volumes en 7.1** : l'unité est bloquée et expliquée (à ranger à la main) ; idem sans liens physiques ou si `roms/<id>` n'est pas un vrai dossier. Une seconde fenêtre d'emu-rust en train de jouer n'est pas exclue par le verrou : ne pas ranger pendant ce temps (dit dans l'aperçu). À rouvrir si l'essai le demande. | défaut |
+
+## 7.2 — à discuter avec l'utilisateur
+
+Ajouté le 2026-11-21 (architecte). La 7.2 est **à l'étude** : `docs/essais-glisser-deposer.md` et
+`docs/essais-sega-cd-32x.md`. Rien n'est conçu tant que ces questions n'ont pas de réponse (demande de
+l'utilisateur : discuter du glisser-déposer avant la conception). Chaque question propose un **défaut recommandé** ;
+« ok pour les défauts » suffit.
+
+### Glisser-déposer de jeux dans la fenêtre
+
+À savoir d'abord : emu-rust reçoit seulement **l'emplacement du fichier** déposé, jamais le nom du programme d'où
+il vient. « Uniquement depuis le gestionnaire de fichiers » devient donc : « uniquement un vrai fichier, rangé à un
+endroit durable de l'ordinateur ».
+
+1. **Copier ou déplacer le fichier déposé ?**
+   - a) **Copier** : l'original reste où il était (Téléchargements, clé USB…) ; prend de la place en double.
+   - b) Déplacer : pas de doublon, mais le fichier disparaît de son dossier d'origine.
+   - c) Copier, avec une case « Déplacer plutôt que copier » dans la fenêtre de confirmation (choix mémorisé).
+   - **Défaut recommandé : c** (copie tant que la case n'est pas cochée).
+
+2. **Faut-il toujours montrer un aperçu avant de ranger ?**
+   - a) Toujours : liste « tel fichier → tel dossier », bouton « Ranger ».
+   - b) **Rangement direct quand tout est sûr** (jeu reconnu sans hésitation, pas de doublon), avec un message
+     « 3 jeux ajoutés — Annuler » ; aperçu seulement s'il y a un doute, un choix à faire ou un dossier entier.
+   - c) Jamais d'aperçu : ce qui est douteux est simplement refusé.
+   - **Défaut recommandé : b.**
+
+3. **Ce qui vient d'un navigateur ou d'un e-mail (lien, image, pièce jointe).** Le système refuse lui-même ces
+   dépôts : le pointeur affiche le symbole « interdit » et emu-rust n'est pas prévenu ; il ne peut donc **pas**
+   afficher de message.
+   - a) **Accepter ce comportement** (pointeur « interdit », rien ne se passe) ; un vrai message d'erreur reste
+     affiché pour tout ce qu'emu-rust reçoit et refuse (questions 4 et 6).
+   - b) Exiger un message dans tous les cas : demande du code propre à chaque système (Windows, macOS, Linux),
+     nettement plus long et plus risqué.
+   - **Défaut recommandé : a.**
+
+4. **Fichier tiré depuis une archive ouverte** (zip ouvert dans 7-Zip, WinRAR ou l'Explorateur, sans l'avoir
+   extraite). Le logiciel d'archive fabrique un fichier temporaire qu'il efface aussitôt.
+   - a) **Refuser avec un message** : « Extrayez d'abord l'archive dans un dossier, puis déposez le fichier. »
+   - b) Tenter la copie quand même (peut échouer une fois sur deux selon le logiciel).
+   - **Défaut recommandé : a.** (Le zip lui-même, déposé depuis le gestionnaire de fichiers, est accepté : n° 5.)
+
+5. **Un fichier `.zip` déposé depuis le gestionnaire de fichiers.**
+   - a) **Rangé tel quel, sans le décompresser**, comme le fait le bouton « Ranger les ROMs… » de la 7.1 (un zip
+     contenant un jeu de console est un jeu ; un zip contenant une image de CD est refusé avec le conseil habituel).
+   - b) Décompressé par emu-rust avant rangement.
+   - **Défaut recommandé : a** (emu-rust ne décompresse jamais vos fichiers).
+
+6. **Un fichier téléchargé, déposé depuis la barre de téléchargements du navigateur ou depuis le dossier
+   Téléchargements.** C'est un vrai fichier sur le disque : emu-rust ne peut pas le distinguer d'un fichier déposé
+   depuis l'Explorateur.
+   - a) **Accepté** (c'est le cas le plus courant : on télécharge un homebrew, on le dépose).
+   - b) Refuser tout ce qui se trouve dans le dossier Téléchargements (gênant : il faudrait d'abord le déplacer).
+   - **Défaut recommandé : a.**
+
+7. **Un dossier entier déposé.**
+   - a) **Accepté, toujours avec aperçu** : emu-rust cherche les jeux dedans (un jeu DOS en dossier est pris en
+     bloc) ; les fichiers qui ne sont pas des jeux sont laissés.
+   - b) Refusé : seuls des fichiers peuvent être déposés.
+   - **Défaut recommandé : a.**
+
+8. **Linux.** Le dépôt fonctionne sous Windows et macOS, et sous Linux « X11 ». Il **ne fonctionne pas** sous
+   Linux « Wayland » (donc pas non plus pour la version Linux lancée dans WSL), ni dans Docker.
+   - a) **Accepter cette limite** ; à ces endroits, on continue d'utiliser « Ouvrir le dossier des ROMs » puis
+     « Ranger les ROMs… ».
+   - b) Étudier un contournement pour Wayland (change la façon dont la fenêtre s'affiche sous Linux ; chantier à
+     part).
+   - **Défaut recommandé : a.**
+
+9. **Quand peut-on déposer, et que fait « Annuler » ?**
+   - Dépôt accepté sur tous les écrans hors jeu ; **pendant une partie : refusé avec un message** (« quittez le jeu
+     pour ajouter des jeux »). Déposer une disquette pour l'insérer dans le jeu en cours serait une autre fonction.
+   - « Annuler » après un dépôt : **retire les copies qu'emu-rust vient de faire** (seulement si elles n'ont pas
+     été modifiées) ; si le fichier avait été déplacé, il retourne à sa place d'origine.
+   - Autres défauts : un fichier déjà présent dans `roms/` n'est pas copié une seconde fois ; un BIOS reconnu
+     ouvre « Importer un BIOS… » ; un fichier qui n'est pas un jeu est refusé avec un message.
+   - **Défaut recommandé : tout ce qui précède.** Un point à changer ?
+
+### Sega CD 32X (Mega CD + 32X)
+
+À savoir : six jeux seulement (Night Trap, Corpse Killer, Fahrenheit, Slam City, Supreme Warrior, Surgical
+Strike). Ils fonctionnent avec picodrive (déjà installé pour la 32X) et le BIOS Mega CD que vous fournissez déjà.
+
+10. **Où ranger ces jeux dans la bibliothèque ?**
+    - a) **Sous « Mega CD », avec une pastille « 32X »** : vous les mettez avec vos autres CD Mega CD
+      (`roms/megacd/`), emu-rust choisit tout seul le bon moteur.
+    - b) Un système à part « Mega CD 32X » avec son propre dossier.
+    - **Défaut recommandé : a** (c'est aussi ainsi que les bases de données de jeux les classent).
+
+11. **Reconnaissance.** emu-rust reconnaîtra ces disques par leur empreinte (fichiers `.cue`) ou par la mention
+    `(Sega CD 32X)` / `(Mega-CD 32X)` / `(32X CD)` dans le nom du fichier (seul moyen pour un `.chd`).
+    - Votre Night Trap 32X : est-ce un `.cue` avec ses pistes, ou un `.chd` ? Quel est le nom exact du fichier ?
+    - a) **Si le nom ne porte pas la mention, une action « Ce jeu est un CD 32X »** dans le menu du jeu permet de
+      le marquer à la main.
+    - b) Pas de marquage manuel : il faut renommer le fichier.
+    - **Défaut recommandé : a.**
+
+12. **Essai.** Aucun CD 32X libre n'existe : les tests automatiques vérifieront seulement qu'emu-rust choisit
+    picodrive et que la 32X s'allume (disque et BIOS factices). Le vrai jeu ne peut être validé que par vous.
+    - a) **Publier la 7.2 en pré-release sur cette base**, votre essai de Night Trap 32X décidant de la suite.
+    - b) Attendre votre essai d'une version de travail avant toute pré-release.
+    - **Défaut recommandé : a.**
+
+13. **Ordre et contenu de la 7.2.** Le glisser-déposer dépend du rangement de la 7.1 ; le CD 32X est indépendant
+    et petit.
+    - a) **Une seule 7.2 avec les deux**, CD 32X fait en premier.
+    - b) CD 32X seul en 7.2, glisser-déposer en 7.3.
+    - **Défaut recommandé : a.**
