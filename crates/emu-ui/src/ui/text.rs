@@ -466,11 +466,9 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
 
 /// Error of a launch, with what to do for the cases the player can fix.
 /// A core that stays in memory (dosbox_pure) is reloaded from a private copy (ADR 0022); the copy failed.
-// Matched in `launch_error` once `emu_runtime` re-exports `LibretroError` (its `CoreCopy` variant is new).
-#[allow(dead_code)]
 pub fn core_copy_failed(path: &std::path::Path, e: &dyn std::fmt::Display) -> String {
     format!(
-        "Ce core ne peut pas être rechargé dans cette session (copie impossible dans {} : {e}). Quittez puis \
+        "Ce core ne peut pas être rechargé dans cette session (copie de {} impossible : {e}). Quittez puis \
          relancez emu-rust.",
         path.display()
     )
@@ -485,6 +483,9 @@ pub fn launch_error(e: &crate::UiError) -> String {
         crate::UiError::Runtime(emu_runtime::RuntimeError::DiskListFull { .. }) => {
             DISKS_LIST_FULL.to_owned()
         }
+        crate::UiError::Runtime(emu_runtime::RuntimeError::Libretro(
+            emu_runtime::LibretroError::CoreCopy { path, source },
+        )) => core_copy_failed(path, source),
         other => other.to_string(),
     }
 }
