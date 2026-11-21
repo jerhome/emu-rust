@@ -21,3 +21,20 @@
 | 1 | 2026-11-21 | Windows (clavier 60 %) | — / hatari | ❌ « core hatari : CRC32 x au lieu de y » : catalogue en cache plus vieux que le nightly reconstruit ; contournement « Vérifier les mises à jour » | corrigé (bf6801c) |
 | 2 | 2026-11-21 | Windows | Mouse Trap (ST), hatari + EmuTOS 1.4 fr | ✅ Installation EmuTOS, bureau GEM, `MOUSE.TOS` lancé depuis la fenêtre A, mode joystick (Hôte+J), démarrage par **Espace** : le jeu tourne bien | OK |
 | 3 | 2026-11-21 | Windows | idem | Ergonomie : l'utilisateur a pris `MOUSE.TOS` pour un pilote et ne savait pas lancer un programme depuis le bureau → ajouter au guide d'essai et à l'aide un mot sur « lancer un .PRG/.TOS depuis le bureau GEM » | à améliorer |
+
+## Essais 6.0.0-rc.1 (2026-11-21)
+
+| Hôte | Jeu | Résultat |
+|---|---|---|
+| Linux sous WSL2 (binaire Linux, WSLg) | Dune II (Mega Drive), clavier | **OK**, impeccable |
+| idem | son | **OK** après `libasound2-plugins` + `~/.asoundrc` (configuration de l'hôte, documentée) |
+| idem | manette | non vue : WSL2 ne voit pas l'USB sans `usbipd-win` (attendu) |
+| Windows | Dune (Mega CD), BIOS européen | ✅ **parfait** : image, son, **manette PS4** OK (première validation réelle du Mega CD et de la manette) |
+| Windows | Storm Master (PC-DOS, jeu-dossier, START.EXE) | ✅ **succès** : son et capture de la souris OK ; lancer → retour bibliothèque → relancer OK (copie privée du core, ADR 0022, validée en réel) |
+| Windows | Hunter (Amiga, `.ipf`) + `capsimg.dll` dans `system/` | ❌ reste sur l'écran « disquette Workbench » (IPF non lu) — mis de côté, voir questions-ouvertes |
+| Windows | Another World (Amiga, ADF), Kickstart 1.3 | ✅ **OK** : mode joystick et son |
+| Windows | Maniac Mansion (C64), vice_x64 | ❌→✅ installation refusée (CRC : index buildbot en retard, voir questions-ouvertes) → DLL posée à la main ; chargement long ; pointeur immobile sur le port 2 par défaut → **OK au port 1** (menu « Port joystick »), son OK, changement de face par le raccourci OK. Piste : le jeu/la DAT pourrait mémoriser le port connu par jeu, ou le guide le signaler |
+| Windows | B.A.T. (CPC), cap32 | ❌ zip de `.dsk` dans `roms/cpc/` : Ready, `cat` → « Drive A: disc missing » (aucune disquette insérée) ; ✅ les 4 `.dsk` (« Disk N of 4 ») extraits dans `roms/cpc/` : regroupés, fonctionne (« trop beau », jouable à la manette PS4), changement de disquette OK. **Défaut en diagnostic** (zip + cap32 `media = direct`) |
+| Windows | NBA Jam (32X), picodrive | ✅ **impeccable** : image, son, manette PS4 (fichier extrait) ; ❌ zip simple (un seul fichier) non utilisable, l'utilisateur a dû extraire — symptôme à préciser, défaut à diagnostiquer |
+
+Suites : restent CPC (zip), 32X, GBA, GBC, non-régression des consoles 1.0 et ST ; Docker WSLg ; PS1 et 3DO avec la 7.0 (en cours).

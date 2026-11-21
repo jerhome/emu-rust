@@ -1031,7 +1031,12 @@ pub(crate) fn zip_images(
         |name| workcopy::zip_entry_accepted(exts, name),
         max.saturating_add(1),
     )?;
-    Ok((!entries.is_empty()).then_some((archive, entries)))
+    // Logical disk order, whatever the order of the central directory (a `.m3u` lists them as extracted).
+    Ok((!entries.is_empty()).then(|| {
+        let mut entries = entries;
+        crate::diskorder::sort_zip_disks(&mut entries);
+        (archive, entries)
+    }))
 }
 
 fn exists(path: &Path) -> Result<bool, RuntimeError> {
@@ -2054,6 +2059,27 @@ mod tests {
     }
 
     #[test]
+    fn zip_stored_out_of_order_is_listed_in_disk_order() {
+        let f = Fixture::new();
+        let zip = f.file(
+            "Bat.zip",
+            &build_zip(&[
+                (b"Bat (Disk 3 of 3).st", b"3", None),
+                (b"Bat (Disk 1 of 3).st", b"1", None),
+                (b"Bat (Disk 2 of 3).st", b"2", None),
+            ]),
+        );
+        let p = f
+            .prepare(&set("Bat", vec![zip]), MediaPolicy::WorkingCopy)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&p.content).unwrap(),
+            "Bat (Disk 1 of 3).st\nBat (Disk 2 of 3).st\nBat (Disk 3 of 3).st\n"
+        );
+        assert_eq!(fs::read(&p.images[0]).unwrap(), b"1");
+    }
+
+    #[test]
     fn zip_with_several_disks_and_hostile_names() {
         let f = Fixture::new();
         let zip = f.file(
@@ -2083,10 +2109,11 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(names, ["evil.st", "root.st", "drive.st", "_hash.msa"]);
+        // Unnumbered floppies of one zip: alphabetical, as the library lists them.
+        assert_eq!(names, ["_hash.msa", "drive.st", "evil.st", "root.st"]);
         assert_eq!(
             fs::read_to_string(&p.content).unwrap(),
-            "evil.st\nroot.st\ndrive.st\n_hash.msa\n"
+            "_hash.msa\ndrive.st\nevil.st\nroot.st\n"
         );
         assert_eq!(
             f.written(),

@@ -55,17 +55,26 @@ fn is_console_file(path: &Path) -> bool {
         })
 }
 
+fn has_zip_ext(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+}
+
 /// §2.4 (design v2.1-identite-disques): a `.zip` whose retained entries (non-empty files) all have a console
 /// extension is a console ROM archive. Only the central directory is read; an unreadable or empty zip is not.
 fn is_console_zip(path: &Path) -> bool {
-    let is_zip = path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-    is_zip
+    has_zip_ext(path)
         && emu_runtime::archive_entry_names(path).is_ok_and(|names| {
             !names.is_empty() && names.iter().all(|n| is_console_file(Path::new(n)))
         })
 }
+
+/// `direct` computer cores that declare `zip` but insert no floppy from it (« Drive A: disc missing », checked
+/// with the real core): a zip is handed to them as a media set so the runtime extracts the images. No
+/// `cores.toml` key says this yet, hence the local list. hatarib is left out on purpose: it reads zips itself
+/// (Hatari), not checked with the real core, and the name of the modified floppy it writes to saves/ would change.
+/// Working-copy cores (hatari, puae, vice) always get media sets; dosbox_pure reads zips (`media_direct`).
+const NO_FLOPPY_FROM_ZIP: &[&str] = &["cap32"];
 
 fn is_known(prefs: &CorePreferences, id: &CoreId) -> bool {
     prefs
@@ -86,9 +95,10 @@ pub fn media_set_name(files: &[PathBuf]) -> String {
 
 /// Media policy rule: `working_copy` cores always get working copies; a core absent from the preferences gets
 /// one as soon as a file is a floppy image (prudent default); everything else is `Direct`.
-/// `File` for a single file of a `direct` core (1.0 behaviour, zips included); `Media` for several disks, a
-/// `.m3u`, or any content of a `working_copy` core (hatari writes into its disks: the user's file must never be
-/// handed over, even alone); `NoGame` without files.
+/// `File` for a single file of a `direct` core (1.0 behaviour, console zips included); `Media` for several disks, a
+/// `.m3u`, any content of a `working_copy` core (hatari writes into its disks: the user's file must never be
+/// handed over, even alone), or a `.zip` for a core of [`NO_FLOPPY_FROM_ZIP`] (cap32: the runtime extracts the
+/// images instead); `NoGame` without files.
 pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreferences) -> ContentSpec {
     let files = match content {
         GameContent::NoGame => return ContentSpec::NoGame,
@@ -138,7 +148,9 @@ pub fn content_spec(core_id: &str, content: &GameContent, prefs: &CorePreference
             rules,
         };
     }
-    if files.len() == 1 && policy == MediaPolicy::Direct {
+    let floppy_zip =
+        files.len() == 1 && has_zip_ext(&files[0]) && NO_FLOPPY_FROM_ZIP.contains(&core_id);
+    if files.len() == 1 && policy == MediaPolicy::Direct && !floppy_zip {
         return ContentSpec::File(files[0].clone());
     }
     ContentSpec::Media {
@@ -537,6 +549,90 @@ mod tests {
                 &prefs
             )),
             Some(MediaPolicy::WorkingCopy)
+        );
+    }
+
+    /// Essai CPC 5.0: a zip of floppies for cap32 is a media set (the runtime extracts the images); hatarib,
+    /// console and dosbox_pure zips are unchanged.
+    #[test]
+    fn cap32_zip_is_a_media_set() {
+        let prefs = CorePreferences::builtin();
+        let dir = tempfile::tempdir().unwrap();
+        let cpc = dir.path().join("Sorcery.zip");
+        write_zip(&cpc, &[("Sorcery.dsk", b"disk")]);
+        let two = dir.path().join("Two.zip");
+        write_zip(
+            &two,
+            &[("Two (Disk 1).dsk", b"a"), ("Two (Disk 2).dsk", b"b")],
+        );
+        for (core, zip) in [("cap32", &cpc), ("cap32", &two)] {
+            match content_spec(core, &GameContent::Files(vec![zip.clone()]), &prefs) {
+                ContentSpec::Media { set, rules } => {
+                    assert_eq!(set.images, vec![zip.clone()], "{core}");
+                    assert_eq!(rules.policy, MediaPolicy::Direct, "{core}");
+                }
+                other => panic!("{core}: {other:?}"),
+            }
+        }
+        // Upper-case extension too.
+        let upper = dir.path().join("UPPER.ZIP");
+        write_zip(&upper, &[("A.DSK", b"disk")]);
+        assert!(matches!(
+            content_spec("cap32", &GameContent::Files(vec![upper]), &prefs),
+            ContentSpec::Media { .. }
+        ));
+        // hatarib reads zips itself (not checked with the real core): 1.0 path kept.
+        assert_eq!(
+            content_spec("hatarib", &GameContent::Files(vec![cpc.clone()]), &prefs),
+            ContentSpec::File(cpc.clone())
+        );
+        // Working-copy computer cores were already sets.
+        for core in ["puae", "puae2021", "hatari", "vice_x64", "vice_x64sc"] {
+            assert_eq!(
+                policy_of(&content_spec(
+                    core,
+                    &GameContent::Files(vec![cpc.clone()]),
+                    &prefs
+                )),
+                Some(MediaPolicy::WorkingCopy),
+                "{core}"
+            );
+        }
+        // Console: the archive itself (the core reads zips).
+        let snes = dir.path().join("Game.zip");
+        write_zip(&snes, &[("Game.sfc", b"rom")]);
+        assert_eq!(
+            content_spec("snes9x", &GameContent::Files(vec![snes.clone()]), &prefs),
+            ContentSpec::File(snes.clone())
+        );
+        assert_eq!(
+            content_spec(
+                "genesis_plus_gx",
+                &GameContent::Files(vec![snes.clone()]),
+                &prefs
+            ),
+            ContentSpec::File(snes)
+        );
+        // dosbox_pure reads its zips (`media_direct`: handed over in place by the runtime): unchanged.
+        let dos = dir.path().join("Doom.zip");
+        write_zip(&dos, &[("DOOM.EXE", b"mz")]);
+        match content_spec(
+            "dosbox_pure",
+            &GameContent::Files(vec![dos.clone()]),
+            &prefs,
+        ) {
+            ContentSpec::Media { set, rules } => {
+                assert_eq!(set.images, vec![dos]);
+                assert_eq!(rules.policy, MediaPolicy::WorkingCopy);
+                assert!(rules.media_direct.iter().any(|e| e == "zip"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A bare floppy keeps the 1.0 path.
+        let dsk = dir.path().join("Sorcery.dsk");
+        assert_eq!(
+            content_spec("cap32", &GameContent::Files(vec![dsk.clone()]), &prefs),
+            ContentSpec::File(dsk)
         );
     }
 
