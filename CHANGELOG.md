@@ -2,6 +2,37 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+Deuxième pré-release de la 2.1 : **identité de jeu**, disquettes ajoutées mémorisées, réglages de la manette.
+
+### Ajouté
+
+- Identité de jeu : deux jeux homonymes (`disk1.st` dans deux dossiers, deux `Game.sfc`) ont des sauvegardes séparées,
+  le second devient `Nom (2)`. Le choix est mémorisé dans le registre `.emu-rust-games` de `saves/<core>/`. Un
+  bandeau l'annonce une fois. Aucun fichier existant n'est renommé ni supprimé.
+- Héritage du `.srm` et des options par jeu : un homonyme déjà joué en 2.0 reçoit une copie (cible absente seulement) ;
+  les états restent attachés au premier jeu, et le bandeau le dit.
+- Confirmation avant de charger un état d'un autre fichier du même nom : la réponse par défaut est **Non**.
+- Disquettes ajoutées (Atari ST) restaurées à chaque lancement, dans le même ordre, sans être insérées. Menu
+  Disquettes : retrait de la liste (la copie est gardée) ou retrait avec suppression de la copie (confirmation),
+  « Nettoyer les copies… » (rien n'est coché d'office), limite de 32 disquettes avec le message
+  « Liste pleine : retirez d'abord une disquette ajoutée. ».
+- Réglages de la manette (Réglages → Manette) : état, zone morte, seuil des gâchettes, raccourci, remappage des boutons
+  par système (« appuyez sur un bouton »).
+- Navigation de la bibliothèque à la manette, avec répétition quand la direction est maintenue.
+- Mega CD en ligne de commande : le message de BIOS manquant s'affiche aussi sans l'interface.
+- Core inconnu + `.zip` : un zip qui ne contient que des fichiers de console est lu directement (comportement 1.0) ;
+  une disquette, une extension inconnue ou un zip illisible ⇒ copie de travail.
+
+### Limites connues
+
+- Pas de jeu Mega CD à plusieurs disques, pas d'import de BIOS par bouton, pas d'identification automatique des
+  disques.
+- Verrou en repli : si le système ne gère pas le verrou de fichier (certains partages réseau), deux instances lancées
+  au même instant peuvent attribuer le même nom. Rien n'est supprimé. Message de journal à guetter :
+  `lock not available (…); concurrent launches are not protected` (fichier `.emu-rust-games.lock`).
+
 ## [2.1.0-rc.1] - 2026-11-21
 
 Pré-release de la 2.1 : **Mega CD**, **manette PS4** et arrêt propre.
@@ -36,7 +67,7 @@ Pré-release de la 2.1 : **Mega CD**, **manette PS4** et arrêt propre.
 ### Limites connues
 
 - Pas de jeu Mega CD à plusieurs disques, pas d'import de BIOS par bouton, pas d'identification automatique des
-  disques ; deux `.cue` de même nom partagent leur sauvegarde (identité de jeu à venir).
+  disques.
 
 ## [2.0.0-rc.2] - 2026-11-21
 
