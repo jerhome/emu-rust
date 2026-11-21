@@ -94,13 +94,27 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// What a failed `run` needs to pick a more precise hint than the generic one.
+struct RunContext {
+    core: std::path::PathBuf,
+    roms: Vec<std::path::PathBuf>,
+    system_dir: std::path::PathBuf,
+}
+
 fn report(result: Result<(), emu_ui::UiError>) -> ExitCode {
+    report_with(result, None)
+}
+
+fn report_with(result: Result<(), emu_ui::UiError>, context: Option<RunContext>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("erreur : {e}");
             if matches!(e, emu_ui::UiError::Runtime(_)) {
-                eprintln!("{}", diagnostics::load_failure_hint());
+                let megacd = context
+                    .as_ref()
+                    .and_then(|c| emu_ui::megacd_cli_hint(&c.core, &c.roms, &c.system_dir));
+                eprintln!("{}", megacd.unwrap_or_else(diagnostics::load_failure_hint));
             }
             ExitCode::FAILURE
         }
@@ -142,7 +156,15 @@ fn main() -> ExitCode {
         Ok(cli::Command::Run(c)) => match build_options(*c) {
             Ok(options) => {
                 install_signal_handler();
-                report(emu_ui::run(options))
+                let context = RunContext {
+                    core: options.core.clone(),
+                    roms: match &options.content {
+                        emu_ui::GameContent::Files(files) => files.clone(),
+                        _ => Vec::new(),
+                    },
+                    system_dir: options.dirs.system.clone(),
+                };
+                report_with(emu_ui::run(options), Some(context))
             }
             Err(e) => fail(&e),
         },

@@ -804,6 +804,7 @@ dependencies = [
  "tracing",
  "winit",
  "wiremock",
+ "zip",
 ]
 
 [[package]]

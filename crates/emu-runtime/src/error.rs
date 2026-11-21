@@ -32,6 +32,9 @@ pub enum RuntimeError {
     /// A working copy could not be completed for lack of space; the partial copy has been removed.
     #[error("disk full while writing {path}")]
     DiskFull { path: PathBuf },
+    /// The core's disk list is full: remove an added disk first.
+    #[error("at most {max} disk images: remove an added disk first")]
+    DiskListFull { max: usize },
     /// The running core registered no disk control interface.
     #[error("the core does not support disk swapping")]
     NoDiskControl,

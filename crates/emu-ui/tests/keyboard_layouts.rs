@@ -57,7 +57,11 @@ fn check(id: &str, text: &str) -> Layout {
         let _ = (&key.label, &key.fr, &key.de, key.sticky);
         let width = key.width.unwrap_or(1.0);
         let gap = key.gap.unwrap_or(0.0);
-        assert!((0.5..=10.0).contains(&width), "{id} : largeur de {}", key.key);
+        assert!(
+            (0.5..=10.0).contains(&width),
+            "{id} : largeur de {}",
+            key.key
+        );
         assert!((0.0..=10.0).contains(&gap), "{id} : espace de {}", key.key);
     }
     for (from, to) in &layout.remap {
@@ -67,13 +71,20 @@ fn check(id: &str, text: &str) -> Layout {
     }
     // The loader contract: `[remap]` closes the file so later tables cannot be swallowed by it.
     if !layout.remap.is_empty() {
-        assert!(text.rfind("[remap]") > text.rfind("[[row]]"), "{id} : [remap] pas en dernier");
+        assert!(
+            text.rfind("[remap]") > text.rfind("[[row]]"),
+            "{id} : [remap] pas en dernier"
+        );
     }
     layout
 }
 
 fn has_key(layout: &Layout, key: &str) -> bool {
-    layout.row.iter().flat_map(|r| &r.keys).any(|k| k.key == key)
+    layout
+        .row
+        .iter()
+        .flat_map(|r| &r.keys)
+        .any(|k| k.key == key)
 }
 
 #[test]
@@ -92,7 +103,10 @@ fn existing_layouts_still_parse() {
 #[test]
 fn pc_uses_oem_102() {
     let pc = check("pc", FILES[0].1);
-    assert_eq!(pc.remap.get("IntlBackslash").map(String::as_str), Some("oem_102"));
+    assert_eq!(
+        pc.remap.get("IntlBackslash").map(String::as_str),
+        Some("oem_102")
+    );
     assert!(has_key(&pc, "oem_102") && has_key(&pc, "kp5") && has_key(&pc, "f12"));
 }
 

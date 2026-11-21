@@ -49,8 +49,21 @@ impl Limits {
 /// `Limits::DEFAULT`), for the UI to tell a console ROM zip from a disk zip when the core is unknown (2.1, §2.4).
 /// Directories and empty entries are left out.
 pub fn archive_entry_names(zip: &Path) -> Result<Vec<String>, RuntimeError> {
-    let _ = zip;
-    todo!("I2: open_archive + entry_file_name, no extraction")
+    let archive = open_archive(zip, Limits::DEFAULT)?;
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        // Central-directory metadata only, as `accepted_entries`.
+        let entry = archive
+            .by_index_data(index)
+            .map_err(|e| archive_error(zip, e))?;
+        if !entry.is_file() || entry.size() == 0 {
+            continue;
+        }
+        if let Some(name) = entry_file_name(entry.name_raw()) {
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 /// See the contract on `Emulator::load`.
@@ -695,5 +708,33 @@ pub(crate) mod tests {
             },
             Err(e) => panic!("unexpected error {e}"),
         }
+    }
+
+    #[test]
+    fn archive_entry_names_reads_only_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = write_zip(
+            tmp.path(),
+            "set.zip",
+            &[
+                (b"dir/", b"", None),
+                (b"dir/Game.sfc", b"rom", None),
+                (b"empty.st", b"", None),
+                (b"../../evil.md", b"x", None),
+                // Declared far larger than the archive: never extracted, so never refused here.
+                (b"big.bin", b"y", Some(u32::MAX)),
+            ],
+        );
+        assert_eq!(
+            archive_entry_names(&zip).unwrap(),
+            ["Game.sfc", "evil.md", "big.bin"]
+        );
+        let garbage = tmp.path().join("bad.zip");
+        fs::write(&garbage, b"not a zip").unwrap();
+        assert!(matches!(
+            archive_entry_names(&garbage),
+            Err(RuntimeError::Archive { .. })
+        ));
+        assert!(archive_entry_names(&tmp.path().join("missing.zip")).is_err());
     }
 }

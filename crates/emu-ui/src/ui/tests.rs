@@ -385,6 +385,8 @@ fn computer_fixture() -> Fixture {
         current: Some(0),
         addable: vec![PathBuf::from("/jeux/extra.st")],
         can_reset: true,
+        added: Vec::new(),
+        orphans: None,
     });
     f
 }
@@ -488,4 +490,190 @@ fn options_scope_row_switches_to_this_game() {
     let mut o = opened(Screen::CoreOptions, &f);
     let actions = f.keys(&mut o, 0, &[Key::ArrowUp, Key::ArrowRight]);
     assert_eq!(actions, vec![UiAction::SetGameScope(true)]);
+}
+
+fn slot_fixture_menu(f: &Fixture, confirm: ConfirmLoad) -> Overlay {
+    let mut o = Overlay::default();
+    o.open(Screen::Menu);
+    o.ask_load_confirmation(confirm);
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    o
+}
+
+#[test]
+fn state_confirmation_defaults_to_no() {
+    let f = Fixture::new();
+    let confirm = ConfirmLoad {
+        slot: 0,
+        from_menu: true,
+        has_disks: true,
+    };
+    // From the menu: Enter on the focused « Non » goes back to the menu, nothing loaded.
+    let mut o = slot_fixture_menu(&f, confirm);
+    assert!(f.keys(&mut o, 0, &[Key::Enter]).is_empty());
+    assert_eq!(o.confirm_load, None);
+    assert_eq!(o.screen(), Some(Screen::Menu));
+    // Then the menu is back, its first row focused.
+    assert_eq!(f.keys(&mut o, 0, &[Key::Enter]), vec![UiAction::Resume]);
+    // « Oui, charger » is one row below.
+    let mut o = slot_fixture_menu(&f, confirm);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::ConfirmLoadState(0)]
+    );
+    // From a shortcut: « Non » resumes the game.
+    let mut o = slot_fixture_menu(
+        &f,
+        ConfirmLoad {
+            from_menu: false,
+            ..confirm
+        },
+    );
+    assert_eq!(f.keys(&mut o, 0, &[Key::Enter]), vec![UiAction::Resume]);
+}
+
+#[test]
+fn back_cancels_a_state_confirmation() {
+    let confirm = ConfirmLoad {
+        slot: 3,
+        from_menu: true,
+        has_disks: false,
+    };
+    let mut o = Overlay::default();
+    o.open(Screen::Menu);
+    o.ask_load_confirmation(confirm);
+    o.back();
+    assert_eq!(o.screen(), Some(Screen::Menu));
+    assert_eq!(o.confirm_load, None);
+    o.ask_load_confirmation(ConfirmLoad {
+        from_menu: false,
+        ..confirm
+    });
+    o.back();
+    assert!(!o.is_open());
+}
+
+fn added_fixture() -> Fixture {
+    let mut f = computer_fixture();
+    let disks = f.disks.as_mut().unwrap();
+    disks.addable.clear();
+    disks.can_reset = false;
+    disks.added = vec![AddedDiskView {
+        copy: PathBuf::from("/s/hatari/Jeu.disks/Extra.st"),
+        name: "Extra.st".into(),
+        size: 737_280,
+        modified: None,
+        source_missing: true,
+        inserted: false,
+    }];
+    disks.orphans = Some(vec![
+        OrphanCopy {
+            name: "02 Extra.st".into(),
+            kind: emu_runtime::OrphanKind::Copy,
+            size: 737_280,
+            modified: None,
+        },
+        OrphanCopy {
+            name: "Jeu.m3u".into(),
+            kind: emu_runtime::OrphanKind::StalePlaylist,
+            size: 20,
+            modified: None,
+        },
+    ]);
+    f
+}
+
+#[test]
+fn added_disk_can_be_removed_with_or_without_its_copy() {
+    let f = added_fixture();
+    let copy = PathBuf::from("/s/hatari/Jeu.disks/Extra.st");
+    let mut o = opened(Screen::Disks, &f);
+    // Slots A, B, then the added disk opens its dialog.
+    assert!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Tab, Key::Enter])
+            .is_empty()
+    );
+    assert_eq!(o.disk_forget.as_ref(), Some(&copy));
+    f.pass(&mut o, 0, &[]);
+    // « Annuler » has the focus.
+    assert!(f.keys(&mut o, 0, &[Key::Enter]).is_empty());
+    assert_eq!(o.disk_forget, None);
+    o.disk_forget = Some(copy.clone());
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::ForgetDisk {
+            copy: copy.clone(),
+            delete: false
+        }]
+    );
+    // Deleting the copy asks again, « Non » first.
+    o.disk_forget = Some(copy.clone());
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    assert!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Tab, Key::Enter])
+            .is_empty()
+    );
+    assert!(o.disk_delete_confirm);
+    f.pass(&mut o, 0, &[]);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::ForgetDisk { copy, delete: true }]
+    );
+    // Back closes the confirmation, then the dialog, then the screen.
+    o.back();
+    assert!(!o.disk_delete_confirm);
+    o.back();
+    assert_eq!(o.disk_forget, None);
+    assert_eq!(o.screen(), Some(Screen::Disks));
+}
+
+#[test]
+fn clean_dialog_deletes_only_checked_rows() {
+    let f = added_fixture();
+    let mut o = opened(Screen::Disks, &f);
+    // Slots A, B, added disk, eject, then « Nettoyer les copies… ».
+    let actions = f.keys(
+        &mut o,
+        0,
+        &[Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Enter],
+    );
+    assert!(actions.is_empty(), "{actions:?}");
+    assert_eq!(o.clean, Some(CleanDialog::default()));
+    f.pass(&mut o, 0, &[]);
+    // Nothing checked: the delete row is disabled, Tab goes from the first check box to « Reprendre ».
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::AdoptOrphan("02 Extra.st".into())]
+    );
+    // Check the playlist only (Space on the check box), then delete.
+    let actions = f.keys(&mut o, 0, &[Key::Tab, Key::Space]);
+    assert!(actions.is_empty());
+    let clean = o.clean.clone().unwrap();
+    assert_eq!(
+        clean.selected.iter().cloned().collect::<Vec<_>>(),
+        vec!["Jeu.m3u".to_owned()]
+    );
+    assert!(f.keys(&mut o, 0, &[Key::Tab, Key::Enter]).is_empty());
+    assert!(o.clean.as_ref().unwrap().confirm);
+    f.pass(&mut o, 0, &[]);
+    // « Non » first.
+    assert!(f.keys(&mut o, 0, &[Key::Enter]).is_empty());
+    assert!(!o.clean.as_ref().unwrap().confirm);
+    o.clean.as_mut().unwrap().confirm = true;
+    o.focus_first = true;
+    f.pass(&mut o, 0, &[]);
+    f.pass(&mut o, 0, &[]);
+    assert_eq!(
+        f.keys(&mut o, 0, &[Key::Tab, Key::Enter]),
+        vec![UiAction::CleanCopies(vec!["Jeu.m3u".into()])]
+    );
+    o.back();
+    assert_eq!(o.clean, None);
+    assert_eq!(o.screen(), Some(Screen::Disks));
 }

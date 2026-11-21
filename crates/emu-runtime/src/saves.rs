@@ -588,6 +588,49 @@ mod tests {
     }
 
     #[test]
+    fn game_fp_round_trip_and_2_0_states() {
+        let mut h = header();
+        h.game_fp = Some("737280:deadbeef".into());
+        let bytes = encode_state(&h, b"p");
+        assert_eq!(decode_state(&bytes).unwrap().0, h);
+        let header_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(read_state_header(&bytes[..16 + header_len]).unwrap(), h);
+        // A 1.0 / 2.0 state (no `game_fp` line) is unchanged byte for byte and reads back as `None`.
+        let old = encode_state(&header(), b"p");
+        assert!(!old.windows(7).any(|w| w == b"game_fp"));
+        assert_eq!(decode_state(&old).unwrap().0.game_fp, None);
+    }
+
+    /// Frozen bytes of a 2.1 state: the `game_fp` line is appended after the four 2.0 keys, so a 2.0 reader (which
+    /// skips unknown keys) loads it. Changing this layout breaks loading 2.1 states in 2.0.
+    #[test]
+    fn a_2_1_header_is_frozen_and_readable_by_2_0() {
+        let h = StateHeader {
+            core_id: "hatari".into(),
+            core_version: "1.4".into(),
+            game: "G (2)".into(),
+            created_unix: 1_763_700_000,
+            game_fp: Some("737280:0a1b2c3d".into()),
+        };
+        let bytes = encode_state(&h, &[0xAA, 0xBB]);
+        let text = b"core_id=hatari\ncore_version=1.4\ngame=G (2)\ncreated_unix=1763700000\ngame_fp=737280:0a1b2c3d\n";
+        let mut expected = b"EMURSTAT".to_vec();
+        expected.extend_from_slice(&[1, 0, 0, 0]);
+        expected.extend_from_slice(&[text.len() as u8, 0, 0, 0]);
+        expected.extend_from_slice(text);
+        expected.extend_from_slice(&[2, 0, 0, 0, 0, 0, 0, 0, 0xAA, 0xBB]);
+        expected.extend_from_slice(&fnv1a64(&[0xAA, 0xBB]).to_le_bytes());
+        assert_eq!(bytes, expected);
+        // What a 2.0 reader sees: an unknown key of the same length, ignored.
+        let mut as_2_0 = bytes.clone();
+        let at = as_2_0.windows(7).position(|w| w == b"game_fp").unwrap();
+        as_2_0[at..at + 7].copy_from_slice(b"unknown");
+        let (decoded, payload) = decode_state(&as_2_0).unwrap();
+        assert_eq!((decoded.game.as_str(), decoded.game_fp), ("G (2)", None));
+        assert_eq!(payload, [0xAA, 0xBB]);
+    }
+
+    #[test]
     fn header_values_are_sanitised() {
         let mut h = header();
         h.core_version = "1.0\ncore_id=evil\r".into();

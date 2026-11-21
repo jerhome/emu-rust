@@ -372,3 +372,53 @@ pub fn megacd_load_failed(game: &str, names: &[&str], system_dir: &Path) -> Stri
         megacd_system_dir(system_dir)
     )
 }
+
+pub const PAD_TITLE: &str = "Manette";
+pub const PAD_ENABLED: &str = "Activer les manettes";
+pub const PAD_DISABLED_NOTE: &str = "Manettes désactivées.";
+pub const PAD_UNAVAILABLE: &str = "Manettes indisponibles (option --no-gamepad, compilation sans manette ou service système absent).";
+pub const PAD_NONE: &str = "Aucune manette branchée.";
+pub const PAD_DEADZONE: &str = "Zone morte du stick";
+pub const PAD_TRIGGER: &str = "Seuil des gâchettes (L2 / R2)";
+pub const PAD_HOTKEY: &str = "Bouton des raccourcis :";
+pub const PAD_HOTKEY_MODE: &str = "PS";
+pub const PAD_HOTKEY_SELECT: &str = "Share / Select";
+pub const PAD_PAUSE_ON_DISCONNECT: &str = "Mettre le jeu en pause si la manette est débranchée";
+pub const PAD_REMAP_TITLE: &str = "Remappage des boutons";
+pub const PAD_REMAP_NOTE: &str = "Choisir un bouton du jeu, puis appuyer sur le bouton de la manette à lui associer \
+                                  (Échap : annuler). Pris en compte au prochain lancement d'un jeu.";
+pub const PAD_REMAP_SYSTEM: &str = "Système :";
+pub const PAD_REMAP_CHANGE: &str = "Changer";
+pub const PAD_REMAP_CANCEL: &str = "Annuler";
+pub const PAD_REMAP_RESET: &str = "Rétablir les boutons par défaut de ce système";
+pub const PAD_REMAP_WAIT: &str = "Appuyez sur un bouton de la manette…";
+pub const PAD_REMAP_NONE: &str = "—";
+pub const PAD_REMAP_NO_PAD: &str = "Branchez une manette pour changer un bouton.";
+pub const PAD_REMAP_MODE: &str = "Le bouton PS sert aux raccourcis : choisissez-en un autre.";
+
+pub fn pad_line(port: usize, name: &str) -> String {
+    format!("Port {} : {}", port + 1, clean(name))
+}
+
+pub fn pad_button_label(button: crate::gamepad::PadButton) -> &'static str {
+    use crate::gamepad::PadButton as P;
+    match button {
+        P::South => "Croix",
+        P::East => "Rond",
+        P::West => "Carré",
+        P::North => "Triangle",
+        P::L1 => "L1",
+        P::R1 => "R1",
+        P::L2 => "L2",
+        P::R2 => "R2",
+        P::Select => "Share",
+        P::Start => "Options",
+        P::Mode => "PS",
+        P::L3 => "L3",
+        P::R3 => "R3",
+        P::DPadUp => "Croix directionnelle haut",
+        P::DPadDown => "Croix directionnelle bas",
+        P::DPadLeft => "Croix directionnelle gauche",
+        P::DPadRight => "Croix directionnelle droite",
+    }
+}

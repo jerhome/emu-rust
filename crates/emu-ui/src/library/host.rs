@@ -13,10 +13,10 @@ use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
-use super::{LaunchRequest, LibraryEvent, LibraryUi, Page, text};
-use crate::app::{App, Restart, open_gamepad};
+use super::{LaunchRequest, Level, LibraryEvent, LibraryUi, Page, text};
+use crate::app::{App, Restart, open_gamepad, pad_poll_interval};
 use crate::egui_layer::EguiLayer;
-use crate::gamepad::PadBackend;
+use crate::gamepad::{GamepadSettings, NavKey, PadBackend};
 use crate::{LaunchOptions, LibraryOptions, LibraryScreen, UiError};
 
 const WINDOW: (u32, u32) = (1280, 720);
@@ -42,6 +42,8 @@ struct Host {
     gamepad_allowed: bool,
     gamepad_opened: bool,
     gamepad: Option<PadBackend>,
+    /// Last pad list given to the settings page (a change redraws).
+    last_pads: Vec<(usize, String)>,
     screen: Option<LibraryScreen>,
     dump_window: Option<std::path::PathBuf>,
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
@@ -74,6 +76,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         gamepad_allowed: options.gamepad,
         gamepad_opened: false,
         gamepad: None,
+        last_pads: Vec::new(),
         screen: options.screen,
         dump_window: options.dump_window,
         proxy,
@@ -152,18 +155,8 @@ impl Host {
                 for w in &request.warnings {
                     app.warn(w.clone());
                 }
-                // Only a real attempt (backend enabled) counts as "opened"; a disabled pad is retried later.
-                if should_open_gamepad(
-                    self.gamepad_allowed,
-                    self.library.config().input.gamepad.enabled,
-                    self.gamepad_opened,
-                ) {
-                    self.gamepad_opened = true;
-                    let (pad, notice) = open_gamepad(self.gamepad_allowed, self.library.config());
-                    self.gamepad = pad;
-                    if let Some(notice) = notice {
-                        app.warn(notice.to_owned());
-                    }
+                if let Some(notice) = self.open_pad_if_needed() {
+                    app.warn(notice.to_owned());
                 }
                 app.set_gamepad(self.gamepad.take());
                 app.attach(event_loop, window, self.egui.take());
@@ -179,6 +172,78 @@ impl Host {
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }
+        }
+    }
+
+    /// Opens the pad backend once. Only a real attempt (backend enabled) counts as "opened": a disabled pad is
+    /// retried once it is enabled in the settings.
+    fn open_pad_if_needed(&mut self) -> Option<&'static str> {
+        if !should_open_gamepad(
+            self.gamepad_allowed,
+            self.library.config().input.gamepad.enabled,
+            self.gamepad_opened,
+        ) {
+            return None;
+        }
+        self.gamepad_opened = true;
+        let (pad, notice) = open_gamepad(self.gamepad_allowed, self.library.config());
+        self.gamepad = pad;
+        notice
+    }
+
+    /// Library navigation from the pad (D-pad / stick, Cross = Enter, Circle = Escape, with auto-repeat), the
+    /// settings page's pad status and the remap capture. Runs on every loop turn while no game is running.
+    fn poll_pad(&mut self) {
+        if self.game.is_some() || self.screen.is_some() {
+            return;
+        }
+        let mut redraw = false;
+        if let Some(notice) = self.open_pad_if_needed() {
+            self.library.set_status(notice.to_owned(), Level::Warn);
+            redraw = true;
+        }
+        let settings_changed = self.library.take_pad_settings_changed();
+        let Some(pad) = &mut self.gamepad else {
+            return;
+        };
+        if settings_changed {
+            pad.set_settings(GamepadSettings::from_config(
+                &self.library.config().input.gamepad,
+            ));
+        }
+        pad.set_ui_capture(true);
+        pad.set_learning(self.library.pad_wants_learning());
+        pad.pump();
+        // Game shortcuts mean nothing in the library.
+        let _ = pad.take_hotkeys();
+        redraw |= !pad.take_notices().is_empty();
+        let nav = pad.take_nav();
+        let learned = pad.take_learned();
+        let pads = pad.attached_names();
+        self.library.set_pad_status(true, pads.clone());
+        if pads != self.last_pads {
+            self.last_pads = pads;
+            redraw = true;
+        }
+        if let Some(button) = learned {
+            self.library.pad_learned(button);
+            redraw = true;
+        }
+        if let Some(egui) = &mut self.egui {
+            for key in nav {
+                egui.inject_key(match key {
+                    NavKey::Up => egui::Key::ArrowUp,
+                    NavKey::Down => egui::Key::ArrowDown,
+                    NavKey::Left => egui::Key::ArrowLeft,
+                    NavKey::Right => egui::Key::ArrowRight,
+                    NavKey::Activate => egui::Key::Enter,
+                    NavKey::Back => egui::Key::Escape,
+                });
+                redraw = true;
+            }
+        }
+        if redraw {
+            self.request_redraw();
         }
     }
 
@@ -330,7 +395,12 @@ impl ApplicationHandler<Wake> for Host {
     }
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if self.game.is_none() && matches!(cause, StartCause::ResumeTimeReached { .. }) {
+        // The pad poll also wakes the loop: only redraw when egui asked for it.
+        if self.game.is_none()
+            && matches!(cause, StartCause::ResumeTimeReached { .. })
+            && self.repaint_at.is_some_and(|t| t <= Instant::now())
+        {
+            self.repaint_at = None;
             self.request_redraw();
         }
     }
@@ -395,9 +465,17 @@ impl ApplicationHandler<Wake> for Host {
         if event_loop.exiting() {
             return;
         }
-        let flow = self
-            .repaint_at
-            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        self.poll_pad();
+        let pad_at = self
+            .gamepad
+            .as_ref()
+            .filter(|_| self.screen.is_none())
+            .map(|p| Instant::now() + pad_poll_interval(!p.attached().is_empty()));
+        let wake = match (self.repaint_at, pad_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         event_loop.set_control_flow(flow);
     }
 

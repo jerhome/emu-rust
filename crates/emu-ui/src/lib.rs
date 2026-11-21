@@ -12,6 +12,7 @@ mod egui_layer;
 // Used by U4 (`FileBrowser::show`, import dialog).
 #[allow(dead_code)]
 mod file_picker;
+mod game_identity;
 mod game_options;
 mod gamepad;
 mod hotkeys;
@@ -38,6 +39,7 @@ pub use crate::config_library::{
 };
 pub use crate::content::{GameContent, content_spec, media_set_name};
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad::GilrsSource;
 pub use crate::gamepad::{
@@ -47,6 +49,7 @@ pub use crate::gamepad::{
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::library::megacd_cli_hint;
 pub use crate::shutdown::request_shutdown;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;

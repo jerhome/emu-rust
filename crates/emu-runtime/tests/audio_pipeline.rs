@@ -104,6 +104,7 @@ fn emulator() -> Emulator {
         state_dir: data.join("states"),
         assets_dir: data.join("assets"),
         core_variables: Vec::new(),
+        restore_added_disks: false,
     };
     std::fs::create_dir_all(&options.system_dir).unwrap();
     std::fs::create_dir_all(&options.save_dir).unwrap();
