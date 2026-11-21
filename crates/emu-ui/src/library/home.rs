@@ -29,7 +29,7 @@ fn system_color(id: &str) -> Color32 {
 
 impl LibraryUi {
     pub(super) fn home(&mut self, ui: &mut Ui) {
-        let dialog_open = self.dialog.is_some();
+        let dialog_open = self.dialog.is_some() || self.cores.import.is_active();
         let mut refilter = false;
         let search_id = Id::unique("library-search");
 
@@ -97,8 +97,14 @@ impl LibraryUi {
                         self.start_scan(ui.ctx());
                     }
                 }
+                if ui.button(text::OPEN_ROM_FOLDER).clicked() {
+                    self.open_rom_folder();
+                }
                 if ui.button(text::DESKTOP_BUTTON).clicked() {
                     self.launch_desktop("atarist");
+                }
+                if ui.button(text::AMIGA_DESKTOP_BUTTON).clicked() {
+                    self.launch_desktop("amiga");
                 }
                 if ui.button(text::CORES).clicked() {
                     self.set_page(Page::Cores);
@@ -135,6 +141,10 @@ impl LibraryUi {
         egui::Panel::bottom("library-status").show(ui, |ui| {
             ui.add_space(2.0);
             self.status_line(ui);
+            if !self.unclassified.is_empty() && ui.small_button(text::UNCLASSIFIED_SHOW).clicked() {
+                let list = self.unclassified.clone();
+                self.open_dialog(super::Dialog::Unclassified(list));
+            }
             if !self.has_dat && !self.games.is_empty() {
                 super::weak(ui, text::NO_DAT);
             }

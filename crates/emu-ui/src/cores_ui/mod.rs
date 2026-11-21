@@ -5,6 +5,7 @@
 
 mod bios;
 mod capture;
+mod import;
 mod launch;
 mod rows;
 pub(crate) mod text;
@@ -16,7 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use egui::{Button, Color32, RichText, ScrollArea, Ui};
 use emu_assets::cores::{
     BuildbotSource, CoreDirs, CoreError, CoreId, CoreInfo, CoreManager, CorePreferences,
-    FirmwareStatus, InstalledCore, Origin, Platform, RemoteCatalog,
+    FirmwareState, FirmwareStatus, InstalledCore, KnownFirmware, Origin, Platform, RemoteCatalog,
+    check_core_firmware,
 };
 use emu_assets::http::{HttpClient, HttpConfig, Progress};
 use emu_assets::jobs::{Job, JobEvent, Notify};
@@ -24,6 +26,7 @@ use emu_assets::jobs::{Job, JobEvent, Notify};
 pub(crate) use self::bios::BiosUi;
 pub use self::bios::open_free_bios_manager;
 pub(crate) use self::capture::run_capture;
+pub(crate) use self::import::ImportUi;
 #[cfg(test)]
 use self::launch::prepare_launch;
 pub(crate) use self::launch::{LaunchCheck, plan_launch, release};
@@ -79,9 +82,14 @@ pub(crate) fn preferences(config: &CoresConfig) -> CorePreferences {
 }
 
 /// What the screen asks its host to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CoresEvent {
     Back,
+    /// « Core utilisé » of a system (libretro database name) changed: `[cores.preferred]` to write.
+    PreferCore {
+        system: String,
+        core: CoreId,
+    },
 }
 
 struct Snapshot {
@@ -151,6 +159,8 @@ pub(crate) struct CoresUi {
     focus_confirm: bool,
     /// Free BIOS section (EmuTOS).
     pub(crate) bios: BiosUi,
+    /// « Importer un BIOS… » dialog; drawn by the library over any page.
+    pub(crate) import: ImportUi,
 }
 
 impl CoresUi {
@@ -178,6 +188,8 @@ impl CoresUi {
         system_dir: std::path::PathBuf,
         prefs: CorePreferences,
     ) -> Self {
+        let system_dir_for_import = system_dir.clone();
+        let manager_for_import = manager.clone();
         Self {
             manager,
             init_error,
@@ -203,7 +215,14 @@ impl CoresUi {
             focus_first: true,
             focus_confirm: false,
             bios: BiosUi::new(None, None),
+            import: ImportUi::new(system_dir_for_import, manager_for_import),
         }
+    }
+
+    /// `[cores.preferred]` changed (« Core utilisé »).
+    pub(crate) fn set_preferences(&mut self, prefs: CorePreferences) {
+        self.prefs = prefs;
+        self.dirty = true;
     }
 
     /// The core being played (its actions are disabled), `None` back in the library.
@@ -434,6 +453,20 @@ impl CoresUi {
                 .firmware
                 .insert(core.id.clone(), manager.firmware_status(&core.id));
         }
+        let known = KnownFirmware::builtin();
+        let wanted: BTreeSet<&CoreId> = self.prefs.systems().flat_map(|(_, c)| c.iter()).collect();
+        for id in wanted {
+            let Some(system) = crate::launch_firmware::firmware_system(&self.prefs, id) else {
+                continue;
+            };
+            match check_core_firmware(&self.system_dir, &self.prefs, id, &system, None, &known) {
+                Some(Ok(check)) => {
+                    checks.required.insert(id.clone(), check);
+                }
+                Some(Err(e)) => tracing::warn!("contrôle du BIOS de {id} : {e}"),
+                None => {}
+            }
+        }
         self.snapshot = Some(Snapshot {
             installed,
             infos: manager.infos(),
@@ -481,7 +514,9 @@ impl CoresUi {
             self.rebuild_snapshot();
         }
         let mut event = None;
-        let escape = !self.modal_open && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = !self.modal_open
+            && !self.import.is_active()
+            && ui.input(|i| i.key_pressed(egui::Key::Escape));
 
         ui.horizontal(|ui| {
             ui.heading(text::TITLE);
@@ -511,6 +546,10 @@ impl CoresUi {
                 event = Some(CoresEvent::Back);
             }
             self.bios.show(ui, &ctx);
+            ui.separator();
+            if let Some(e) = self.core_choice(ui) {
+                event = Some(e);
+            }
             ui.separator();
             self.filter_bar(ui);
             ui.separator();
@@ -591,6 +630,9 @@ impl CoresUi {
             {
                 self.start_refresh(ctx);
             }
+            if ui.button(text::IMPORT_BUTTON).clicked() {
+                self.import.start(None);
+            }
             if ui
                 .add_enabled(
                     !updatable.is_empty(),
@@ -629,6 +671,127 @@ impl CoresUi {
         if let Some(e) = &self.refresh_error {
             ui.colored_label(ERROR, e);
         }
+    }
+
+    /// 3.0 check of a row: fallback in blue (never red), problems in orange, with the import button.
+    fn required_line(&mut self, ui: &mut Ui, check: &emu_assets::cores::FirmwareCheck) {
+        let wanted = check.wanted.as_deref().unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            let importable = match &check.state {
+                FirmwareState::Ok | FirmwareState::Free { .. } | FirmwareState::Unverified => {
+                    ui.label(RichText::new(text::required_ok(wanted)).small().weak());
+                    false
+                }
+                FirmwareState::Builtin { label } => {
+                    ui.label(
+                        RichText::new(text::firmware_state(&FirmwareState::Builtin {
+                            label: label.clone(),
+                        }))
+                        .small()
+                        .weak(),
+                    );
+                    false
+                }
+                FirmwareState::CoreFallback { label } => {
+                    ui.colored_label(
+                        INFO,
+                        RichText::new(text::core_fallback(label, wanted)).small(),
+                    );
+                    true
+                }
+                state => {
+                    ui.colored_label(
+                        WARNING,
+                        RichText::new(text::required_problem(wanted, state)).small(),
+                    );
+                    true
+                }
+            };
+            if importable {
+                let label = if wanted.to_ascii_lowercase().starts_with("kick") {
+                    text::IMPORT_KICKSTART
+                } else {
+                    text::IMPORT_BUTTON
+                };
+                if ui.small_button(label).clicked() {
+                    self.import.start(Some(wanted.to_owned()));
+                }
+            }
+        });
+    }
+
+    /// « Core utilisé » for each system with several cores (design v3.0 §3.3). Writes nothing itself: the library
+    /// saves `[cores.preferred]`. A core that is not installed can be chosen; its row offers « Installer ».
+    fn core_choice(&mut self, ui: &mut Ui) -> Option<CoresEvent> {
+        let systems: Vec<(String, Vec<CoreId>)> = self
+            .prefs
+            .systems()
+            .filter(|(_, cores)| cores.len() > 1)
+            .map(|(s, c)| (s.to_owned(), c.to_vec()))
+            .collect();
+        if systems.is_empty() {
+            return None;
+        }
+        let installed: BTreeSet<CoreId> = self
+            .snapshot
+            .as_ref()
+            .map(|s| s.installed.iter().map(|c| c.id.clone()).collect())
+            .unwrap_or_default();
+        let mut event = None;
+        // Folded (keyboard: the header is focusable, Entrée opens it) so the core list stays visible, unless an
+        // alternative is recommended on this OS (puae2021 on a Mac).
+        let open = systems.iter().any(|(_, cores)| {
+            cores
+                .iter()
+                .any(|c| crate::platform::recommended_here(&self.prefs.recommended_on(c)))
+        });
+        egui::CollapsingHeader::new(RichText::new(text::CORE_CHOICE_TITLE).strong())
+            .id_salt("core-choice")
+            .default_open(open)
+            .show(ui, |ui| {
+                for (system, cores) in systems {
+                    let name = emu_library::systems()
+                        .iter()
+                        .find(|s| s.database == system)
+                        .map_or_else(|| system.clone(), |s| s.name.clone());
+                    let current = self.prefs.for_system(&system).first().cloned();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{name} :"));
+                        let mut sorted = cores.clone();
+                        sorted.sort();
+                        for core in sorted {
+                            let display = self
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| s.infos.get(&core))
+                                .map_or_else(
+                                    || core.to_string(),
+                                    |i| sanitize_core_text(&i.display_name),
+                                );
+                            let mut label = display;
+                            let on = self.prefs.recommended_on(&core);
+                            if let Some(r) = text::recommended_on(&on) {
+                                label.push_str(&format!(" ({r})"));
+                            }
+                            if !installed.contains(&core) {
+                                label.push_str(&format!(" — {}", text::CORE_NOT_INSTALLED));
+                            }
+                            let mut rich = RichText::new(label);
+                            if crate::platform::recommended_here(&on) {
+                                rich = rich.strong();
+                            }
+                            let selected = current.as_ref() == Some(&core);
+                            if ui.selectable_label(selected, rich).clicked() && !selected {
+                                event = Some(CoresEvent::PreferCore {
+                                    system: system.clone(),
+                                    core: core.clone(),
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+        event
     }
 
     fn filter_bar(&mut self, ui: &mut Ui) {
@@ -706,6 +869,9 @@ impl CoresUi {
             let fw = text::firmware_summary(row.firmware_missing, row.firmware_wrong);
             if !fw.is_empty() {
                 ui.colored_label(WARNING, RichText::new(fw).small());
+            }
+            if let Some(check) = &row.required {
+                self.required_line(ui, check);
             }
             if let Some(e) = self.errors.get(&row.id) {
                 ui.colored_label(ERROR, e);
@@ -873,6 +1039,11 @@ impl CoresUi {
                     .weak(),
                 );
                 ui.colored_label(color, text::firmware_state(&f.state));
+                if !matches!(f.state, FirmwareState::Ok)
+                    && ui.small_button(text::IMPORT_ONE).clicked()
+                {
+                    self.import.start(Some(f.spec.path.clone()));
+                }
             });
         }
         ui.label(format!(

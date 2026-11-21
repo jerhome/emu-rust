@@ -120,6 +120,36 @@ fn options_grouping() {
 }
 
 #[test]
+fn amiga_main_options_come_first() {
+    let options = vec![
+        opt("puae_floppy_multidrive", Some("media"), &["x"], "x", true),
+        opt("puae_video_standard", Some("video"), &["x"], "x", true),
+        opt("puae_other", Some("video"), &["x"], "x", true),
+        opt("puae_kickstart", Some("system"), &["x"], "x", true),
+        opt("puae_model", Some("system"), &["x"], "x", true),
+    ];
+    let cats = vec![cat("system"), cat("video"), cat("media")];
+    let groups = group_options(&options, &cats);
+    assert_eq!(groups[0].0, text::OPTIONS_MAIN);
+    let main: Vec<&str> = groups[0].1.iter().map(|o| o.key.as_str()).collect();
+    assert_eq!(
+        main,
+        [
+            "puae_model",
+            "puae_kickstart",
+            "puae_video_standard",
+            "puae_floppy_multidrive"
+        ]
+    );
+    assert_eq!(
+        groups.len(),
+        2,
+        "pinned options are not repeated: {groups:?}"
+    );
+    assert_eq!(groups[1].1[0].key, "puae_other");
+}
+
+#[test]
 fn back_navigation() {
     let mut o = Overlay::default();
     o.open(Screen::Keys);

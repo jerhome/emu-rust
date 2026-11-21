@@ -8,7 +8,7 @@ use winit::keyboard::KeyCode;
 
 use crate::config_computer::KeyboardModeChoice;
 
-use super::keymap::retro_key;
+use super::keymap::KeyRemap;
 
 /// What the physical keyboard drives (host key + J).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,6 +57,8 @@ impl From<KeyboardModeChoice> for KeyboardMode {
 /// Keyboard of the emulated machine: held keys (polling) and ordered transitions (callback).
 #[derive(Debug, Default)]
 pub(crate) struct ComputerKeyboard {
+    /// Physical key → machine key: positional default plus the layout's and the user's overrides.
+    remap: KeyRemap,
     held: BTreeSet<RetroKey>,
     events: Vec<KeyEvent>,
     modifiers: KeyModifiers,
@@ -67,6 +69,11 @@ pub(crate) struct ComputerKeyboard {
 const MAX_PENDING_EVENTS: usize = 256;
 
 impl ComputerKeyboard {
+    /// Overrides of the machine's layout (`KeyRemap::for_layout`); the default is the positional map alone.
+    pub fn set_remap(&mut self, remap: KeyRemap) {
+        self.remap = remap;
+    }
+
     /// While paused, new key presses are dropped (they would all reach the machine at once on resume);
     /// releases still go through so no key stays stuck.
     pub fn set_paused(&mut self, paused: bool) {
@@ -82,7 +89,9 @@ impl ComputerKeyboard {
     /// characters: the machine's own layout turns the position into a character). Keys without libretro
     /// equivalent and duplicate presses / releases are ignored.
     pub fn handle_key(&mut self, code: KeyCode, pressed: bool, text: Option<&str>) {
-        let Some(key) = retro_key(code) else { return };
+        let Some(key) = self.remap.map(code) else {
+            return;
+        };
         if self.paused && pressed {
             return;
         }

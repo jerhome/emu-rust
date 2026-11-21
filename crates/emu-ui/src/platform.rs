@@ -28,7 +28,7 @@ fn clean_hint(value: Option<String>) -> Option<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FolderOutcome {
+pub enum FolderOutcome {
     Opened,
     /// Cannot open a file manager: show the path (and where it is on the host, if known).
     ShowPath {
@@ -65,7 +65,7 @@ pub(crate) fn plan_open_folder(
 
 /// Opens `path` in the system file manager, or says where it is when that is impossible (container, no opener,
 /// failure). May wait for the opener process: call it off the UI thread ([`spawn_open_folder`]).
-pub(crate) fn open_folder(path: &Path) -> FolderOutcome {
+pub fn open_folder(path: &Path) -> FolderOutcome {
     open_folder_with(path, running_in_container(), host_roms_hint(), |p| {
         opener::open(p).map_err(|e| e.to_string())
     })

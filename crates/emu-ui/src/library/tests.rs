@@ -376,7 +376,7 @@ fn dat_download_imports_then_uses_etag_only_when_the_file_exists() {
         .unwrap();
     let server = rt.block_on(MockServer::start());
     let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
-    let gb = "/Nintendo%20-%20Game%20Boy.dat";
+    let gb = "/metadat/no-intro/Nintendo%20-%20Game%20Boy.dat";
     rt.block_on(
         Mock::given(method("GET"))
             .and(path(gb))
@@ -436,7 +436,7 @@ fn dat_download_imports_then_uses_etag_only_when_the_file_exists() {
     assert!(!first.offline);
     let info = db.dat_info("gb").unwrap().unwrap();
     assert_eq!(info.etag.as_deref(), Some("\"v1\""));
-    let file = tmp.path().join("Nintendo - Game Boy.dat");
+    let file = tmp.path().join("no-intro").join("Nintendo - Game Boy.dat");
     assert!(file.is_file());
     // Same ETag, file present: 304, nothing re-imported.
     let second = run(&mut db);
@@ -742,4 +742,280 @@ fn dat_download_skips_megacd() {
         requests.iter().all(|r| !r.url.path().contains("Mega-CD")),
         "no request for the Mega CD DAT"
     );
+}
+
+#[test]
+fn dat_repo_root_matches_the_asset_constants() {
+    assert_eq!(
+        format!("{}metadat/no-intro/", worker::DAT_REPO_ROOT),
+        emu_assets::DAT_BASE_URL
+    );
+    assert_eq!(
+        format!("{}metadat/tosec/", worker::DAT_REPO_ROOT),
+        emu_assets::DAT_TOSEC_BASE_URL
+    );
+    assert_eq!(
+        format!("{}dat/", worker::DAT_REPO_ROOT),
+        emu_assets::DAT_LIBRETRO_BASE_URL
+    );
+}
+
+/// Écart 2.0 corrected (design v3.0 §10 #4): each `(system, source)` is fetched from its own folder and kept in
+/// its own local folder; the Atari ST gets the TOSEC DAT, the Amiga both TOSEC and WHDLoad (same file name).
+#[test]
+fn dat_download_fetches_each_source_of_each_system() {
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = rt.block_on(MockServer::start());
+    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    for p in [
+        "/metadat/tosec/Atari%20-%20ST.dat",
+        "/metadat/tosec/Commodore%20-%20Amiga.dat",
+        "/dat/Commodore%20-%20Amiga.dat",
+    ] {
+        rt.block_on(
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(dat.clone()))
+                .mount(&server),
+        );
+    }
+    rt.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .with_priority(5)
+            .mount(&server),
+    );
+    let client = emu_assets::http::HttpClient::new(emu_assets::http::HttpConfig {
+        allow_loopback_http: true,
+        timeout: Duration::from_secs(10),
+        ..emu_assets::http::HttpConfig::default()
+    })
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = Library::open_in_memory().unwrap();
+    let catalog: Vec<_> = systems()
+        .iter()
+        .filter(|s| s.id == "atarist" || s.id == "amiga")
+        .cloned()
+        .collect();
+    let summary = worker::download_dats(
+        &mut db,
+        &client,
+        &format!("{}/", server.uri()),
+        tmp.path(),
+        &catalog,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    );
+    assert!(summary.failed.is_empty(), "{summary:?}");
+    assert_eq!(summary.updated.len(), 3, "{summary:?}");
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    assert!(
+        requests.iter().all(|r| !r.url.path().contains("no-intro")),
+        "no No-Intro request for computers"
+    );
+    assert!(tmp.path().join("tosec/Atari - ST.dat").is_file());
+    assert!(tmp.path().join("tosec/Commodore - Amiga.dat").is_file());
+    assert!(tmp.path().join("libretro/Commodore - Amiga.dat").is_file());
+    use emu_library::DatSource;
+    assert!(
+        db.dat_info_for("amiga", DatSource::Tosec)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        db.dat_info_for("amiga", DatSource::Libretro)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        db.dat_info_for("atarist", DatSource::Tosec)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn rom_folder_in_a_container_shows_the_path_without_opener() {
+    let mut h = harness(false);
+    h.ui.container = true;
+    h.ui.host_roms_hint = Some("D:\\Jeux\\roms".into());
+    h.ui.config.library.roots.clear();
+    let roms = h.ui.dirs.root.join("roms");
+    let _ = std::fs::remove_dir_all(&roms);
+    h.ui.open_rom_folder();
+    assert!(h.ui.folder_task.is_none(), "the opener is never called");
+    assert!(roms.is_dir(), "<data>/roms created");
+    match &h.ui.dialog {
+        Some(Dialog::FolderPath {
+            path,
+            host_hint,
+            container,
+            ..
+        }) => {
+            assert_eq!(path, &roms);
+            assert_eq!(host_hint.as_deref(), Some("D:\\Jeux\\roms"));
+            assert!(*container);
+        }
+        _ => panic!("FolderPath dialog expected"),
+    }
+    h.frame(Vec::new());
+    h.key(Key::Enter);
+    assert!(h.ui.dialog.is_none(), "OK has the focus");
+}
+
+#[test]
+fn several_rom_folders_ask_which_one() {
+    let mut h = harness(false);
+    h.ui.container = true;
+    let extra = h.ui.dirs.root.join("more-roms");
+    std::fs::create_dir_all(&extra).unwrap();
+    h.ui.config.library.roots = vec![extra];
+    h.ui.open_rom_folder();
+    assert!(matches!(&h.ui.dialog, Some(Dialog::ChooseFolder(r)) if r.len() == 2));
+    h.frame(Vec::new());
+    h.key(Key::Enter);
+    assert!(
+        matches!(&h.ui.dialog, Some(Dialog::FolderPath { path, .. }) if path.ends_with("roms")),
+        "first folder chosen with Entrée"
+    );
+}
+
+/// Design v3.0 §2.1 / §9 q.3: no Kickstart ⇒ AROS after a warning given once per game; the game's options keep
+/// `aros_acknowledged`, the second launch goes straight on.
+#[test]
+fn missing_kickstart_warns_once_then_launches_with_aros() {
+    let mut h = harness(false);
+    let game = h.ui.dirs.root.join("roms/amiga/Game.adf");
+    std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+    std::fs::write(&game, vec![0u8; 1024]).unwrap();
+    let prefs = cores_ui::preferences(&h.ui.config.cores);
+    let puae = CoreId::new("puae").unwrap();
+    let args = LaunchArgs {
+        game_id: None,
+        title: "Game".into(),
+        system_id: "amiga".into(),
+        ext: Some("adf".into()),
+        content: GameContent::Files(vec![game.clone()]),
+        computer: true,
+    };
+    let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
+        game: None,
+        title: "Game".into(),
+        core,
+        core_path,
+        content: GameContent::Files(vec![game.clone()]),
+        computer: true,
+        warnings,
+        failure_hint: None,
+    };
+    let ready = || LaunchCheck::Ready {
+        id: puae.clone(),
+        path: PathBuf::from("/cores/puae_libretro.so"),
+        warnings: Vec::new(),
+    };
+    assert!(
+        h.ui.firmware_gate(&prefs, ready(), args.clone(), &request)
+            .is_none()
+    );
+    let Some(Dialog::Firmware3 {
+        decision,
+        options_path,
+        ..
+    }) = &h.ui.dialog
+    else {
+        panic!("Kickstart dialog expected");
+    };
+    assert!(matches!(
+        decision,
+        FirmwareDecision::FallbackFirstTime { wanted, .. } if wanted == "kick34005.A500"
+    ));
+    let options_path = options_path.clone();
+    h.frame(Vec::new());
+    // Focus on « Importer un Kickstart… »; Tab reaches « Continuer avec la ROM intégrée ».
+    h.key(Key::Tab);
+    let events = h.key(Key::Enter);
+    assert!(
+        events.iter().any(|e| matches!(e, LibraryEvent::Launch(_))),
+        "{events:?}"
+    );
+    let saved = crate::game_options::GameOptions::load(&options_path);
+    assert!(saved.options.input.aros_acknowledged);
+    // Second launch: no dialog.
+    let again = h.ui.firmware_gate(&prefs, ready(), args, &request);
+    assert!(matches!(again, Some(LaunchCheck::Ready { .. })));
+    assert!(h.ui.dialog.is_none());
+}
+
+#[test]
+fn consoles_keep_the_info_check() {
+    let mut h = harness(false);
+    let prefs = cores_ui::preferences(&h.ui.config.cores);
+    let args = LaunchArgs {
+        game_id: None,
+        title: "G".into(),
+        system_id: "gb".into(),
+        ext: Some("gb".into()),
+        content: GameContent::Files(vec![PathBuf::from("/r/g.gb")]),
+        computer: false,
+    };
+    let request = |core: CoreId, core_path: PathBuf, warnings: Vec<String>| LaunchRequest {
+        game: None,
+        title: "G".into(),
+        core,
+        core_path,
+        content: GameContent::NoGame,
+        computer: false,
+        warnings,
+        failure_hint: None,
+    };
+    let check = LaunchCheck::FirmwareMissing {
+        id: CoreId::new("gambatte").unwrap(),
+        path: PathBuf::from("/c.so"),
+        missing: Vec::new(),
+    };
+    assert!(matches!(
+        h.ui.firmware_gate(&prefs, check, args, &request),
+        Some(LaunchCheck::FirmwareMissing { .. })
+    ));
+}
+
+#[test]
+fn unclassified_files_are_listed_with_their_folders() {
+    let line = text::unclassified_line(Path::new("/jeux/Game.ipf"));
+    assert!(line.contains("roms/atarist/"), "{line}");
+    assert!(line.contains("roms/amiga/"), "{line}");
+    let mut h = harness(false);
+    h.ui.unclassified = vec![PathBuf::from("/jeux/Game.ipf")];
+    h.ui.open_dialog(Dialog::Unclassified(h.ui.unclassified.clone()));
+    h.frame(Vec::new());
+    h.key(Key::Enter);
+    assert!(h.ui.dialog.is_none());
+}
+
+#[test]
+fn preferred_core_is_written_and_cleared() {
+    let mut h = harness(true);
+    let p2021 = CoreId::new("puae2021").unwrap();
+    h.ui.prefer_core("Commodore - Amiga", p2021.clone());
+    assert_eq!(
+        h.ui.config.cores.preferred.get("amiga").map(String::as_str),
+        Some("puae2021")
+    );
+    assert_eq!(
+        cores_ui::preferences(&h.ui.config.cores)
+            .for_system("Commodore - Amiga")
+            .first(),
+        Some(&p2021)
+    );
+    h.ui.prefer_core("Commodore - Amiga", CoreId::new("puae").unwrap());
+    assert!(!h.ui.config.cores.preferred.contains_key("amiga"));
 }

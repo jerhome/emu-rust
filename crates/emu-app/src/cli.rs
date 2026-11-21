@@ -19,8 +19,14 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
                          \x20      emu-rust [--data-dir DIR] --remove-core <ID> | --check-bios [ID] | --list-bios\n\
                          \x20      emu-rust [--data-dir DIR] --install-bios emutos[:VARIANTE] [--replace-user-bios]\n\
+                         \x20      emu-rust [--data-dir DIR] --import-bios <fichier> [--bios-name <nom> --unverified]\n\
+                         \x20                [--replace-user-bios]\n\
                          \x20      emu-rust --version | --help\n\
-                         --core accepte l'identifiant d'un core installé (ex. gambatte) ou le chemin d'un fichier.\n\
+                         --core accepte l'identifiant d'un core installé (ex. gambatte, puae, puae2021) ou le\n\
+                         chemin d'un fichier.\n\
+                         --import-bios copie un BIOS que vous possédez (Kickstart, TOS…) sous le nom attendu, après\n\
+                         vérification de son empreinte ; un fichier inconnu demande --bios-name (nom listé par\n\
+                         --list-bios) et --unverified.\n\
                          --rom répété : disquettes d'un même jeu, dans l'ordre ; sans --rom : démarrage sans\n\
                          contenu (bureau d'un ordinateur, ex. --core hatari).\n\
                          --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
@@ -102,6 +108,14 @@ pub enum CoresAction {
         variant: Option<String>,
         replace: bool,
     },
+    /// `--import-bios <file>` (design v3.0 §4): `name` = `--bios-name`, `unverified` = `--unverified` (both
+    /// needed for an unknown file), `replace` = `--replace-user-bios`.
+    ImportBios {
+        file: PathBuf,
+        name: Option<String>,
+        unverified: bool,
+        replace: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -136,6 +150,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut roms: Vec<PathBuf> = Vec::new();
     let mut no_game = false;
     let mut replace_user_bios = false;
+    let mut bios_name: Option<String> = None;
+    let mut unverified = false;
     let mut data_dir = None;
     let mut system_dir = None;
     let mut save_dir = None;
@@ -173,6 +189,25 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--no-game" => no_game = true,
             "--list-bios" => actions.push(CoresAction::ListBios),
             "--replace-user-bios" => replace_user_bios = true,
+            "--import-bios" => actions.push(CoresAction::ImportBios {
+                file: PathBuf::from(value(&mut it)?),
+                name: None,
+                unverified: false,
+                replace: false,
+            }),
+            "--bios-name" => {
+                let n = text(&mut it)?;
+                // Names come from the catalogue; checked again when the command runs.
+                if n.is_empty()
+                    || n.contains("..")
+                    || n.starts_with(['/', '\\'])
+                    || n.contains('\\')
+                {
+                    return Err("--bios-name : nom de BIOS invalide".into());
+                }
+                bios_name = Some(n);
+            }
+            "--unverified" => unverified = true,
             "--install-bios" => {
                 let spec = text(&mut it)?;
                 let (id, variant) = match spec.split_once(':') {
@@ -260,8 +295,27 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
 
     if replace_user_bios {
         match actions.last_mut() {
-            Some(CoresAction::InstallBios { replace, .. }) => *replace = true,
-            _ => return Err("--replace-user-bios s'utilise avec --install-bios".into()),
+            Some(
+                CoresAction::InstallBios { replace, .. } | CoresAction::ImportBios { replace, .. },
+            ) => *replace = true,
+            _ => {
+                return Err(
+                    "--replace-user-bios s'utilise avec --install-bios ou --import-bios".into(),
+                );
+            }
+        }
+    }
+    if bios_name.is_some() || unverified {
+        match actions.last_mut() {
+            Some(CoresAction::ImportBios {
+                name,
+                unverified: u,
+                ..
+            }) => {
+                *name = bios_name.take();
+                *u = unverified;
+            }
+            _ => return Err("--bios-name et --unverified s'utilisent avec --import-bios".into()),
         }
     }
     if no_game && !roms.is_empty() {
@@ -488,6 +542,36 @@ mod tests {
             }
         );
         assert!(p(&["--replace-user-bios"]).is_err());
+        assert_eq!(
+            cores(&["--import-bios", "/x/kick.rom"]),
+            CoresAction::ImportBios {
+                file: PathBuf::from("/x/kick.rom"),
+                name: None,
+                unverified: false,
+                replace: false,
+            }
+        );
+        assert_eq!(
+            cores(&[
+                "--import-bios",
+                "k.rom",
+                "--bios-name",
+                "kick34005.A500",
+                "--unverified",
+                "--replace-user-bios"
+            ]),
+            CoresAction::ImportBios {
+                file: PathBuf::from("k.rom"),
+                name: Some("kick34005.A500".into()),
+                unverified: true,
+                replace: true,
+            }
+        );
+        assert!(p(&["--bios-name", "x"]).is_err());
+        assert!(p(&["--unverified"]).is_err());
+        assert!(p(&["--import-bios", "k", "--bios-name", "../x"]).is_err());
+        assert!(p(&["--import-bios", "k", "--bios-name", "/abs"]).is_err());
+        assert!(p(&["--import-bios", "k", "--core", "puae"]).is_err());
         assert!(p(&["--install-bios", "../x"]).is_err());
         assert!(p(&["--install-bios", "emutos:a/b"]).is_err());
         assert!(p(&["--install-bios", "emutos", "--rom", "r"]).is_err());

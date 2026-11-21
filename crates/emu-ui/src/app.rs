@@ -1,6 +1,7 @@
 //! winit `ApplicationHandler` driving the emulator: `Pacer` scheduling, shortcuts, SRAM flushing, and the egui
 //! overlay (menu open ⇒ emulation paused, keys go to egui instead of the game).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -18,17 +19,19 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, WindowAttributes, WindowId};
 
 use crate::computer::input::{CaptureEffect, CaptureEvent, CaptureState, KeyboardMode, map_button};
+use crate::computer::keymap::KeyRemap;
 use crate::computer::session::{ComputerInputs, ComputerSession, KeyOutcome};
-use crate::computer::vkbd::{VirtualKeyboard, legend_for_variant};
+use crate::computer::vkbd::{KeyboardLayout, VirtualKeyboard, legend_for_variant};
 use crate::config::{MAX_SCALE, MIN_SCALE};
 use crate::config_computer::KeyboardModeChoice;
 use crate::content::content_spec;
 use crate::egui_layer::EguiLayer;
 use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
-use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options};
+use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options_with};
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
 use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
+use crate::launch_firmware::firmware_setup;
 use crate::shutdown;
 use crate::ui::{
     self, AddedDiskView, CaptureOutcome, ComputerView, ConfirmLoad, DisksView, OsdLevel, Overlay,
@@ -68,11 +71,24 @@ pub(crate) enum Restart {
         /// Folder actually used by this session (`<game> (n).disks` for a same-name game); `None` without
         /// working copies.
         work_dir: Option<PathBuf>,
+        /// Save files the core wrote for this game (`game_saves`, design v3.0 §3.5.3); `None` when the core
+        /// declares none or the game has no content name.
+        core_files: Option<CoreGameFiles>,
     },
 }
 
+/// Files of `reset_core_game_files`: folder given to the core for this game (`GameIdentity::core_save_dir`, never
+/// `<saves>/<core_id>` rebuilt here), name of the content handed to the core, `game_saves` patterns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CoreGameFiles {
+    pub dir: PathBuf,
+    pub content_name: String,
+    pub patterns: Vec<String>,
+}
+
 impl Restart {
-    /// Deletes the working copies of the game (`ResetDisks` only). The core must be unloaded.
+    /// Deletes the working copies of the game and the save files the core wrote for it (`ResetDisks` only). The
+    /// core must be unloaded. `true` when something was deleted.
     pub(crate) fn apply(&self) -> Result<bool, emu_runtime::RuntimeError> {
         match self {
             Restart::Plain => Ok(false),
@@ -80,10 +96,24 @@ impl Restart {
                 saves_core_dir,
                 game,
                 work_dir,
-            } => match work_dir {
-                Some(dir) => emu_runtime::reset_work_dir(saves_core_dir, dir),
-                None => emu_runtime::reset_working_copies(saves_core_dir, game),
-            },
+                core_files,
+            } => {
+                let copies = match work_dir {
+                    Some(dir) => emu_runtime::reset_work_dir(saves_core_dir, dir),
+                    None => emu_runtime::reset_working_copies(saves_core_dir, game),
+                };
+                let files = match core_files {
+                    Some(f) => {
+                        emu_runtime::reset_core_game_files(&f.dir, &f.content_name, &f.patterns)
+                    }
+                    None => Ok(Vec::new()),
+                };
+                for path in files.as_deref().unwrap_or_default() {
+                    tracing::info!("sauvegarde du core supprimée : {}", path.display());
+                }
+                let deleted_files = !files?.is_empty();
+                Ok(copies? || deleted_files)
+            }
         }
     }
 }
@@ -198,6 +228,8 @@ pub(crate) struct App {
     working_copy: bool,
     /// The files the game was launched with (disk menu: « ajouter une image du même dossier »).
     content_files: Vec<PathBuf>,
+    /// Save files of the core deleted with the working copies (« Réinitialiser »).
+    core_files: Option<CoreGameFiles>,
     states_warned: bool,
 }
 
@@ -360,19 +392,32 @@ impl App {
             options_inherited,
             resolution_failed,
         } = resolve_game(&core_id, spec, &options.dirs);
-        let game_options = GameOptions::load(&game_options_path);
-        let frontend_options = CoreId::new(&core_id)
-            .map(|id| prefs.frontend_options(&id))
+        let mut game_options = GameOptions::load(&game_options_path);
+        let typed_id = CoreId::new(&core_id);
+        let frontend_options = typed_id
+            .as_ref()
+            .map(|id| prefs.frontend_options(id))
             .unwrap_or_default();
-        let core_variables = effective_core_options(
+        let global_options = options
+            .config
+            .core_options
+            .get(&core_id)
+            .cloned()
+            .unwrap_or_default();
+        let firmware = firmware_setup(
+            &core_id,
+            options.content.first(),
+            &options.dirs,
+            &options.config,
+            &prefs,
+            &mut game_options.options,
+        );
+        let game_options_dirty = firmware.acknowledged_now;
+        let core_variables = effective_core_options_with(
             &[],
             &frontend_options,
-            &options
-                .config
-                .core_options
-                .get(&core_id)
-                .cloned()
-                .unwrap_or_default(),
+            &firmware.computed,
+            &global_options,
             &game_options.options.core_options,
         );
         let identity_banners =
@@ -392,6 +437,15 @@ impl App {
                 restore_added_disks: true,
             },
         )?;
+        let core_files = typed_id.as_ref().and_then(|id| {
+            let patterns = prefs.game_save_patterns(id);
+            let content_name = emulator.content_name()?.to_owned();
+            (!patterns.is_empty()).then(|| CoreGameFiles {
+                dir: emulator.identity().core_save_dir.clone(),
+                content_name,
+                patterns,
+            })
+        });
         let audio = if options.audio && options.config.audio.enabled {
             let cfg = AudioConfig {
                 latency: Duration::from_millis(u64::from(options.config.audio.latency_ms.max(1))),
@@ -438,11 +492,19 @@ impl App {
                     )
                     .to_owned()
                 });
+            let layout_id = keyboard_layout_id(&core_id);
             let mut session = ComputerSession::new(
                 options.config.hotkeys.host_key,
                 KeyboardMode::from(mode),
-                VirtualKeyboard::new("atari_st", &legend),
+                VirtualKeyboard::new(layout_id, &legend),
             );
+            if let Some(layout) = KeyboardLayout::load(layout_id) {
+                let user = options.config.computer.remap.get(layout_id);
+                session.keyboard.set_remap(KeyRemap::for_layout(
+                    &layout,
+                    user.unwrap_or(&BTreeMap::new()),
+                ));
+            }
             session.auto_capture = input
                 .auto_capture
                 .unwrap_or(options.config.computer.auto_capture);
@@ -458,6 +520,11 @@ impl App {
             text::menu_hint(options.config.hotkeys.menu)
         };
         overlay.osd.info(hint, now);
+        if let Some(notice) = firmware.notice {
+            overlay
+                .osd
+                .push(notice, OsdLevel::Warn, Duration::from_secs(12), now);
+        }
         for banner in identity_banners {
             overlay
                 .osd
@@ -521,12 +588,13 @@ impl App {
             host_held: false,
             game_options,
             game_options_path,
-            game_options_dirty: false,
+            game_options_dirty,
             game_scope: false,
             frontend_options,
             disks_view: None,
             working_copy,
             content_files,
+            core_files,
             states_warned: false,
         })
     }
@@ -916,10 +984,8 @@ impl App {
             Restart::ResetDisks {
                 saves_core_dir: self.options.dirs.saves.join(&self.core_id),
                 game: self.emulator.game_name().to_owned(),
-                work_dir: self
-                    .emulator
-                    .prepared_media()
-                    .and_then(|p| p.work_dir.clone()),
+                work_dir: self.emulator.work_dir(),
+                core_files: self.core_files.clone(),
             }
         } else {
             Restart::Plain
@@ -2121,6 +2187,15 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Virtual keyboard and key overrides of a computer core (`data/keyboards/<id>.toml`). Only the layouts of the
+/// released systems: PC, CPC and C64 come with their versions.
+fn keyboard_layout_id(core_id: &str) -> &'static str {
+    match core_id {
+        "puae" | "puae2021" => "amiga",
+        _ => "atari_st",
+    }
+}
+
 /// Ctrl+key / Alt+Enter shortcut for a press, off while the keymap binds a modifier to a game button.
 fn modifier_shortcut(
     ctrl: bool,
@@ -2165,6 +2240,30 @@ mod tests {
     }
 
     #[test]
+    fn amiga_cores_get_the_amiga_keyboard_and_its_remap() {
+        use crate::computer::input::ComputerKeyboard;
+        use emu_runtime::RetroKey;
+        assert_eq!(keyboard_layout_id("puae"), "amiga");
+        assert_eq!(keyboard_layout_id("puae2021"), "amiga");
+        assert_eq!(keyboard_layout_id("hatari"), "atari_st");
+        let layout = KeyboardLayout::load("amiga").unwrap();
+        let key = |name| RetroKey::from_name(name).unwrap();
+        let mut kb = ComputerKeyboard::default();
+        kb.set_remap(KeyRemap::for_layout(&layout, &BTreeMap::new()));
+        kb.handle_key(KeyCode::AltLeft, true, None);
+        kb.handle_key(KeyCode::AltRight, true, None);
+        assert!(kb.is_held(key("lsuper")) && kb.is_held(key("rsuper")));
+        assert!(!kb.is_held(key("lalt")) && !kb.is_held(key("ralt")));
+        // The user's table wins; other keys keep their positional default.
+        let user = BTreeMap::from([("ContextMenu".to_owned(), "ralt".to_owned())]);
+        let mut kb = ComputerKeyboard::default();
+        kb.set_remap(KeyRemap::for_layout(&layout, &user));
+        kb.handle_key(KeyCode::ContextMenu, true, None);
+        kb.handle_key(KeyCode::KeyA, true, None);
+        assert!(kb.is_held(key("ralt")) && kb.is_held(key("a")));
+    }
+
+    #[test]
     fn pad_poll_is_slow_without_pad() {
         assert_eq!(pad_poll_interval(true), PAD_POLL_INTERVAL);
         assert!(pad_poll_interval(false) > PAD_POLL_INTERVAL);
@@ -2180,14 +2279,23 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("a.st"), b"x").unwrap();
         }
+        std::fs::write(core.join("disk1.save0.adf"), b"s").unwrap();
+        std::fs::write(core.join("other.save0.adf"), b"s").unwrap();
         let restart = Restart::ResetDisks {
             saves_core_dir: core.clone(),
             game: "Jeu".to_owned(),
             work_dir: Some(own.clone()),
+            core_files: Some(CoreGameFiles {
+                dir: core.clone(),
+                content_name: "disk1".to_owned(),
+                patterns: vec!["{game}.save*.adf".to_owned()],
+            }),
         };
-        restart.apply().unwrap();
+        assert!(restart.apply().unwrap());
         assert!(!own.exists());
         assert!(other.join("a.st").exists());
+        assert!(!core.join("disk1.save0.adf").exists());
+        assert!(core.join("other.save0.adf").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

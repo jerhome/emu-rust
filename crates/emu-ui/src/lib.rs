@@ -1,6 +1,7 @@
 //! Window, event loop and egui interface. No `unsafe` here: GL lives in emu-runtime (ADR 0008).
 
 mod app;
+mod bios_import;
 mod computer;
 mod config;
 mod config_computer;
@@ -9,23 +10,24 @@ mod config_library;
 mod content;
 mod cores_ui;
 mod egui_layer;
-// Used by U4 (`FileBrowser::show`, import dialog).
-#[allow(dead_code)]
 mod file_picker;
 mod game_identity;
 mod game_options;
 mod gamepad;
 mod hotkeys;
 mod keyboard;
+mod launch_firmware;
 mod library;
-// Used by U3b/U4.
-#[allow(dead_code)]
 mod platform;
 mod shutdown;
 mod ui;
 
 use std::path::PathBuf;
 
+pub use crate::bios_import::{
+    BiosIdentified, BiosImportItem, BiosImportReport, ROM_KEY_NAME, firmware_catalogue,
+    identify_bios, import_bios, import_error, known_import_items, unverified_item,
+};
 pub use crate::config::{
     AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
@@ -49,7 +51,9 @@ pub use crate::gamepad::{
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
 pub use crate::library::megacd_cli_hint;
+pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;

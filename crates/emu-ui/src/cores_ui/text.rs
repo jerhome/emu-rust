@@ -106,11 +106,114 @@ pub fn firmware_state(state: &FirmwareState) -> String {
         FirmwareState::Unverified => "présent (non vérifiable)".to_owned(),
         FirmwareState::Free { label } => format!("BIOS libre installé ({label})"),
         FirmwareState::Unreadable(e) => format!("illisible : {e}"),
-        // TODO(U4): wording of the 3.0 states (only produced by `check_required`).
-        FirmwareState::CoreFallback { label } | FirmwareState::Builtin { label } => {
-            format!("intégré au core ({label})")
+        FirmwareState::CoreFallback { label } => {
+            format!("absent : {label} utilisé à la place (original recommandé)")
         }
+        FirmwareState::Builtin { label } => format!("intégré au core ({label})"),
     }
+}
+
+/// Row of a core whose table falls back to a built-in ROM: « AROS intégré — Kickstart recommandé » (never shown as
+/// an error).
+pub fn core_fallback(label: &str, wanted: &str) -> String {
+    let short = label.split(" (").next().unwrap_or(label);
+    let kind = if wanted.to_ascii_lowercase().starts_with("kick") {
+        "Kickstart"
+    } else {
+        "BIOS d'origine"
+    };
+    format!("{short} intégré — {kind} recommandé ({wanted})")
+}
+
+pub fn required_ok(wanted: &str) -> String {
+    format!("BIOS présent ({wanted})")
+}
+
+pub fn required_problem(wanted: &str, state: &FirmwareState) -> String {
+    format!("{wanted} : {}", firmware_state(state))
+}
+
+// ---- « Importer un BIOS… » (design v3.0 §2.2) -------------------------------------------------------------
+
+pub const IMPORT_BUTTON: &str = "Importer un BIOS…";
+pub const IMPORT_KICKSTART: &str = "Importer un Kickstart…";
+pub const IMPORT_ONE: &str = "Importer…";
+pub const IMPORT_TITLE: &str = "Importer un BIOS";
+pub const IMPORT_NATIVE_OPEN: &str = "Choisissez le fichier dans la fenêtre du système…";
+pub const IMPORT_WORKING: &str = "Vérification du fichier…";
+pub const IMPORT_INTERRUPTED: &str = "tâche interrompue";
+pub const IMPORT_NOTHING: &str = "Rien à importer : le fichier est déjà installé.";
+pub const IMPORT_KNOWN: &str = "Fichier reconnu. Il sera copié dans le dossier des BIOS sous :";
+pub const IMPORT_DO: &str = "Importer";
+pub const IMPORT_REPLACE: &str = "Remplacer les fichiers existants";
+pub const IMPORT_REPLACE_NOTE: &str = "Un fichier existant n'est jamais effacé : il est renommé <nom>.user-<date> \
+                                       avant le remplacement.";
+pub const IMPORT_ROM_KEY: &str = "Clé des ROM chiffrées d'Amiga Forever : elle sera copiée sous le nom rom.key \
+                                  (non vérifiée).";
+pub const IMPORT_FORCE: &str = "Importer quand même (non vérifié)…";
+pub const IMPORT_CHOOSE_NAME: &str = "Nom sous lequel le core attend ce fichier :";
+pub const IMPORT_FILTER_HINT: &str = "filtrer (ex. kick, A500)";
+pub const IMPORT_UNVERIFIED: &str = "Importer (non vérifié)";
+pub const OK: &str = "OK";
+
+pub fn import_wanted(name: &str) -> String {
+    format!("Fichier attendu : {name}")
+}
+
+pub fn import_failed(e: &str) -> String {
+    format!("Import impossible : {e}")
+}
+
+pub fn target_new(name: &str, label: &str) -> String {
+    if label == name {
+        format!("{name} : nouveau")
+    } else {
+        format!("{name} ({label}) : nouveau")
+    }
+}
+
+pub fn target_free(name: &str) -> String {
+    format!("{name} : remplace le BIOS libre installé par emu-rust")
+}
+
+pub fn target_same(name: &str) -> String {
+    format!("{name} : déjà installé")
+}
+
+pub fn target_other(name: &str) -> String {
+    format!(
+        "{name} : un autre fichier existe déjà sous ce nom (conservé sauf si vous choisissez « Remplacer »)"
+    )
+}
+
+pub fn import_unknown(md5: &[u8; 16], size: u64) -> String {
+    let hex: String = md5.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "Fichier inconnu (md5 {hex}, {} Kio) : il ne correspond à aucun BIOS connu et n'est pas importé.",
+        size / 1024
+    )
+}
+
+pub fn import_unverified_as(name: &str) -> String {
+    format!("Importer sous {name} (non vérifié)")
+}
+
+// ---- « Core utilisé » (design v3.0 §3.3) -------------------------------------------------------------------
+
+pub const CORE_CHOICE_TITLE: &str = "Core utilisé par système";
+pub const CORE_NOT_INSTALLED: &str = "non installé";
+
+pub fn recommended_on(platforms: &[emu_assets::cores::Platform]) -> Option<String> {
+    use emu_assets::cores::Platform;
+    let names: Vec<&str> = platforms
+        .iter()
+        .map(|p| match p {
+            Platform::MacosX86_64 => "Mac",
+            Platform::WindowsX86_64 => "Windows",
+            Platform::LinuxX86_64 => "Linux",
+        })
+        .collect();
+    (!names.is_empty()).then(|| format!("recommandé sur {}", names.join(", ")))
 }
 
 pub fn progress(done: u64, total: Option<u64>) -> String {

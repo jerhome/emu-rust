@@ -16,7 +16,10 @@ pub(crate) struct ComputedContext<'a> {
     pub system: &'a str,
     /// Result of the single firmware check of this launch, when one was made.
     pub firmware: Option<&'a FirmwareCheck>,
+    // Read by the 4.0 (`layout_option`) and 5.0 (`options_by_extension`) layers; filled from 3.0 on.
+    #[allow(dead_code)]
     pub locale: &'a str,
+    #[allow(dead_code)]
     pub extension: &'a str,
 }
 

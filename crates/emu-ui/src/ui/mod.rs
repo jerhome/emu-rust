@@ -131,24 +131,47 @@ pub fn cycle_value(opt: &CoreOption, delta: i32) -> Option<String> {
 
 /// Visible options grouped by category: uncategorised ones first (« Général »), then categories in the core's
 /// order. Empty groups are dropped.
+/// Options shown first, in this order, whatever their category (design v3.0 §4: model, Kickstart, video and
+/// MultiDrive of puae / puae2021).
+const PINNED_OPTIONS: &[&str] = &[
+    "puae_model",
+    "puae_kickstart",
+    "puae_video_standard",
+    "puae_floppy_multidrive",
+];
+
 pub fn group_options<'a>(
     options: &'a [CoreOption],
     categories: &'a [CoreOptionCategory],
 ) -> Vec<(String, Vec<&'a CoreOption>)> {
     let known = |c: &str| categories.iter().any(|k| k.key == c);
-    let mut groups = vec![(
-        text::OPTIONS_GENERAL.to_owned(),
-        options
-            .iter()
-            .filter(|o| o.visible && o.category.as_deref().is_none_or(|c| !known(c)))
-            .collect::<Vec<_>>(),
-    )];
+    let pinned = |o: &CoreOption| PINNED_OPTIONS.contains(&o.key.as_str());
+    let mut groups = vec![
+        (
+            text::OPTIONS_MAIN.to_owned(),
+            PINNED_OPTIONS
+                .iter()
+                .filter_map(|k| options.iter().find(|o| o.visible && o.key == *k))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            text::OPTIONS_GENERAL.to_owned(),
+            options
+                .iter()
+                .filter(|o| {
+                    o.visible && !pinned(o) && o.category.as_deref().is_none_or(|c| !known(c))
+                })
+                .collect::<Vec<_>>(),
+        ),
+    ];
     for cat in categories {
         groups.push((
             cat.label.clone(),
             options
                 .iter()
-                .filter(|o| o.visible && o.category.as_deref() == Some(cat.key.as_str()))
+                .filter(|o| {
+                    o.visible && !pinned(o) && o.category.as_deref() == Some(cat.key.as_str())
+                })
                 .collect(),
         ));
     }
