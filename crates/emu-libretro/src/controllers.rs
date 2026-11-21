@@ -22,7 +22,8 @@ const MAX_DESC_BYTES: usize = MAX_DESC_CHARS * 4;
 /// `info` is null or points to a `retro_controller_info` array, valid for the call, that is terminated by an entry
 /// with a null `types` or holds at least `MAX_PORTS` entries; every non-null `types` points to `num_types`
 /// readable descriptions (or at least `MAX_TYPES`), whose `desc` is null or a NUL-terminated string (or at least
-/// `MAX_DESC_BYTES` readable bytes).
+/// `MAX_DESC_BYTES` readable bytes). Both arrays are aligned for their C type, as `ptr::read` requires (they are
+/// C arrays of `#[repr(C)]` structs built by the core; no packed layout is possible in the libretro ABI).
 pub(crate) unsafe fn copy_controller_info(
     info: *const sys::retro_controller_info,
 ) -> Vec<Vec<ControllerType>> {
@@ -32,7 +33,8 @@ pub(crate) unsafe fn copy_controller_info(
     }
     for port in 0..MAX_PORTS {
         // SAFETY: `port` < MAX_PORTS and no earlier entry was the terminator, so the entry is inside the array
-        // per the contract; `retro_controller_info` is plain data (`Copy`, any bit pattern valid).
+        // per the contract and aligned like any C array element; `retro_controller_info` is plain data (`Copy`, any
+        // bit pattern valid).
         let entry = unsafe { info.add(port).read() };
         if entry.types.is_null() {
             break;
@@ -42,7 +44,7 @@ pub(crate) unsafe fn copy_controller_info(
             .min(MAX_TYPES);
         let mut types = Vec::with_capacity(count);
         for index in 0..count {
-            // SAFETY: `index` < min(num_types, MAX_TYPES): inside the `types` array per the contract; plain data.
+            // SAFETY: `index` < min(num_types, MAX_TYPES): inside the `types` array per the contract and aligned like any C array element; plain data.
             let raw = unsafe { entry.types.add(index).read() };
             if raw.desc.is_null() {
                 continue;
@@ -90,9 +92,11 @@ pub(crate) fn types_for(ports: &[Vec<ControllerType>], port: u32) -> &[Controlle
         .map_or(&[], Vec::as_slice)
 }
 
-/// `set_controller_device` rule: NONE and JOYPAD on any of the `MAX_PORTS` ports, otherwise an id declared for it.
+/// `set_controller_device` rule: NONE and JOYPAD on ports below `max(2, declared ports)` (never above `MAX_PORTS`,
+/// the most that is read), otherwise an id declared for the port.
 pub(crate) fn device_allowed(ports: &[Vec<ControllerType>], port: u32, id: u32) -> bool {
-    if usize::try_from(port).map_or(true, |p| p >= MAX_PORTS) {
+    let limit = ports.len().clamp(2, MAX_PORTS);
+    if usize::try_from(port).map_or(true, |p| p >= limit) {
         return false;
     }
     id == sys::RETRO_DEVICE_NONE
@@ -264,7 +268,15 @@ mod tests {
         assert!(device_allowed(&ports, 0, 517));
         assert!(device_allowed(&ports, 0, sys::RETRO_DEVICE_NONE));
         assert!(device_allowed(&ports, 1, sys::RETRO_DEVICE_JOYPAD));
-        assert!(device_allowed(&ports, 7, sys::RETRO_DEVICE_JOYPAD));
+        assert!(!device_allowed(&ports, 2, sys::RETRO_DEVICE_JOYPAD));
+        assert!(!device_allowed(&ports, 7, sys::RETRO_DEVICE_JOYPAD));
+        let three = vec![Vec::new(), Vec::new(), Vec::new()];
+        assert!(device_allowed(&three, 2, sys::RETRO_DEVICE_NONE));
+        assert!(!device_allowed(&three, 3, sys::RETRO_DEVICE_NONE));
+        assert!(device_allowed(&[], 1, sys::RETRO_DEVICE_JOYPAD));
+        assert!(!device_allowed(&[], 2, sys::RETRO_DEVICE_JOYPAD));
+        let many = vec![Vec::new(); MAX_PORTS];
+        assert!(device_allowed(&many, 7, sys::RETRO_DEVICE_JOYPAD));
         assert!(!device_allowed(&ports, 1, 517));
         assert!(!device_allowed(&ports, 0, 261));
         assert!(!device_allowed(&ports, 8, sys::RETRO_DEVICE_JOYPAD));

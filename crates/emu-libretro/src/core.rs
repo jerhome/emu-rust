@@ -487,7 +487,7 @@ impl Core {
         controllers::types_for(&self.controllers, port)
     }
 
-    /// `retro_set_controller_port_device`. Accepted on ports 0 to 7: `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD`,
+    /// `retro_set_controller_port_device`. Accepted on ports below `max(2, declared ports)` (at most 8): `RETRO_DEVICE_NONE`, `RETRO_DEVICE_JOYPAD`,
     /// or an id the core declared for this port. Requires a loaded game ([`LibretroError::NoGame`] otherwise); an
     /// other id or port is [`LibretroError::UnknownControllerDevice`].
     pub fn set_controller_device(&mut self, port: u32, id: u32) -> Result<(), LibretroError> {
@@ -499,7 +499,7 @@ impl Core {
             return Err(LibretroError::UnknownControllerDevice { port, id });
         }
         // SAFETY: a game is loaded; owning thread (`Core` is !Send); `id` is NONE, JOYPAD or declared by the core
-        // for `port`, which is below the 8 ports read from SET_CONTROLLER_INFO.
+        // for `port`, and `port` is below `max(2, ports declared by the core)`, so the core indexes it.
         unsafe { (self.api.set_controller_port_device)(port, id) };
         self.sync_controllers();
         Ok(())
