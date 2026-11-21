@@ -15,3 +15,5 @@ Quatre propositions, formes pleines sans dégradé, aux couleurs de l'interface 
 `rsvg-convert` et Inkscape ne sont pas installés dans le conteneur de développement).
 
 Le choix revient à l'utilisateur ; la variante retenue devient `packaging/icon/emu-rust.svg`.
+
+**Choix de l’utilisateur (2026-11-21) : variante B « Croix et boutons ».** FP1 la copie en `packaging/icon/emu-rust.svg`.
