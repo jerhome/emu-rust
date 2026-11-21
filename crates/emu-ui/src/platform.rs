@@ -53,7 +53,8 @@ pub(crate) fn plan_open_folder(
     in_container: bool,
     host_hint: Option<String>,
 ) -> FolderPlan {
-    if in_container {
+    // Only an existing absolute directory is handed to the opener (never a relative path or a file).
+    if in_container || !path.is_absolute() || !path.is_dir() {
         FolderPlan::ShowPath {
             path: path.to_owned(),
             host_hint,
@@ -156,12 +157,30 @@ mod tests {
                 host_hint: Some("D:\\roms".into())
             }
         );
-        assert_eq!(plan_open_folder(p, false, None), FolderPlan::TryOpen);
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            plan_open_folder(dir.path(), false, None),
+            FolderPlan::TryOpen
+        );
+    }
+
+    #[test]
+    fn opener_only_gets_an_existing_absolute_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "x").unwrap();
+        for bad in [file, dir.path().join("missing"), PathBuf::from("relative")] {
+            assert!(matches!(
+                plan_open_folder(&bad, false, None),
+                FolderPlan::ShowPath { .. }
+            ));
+        }
     }
 
     #[test]
     fn open_folder_outcomes() {
-        let p = Path::new("/r");
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
         let ok = open_folder_with(p, false, None, |_| Ok(()));
         assert_eq!(ok, FolderOutcome::Opened);
         let failed = open_folder_with(p, false, Some("h".into()), |_| Err("no".into()));

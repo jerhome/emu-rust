@@ -106,6 +106,74 @@ pub(crate) struct FileBrowser {
     pub typed: String,
     /// Give the keyboard focus to the first entry on the next frame (opening, folder change).
     focus_first: bool,
+    /// Listing in progress on the worker thread.
+    loading: Option<Receiver<Listing>>,
+    /// The folder holds more than [`MAX_ENTRIES`] entries: the list is cut.
+    truncated: bool,
+    /// Nothing visible, but hidden entries exist.
+    hidden_only: bool,
+}
+
+struct Listing {
+    entries: Vec<BrowserEntry>,
+    error: Option<String>,
+    truncated: bool,
+    hidden_only: bool,
+}
+
+fn accepts(filter: &[String], name: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| filter.iter().any(|f| f.eq_ignore_ascii_case(e)))
+}
+
+/// Folders first, then files, case-insensitive; hidden entries and files rejected by the filter are skipped.
+fn list_dir(dir: &Path, filter: &[String]) -> Listing {
+    let mut listing = Listing {
+        entries: Vec::new(),
+        error: None,
+        truncated: false,
+        hidden_only: false,
+    };
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            listing.error = Some(e.to_string());
+            return listing;
+        }
+    };
+    let mut hidden = 0usize;
+    for (seen, entry) in read.flatten().enumerate() {
+        if seen >= MAX_ENTRIES * 4 {
+            listing.truncated = true;
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            hidden += 1;
+            continue;
+        }
+        // `metadata` follows symlinks: a link to a folder is a folder, a broken link is skipped.
+        let Ok(meta) = std::fs::metadata(entry.path()) else {
+            continue;
+        };
+        let is_dir = meta.is_dir();
+        if !is_dir && !accepts(filter, &name) {
+            continue;
+        }
+        if listing.entries.len() >= MAX_ENTRIES {
+            listing.truncated = true;
+            break;
+        }
+        listing.entries.push(BrowserEntry { name, is_dir });
+    }
+    listing.hidden_only = listing.entries.is_empty() && hidden > 0;
+    listing.entries.sort_by(compare);
+    listing
 }
 
 impl FileBrowser {
@@ -122,6 +190,9 @@ impl FileBrowser {
             error: None,
             typed: String::new(),
             focus_first: true,
+            loading: None,
+            truncated: false,
+            hidden_only: false,
         };
         b.refresh();
         b
@@ -139,48 +210,58 @@ impl FileBrowser {
         self.error.as_deref()
     }
 
-    /// Folders first, then files, case-insensitive; hidden entries and files rejected by the filter are skipped.
+    /// Starts listing the current folder on a worker thread (the UI thread never touches the disk); the result is
+    /// collected by [`FileBrowser::poll`].
     pub fn refresh(&mut self) {
         self.typed = self.dir.display().to_string();
         self.focus_first = true;
         self.entries.clear();
         self.error = None;
-        let read = match std::fs::read_dir(&self.dir) {
-            Ok(r) => r,
+        self.truncated = false;
+        self.hidden_only = false;
+        // A previous receiver is dropped: its late result is ignored.
+        let (tx, rx) = mpsc::channel();
+        let dir = self.dir.clone();
+        let filter = self.filter.clone();
+        let spawned = std::thread::Builder::new()
+            .name("file-browser-list".into())
+            .spawn(move || {
+                let _ = tx.send(list_dir(&dir, &filter));
+            });
+        match spawned {
+            Ok(_) => self.loading = Some(rx),
             Err(e) => {
+                self.loading = None;
                 self.error = Some(e.to_string());
-                return;
-            }
-        };
-        for entry in read.flatten().take(MAX_ENTRIES * 4) {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            // `metadata` follows symlinks: a link to a folder is a folder, a broken link is skipped.
-            let Ok(meta) = std::fs::metadata(entry.path()) else {
-                continue;
-            };
-            let is_dir = meta.is_dir();
-            if !is_dir && !self.accepts(&name) {
-                continue;
-            }
-            self.entries.push(BrowserEntry { name, is_dir });
-            if self.entries.len() >= MAX_ENTRIES {
-                break;
             }
         }
-        self.entries.sort_by(compare);
+    }
+
+    /// Collects the listing if it is ready; `true` while it is still loading.
+    pub fn poll(&mut self) -> bool {
+        let Some(rx) = &self.loading else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(listing) => {
+                self.loading = None;
+                self.entries = listing.entries;
+                self.error = listing.error;
+                self.truncated = listing.truncated;
+                self.hidden_only = listing.hidden_only;
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.loading = None;
+                self.error = Some(crate::ui::text::BROWSER_LIST_FAILED.to_owned());
+                false
+            }
+        }
     }
 
     fn accepts(&self, name: &str) -> bool {
-        if self.filter.is_empty() {
-            return true;
-        }
-        Path::new(name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| self.filter.iter().any(|f| f.eq_ignore_ascii_case(e)))
+        accepts(&self.filter, name)
     }
 
     /// Goes to the parent folder; `false` at the root.
@@ -239,6 +320,11 @@ impl FileBrowser {
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<BrowserOutcome> {
         use crate::ui::text;
         let mut outcome = None;
+        let loading = self.poll();
+        if loading {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
         let typing = ui.ctx().text_edit_focused();
         let (escape, back) = ui.input(|i| {
             (
@@ -270,13 +356,20 @@ impl FileBrowser {
             );
         }
         let mut activate = None;
-        let focus_first = std::mem::take(&mut self.focus_first);
+        // Focus is given once the list has arrived.
+        let focus_first = !loading && std::mem::take(&mut self.focus_first);
         egui::ScrollArea::vertical()
             .max_height(320.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                if self.entries().is_empty() && self.error().is_none() {
-                    ui.label(text::BROWSER_EMPTY);
+                if loading {
+                    ui.label(text::BROWSER_LOADING);
+                } else if self.entries().is_empty() && self.error().is_none() {
+                    ui.label(if self.hidden_only {
+                        text::BROWSER_ONLY_HIDDEN
+                    } else {
+                        text::BROWSER_EMPTY
+                    });
                 }
                 for (i, entry) in self.entries().iter().enumerate() {
                     let label = if entry.is_dir {
@@ -291,6 +384,13 @@ impl FileBrowser {
                     if r.clicked() {
                         activate = Some(i);
                     }
+                }
+                if self.truncated {
+                    ui.label(
+                        egui::RichText::new(text::browser_truncated(MAX_ENTRIES))
+                            .small()
+                            .weak(),
+                    );
                 }
             });
         ui.add_space(6.0);
@@ -363,6 +463,23 @@ mod tests {
         dir
     }
 
+    /// Waits for the worker thread (tests only).
+    fn settle(b: &mut FileBrowser) {
+        for _ in 0..2000 {
+            if !b.poll() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("listing did not finish");
+    }
+
+    fn browser(dir: PathBuf, filter: Vec<String>) -> FileBrowser {
+        let mut b = FileBrowser::new(dir, filter);
+        settle(&mut b);
+        b
+    }
+
     fn names(b: &FileBrowser) -> Vec<&str> {
         b.entries().iter().map(|e| e.name.as_str()).collect()
     }
@@ -370,9 +487,9 @@ mod tests {
     #[test]
     fn lists_folders_first_filtered_and_sorted() {
         let dir = tree();
-        let b = FileBrowser::new(dir.path().to_owned(), vec!["rom".into()]);
+        let b = browser(dir.path().to_owned(), vec!["rom".into()]);
         assert_eq!(names(&b), ["Alpha", "beta", "kick.ROM", "Zed.rom"]);
-        let all = FileBrowser::new(dir.path().to_owned(), Vec::new());
+        let all = browser(dir.path().to_owned(), Vec::new());
         assert_eq!(
             names(&all),
             [
@@ -390,8 +507,9 @@ mod tests {
     fn navigation_and_picking() {
         let dir = tree();
         std::fs::write(dir.path().join("Alpha").join("a.rom"), "x").unwrap();
-        let mut b = FileBrowser::new(dir.path().to_owned(), vec!["rom".into()]);
+        let mut b = browser(dir.path().to_owned(), vec!["rom".into()]);
         assert_eq!(b.activate(0), None);
+        settle(&mut b);
         assert_eq!(b.dir(), dir.path().join("Alpha"));
         assert_eq!(
             b.activate(0),
@@ -400,6 +518,7 @@ mod tests {
             ))
         );
         assert!(b.go_up());
+        settle(&mut b);
         assert_eq!(b.dir(), dir.path());
         assert_eq!(b.activate(99), None);
     }
@@ -407,9 +526,10 @@ mod tests {
     #[test]
     fn typed_path() {
         let dir = tree();
-        let mut b = FileBrowser::new(dir.path().to_owned(), vec!["rom".into()]);
+        let mut b = browser(dir.path().to_owned(), vec!["rom".into()]);
         b.typed = "beta".into();
         assert_eq!(b.submit_typed(), None);
+        settle(&mut b);
         assert_eq!(b.dir(), dir.path().join("beta"));
         b.typed = dir.path().join("Zed.rom").display().to_string();
         assert_eq!(
@@ -426,13 +546,45 @@ mod tests {
     #[test]
     fn missing_start_falls_back_to_an_ancestor() {
         let dir = tree();
-        let b = FileBrowser::new(dir.path().join("nope/deeper"), Vec::new());
+        let b = browser(dir.path().join("nope/deeper"), Vec::new());
         assert_eq!(b.dir(), dir.path());
     }
 
     #[test]
     fn root_has_no_parent() {
-        let mut b = FileBrowser::new(PathBuf::from("/"), Vec::new());
+        let mut b = browser(PathBuf::from("/"), Vec::new());
         assert!(!b.go_up());
+    }
+
+    #[test]
+    fn hidden_only_folder_is_told_apart_from_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = browser(dir.path().to_owned(), Vec::new());
+        assert!(!empty.hidden_only && empty.entries().is_empty());
+        std::fs::write(dir.path().join(".secret"), "x").unwrap();
+        let b = browser(dir.path().to_owned(), Vec::new());
+        assert!(b.hidden_only && b.entries().is_empty());
+    }
+
+    #[test]
+    fn listing_is_cut_at_the_maximum_and_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_ENTRIES + 3 {
+            std::fs::write(dir.path().join(format!("f{i}.rom")), "").unwrap();
+        }
+        let b = browser(dir.path().to_owned(), Vec::new());
+        assert_eq!(b.entries().len(), MAX_ENTRIES);
+        assert!(b.truncated);
+        let small = tree();
+        assert!(!browser(small.path().to_owned(), Vec::new()).truncated);
+    }
+
+    #[test]
+    fn refresh_is_asynchronous_until_polled() {
+        let dir = tree();
+        let mut b = FileBrowser::new(dir.path().to_owned(), Vec::new());
+        assert!(b.entries().is_empty());
+        settle(&mut b);
+        assert!(!b.entries().is_empty());
     }
 }

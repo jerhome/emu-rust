@@ -386,6 +386,13 @@ pub const BROWSER_UP: &str = "Dossier parent";
 pub const BROWSER_GO: &str = "Aller";
 pub const BROWSER_CANCEL: &str = "Annuler";
 pub const BROWSER_EMPTY: &str = "Dossier vide.";
+pub const BROWSER_LOADING: &str = "Chargement…";
+pub const BROWSER_ONLY_HIDDEN: &str = "Aucun fichier visible (fichiers cachés masqués).";
+pub const BROWSER_LIST_FAILED: &str = "Lecture du dossier interrompue.";
+
+pub fn browser_truncated(max: usize) -> String {
+    format!("{max} premiers éléments affichés")
+}
 pub const BROWSER_PATH_HINT: &str = "chemin d'un dossier ou d'un fichier";
 
 pub fn browser_filter(extensions: &[String]) -> String {
