@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use egui::{Button, Key, RichText, ScrollArea, Ui};
 
 use super::exec::{self, Job, Outcome, RunKind};
-use super::{Choice, Group, Preview, RowKind, Stage, row_kind, selectable, text};
+use super::{Choice, Group, Preview, RowKind, Stage, UndoAsk, row_kind, selectable, text};
 use crate::library::{ERROR, Level, LibraryUi, Page, WARNING, notify, weak};
 
 const INFO: egui::Color32 = egui::Color32::from_rgb(130, 180, 255);
@@ -21,7 +21,9 @@ enum Action {
     ToggleOther(u32),
     ImportBios(PathBuf),
     Apply,
-    Undo(PathBuf),
+    AskUndo(UndoAsk),
+    ConfirmUndo,
+    CancelUndo,
     StopRun,
 }
 
@@ -76,6 +78,10 @@ impl LibraryUi {
 
     /// « Ranger » / « Annuler le dernier rangement »: same refusals as the analysis, then the worker.
     fn start_run(&mut self, job: Job, ctx: &egui::Context) {
+        self.tidy.confirm_undo = None;
+        if self.tidy.busy() {
+            return;
+        }
         if let Some(msg) = super::refusal(self.tidy_busy_state()) {
             self.set_status(msg.to_owned(), Level::Warn);
             return;
@@ -149,7 +155,7 @@ impl LibraryUi {
                         actions.push(Action::Retry);
                     }
                 }
-                Stage::Preview(p) => preview(ui, p, &mut actions),
+                Stage::Preview(p) => preview(ui, p, &mut self.tidy.confirm_undo, &mut actions),
                 Stage::Running {
                     progress,
                     undo,
@@ -165,15 +171,23 @@ impl LibraryUi {
                     if let Some(current) = progress.as_ref().and_then(|p| p.current.as_deref()) {
                         weak(ui, text::path(current));
                     }
-                    let stop = ui.add_enabled(!task.is_cancelled(), Button::new(text::STOP_RUN));
-                    if focus_first {
-                        stop.request_focus();
-                    }
-                    if stop.clicked() {
+                    // An undo is never stopped: a stopped undo is final (design v7.1 §3.4.1). The stop button of
+                    // a run never gets the focus (a held Enter would press it).
+                    if !*undo
+                        && ui
+                            .add_enabled(!task.is_cancelled(), Button::new(text::STOP_RUN))
+                            .clicked()
+                    {
                         actions.push(Action::StopRun);
                     }
                 }
-                Stage::Report(outcome) => report(ui, outcome, focus_first, &mut actions),
+                Stage::Report(outcome) => report(
+                    ui,
+                    outcome,
+                    focus_first,
+                    &mut self.tidy.confirm_undo,
+                    &mut actions,
+                ),
             }
         });
         if escape {
@@ -191,9 +205,14 @@ impl LibraryUi {
                     }
                 }
                 Action::Retry => {
-                    let ctx = ui.ctx().clone();
-                    self.tidy.close();
-                    self.start_tidy(&ctx);
+                    // Refused (scan, download…): the report stays on screen.
+                    if let Some(msg) = super::refusal(self.tidy_busy_state()) {
+                        self.set_status(msg.to_owned(), Level::Warn);
+                    } else {
+                        let ctx = ui.ctx().clone();
+                        self.tidy.close();
+                        self.start_tidy(&ctx);
+                    }
                 }
                 Action::Check(id, on) => {
                     if let Stage::Preview(p) = &mut self.tidy.stage {
@@ -233,9 +252,20 @@ impl LibraryUi {
                         self.start_run(job, &ctx);
                     }
                 }
-                Action::Undo(journal) => {
-                    let ctx = ui.ctx().clone();
-                    self.start_run(Job::Undo { journal }, &ctx);
+                Action::AskUndo(ask) => self.tidy.confirm_undo = Some(ask),
+                Action::CancelUndo => self.tidy.confirm_undo = None,
+                Action::ConfirmUndo => {
+                    if self.tidy.may_undo()
+                        && let Some(ask) = self.tidy.confirm_undo.take()
+                    {
+                        let ctx = ui.ctx().clone();
+                        self.start_run(
+                            Job::Undo {
+                                journal: ask.journal,
+                            },
+                            &ctx,
+                        );
+                    }
                 }
                 Action::StopRun => {
                     if let Stage::Running { task, .. } = &self.tidy.stage {
@@ -247,7 +277,7 @@ impl LibraryUi {
     }
 }
 
-fn preview(ui: &mut Ui, p: &mut Preview, actions: &mut Vec<Action>) {
+fn preview(ui: &mut Ui, p: &mut Preview, confirm: &mut Option<UndoAsk>, actions: &mut Vec<Action>) {
     weak(ui, text::INTRO);
     ui.colored_label(WARNING, RichText::new(text::SECOND_INSTANCE).small());
     let t = super::totals(&p.plan, &p.checked);
@@ -257,16 +287,16 @@ fn preview(ui: &mut Ui, p: &mut Preview, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         // Disabled while a choice is pending: the plan may still change.
         if ui
-            .add_enabled(p.can_apply(), Button::new(text::APPLY))
+            .add_enabled(p.can_apply(), Button::new(text::apply(p.checked.len())))
             .clicked()
         {
             actions.push(Action::Apply);
         }
-        if ui.button(text::CANCEL).clicked() {
+        if ui.button(text::CLOSE_WITHOUT_TIDY).clicked() {
             actions.push(Action::Back);
         }
-        undo_button(ui, &p.last, actions);
     });
+    undo_section(ui, &p.last, confirm, actions);
     if updating > 0 {
         weak(ui, text::APPLY_UPDATING);
     }
@@ -423,11 +453,44 @@ fn unit_row(ui: &mut Ui, p: &Preview, index: usize, actions: &mut Vec<Action>) {
     });
 }
 
-fn undo_button(ui: &mut Ui, last: &exec::LastTidy, actions: &mut Vec<Action>) {
-    if let Some(journal) = last.undo_target()
-        && ui.button(text::UNDO).clicked()
-    {
-        actions.push(Action::Undo(journal.to_path_buf()));
+/// « Annuler le dernier rangement… » on its own line, then its confirmation (date and number of files).
+fn undo_section(
+    ui: &mut Ui,
+    last: &exec::LastTidy,
+    confirm: &mut Option<UndoAsk>,
+    actions: &mut Vec<Action>,
+) {
+    let (Some(_), Some(info)) = (last.undo_target(), last.info.as_ref()) else {
+        return;
+    };
+    match confirm {
+        Some(ask) if ask.journal == info.path => {
+            ui.group(|ui| {
+                ui.colored_label(WARNING, text::undo_confirm(ask.moved, ask.unix));
+                ui.horizontal(|ui| {
+                    let no = ui.button(text::UNDO_CONFIRM_NO);
+                    if std::mem::take(&mut ask.focus) {
+                        no.request_focus();
+                    }
+                    if no.clicked() {
+                        actions.push(Action::CancelUndo);
+                    }
+                    if ui.button(text::UNDO_CONFIRM_YES).clicked() {
+                        actions.push(Action::ConfirmUndo);
+                    }
+                });
+            });
+        }
+        _ => {
+            if ui.button(text::UNDO).clicked() {
+                actions.push(Action::AskUndo(UndoAsk {
+                    journal: info.path.clone(),
+                    moved: info.moved,
+                    unix: info.created_unix,
+                    focus: true,
+                }));
+            }
+        }
     }
 }
 
@@ -440,13 +503,13 @@ fn last_tidy_lines(ui: &mut Ui, last: &exec::LastTidy) {
     }
 }
 
-/// Path under the roms root shown relative to it.
-fn shown(root: Option<&std::path::Path>, p: &std::path::Path) -> std::path::PathBuf {
-    root.and_then(|r| p.strip_prefix(r).ok())
-        .map_or_else(|| p.to_path_buf(), std::path::Path::to_path_buf)
-}
-
-fn report(ui: &mut Ui, out: &Outcome, focus_first: bool, actions: &mut Vec<Action>) {
+fn report(
+    ui: &mut Ui,
+    out: &Outcome,
+    focus_first: bool,
+    confirm: &mut Option<UndoAsk>,
+    actions: &mut Vec<Action>,
+) {
     let title = match out.kind {
         RunKind::Tidy => text::REPORT_TIDY,
         RunKind::Undo => text::REPORT_UNDO,
@@ -461,33 +524,34 @@ fn report(ui: &mut Ui, out: &Outcome, focus_first: bool, actions: &mut Vec<Actio
         if again.clicked() {
             actions.push(Action::Retry);
         }
-        undo_button(ui, &out.last, actions);
     });
+    undo_section(ui, &out.last, confirm, actions);
     last_tidy_lines(ui, &out.last);
     for m in &out.messages {
         ui.colored_label(WARNING, m.as_str());
     }
-    let root = out.root.as_deref();
+    let shown = |p: &std::path::Path| exec::shown_path(out, p);
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if let Some(r) = &out.report {
-                ui.label(text::moved(r.moved.len(), r.dirs_created, r.dirs_removed));
-                if r.cancelled {
-                    ui.colored_label(INFO, text::CANCELLED);
+                let lines = exec::report_lines(out.kind, r);
+                ui.label(lines.headline);
+                if let Some(c) = lines.cancelled {
+                    ui.colored_label(INFO, c);
                 }
                 if !r.left.is_empty() {
                     ui.add_space(6.0);
-                    ui.label(RichText::new(text::LEFT_TITLE).strong());
+                    ui.label(RichText::new(lines.left_title).strong());
                     for (p, b) in &r.left {
-                        ui.colored_label(WARNING, text::left(&shown(root, p), b));
+                        ui.colored_label(WARNING, text::left(&shown(p), b));
                     }
                 }
                 if !r.errors.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::ERRORS_TITLE).strong());
                     for (p, m) in &r.errors {
-                        ui.colored_label(ERROR, text::error_line(&shown(root, p), m));
+                        ui.colored_label(ERROR, text::error_line(&shown(p), m));
                     }
                 }
             }
@@ -495,7 +559,7 @@ fn report(ui: &mut Ui, out: &Outcome, focus_first: bool, actions: &mut Vec<Actio
                 ui.add_space(6.0);
                 ui.label(RichText::new(text::SKIPPED_TITLE).strong());
                 for (p, m) in &out.skipped {
-                    ui.colored_label(WARNING, text::error_line(p, m));
+                    ui.colored_label(WARNING, text::error_line(&shown(p), m));
                 }
             }
         });

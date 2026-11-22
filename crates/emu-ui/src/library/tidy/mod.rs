@@ -442,9 +442,20 @@ pub(super) enum Stage {
     Report(Box<exec::Outcome>),
 }
 
+/// « Annuler le dernier rangement… » waiting for its confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UndoAsk {
+    pub journal: PathBuf,
+    pub moved: u64,
+    pub unix: i64,
+    /// Focus « Non » on the next frame (the safe default for a held key).
+    pub focus: bool,
+}
+
 #[derive(Default)]
 pub(super) struct TidyUi {
     pub stage: Stage,
+    pub confirm_undo: Option<UndoAsk>,
     pub focus_first: bool,
     /// Start the analysis on the next frame (capture mode).
     pub pending: bool,
@@ -503,7 +514,13 @@ impl TidyUi {
         changed
     }
 
+    /// An undo may start: confirmed, nothing running, from the preview or the report.
+    pub(super) fn may_undo(&self) -> bool {
+        self.confirm_undo.is_some() && matches!(self.stage, Stage::Preview(_) | Stage::Report(_))
+    }
+
     pub(super) fn close(&mut self) {
+        self.confirm_undo = None;
         // Dropping the task cancels it.
         self.stage = Stage::Idle;
     }

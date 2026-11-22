@@ -472,3 +472,24 @@ fn run_job_tidies_then_undoes_and_offers_undo_once() {
     let out = run_job(&dirs, Job::Recovery, &cancel, &mut |_| {});
     assert!(out.messages.is_empty(), "{:?}", out.messages);
 }
+
+#[test]
+fn undo_needs_a_confirmation_and_an_idle_page() {
+    let t = tree();
+    let mut ui = TidyUi {
+        stage: Stage::Preview(Box::new(preview(&t))),
+        ..TidyUi::default()
+    };
+    assert!(!ui.may_undo(), "never without the confirmation");
+    ui.confirm_undo = Some(UndoAsk {
+        journal: "/j/journal-1.txt".into(),
+        moved: 2,
+        unix: 1,
+        focus: true,
+    });
+    assert!(ui.may_undo());
+    ui.stage = Stage::Failed("x".into());
+    assert!(!ui.may_undo());
+    ui.close();
+    assert!(ui.confirm_undo.is_none());
+}

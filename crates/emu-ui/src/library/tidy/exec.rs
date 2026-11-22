@@ -38,6 +38,8 @@ pub(crate) struct Outcome {
     pub last: LastTidy,
     /// Canonical roms root, to show paths relative to it.
     pub root: Option<PathBuf>,
+    /// Saves folder, idem (`saves/<core>/…`: no account name in the report).
+    pub saves: Option<PathBuf>,
 }
 
 impl Outcome {
@@ -49,6 +51,7 @@ impl Outcome {
             messages: Vec::new(),
             last: LastTidy::default(),
             root: None,
+            saves: None,
         }
     }
 }
@@ -67,7 +70,7 @@ pub(crate) trait TidySteps {
 pub(crate) fn error_text(e: &LibraryError) -> String {
     match e {
         LibraryError::TidyBusy => text::BUSY.to_owned(),
-        LibraryError::Journal { path, message } => text::journal_unreadable(path, message),
+        LibraryError::Journal { path, message } => text::journal_error(path, message),
         LibraryError::TidyRootMismatch { journal } => text::other_root(journal),
         e => crate::ui::text::sanitize_core_text(&e.to_string()),
     }
@@ -90,11 +93,23 @@ impl LastTidy {
                 info,
                 ..Self::default()
             },
-            Err(e) => Self {
-                info: None,
-                blocked: matches!(e, LibraryError::Journal { .. }),
-                error: Some(error_text(&e)),
-            },
+            Err(e) => {
+                let error = match &e {
+                    LibraryError::Journal { path, message } => {
+                        text::journal_unreadable(path, message)
+                    }
+                    e => error_text(e),
+                };
+                Self {
+                    info: None,
+                    // Another root: tidying here would fail on its in-progress journal, or undo the wrong one.
+                    blocked: matches!(
+                        e,
+                        LibraryError::Journal { .. } | LibraryError::TidyRootMismatch { .. }
+                    ),
+                    error: Some(error),
+                }
+            }
         }
     }
 
@@ -179,6 +194,9 @@ pub(crate) fn after_run<S: TidySteps>(
             // Another window holds the lock: its own run recovers; nothing to replay here.
             if !busy {
                 finish_pending(steps, &mut out);
+                if out.report.is_none() {
+                    out.messages.push(text::AFTER_ERROR.to_owned());
+                }
             }
         }
     }
@@ -278,7 +296,18 @@ pub(crate) fn run_job(
         }
     };
     out.root = Some(options.roms_root().to_path_buf());
+    out.saves = Some(dirs.saves.clone());
     out
+}
+
+/// `roms/…` or `saves/…` when `p` is under one of them, otherwise `p`.
+pub(crate) fn shown_path(out: &Outcome, p: &Path) -> PathBuf {
+    for (base, name) in [(&out.root, "roms"), (&out.saves, "saves")] {
+        if let Some(rel) = base.as_deref().and_then(|b| p.strip_prefix(b).ok()) {
+            return Path::new(name).join(rel);
+        }
+    }
+    p.to_path_buf()
 }
 
 /// Nothing to recover when no tidying ever ran (no journal folder) or the roms folder is missing.
@@ -286,16 +315,56 @@ pub(crate) fn recovery_needed(dirs: &DataDirs) -> bool {
     dirs.tidy_journals.is_dir() && roms_root(dirs).is_dir() && dirs.library_db.is_file()
 }
 
+/// Head of the report, worded for a run or an undo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReportLines {
+    pub headline: String,
+    pub cancelled: Option<&'static str>,
+    pub left_title: &'static str,
+}
+
+pub(crate) fn report_lines(kind: RunKind, r: &TidyReport) -> ReportLines {
+    match kind {
+        RunKind::Undo => ReportLines {
+            // `moved` is the net list of the whole journal, not what came back: not shown as a count.
+            headline: if r.left.is_empty() && !r.cancelled {
+                text::UNDO_ALL_BACK.to_owned()
+            } else {
+                text::UNDO_SOME_LEFT.to_owned()
+            },
+            cancelled: r.cancelled.then_some(text::UNDO_CANCELLED),
+            left_title: text::UNDO_LEFT_TITLE,
+        },
+        RunKind::Tidy | RunKind::Recovery => ReportLines {
+            headline: text::moved(r.moved.len(), r.dirs_created, r.dirs_removed),
+            cancelled: r.cancelled.then_some(text::CANCELLED),
+            left_title: text::LEFT_TITLE,
+        },
+    }
+}
+
 /// Lines logged after the start-up recovery: messages, what was left or failed, identity collisions.
 pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
     let mut lines = out.messages.clone();
     if let Some(r) = &out.report {
-        lines.extend(r.left.iter().map(|(p, b)| text::left(p, b)));
-        lines.extend(r.errors.iter().map(|(p, m)| text::error_line(p, m)));
+        lines.extend(
+            r.left
+                .iter()
+                .map(|(p, b)| text::left(&shown_path(out, p), b)),
+        );
+        lines.extend(
+            r.errors
+                .iter()
+                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
+        );
     }
     if !out.skipped.is_empty() {
         lines.push(text::SKIPPED_TITLE.to_owned());
-        lines.extend(out.skipped.iter().map(|(p, m)| text::error_line(p, m)));
+        lines.extend(
+            out.skipped
+                .iter()
+                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
+        );
     }
     lines
 }
@@ -342,6 +411,7 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         identities_done: true,
     })));
     out.root = Some(root);
+    out.saves = Some(dirs.saves.clone());
     out
 }
 
@@ -528,7 +598,8 @@ mod tests {
             journal: PathBuf::from("/j/journal-2.txt"),
         }));
         assert!(other.undo_target().is_none());
-        assert!(!other.blocked);
+        assert!(other.blocked);
+        assert!(unreadable.error.as_deref().unwrap().contains("retiré"));
     }
 
     #[test]
@@ -559,6 +630,62 @@ mod tests {
     }
 
     #[test]
+    fn error_without_recovery_report_says_games_stay_tidied() {
+        let mut f = Fake::default();
+        let err = LibraryError::Journal {
+            path: PathBuf::from("/j/journal-1.txt"),
+            message: "écriture impossible".into(),
+        };
+        let out = after_run(RunKind::Tidy, Err(err), &mut f);
+        assert_eq!(out.messages.last().unwrap(), text::AFTER_ERROR);
+    }
+
+    #[test]
+    fn report_paths_are_relative_to_roms_and_saves() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(PathBuf::from("/home/u/data/roms"));
+        out.saves = Some(PathBuf::from("/home/u/data/saves"));
+        assert_eq!(
+            shown_path(&out, Path::new("/home/u/data/roms/snes/a.sfc")),
+            Path::new("roms/snes/a.sfc")
+        );
+        assert_eq!(
+            shown_path(&out, Path::new("/home/u/data/saves/snes9x/.emu-rust-games")),
+            Path::new("saves/snes9x/.emu-rust-games")
+        );
+        assert_eq!(
+            shown_path(&out, Path::new("/elsewhere/x")),
+            Path::new("/elsewhere/x")
+        );
+    }
+
+    #[test]
+    fn undo_report_has_its_own_wording() {
+        let mut r = report(Some("/j/journal-1.txt"));
+        let undo = report_lines(RunKind::Undo, &r);
+        assert_eq!(undo.headline, text::UNDO_ALL_BACK);
+        assert_eq!(undo.left_title, text::UNDO_LEFT_TITLE);
+        r.cancelled = true;
+        let undo = report_lines(RunKind::Undo, &r);
+        assert_eq!(undo.cancelled, Some(text::UNDO_CANCELLED));
+        assert_eq!(undo.headline, text::UNDO_SOME_LEFT);
+        let tidy = report_lines(RunKind::Tidy, &r);
+        assert_eq!(tidy.cancelled, Some(text::CANCELLED));
+        assert!(tidy.headline.contains("Fichiers déplacés : 1"));
+    }
+
+    #[test]
+    fn undo_confirmation_recalls_date_and_files() {
+        let t = text::undo_confirm(4, 1_763_840_000);
+        assert!(t.contains("2025-11-22"));
+        assert!(t.contains("UTC"));
+        assert!(t.contains("4 fichier(s)"));
+        assert_eq!(text::apply(3), "Ranger 3 jeu(x)");
+        assert_eq!(text::CLOSE_WITHOUT_TIDY, "Fermer sans ranger");
+        assert!(text::UNDO.ends_with('…'));
+    }
+
+    #[test]
     fn error_texts_are_french() {
         assert_eq!(error_text(&LibraryError::TidyBusy), text::BUSY);
         assert!(text::BUSY.contains("une autre fenêtre d'emu-rust range déjà"));
@@ -567,7 +694,9 @@ mod tests {
             message: "ligne 3 invalide".into(),
         });
         assert!(t.contains("/data/rangement/journal-5.txt"));
-        assert!(t.contains("retiré"));
+        assert!(t.contains("ligne 3 invalide"));
+        // Not every journal refusal means « unreadable »: no removal advice here.
+        assert!(!t.contains("retiré"));
         let t = error_text(&LibraryError::TidyRootMismatch {
             journal: PathBuf::from("/data/rangement/journal-6.txt"),
         });
