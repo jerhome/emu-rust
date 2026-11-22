@@ -331,3 +331,30 @@ Les autres questions prennent le défaut recommandé :
 | Q10 | Sous « Mega CD », avec une pastille « 32X » |
 | Q12 | Pré-release sur la base des tests factices ; l'essai de l'utilisateur décide de la suite |
 | 2026-11-22 | 7.1 | Faces `.d64` non regroupées : `MANIACD0.D64` et `MANIACD1.D64` (Maniac Mansion C64, essai utilisateur) donnent deux tuiles, la face 2 ne démarre pas ; le zip fonctionne | Défaut proposé : regrouper aussi les noms « préfixe commun + chiffre final » (`…D0`/`…D1`, `…1`/`…2`, en 8.3 majuscules) **dans un même dossier système d'ordinateur** (c64, amiga, st, cpc, dos), ordre numérique, seulement si le préfixe fait ≥ 4 caractères et qu'il n'y a pas d'autre fichier du même préfixe ; à faire en 7.1 (library-assets) | défaut |
+
+## 9.0 — rendu matériel : à discuter avec l'utilisateur
+
+Ajouté le 2026-11-22 (architecte). Étude préliminaire : `docs/etude-9.0-rendu-materiel.md` (§9, texte complet des
+questions). Ni ADR ni découpage avant les réponses.
+**Périmètre (consigne du 2026-11-22)** : Windows natif, puis macOS Intel, puis Linux natif ; WSL / WSLg, Docker et
+noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0. Défaut recommandé en gras ; « ok pour les défauts » suffit.
+
+1. **Premier système de la 9.0.** a) **PlayStation en haute résolution (swanstation), sans nouveau système** ;
+   b) Nintendo 64 ; c) Dreamcast.
+2. **Premier système nouveau (9.1).** a) **Dreamcast (flycast)** ; b) Nintendo 64 ; c) les deux ensemble.
+3. **PlayStation par défaut.** a) **pcsx_rearmed en logiciel reste le défaut, la haute résolution est un réglage** ;
+   b) swanstation en haute résolution devient le défaut.
+4. **Résolution interne à l'activation.** a) **×2**, réglable de ×1 à ×8 ; b) ×4 ; c) selon la taille de la fenêtre.
+5. **Place de DirectX 11.** a) **Après la mesure OpenGL sur l'Iris Xe : 9.2 si OpenGL est bon, avant la 9.1 sinon** ;
+   b) toujours avant tout nouveau système ; c) seulement en cas de problème.
+6. **Méthode DirectX 11.** a) **Pont d'abord (interface en OpenGL, image du core copiée), coût mesuré** ;
+   b) interface entièrement en DirectX d'emblée.
+7. **Mode mesure.** a) **« Mesurer 60 s » puis coller le rapport** ; b) simple compteur à l'écran.
+8. **macOS Intel.** a) **Accepter des cores ou réglages absents, affichés grisés** ; b) tout ou rien sur toutes les
+   cibles.
+9. **Saturn et Nintendo DS** (cores sans rendu matériel). a) **Étude à part, sans attendre la 9.x** ; b) en 9.3 ;
+   c) pas intéressé.
+10. **GameCube / Wii, 3DS, PlayStation 2.** a) **Hors 9.x, à redécider** ; b) à prévoir (lequel ?).
+11. **Vulkan.** a) **9.4, tests automatiques, essai par le camarade** ; b) plus tôt ; c) abandonné.
+12. **Ordre des versions.** a) **7.1 → 7.2 → 8.0 → 9.0** ; b) 9.0 avant la 8.0.
+13. **À relever sur le portable Windows** (pas de défaut) : processeur, mémoire, version du pilote Intel (`dxdiag`).
