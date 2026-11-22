@@ -282,6 +282,21 @@ n'a encore été écrit chez un utilisateur.
   peut décaler les dates d'une heure : l'unité n'est alors pas annulée (elle reste rangée, signalée). Deux
   instances qui posent `I` et annulent en même temps ne sont pas départagées au-delà du verrou de chaque appel
   (limite « seconde instance » ci-dessous).
+- **Décisions après la revue FV1a** (2026-11-22 ; rapport `.claude/fv1a-7.1.md`).
+  1. **Identité physique (I3).** Dans la branche destructrice de la reprise et de la défaite (retirer un
+     exemplaire « identique »), l'identité de deux exemplaires est prouvée par le crate `same-file` (déjà
+     transitif via `walkdir`, il devient dépendance directe d'`emu-library` ; l'implémenteur vérifie sa licence),
+     avec en plus le garde `canonicalize(src) != canonicalize(dst)`. La borne de 512 Mio (taille + CRC32)
+     disparaît pour cette branche. Si un fichier ne peut pas être ouvert, le cas est signalé et rien n'est retiré.
+  2. **Windows, `sync_dir`** (m4) : sans effet, acceptable sur NTFS. Sur FAT / exFAT, un renommage de dossier
+     (unités `W`) n'est ni atomique ni ordonné : limite assumée, à ajouter à celles ci-dessus.
+  3. **`fold_path`** : le pliage de casse et d'Unicode est volontairement plus grossier que NFC (`é` == `e`) et
+     incomplet pour certains alphabets. Il va dans le sens sûr : refus ou `Conflict`, jamais fusion.
+     `Pokémon.gb` et `Pokemon.gb` visant le même dossier restent non rangés, le message montre le fichier existant.
+  4. **Fichier ouvert par un autre programme** (Windows) : violation de partage, donc `Fatal` ; le journal reste
+     en cours jusqu'à la fermeture du fichier, puis reprise. L'UI doit l'expliquer.
+  5. **Sur `Fatal`**, le `TidyReport` partiel est perdu : l'UI enchaîne `recover_tidy` puis
+     `pending_tidy_identities`.
 
 ### 5. Cores améliorés par un fichier d'origine
 
