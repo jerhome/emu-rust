@@ -929,6 +929,8 @@ pub const LOG_FILTER_WARNINGS: &str = "Avertissements";
 pub const LOG_FILTER_ALL: &str = "Tout";
 pub const LOG_OPEN_FOLDER: &str = "Ouvrir le dossier des journaux";
 pub const LOG_EMPTY: &str = "Aucun message pour ce filtre.";
+pub const LOG_FILE_IN_USE: &str =
+    "fichier journal utilisé par une autre instance : cette session n'est pas enregistrée";
 pub const LOG_HINT: &str = "PgUp / PgDn : défiler · Échap : retour";
 
 /// Footer line: `emu-rust <version> — dev by claude@jerhome`.

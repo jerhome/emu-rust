@@ -225,6 +225,8 @@ pub(super) enum ChoiceOutcome {
     Unit(Result<(), LibraryError>),
     /// Units resolved.
     Extension(u32),
+    /// The preview was left before the worker started this choice.
+    Cancelled,
 }
 
 /// Result: the plan with the choice applied (left unused when the choice is refused).
@@ -238,6 +240,19 @@ pub(super) fn run_choice(plan: &mut TidyPlan, choice: &Choice) -> ChoiceOutcome 
             ChoiceOutcome::Extension(plan.choose_system_for_extension(extension, system))
         }
     }
+}
+
+/// Worker body: nothing is computed once the preview was left (`cancel`).
+pub(super) fn choice_job(
+    cancel: &std::sync::atomic::AtomicBool,
+    mut plan: TidyPlan,
+    choice: &Choice,
+) -> (TidyPlan, ChoiceOutcome) {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return (plan, ChoiceOutcome::Cancelled);
+    }
+    let outcome = run_choice(&mut plan, choice);
+    (plan, outcome)
 }
 
 /// The preview being edited.
@@ -287,11 +302,12 @@ impl Preview {
         let Some(choice) = self.queued.pop_front() else {
             return;
         };
-        let mut plan = self.plan.clone();
+        let plan = self.plan.clone();
         let job = choice.clone();
-        let task = Task::spawn("tidy-choice", notify, move |_cancel, _progress| {
-            let outcome = run_choice(&mut plan, &job);
-            (plan, outcome)
+        // Leaving the preview drops the task (cancel flag) and the queue with it: no further choice runs. A
+        // choice already in `choose_system*` runs to its end: emu-library offers no cancellation there.
+        let task = Task::spawn("tidy-choice", notify, move |cancel, _progress| {
+            choice_job(cancel, plan, &job)
         });
         self.choosing = Some((choice, task));
     }
@@ -321,6 +337,7 @@ impl Preview {
     ) -> Result<(), String> {
         match (choice, outcome) {
             (_, ChoiceOutcome::Unit(Err(e))) => Err(e.to_string()),
+            (_, ChoiceOutcome::Cancelled) => Err(text::CHOICE_INTERRUPTED.to_owned()),
             (Choice::Unit { unit, .. }, ChoiceOutcome::Unit(Ok(()))) => {
                 self.plan = plan;
                 self.other_open.remove(unit);
@@ -379,7 +396,7 @@ impl Preview {
         let outcome = run_choice(&mut plan, &choice);
         let n = match outcome {
             ChoiceOutcome::Extension(n) => n,
-            ChoiceOutcome::Unit(_) => 0,
+            ChoiceOutcome::Unit(_) | ChoiceOutcome::Cancelled => 0,
         };
         let _ = self.apply(&choice, plan, outcome);
         n

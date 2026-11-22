@@ -45,7 +45,7 @@ pub struct LogRecord {
     pub origin: LogOrigin,
     /// `tracing` target (`emu_ui::library`, `emu_libretro::log`…).
     pub target: String,
-    /// At most [`MAX_LOG_MESSAGE`] characters, control and bidi characters removed for core lines.
+    /// One line of at most [`MAX_LOG_MESSAGE`] characters, control and bidi characters removed (every origin).
     pub message: String,
 }
 
@@ -137,13 +137,27 @@ impl LogBuffer {
 
     /// Takes the OS lock of `<path>.lock`, rotates `<path>` to `<path>.1`, writes what the ring already holds,
     /// then follows it (cap [`MAX_LOG_FILE_BYTES`], mode 0600 on Unix). A lock held by another instance, or a
-    /// failed rotation or open, is returned once and leaves the ring working without a file.
+    /// failed rotation or open, is returned once and leaves the ring working without a file; a lock held elsewhere
+    /// also puts a warning in the ring (`ErrorKind::WouldBlock`: the caller need not log it again).
     pub fn attach_file(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             *lock(&self.dir) = Some(parent.to_owned());
             std::fs::create_dir_all(parent)?;
         }
-        let lock_file = take_lock(&suffixed(path, ".lock"))?;
+        let lock_file = match take_lock(&suffixed(path, ".lock")) {
+            Ok(f) => f,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    self.push(
+                        LogLevel::Warn,
+                        LogOrigin::App,
+                        "emu_ui::log",
+                        crate::ui::text::LOG_FILE_IN_USE,
+                    );
+                }
+                return Err(e);
+            }
+        };
         if path.exists() {
             // Windows refuses to replace an existing target on some versions: remove it first.
             let previous = suffixed(path, ".1");
@@ -623,7 +637,11 @@ mod tests {
             text.contains("first again") && !text.contains("second"),
             "{text}"
         );
-        assert_eq!(second.snapshot(0).len(), 1, "the ring still works");
+        let ring = second.snapshot(0);
+        assert_eq!(ring.len(), 2, "the ring still works");
+        assert_eq!(ring[0].level, LogLevel::Warn);
+        assert_eq!(ring[0].message, crate::ui::text::LOG_FILE_IN_USE);
+        assert_eq!(second.unread(), (0, 2));
     }
 
     #[test]

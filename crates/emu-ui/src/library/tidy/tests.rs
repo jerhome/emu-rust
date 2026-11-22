@@ -384,3 +384,20 @@ fn choices_are_applied_in_a_worker_in_order() {
     assert_eq!(unit(&p.plan, "Vagrant.chd").system.as_deref(), Some("psx"));
     assert!(p.note.is_some());
 }
+
+/// Leaving the preview drops the task: a choice not started yet computes nothing.
+#[test]
+fn a_cancelled_choice_does_nothing() {
+    let t = tree();
+    let mut p = preview(&t);
+    let id = unit(&p.plan, "Pocket.gb").id;
+    let choice = Choice::Unit {
+        unit: id,
+        system: "gb".to_owned(),
+    };
+    let (plan, outcome) = choice_job(&AtomicBool::new(true), p.plan.clone(), &choice);
+    assert!(matches!(outcome, ChoiceOutcome::Cancelled));
+    assert_eq!(plan, p.plan);
+    assert!(p.apply(&choice, plan, outcome).is_err());
+    assert!(unit(&p.plan, "Pocket.gb").system.is_none());
+}

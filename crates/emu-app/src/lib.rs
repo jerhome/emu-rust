@@ -259,8 +259,11 @@ fn start_window_mode(
             Err(e) => tracing::warn!("console non ouverte, démarrage sans console : {e}"),
         }
     }
-    if let Err(e) = emu_ui::log::LogBuffer::global().attach_file(&dirs.logs.join("emu-rust.log")) {
-        tracing::warn!("fichier journal indisponible : {e}");
+    match emu_ui::log::LogBuffer::global().attach_file(&dirs.logs.join("emu-rust.log")) {
+        // Another instance holds the log: the buffer already shows its own warning in the « Journal » panel.
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(e) => tracing::warn!("fichier journal indisponible : {e}"),
+        Ok(()) => {}
     }
     None
 }
