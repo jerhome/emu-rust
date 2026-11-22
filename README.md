@@ -4,7 +4,7 @@ Frontend [libretro](https://www.libretro.com/) écrit en Rust. L'émulation est 
 emu-rust fournit l'image, le son, le clavier et la manette PS4, la bibliothèque de jeux avec jaquettes, le
 téléchargement des cores et des BIOS libres. Usage personnel.
 
-**Version stable : 6.0.0** · **pré-release : 7.0.0-rc.1** ([releases](../../releases))
+**Version stable : 7.0.0** ([releases](../../releases))
 
 ## Systèmes pris en charge
 

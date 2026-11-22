@@ -2,6 +2,13 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.0.0] - 2026-11-22
+
+Version stable de la 7.0 : contenu de la 7.0.0-rc.1, **validé par l'utilisateur sous Windows** : PlayStation (GTA avec
+le BIOS intégré et avec un BIOS d'origine, mode DualShock retenu, cores `pcsx_rearmed`, `swanstation` et
+`mednafen_psx`), 3DO (Road Rash avec Opera Boot intégré et avec `panafz10.bin`), zip CPC (B.A.T.). Aucun changement
+de code depuis la rc.
+
 ## [7.0.0-rc.1] - 2026-11-21
 
 Première pré-release de la 7.0 : **PlayStation** et **3DO** (rendu logiciel). Guide d'essai :
