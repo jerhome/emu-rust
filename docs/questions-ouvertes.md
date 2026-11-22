@@ -330,3 +330,4 @@ Les autres questions prennent le défaut recommandé :
 | Q9 | Comportement du dépôt et de « Annuler » : défauts retenus |
 | Q10 | Sous « Mega CD », avec une pastille « 32X » |
 | Q12 | Pré-release sur la base des tests factices ; l'essai de l'utilisateur décide de la suite |
+| 2026-11-22 | 7.1 | Faces `.d64` non regroupées : `MANIACD0.D64` et `MANIACD1.D64` (Maniac Mansion C64, essai utilisateur) donnent deux tuiles, la face 2 ne démarre pas ; le zip fonctionne | Défaut proposé : regrouper aussi les noms « préfixe commun + chiffre final » (`…D0`/`…D1`, `…1`/`…2`, en 8.3 majuscules) **dans un même dossier système d'ordinateur** (c64, amiga, st, cpc, dos), ordre numérique, seulement si le préfixe fait ≥ 4 caractères et qu'il n'y a pas d'autre fichier du même préfixe ; à faire en 7.1 (library-assets) | défaut |
