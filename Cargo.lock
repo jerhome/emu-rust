@@ -746,6 +746,7 @@ dependencies = [
  "crc32fast",
  "libc",
  "rusqlite",
+ "same-file",
  "serde",
  "sha1",
  "tempfile",

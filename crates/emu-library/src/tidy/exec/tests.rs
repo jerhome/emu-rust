@@ -396,7 +396,7 @@ fn fault_at_every_call_of_the_run_then_recovery() {
     });
     assert!(total > 40, "{total}");
     for at in 0..=total {
-        for mode in [Mode::Crash, Mode::Once] {
+        for mode in [Mode::Crash, Mode::Once, Mode::DoneButFailed] {
             let (fx, mut library, plan, initial) = setup();
             let options = fx.options();
             let units = sides(&plan, &initial);
@@ -486,7 +486,7 @@ fn fault_at_every_call_of_the_undo_then_recovery() {
         );
     });
     for at in 0..=total {
-        for mode in [Mode::Crash, Mode::Once] {
+        for mode in [Mode::Crash, Mode::Once, Mode::DoneButFailed] {
             let (fx, mut library, plan, initial, journal) = prepared();
             let options = fx.options();
             let units = sides(&plan, &initial);

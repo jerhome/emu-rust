@@ -18,7 +18,6 @@ use super::journal::{
     self, Block, Content, JournalWriter, MAX_FORWARD_SIZE, MAX_UNDO_SIZE, MTIME_TOLERANCE_SECS, Op,
     State, same_place,
 };
-use super::plan::crc_of;
 use super::relocate;
 use super::sys::Sys;
 use super::{
@@ -141,12 +140,6 @@ fn same_state(meta: &fs::Metadata, size: u64, mtime: i64) -> bool {
 fn links_of(meta: &fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     meta.nlink()
-}
-
-#[cfg(unix)]
-fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
 }
 
 /// `(files, size, newest mtime)` of the regular files below `rel` (not following links); `None` when it holds a
@@ -478,6 +471,12 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
+    /// `sync_dir` of the folder holding `rel` (the root counts).
+    fn sync_parent(&self, rel: &Path) -> Result<(), LibraryError> {
+        let path = self.abs(rel.parent().unwrap_or(Path::new("")));
+        self.sys.sync_dir(&path).map_err(|e| io_at(&path, e))
+    }
+
     fn remove_dir(&mut self, rel: &Path, quiet: bool) -> Result<(), LibraryError> {
         if !matches!(probe(&self.root, rel), Probe::Dir) {
             return Ok(());
@@ -536,18 +535,27 @@ impl<'a> Exec<'a> {
                 }
                 let (from, to) = (root.join(place), root.join(source));
                 self.sys.hard_link(&from, &to).map_err(|e| io_at(&to, e))?;
+                // The name given back durable before the other one goes (FV1a I2).
+                self.sync_parent(source)?;
                 self.sys.remove_file(&from).map_err(|e| io_at(&from, e))?;
-                Ok(())
+                self.sync_parent(place)
             }
-            Probe::File(src_meta) => {
-                if self.identical(source, &src_meta, place, &dest_meta, size) {
-                    let path = root.join(place);
-                    self.sys.remove_file(&path).map_err(|e| io_at(&path, e))?;
-                } else {
-                    self.signal(
+            Probe::File(_) => {
+                match self.identical(source, place, size) {
+                    Identity::Same => {
+                        let path = root.join(place);
+                        self.sys.remove_file(&path).map_err(|e| io_at(&path, e))?;
+                        self.sync_parent(place)?;
+                    }
+                    Identity::Different => self.signal(
                         place,
                         "fichier présent à l'origine et à la destination, différent : rien n'est touché",
-                    );
+                    ),
+                    Identity::Unproven => self.signal(
+                        place,
+                        "fichier présent à l'origine et à la destination, identité impossible à vérifier : \
+                         rien n'est touché",
+                    ),
                 }
                 Ok(())
             }
@@ -562,34 +570,32 @@ impl<'a> Exec<'a> {
         }
     }
 
-    /// Two names of one file, or two equal copies: the destination may go. Unix also wants two links on the
-    /// destination, read again just before (RV1 I1: one name seen twice is never removed).
-    fn identical(
-        &self,
-        source: &Path,
-        src_meta: &fs::Metadata,
-        place: &Path,
-        dest_meta: &fs::Metadata,
-        size: u64,
-    ) -> bool {
-        if same_place(source, place) || src_meta.len() != size || dest_meta.len() != size {
-            return false;
+    /// Two names of one file, proven by the file system (FV1a I3: `same-file`, Unix and Windows, any size): only
+    /// then may the destination go. Two equal copies are not enough. Unix also wants two links on the destination,
+    /// read again just before (RV1 I1: one name seen twice is never removed), and the two canonical paths must
+    /// differ.
+    fn identical(&self, source: &Path, place: &Path, size: u64) -> Identity {
+        let (src, dst) = (self.root.join(source), self.root.join(place));
+        let (Ok(src_meta), Ok(again)) = (fs::symlink_metadata(&src), fs::symlink_metadata(&dst))
+        else {
+            return Identity::Unproven;
+        };
+        if same_place(source, place) || src_meta.len() != size || again.len() != size {
+            return Identity::Different;
         }
         #[cfg(unix)]
-        {
-            let Ok(again) = fs::symlink_metadata(self.root.join(place)) else {
-                return false;
-            };
-            if links_of(&again) < 2 {
-                return false;
-            }
-            if same_inode(src_meta, &again) {
-                return true;
-            }
+        if links_of(&again) < 2 {
+            return Identity::Different;
         }
-        size <= self.options.max_file_size()
-            && crc_of(&self.root.join(source))
-                .is_some_and(|a| crc_of(&self.root.join(place)) == Some(a))
+        if !distinct_names(&src, &dst) {
+            return Identity::Different;
+        }
+        match same_file::is_same_file(&src, &dst) {
+            Ok(true) => Identity::Same,
+            Ok(false) => Identity::Different,
+            // Sharing refused (Windows), rights…: nothing proven, nothing removed.
+            Err(_) => Identity::Unproven,
+        }
     }
 
     fn return_dir(
@@ -633,7 +639,10 @@ impl<'a> Exec<'a> {
                     return Ok(());
                 }
                 let (from, to) = (root.join(place), root.join(source));
-                self.sys.rename(&from, &to).map_err(|e| io_at(&to, e))
+                self.sys.rename(&from, &to).map_err(|e| io_at(&to, e))?;
+                // Both folders durable before the cleanup removes anything (FV1a I2).
+                self.sync_parent(source)?;
+                self.sync_parent(place)
             }
             Probe::Error(e) => Err(io_at(&root.join(source), e)),
             _ => {
@@ -658,9 +667,11 @@ impl<'a> Exec<'a> {
         };
         match self.run_steps(writer, spec, &mut block) {
             Ok(outcome) => Ok(outcome),
+            // A failed journal write stops at once, nothing undone (FV1a I1): the line may be on disk even though
+            // the write reported an error, so only the recovery, reading the journal as it really is, may decide.
+            Err(Step::Journal(e)) => Err(Fatal(e)),
             Err(step) => {
-                // A failed journal write or a failed undo stops everything; otherwise the block is undone and the
-                // run goes on with the next unit.
+                // A failed undo stops everything; otherwise the block is undone and the run goes on.
                 if let Err(e) = self.rollback(&block) {
                     return Err(Fatal(e));
                 }
@@ -689,6 +700,7 @@ impl<'a> Exec<'a> {
         block: &mut Block,
         rel: &Path,
         on_disk: &Path,
+        created: &mut BTreeSet<PathBuf>,
     ) -> Result<bool, Step> {
         // D+ only when this block sees the folder missing, just before creating it (RV1 I4).
         match probe(&self.root, on_disk) {
@@ -705,6 +717,7 @@ impl<'a> Exec<'a> {
         self.sys
             .create_dir(&path)
             .map_err(|e| Step::Io(io_at(&path, e)))?;
+        created.insert(on_disk.parent().map(Path::to_path_buf).unwrap_or_default());
         Ok(true)
     }
 
@@ -728,9 +741,11 @@ impl<'a> Exec<'a> {
         let parent = |p: &Path| p.parent().map(Path::to_path_buf).unwrap_or_default();
         self.write(writer, block, Op::Begin(spec.unit))?;
         let mut created = 0u64;
+        // Folders holding a folder made by this block: synced with the destinations (FV1a I2).
+        let mut made_in = BTreeSet::new();
         let (outside, inside) = spec.needed_dirs();
         for d in &outside {
-            created += u64::from(self.create_dir(writer, block, d, d)?);
+            created += u64::from(self.create_dir(writer, block, d, d, &mut made_in)?);
         }
         let part = spec.part();
         if let Some(p) = &part {
@@ -744,8 +759,15 @@ impl<'a> Exec<'a> {
             self.sys
                 .create_dir(&path)
                 .map_err(|e| Step::Io(io_at(&path, e)))?;
+            made_in.insert(parent(p));
             for d in &inside {
-                created += u64::from(self.create_dir(writer, block, d, &spec.link_place(d))?);
+                created += u64::from(self.create_dir(
+                    writer,
+                    block,
+                    d,
+                    &spec.link_place(d),
+                    &mut made_in,
+                )?);
             }
         }
         // Intentions, then the operations, each followed by its synced « done » line.
@@ -775,6 +797,7 @@ impl<'a> Exec<'a> {
             .map(|f| parent(&spec.link_place(&f.to)))
             .collect();
         dest_dirs.extend(spec.whole.iter().map(|w| parent(&w.to)));
+        dest_dirs.extend(made_in);
         self.sync_dirs(dest_dirs)?;
         if let (Some(p), Some(d)) = (&part, &spec.assembly) {
             free(&root, d).map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
@@ -786,6 +809,12 @@ impl<'a> Exec<'a> {
         }
         for f in &spec.files {
             let path = root.join(&f.from);
+            if !distinct_names(&path, &root.join(&f.to)) {
+                return Err(Step::Io(io_at(
+                    &path,
+                    io::Error::other("origine et destination désignent le même nom"),
+                )));
+            }
             self.sys
                 .remove_file(&path)
                 .map_err(|e| Step::Io(io_at(&path, e)))?;
@@ -1318,6 +1347,20 @@ fn link_error(path: &Path, e: io::Error) -> Step {
         }),
         _ => Step::Io(io_at(path, e)),
     }
+}
+
+/// Result of [`Exec::identical`].
+enum Identity {
+    /// Two names of one file.
+    Same,
+    Different,
+    /// The check could not be made (file not openable).
+    Unproven,
+}
+
+/// The two canonical paths exist and differ (FV1a I3): guard before removing one name of a file.
+fn distinct_names(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a != b)
 }
 
 fn same_file_path(a: &Path, b: &Path) -> bool {

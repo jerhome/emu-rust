@@ -10,6 +10,9 @@ publish = false
 crc32fast = "1.5"
 # SQLite compiled from source (`bundled`): no system library; SQLite is public domain, rusqlite MIT.
 rusqlite = { version = "0.43", features = ["bundled"] }
+# Physical identity of two names (Unix dev+inode, Windows volume+file index), FV1a I3. Unlicense/MIT, already in
+# the lock file through walkdir; no `unsafe` needed here.
+same-file = "1.0.6"
 serde = { workspace = true }
 sha1 = "0.10"
 thiserror = { workspace = true }

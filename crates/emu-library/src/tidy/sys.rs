@@ -81,6 +81,8 @@ pub(crate) mod faulty {
         Once,
         /// Call `at` and every later one fail (crash), the journal write torn.
         Crash,
+        /// Call `at` is fully carried out (journal write synced) but reports an error; later calls work.
+        DoneButFailed,
     }
 
     pub(crate) struct Faulty {
@@ -108,7 +110,7 @@ pub(crate) mod faulty {
             let n = self.calls.get();
             self.calls.set(n + 1);
             match self.mode {
-                Mode::Once => n == self.at,
+                Mode::Once | Mode::DoneButFailed => n == self.at,
                 Mode::Crash => n >= self.at,
             }
         }
@@ -121,6 +123,9 @@ pub(crate) mod faulty {
     impl Sys for Faulty {
         fn create_dir(&self, path: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.create_dir(path)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.create_dir(path)
@@ -128,6 +133,9 @@ pub(crate) mod faulty {
 
         fn remove_dir(&self, path: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.remove_dir(path)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.remove_dir(path)
@@ -135,6 +143,9 @@ pub(crate) mod faulty {
 
         fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.hard_link(from, to)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.hard_link(from, to)
@@ -142,6 +153,9 @@ pub(crate) mod faulty {
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.remove_file(path)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.remove_file(path)
@@ -149,6 +163,9 @@ pub(crate) mod faulty {
 
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.rename(from, to)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.rename(from, to)
@@ -156,6 +173,9 @@ pub(crate) mod faulty {
 
         fn sync_dir(&self, path: &Path) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.sync_dir(path)?;
+                }
                 return Err(Self::injected());
             }
             RealSys.sync_dir(path)
@@ -163,6 +183,9 @@ pub(crate) mod faulty {
 
         fn write_synced(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
             if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.write_synced(file, bytes)?;
+                }
                 if self.mode == Mode::Crash && self.calls.get() == self.at + 1 {
                     // The crash cut the write: half of it reached the disk.
                     file.write_all(&bytes[..bytes.len() / 2])?;
