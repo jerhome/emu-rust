@@ -1,7 +1,8 @@
 # ADR 0023 — Version 7.1 : finition de l'interface, console cachée, rangement de `roms/`, fichiers d'origine
 
 Statut : **accepté** (2026-11-21, architecte ; proposé le même jour, amendé après la revue indépendante — reprise
-par unité, marqueur d'identités, groupes multi-CD, console à deux exécutables, copie entre volumes retirée). Choix
+par unité, marqueur d'identités, groupes multi-CD, console à deux exécutables, copie entre volumes retirée ;
+**amendé le 2026-11-22 après la revue FV0** du journal : §4.3 `.bin` sans en-tête, §4.8). Choix
 de l'utilisateur faits : icône **B** (croix et boutons), avertissement BIOS **une fois par (core, fichier)** ; les
 autres défauts sont appliqués et consignés (`docs/questions-ouvertes.md`, lignes 7.1). Périmètre :
 `docs/specs/v7.1-v8.0-utilisateur.md` §7.1 (fait autorité ; point 5 = BIOS / firmware d'origine fourni par
@@ -162,7 +163,10 @@ système). Sinon, même ordre que le scan, appliqué « comme si aucun dossier n
 zip reste refusée, règle 2.1) ; (4) nom présent dans **un seul** DAT ; (5) extension propre à un seul système.
 
 - **Sûre** (bibliothèque, 1, 2, 3 ou 5) : cochée d'office.
-- **Suggérée** (4 ; jeu-dossier DOS ; zip pris pour du DOS) : montrée **décochée**, avec la raison.
+- **Suggérée** (4 ; jeu-dossier DOS ; zip pris pour du DOS ; **`.bin` sans en-tête**) : montrée **décochée**,
+  avec la raison. Un `.bin` que seule son extension désigne (ni en-tête Mega Drive / 32X reconnu par la sonde, ni
+  empreinte dans un DAT) n'est jamais « Sûre » : l'extension est aussi celle de BIOS et de pistes de CD isolées
+  (choix de FB1a, validé par la revue FV0).
 - **Ambiguë** (plusieurs systèmes possibles : `.chd`, `.m3u`, `.dsk`, `.bin`, `.gb` sans DAT…) : l'aperçu propose
   les systèmes candidats, unité par unité ou **pour toute une extension d'un coup** (« tous les `.chd` ambigus →
   PlayStation ») ; sans choix, l'unité reste en place.
@@ -228,9 +232,40 @@ de racine) rejoue le dernier journal à l'envers, unité par unité, avec les m�
 tous ses fichiers sont encore à leur destination, inchangés (taille + date), et si leur place d'origine est libre ;
 sinon elle reste entière où elle est et figure au rapport. Dossiers créés retirés s'ils sont vides, dossiers vidés
 recréés ; mêmes mises à jour de la base et des registres en sens inverse (avec leur propre ligne `I`). Le journal
-est alors marqué « annulé » ; les 20 derniers sont gardés.
+est alors marqué « annulé » ; les 20 derniers sont gardés. Seul le journal **le plus récent** s'annule ; s'il est
+illisible, rien ne s'annule (on ne saute jamais à un plus ancien). Précisions : §4.8.
 
 **4.7 Schéma.** Aucune migration : le journal est un fichier, `relocate` n'utilise que les colonnes de la v6.
+
+**4.8 Journal : décisions de l'amendement du 2026-11-22** (revue FV0 du format écrit par FB1a ; grammaire, états
+et reprise détaillés : design §3.4.1, qui fait foi pour le format). La version du format reste 1 : aucun journal
+n'a encore été écrit chez un utilisateur.
+
+- **Taille et date dans les intentions.** `M <n> <taille> <mtime> <de> <vers>` ; `W <fichiers> <taille> <mtime>
+  <de> <vers>` (agrégat récursif du dossier : nombre de fichiers, somme des tailles, date la plus récente). `mtime`
+  = secondes entières depuis 1970 UTC, tronquées (la valeur du scan, `game.mtime_unix`). Comparaison du journal au
+  disque : taille égale et dates à **2 s** près. C'est le « inchangés (taille + date) » du §4.6 ; à la reprise, la
+  date ne prouve jamais que deux fichiers sont identiques (fichier physique ou taille + CRC32, §4.5), elle sert
+  seulement à ne pas rapatrier un fichier que le journal ne prouve pas avoir posé.
+- **Section d'annulation.** L'annulation écrit **dans le même journal**, après `E`, des blocs `B u` … `C u` aux
+  déplacements inversés, puis `U`. La règle de reprise du §4.5 (« `B` sans `C` ») s'y applique telle quelle : une
+  unité dont le retour a été interrompu est remise à son emplacement rangé, puis `U` est posé. Une seule section
+  d'annulation par journal : après une annulation partielle (unité modifiée, place d'origine occupée, interruption,
+  coupure), les unités restées rangées le restent.
+- **Identités.** Tout marqueur de clôture (`E`, `U`) rend caduc le `I` antérieur : les identités sont dues tant
+  que la dernière ligne du journal n'est pas `I`. La liste rejouée est **nette** — une paire (chemin périmé →
+  chemin actuel) par fichier d'une unité validée, dans le sens de l'aller si l'unité est restée rangée, inverse
+  si elle est revenue — donc juste que le `I` de l'aller ait été posé ou non.
+- **Journal strict.** Toute ligne hors grammaire (déplacement hors d'un bloc, `C` qui ne ferme pas le `B` ouvert,
+  numéro dupliqué, assemblage mal nommé, destination hors de l'assemblage, inverse qui n'est pas celui de
+  l'aller…) fait refuser le journal **entier** : rien n'est rejoué ni complété. Un journal en cours ou illisible
+  bloque tout nouveau rangement et toute annulation ; un fichier vide ou à en-tête coupé vaut « rien n'a bougé ».
+  Le journal est créé au premier `B` ; l'aller est clos avant 7 Mio pour que son annulation tienne sous la borne
+  de lecture de 16 Mio ; la purge des 20 derniers ne supprime qu'un journal dont la dernière ligne est `I`.
+- **Limites assumées.** Sur FAT / exFAT (unités `W` seulement, les autres y sont bloquées), un changement d'heure
+  peut décaler les dates d'une heure : l'unité n'est alors pas annulée (elle reste rangée, signalée). Deux
+  instances qui posent `I` et annulent en même temps ne sont pas départagées au-delà du verrou de chaque appel
+  (limite « seconde instance » ci-dessous).
 
 ### 5. Cores améliorés par un fichier d'origine
 
