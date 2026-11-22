@@ -20,7 +20,9 @@ Les jeux sont fournis par l'utilisateur ; emu-rust ne télécharge aucune ROM ni
 | 8.2 ordinateurs | Oric Atmos | L'Aigle d'Or (Loriciels) | cassette `.tap`, core `oricutron` (état à vérifier) |
 | 8.2 ordinateurs | ZX Spectrum | Saboteur | cassette / chargement ; comparaison avec la version CPC |
 | 8.3 arcade | FinalBurn Neo (Neo Geo) | Metal Slug | BIOS Neo Geo, zip arcade |
-| 8.3 arcade | FinalBurn Neo (CPS2) | Street Fighter Alpha 2 | combat, 6 boutons |
+| 8.3 arcade | FinalBurn Neo (CPS2) | Street Fighter Alpha 2 |
+| 8.3 arcade | MAME 2003-Plus (core léger, recommandé) | OutRun | romset MAME 0.78 ; complète FinalBurn Neo |
+| 8.3 arcade | MAME actuel (core complet, lourd) | OutRun (même jeu, romset à jour) | romset exactement à la version du core ; à comparer avec 2003-Plus | combat, 6 boutons |
 
 ## 9.x — rendu matériel (OpenGL d'abord ; DirectX 11 sans urgence ; Vulkan encore moins)
 
