@@ -54,3 +54,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Windows | GTA, pcsx_rearmed — mode manette DualShock | ✅ **OK** : bascule Numérique → DualShock, mode retenu après réinitialisation |
 | Windows | GTA, **swanstation** (changement de core) | ✅ **OK** : le jeu tourne ; reprise de carte mémoire non vérifiée (pas de sauvegarde possible avant une fin de mission) |
 | Windows | GTA, **mednafen_psx (Beetle PSX)** | ✅ **OK** : « ça marche quand même sacrément bien » (pas de lenteur signalée) |
+| Windows | Road Rash (3DO), opera, **sans `panafz10.bin` (Opera Boot intégré)** | ✅ **impeccable** — question ouverte de la 7.0 tranchée : le jeu démarre avec le BIOS libre intégré |
