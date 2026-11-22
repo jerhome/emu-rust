@@ -19,7 +19,8 @@ pub(crate) enum Scope {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RowFilter {
     pub scope: Scope,
-    /// Case-insensitive substring of the id or display name.
+    /// Case-insensitive substring of the id, the display name or the name of a system it serves (« 3DO »,
+    /// « PlayStation »).
     pub search: String,
 }
 
@@ -91,6 +92,25 @@ fn system_names(info: Option<&CoreInfo>) -> Vec<String> {
     names
 }
 
+/// Lower-case names of the systems each core serves (search): libretro database name, catalogue name and id.
+fn served_systems(prefs: &CorePreferences) -> BTreeMap<&CoreId, Vec<String>> {
+    let mut out: BTreeMap<&CoreId, Vec<String>> = BTreeMap::new();
+    for (database, cores) in prefs.systems() {
+        let mut names = vec![database.to_lowercase()];
+        if let Some(s) = emu_library::systems()
+            .iter()
+            .find(|s| s.database == database)
+        {
+            names.push(s.name.to_lowercase());
+            names.push(s.id.to_lowercase());
+        }
+        for core in cores {
+            out.entry(core).or_default().extend(names.iter().cloned());
+        }
+    }
+    out
+}
+
 pub(crate) fn rows(
     installed: &[InstalledCore],
     catalog: Option<&RemoteCatalog>,
@@ -122,6 +142,7 @@ pub(crate) fn rows(
     }
 
     let needle = filter.search.trim().to_lowercase();
+    let systems = served_systems(prefs);
     let mut out: Vec<CoreRow> = ids
         .into_iter()
         .filter_map(|id| {
@@ -133,6 +154,9 @@ pub(crate) fn rows(
             if !needle.is_empty()
                 && !name.to_lowercase().contains(&needle)
                 && !id.as_str().to_lowercase().contains(&needle)
+                && !systems
+                    .get(id)
+                    .is_some_and(|names| names.iter().any(|n| n.contains(&needle)))
             {
                 return None;
             }
@@ -368,6 +392,31 @@ mod tests {
             &Checks::default(),
         );
         assert_eq!(r[0].id.as_str(), "zzz_exotic");
+    }
+
+    fn search(s: &str) -> RowFilter {
+        RowFilter {
+            scope: Scope::Release,
+            search: s.into(),
+        }
+    }
+
+    fn ids(r: &[CoreRow]) -> Vec<&str> {
+        r.iter().map(|r| r.id.as_str()).collect()
+    }
+
+    #[test]
+    fn search_finds_cores_by_system_name() {
+        let r = default_rows(&[], None, &search("3DO"), None, &Checks::default());
+        assert_eq!(ids(&r), ["opera"]);
+        let r = default_rows(&[], None, &search("playstation"), None, &Checks::default());
+        let found = ids(&r);
+        for core in ["mednafen_psx", "pcsx_rearmed", "swanstation"] {
+            assert!(found.contains(&core), "{core} missing from {found:?}");
+        }
+        // The id and the display name still match.
+        let r = default_rows(&[], None, &search("opera"), None, &Checks::default());
+        assert_eq!(ids(&r), ["opera"]);
     }
 
     #[test]

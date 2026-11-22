@@ -837,12 +837,9 @@ impl CoresUi {
     /// « Core utilisé » for each system with several cores (design v3.0 §3.3). Writes nothing itself: the library
     /// saves `[cores.preferred]`. A core that is not installed can be chosen; its row offers « Installer ».
     fn core_choice(&mut self, ui: &mut Ui) -> Option<CoresEvent> {
-        let systems: Vec<(String, Vec<CoreId>)> = self
-            .prefs
-            .systems()
-            .filter(|(_, cores)| cores.len() > 1)
-            .map(|(s, c)| (s.to_owned(), c.to_vec()))
-            .collect();
+        // Single-core systems are listed too (« 3DO : Opera »), without a choice: the user sees which core runs
+        // each system and whether it is installed.
+        let systems = choice_systems(&self.prefs);
         if systems.is_empty() {
             return None;
         }
@@ -898,7 +895,10 @@ impl CoresUi {
                                 rich = rich.strong();
                             }
                             let selected = current.as_ref() == Some(&core);
-                            if ui.selectable_label(selected, rich).clicked() && !selected {
+                            if cores.len() == 1 {
+                                // Nothing to choose: shown, not focusable.
+                                ui.label(rich);
+                            } else if ui.selectable_label(selected, rich).clicked() && !selected {
                                 event = Some(CoresEvent::PreferCore {
                                     system: system.clone(),
                                     core: core.clone(),
@@ -1228,6 +1228,15 @@ pub(crate) fn region_files(prefs: &CorePreferences, core: &CoreId) -> Vec<String
         }
     }
     if out.len() > 1 { out } else { Vec::new() }
+}
+
+/// Systems of « Core utilisé par système », in the order of `cores.toml`, single-core ones included.
+pub(crate) fn choice_systems(prefs: &CorePreferences) -> Vec<(String, Vec<CoreId>)> {
+    prefs
+        .systems()
+        .filter(|(_, cores)| !cores.is_empty())
+        .map(|(s, c)| (s.to_owned(), c.to_vec()))
+        .collect()
 }
 
 #[cfg(test)]

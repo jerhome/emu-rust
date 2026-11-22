@@ -362,3 +362,15 @@ fn escape_belongs_to_the_host_dialog() {
     out.textures_delta.clear();
     assert_eq!(event, Some(CoresEvent::Back));
 }
+
+#[test]
+fn core_choice_lists_single_core_systems_too() {
+    let prefs = emu_assets::cores::CorePreferences::builtin();
+    let systems = super::choice_systems(&prefs);
+    let three_do = systems
+        .iter()
+        .find(|(s, _)| s.contains("3DO"))
+        .expect("3DO listed");
+    assert_eq!(three_do.1, [id("opera")]);
+    assert!(systems.iter().any(|(_, c)| c.len() > 1), "choices kept");
+}
