@@ -2,7 +2,8 @@
 
 Statut : **accepté** (2026-11-21, architecte ; proposé le même jour, amendé après la revue indépendante — reprise
 par unité, marqueur d'identités, groupes multi-CD, console à deux exécutables, copie entre volumes retirée ;
-**amendé le 2026-11-22 après la revue FV0** du journal : §4.3 `.bin` sans en-tête, §4.8). Choix
+**amendé le 2026-11-22 après la revue FV0** du journal : §4.3 `.bin` sans en-tête, §4.8 ; **précisé le même jour
+après la revue RV1** : §4.8, « Précisions RV1 »). Choix
 de l'utilisateur faits : icône **B** (croix et boutons), avertissement BIOS **une fois par (core, fichier)** ; les
 autres défauts sont appliqués et consignés (`docs/questions-ouvertes.md`, lignes 7.1). Périmètre :
 `docs/specs/v7.1-v8.0-utilisateur.md` §7.1 (fait autorité ; point 5 = BIOS / firmware d'origine fourni par
@@ -262,7 +263,22 @@ n'a encore été écrit chez un utilisateur.
   bloque tout nouveau rangement et toute annulation ; un fichier vide ou à en-tête coupé vaut « rien n'a bougé ».
   Le journal est créé au premier `B` ; l'aller est clos avant 7 Mio pour que son annulation tienne sous la borne
   de lecture de 16 Mio ; la purge des 20 derniers ne supprime qu'un journal dont la dernière ligne est `I`.
-- **Limites assumées.** Sur FAT / exFAT (unités `W` seulement, les autres y sont bloquées), un changement d'heure
+- **Précisions RV1** (revue du contrat, 2026-11-22 ; détail : design §3.4.1).
+  1. Le journal refuse tout `M` / `W` dont `de` et `vers` sont égaux après pliage de casse et normalisation
+     Unicode ; sous Unix, la reprise exige `nlink ≥ 2` avant de retirer une destination « identique » à sa
+     source. Un seul fichier vu sous deux noms n'est jamais retiré.
+  2. Si la défaite d'un bloc échoue elle-même (erreur d'E/S), l'exécution s'arrête sans `E` ni `U` : le journal
+     reste en cours et est repris au démarrage suivant ; `recover_tidy` rend une erreur sans poser de clôture.
+  3. Nettoyage d'un assemblage défait : les `D+` du plus profond au moins profond (cherchés aux deux
+     emplacements, comme les `M`), puis `S`, puis `<D>` ; « non vide » est silencieux pour un `D+`.
+  4. Un bloc peut écrire `D+` pour les ancêtres de `<D>` qu'il crée réellement ; un `D+` n'est écrit que par le
+     bloc qui crée vraiment le dossier à l'exécution, jamais d'après le plan.
+  5. Chaque ligne du journal est synchronisée (`m`, `w`, `C`, `E`, `U`, `I` compris) ; le dossier source l'est
+     après le retrait, avant `C`. Une annulation interrompue devient **définitive** (l'unité est remise rangée,
+     `U` posé) et le rapport de reprise le dit. Un journal plus récent d'une autre racine bloque l'annulation.
+- **Limites assumées.** Sous Windows, un fichier plus gros que la borne de hachage, coupé entre le lien et le
+  retrait de sa source, ne peut pas être prouvé identique : il reste en double à la destination, signalé, jamais
+  retiré d'office. Sur FAT / exFAT (unités `W` seulement, les autres y sont bloquées), un changement d'heure
   peut décaler les dates d'une heure : l'unité n'est alors pas annulée (elle reste rangée, signalée). Deux
   instances qui posent `I` et annulent en même temps ne sont pas départagées au-delà du verrou de chaque appel
   (limite « seconde instance » ci-dessous).
