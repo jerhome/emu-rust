@@ -49,3 +49,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Plate-forme | Jeu, core | Résultat |
 |---|---|---|
 | Windows | GTA (PlayStation), pcsx_rearmed, **BIOS HLE intégré** (sans `scph*.bin`) | ✅ **impeccable** : image, son, manette PS4 |
+| Windows | GTA (PlayStation), pcsx_rearmed, **BIOS Europe de l'utilisateur** | ✅ jeu OK après lancement forcé ; ❌ **empreinte du BIOS non reconnue** à l'import (seul md5 accepté pour `scph5502.bin` : 32736f17… = SCPH-5502 v3.0E) — md5, taille et nom du fichier demandés à l'utilisateur |
