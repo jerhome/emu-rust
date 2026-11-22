@@ -1,54 +1,67 @@
-//! Tidy journal, format version 1 (ADR 0023 §4.5, design v7.1 §3.4). Written before anything moves; read by the
-//! recovery, the undo and « Annuler le dernier rangement ». This module only encodes, parses, lists and appends:
-//! what the lines mean for the execution, the undo and the recovery is FB1b's.
+//! Tidy journal, format version 1 (ADR 0023 §4.5 and §4.8, design v7.1 §3.4.1 which is authoritative). Written
+//! before anything moves; read by the recovery, the undo, the identity step and « Annuler le dernier rangement ».
+//! This module encodes, parses (strict grammar), lists and appends; `exec.rs` gives the lines their meaning.
 //!
 //! File: `<journal_dir>/journal-<unix>.txt` (`journal-<unix>-<k>.txt` when that name is taken), UTF-8 text, one
-//! record per line ending with `\n`, never rewritten in place, `sync_all` after every appended line:
+//! record per line ending with `\n`, never rewritten in place (only cut back to its last `\n` before appending),
+//! `sync_all` after every write:
 //!
 //! ```text
-//! emu-rust tidy 1                 header (exact)
-//! R <root>                        canonical roms root, absolute, native separators
-//! B <unit>                        unit begins (plan unit id)
-//! S <dir>                         assembly folder `<dest>.emu-rust-part` about to be created (exclusive)
-//! M <n> <from> <to>               intention: file move n of the unit (n = 0, 1, …)
-//! m <n>                           file move n done
-//! W <from> <to>                   intention: one rename of a whole folder
-//! w                               that rename done
-//! D+ <dir>                        folder created
-//! D- <dir>                        folder removed (emptied by the run)
-//! C <unit>                        unit committed (moves done and library rewritten)
-//! E                               end of the run (or of its recovery)
-//! I                               identity registries rewritten (`emu_runtime::relocate_identities`)
-//! U                               run undone
+//! emu-rust tidy 1                               header (exact)
+//! R <root>                                      canonical roms root, absolute, native separators
+//! B <unit>                                      block begins (plan unit id)
+//! D+ <dir>                                      intention: folder created (only by the block that creates it)
+//! D- <dir>                                      intention: folder removed
+//! S <dir>                                       intention: assembly folder `<D>.emu-rust-part` created (exclusive)
+//! M <n> <size> <mtime> <from> <to>              intention: file move n (hard link, then the source is removed)
+//! m <n>                                         link n made
+//! W <files> <size> <mtime> <from> <to>          intention: one rename of a whole folder (aggregate of its files)
+//! w                                             that rename done
+//! C <unit>                                      block committed (moves done and library rewritten)
+//! E                                             end of the run (or of its recovery)
+//! U                                             end of the undo section (or of its recovery)
+//! I                                             identity registries rewritten (`emu_runtime::relocate_identities`)
 //! ```
+//!
+//! Grammar (anything else refuses the whole journal, error with the line number, never its content):
+//! `header [forward [undo]]`, `forward = {block} [E [I]]`, `undo = {block} [U [I]]` (only after `E`),
+//! `block = B u {body} [C u]`. A block without its `C` is open (abandoned at the next `B`, `E`, `U` or the end).
+//! In a block with `S <D>.emu-rust-part`, the `M` destinations and the `D+` after `S` name final paths under `<D>/`
+//! (the `D+` before `S` may create the ancestors of `<D>`). Undo blocks carry the exact inverse of the moves of a
+//! committed forward block (same `n`, paths swapped, same size / file count). A move whose two paths are equal
+//! after case and accent folding is refused (the recovery would take them for two copies of one file). Every
+//! prefix of a valid journal cut at a line end is valid.
 //!
 //! Every path but the root is relative to the root, components joined by `/` on every platform; each component
 //! is percent-encoded byte by byte (`%XX`, upper-case hex) except `A-Z a-z 0-9 - . _ ~ ( ) [ ] ! , + & '`, so a
 //! field never holds a space, a `%`, a separator or a control character. A decoded component must not be empty,
-//! `.`, `..`, nor contain `/`, `\` (Windows) or NUL: a journal can never name a path outside the root. The root is
-//! percent-encoded as a whole, with `/`, `\` and `:` kept. Fields are separated by one space; `<unit>` and `<n>`
-//! are decimal `u32`.
+//! `.`, `..`, nor contain `/` or NUL (nor, on Windows, `\`, `:`, a reserved device name or a trailing dot / space):
+//! a journal can never name a path outside the root. The root is percent-encoded as a whole, with `/`, `\` and `:`
+//! kept. Numbers are canonical decimal (ASCII digits, no sign, no leading zero but `0`).
 //!
-//! Reading: at most [`MAX_JOURNAL_SIZE`] bytes; a last line without `\n` is a write cut by a crash and is dropped
-//! (`Journal::torn`); anything else that does not parse makes the whole journal unreadable (error with the line
-//! number, never its content).
+//! Reading: at most [`MAX_JOURNAL_SIZE`] bytes; a last line without `\n` is a write cut by a crash and is dropped.
+//! An empty file or a cut header (fewer than two complete lines, content a prefix of the header) means « nothing
+//! moved » ([`read`] returns `None`).
 
-// The writer and most encoders are used by the execution, undo and recovery (FB1b); tests cover them meanwhile.
-#![cfg_attr(
-    not(test),
-    allow(dead_code, reason = "used by the tidy execution (FB1b)")
-)]
-
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 use super::TidyJournalInfo;
+use super::plan::PART_SUFFIX;
+use super::sys::Sys;
 use crate::LibraryError;
 
 pub(crate) const MAGIC: &str = "emu-rust tidy 1";
-/// Read bound (design v7.1 §3.4).
+/// Read bound (design v7.1 §3.4.1).
 pub(crate) const MAX_JOURNAL_SIZE: u64 = 16 * 1024 * 1024;
+/// A forward section is closed before the file would exceed this, so its undo always fits under the read bound.
+pub(crate) const MAX_FORWARD_SIZE: u64 = 7 * 1024 * 1024;
+/// Bound of the undo section (room left for `U` and `I`).
+pub(crate) const MAX_UNDO_SIZE: u64 = MAX_JOURNAL_SIZE - 64;
+/// « Same state as the line »: FAT 2 s grain, Windows caches, network shares.
+pub(crate) const MTIME_TOLERANCE_SECS: i64 = 2;
 const PREFIX: &str = "journal-";
 const SUFFIX: &str = ".txt";
 
@@ -57,9 +70,21 @@ const SUFFIX: &str = ".txt";
 pub(crate) enum Op {
     Begin(u32),
     Part(PathBuf),
-    Move { n: u32, from: PathBuf, to: PathBuf },
+    Move {
+        n: u32,
+        size: u64,
+        mtime: i64,
+        from: PathBuf,
+        to: PathBuf,
+    },
     MoveDone(u32),
-    Whole { from: PathBuf, to: PathBuf },
+    Whole {
+        files: u32,
+        size: u64,
+        mtime: i64,
+        from: PathBuf,
+        to: PathBuf,
+    },
     WholeDone,
     DirCreated(PathBuf),
     DirRemoved(PathBuf),
@@ -69,13 +94,86 @@ pub(crate) enum Op {
     Undone,
 }
 
+/// One `B u … [C u]` block: its body lines in file order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Block {
+    pub(crate) unit: u32,
+    pub(crate) body: Vec<Op>,
+    pub(crate) committed: bool,
+}
+
+impl Block {
+    /// `S` folder of the block, if any.
+    pub(crate) fn part(&self) -> Option<&Path> {
+        self.body.iter().find_map(|op| match op {
+            Op::Part(p) => Some(p.as_path()),
+            _ => None,
+        })
+    }
+
+    /// `<D>` of the `S <D>.emu-rust-part` line.
+    pub(crate) fn final_dir(&self) -> Option<PathBuf> {
+        self.part().and_then(final_of_part)
+    }
+
+    pub(crate) fn is_done(&self, done: &Op) -> bool {
+        self.body.contains(done)
+    }
+
+    /// `(from, to)` of the `M` and `W` lines, in order.
+    pub(crate) fn pairs(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.body
+            .iter()
+            .filter_map(|op| match op {
+                Op::Move { from, to, .. } | Op::Whole { from, to, .. } => {
+                    Some((from.clone(), to.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The state of a journal (design v7.1 §3.4.1, table of states).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum State {
+    /// 1: forward section without `E`.
+    Running,
+    /// 2: `… E`, identities due.
+    Ended,
+    /// 3: `… E I`.
+    EndedMarked,
+    /// 4: `E` written, undo section opened, no `U`.
+    Undoing,
+    /// 5: `… U`, identities due.
+    Undone,
+    /// 6: `… U I`.
+    UndoneMarked,
+}
+
+impl State {
+    pub(crate) fn in_progress(self) -> bool {
+        matches!(self, State::Running | State::Undoing)
+    }
+
+    /// Last line `E` or `U`: the identity step is due.
+    pub(crate) fn identities_due(self) -> bool {
+        matches!(self, State::Ended | State::Undone)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Journal {
-    /// Canonical roms root of the run (compared with the current one before any replay).
+    /// Canonical roms root of the run (compared with the current one before any action).
     pub(crate) root: PathBuf,
-    pub(crate) ops: Vec<Op>,
+    pub(crate) forward: Vec<Block>,
+    /// Undo section (blocks after `E`).
+    pub(crate) undo: Vec<Block>,
+    pub(crate) state: State,
     /// The last line had no `\n` (crash while writing it): it was dropped.
     pub(crate) torn: bool,
+    /// Bytes of the complete lines (header included).
+    pub(crate) len: u64,
 }
 
 fn journal_error(path: &Path, message: impl Into<String>) -> LibraryError {
@@ -150,6 +248,76 @@ fn os_string(bytes: Vec<u8>) -> Option<std::ffi::OsString> {
     String::from_utf8(bytes).ok().map(Into::into)
 }
 
+/// A component Windows would not keep as written (M2): trailing dot or space, a reserved device name (with or
+/// without extension), a character it forbids in names. Checked on every platform by the tests.
+pub(crate) fn bad_windows_component(bytes: &[u8]) -> bool {
+    if bytes.ends_with(b".") || bytes.ends_with(b" ") {
+        return true;
+    }
+    if bytes
+        .iter()
+        .any(|&b| b < 0x20 || b"<>:\"|?*\\".contains(&b))
+    {
+        return true;
+    }
+    let stem = bytes.split(|&b| b == b'.').next().unwrap_or(bytes);
+    let stem = String::from_utf8_lossy(stem)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem.as_bytes()[3].is_ascii_digit()
+        && stem.as_bytes()[3] != b'0')
+}
+
+fn is_combining(c: char) -> bool {
+    matches!(u32::from(c), 0x300..=0x36F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+}
+
+fn base_letter(c: char) -> char {
+    match c {
+        'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+        'ď' | 'đ' => 'd',
+        'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ò'..='ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ś' | 'ŝ' | 'ş' | 'š' => 's',
+        'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ý' | 'ÿ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        other => other,
+    }
+}
+
+/// Case and accent folding of a relative path (RV1 I1): lower case, combining marks dropped, accented Latin
+/// letters reduced to their base letter, `\` read as `/`. Coarser than Unicode normalization (no table can be added
+/// to this crate): it may call two distinct names equal, never the reverse for case-only, NFC / NFD or accent
+/// differences of Latin text, which is what matters — equal folds are refused, never merged.
+pub(crate) fn fold_path(path: &Path) -> String {
+    let mut out = String::new();
+    for c in path.to_string_lossy().chars() {
+        let c = if c == '\\' { '/' } else { c };
+        if is_combining(c) {
+            continue;
+        }
+        for l in c.to_lowercase() {
+            out.push(base_letter(l));
+        }
+    }
+    out
+}
+
+/// `true` when `a` and `b` may name one file on a case-insensitive or normalizing file system.
+pub(crate) fn same_place(a: &Path, b: &Path) -> bool {
+    fold_path(a) == fold_path(b)
+}
+
 /// `None` for a path that is empty, absolute or holds anything but plain names (`..`, `.`, a drive prefix).
 fn encode_rel(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
@@ -171,13 +339,23 @@ fn decode_rel(field: &str) -> Option<PathBuf> {
             || bytes == b".."
             || bytes.contains(&b'/')
             || bytes.contains(&0)
-            || (cfg!(windows) && (bytes.contains(&b'\\') || bytes.contains(&b':')));
+            || (cfg!(windows) && bad_windows_component(&bytes));
         if bad {
             return None;
         }
         path.push(os_string(bytes)?);
     }
     (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// `<D>` of `<D>.emu-rust-part`; `None` when the last component does not end with the suffix or is only it.
+pub(crate) fn final_of_part(part: &Path) -> Option<PathBuf> {
+    let name = part.file_name()?.to_str()?;
+    let stem = name.strip_suffix(PART_SUFFIX)?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(part.with_file_name(stem))
 }
 
 /// The two header lines.
@@ -194,9 +372,31 @@ pub(crate) fn encode(op: &Op) -> Option<String> {
     let line = match op {
         Op::Begin(u) => format!("B {u}"),
         Op::Part(dir) => format!("S {}", encode_rel(dir)?),
-        Op::Move { n, from, to } => format!("M {n} {} {}", encode_rel(from)?, encode_rel(to)?),
+        Op::Move {
+            n,
+            size,
+            mtime,
+            from,
+            to,
+        } => format!(
+            "M {n} {size} {} {} {}",
+            (*mtime).max(0),
+            encode_rel(from)?,
+            encode_rel(to)?
+        ),
         Op::MoveDone(n) => format!("m {n}"),
-        Op::Whole { from, to } => format!("W {} {}", encode_rel(from)?, encode_rel(to)?),
+        Op::Whole {
+            files,
+            size,
+            mtime,
+            from,
+            to,
+        } => format!(
+            "W {files} {size} {} {} {}",
+            (*mtime).max(0),
+            encode_rel(from)?,
+            encode_rel(to)?
+        ),
         Op::WholeDone => "w".to_owned(),
         Op::DirCreated(dir) => format!("D+ {}", encode_rel(dir)?),
         Op::DirRemoved(dir) => format!("D- {}", encode_rel(dir)?),
@@ -208,30 +408,37 @@ pub(crate) fn encode(op: &Op) -> Option<String> {
     Some(line + "\n")
 }
 
+/// Canonical decimal: ASCII digits, no sign, no leading zero (but `0` itself).
+fn canonical<T: std::str::FromStr>(s: &str) -> Option<T> {
+    let ok =
+        s == "0" || (!s.is_empty() && !s.starts_with('0') && s.bytes().all(|b| b.is_ascii_digit()));
+    ok.then(|| s.parse().ok()).flatten()
+}
+
 fn parse_op(line: &str) -> Option<Op> {
     let fields: Vec<&str> = line.split(' ').collect();
-    let num = |s: &str| -> Option<u32> {
-        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| s.parse().ok())
-            .flatten()
-    };
     Some(match fields.as_slice() {
-        ["B", u] => Op::Begin(num(u)?),
+        ["B", u] => Op::Begin(canonical(u)?),
         ["S", d] => Op::Part(decode_rel(d)?),
-        ["M", n, from, to] => Op::Move {
-            n: num(n)?,
+        ["M", n, size, mtime, from, to] => Op::Move {
+            n: canonical(n)?,
+            size: canonical(size)?,
+            mtime: canonical(mtime)?,
             from: decode_rel(from)?,
             to: decode_rel(to)?,
         },
-        ["m", n] => Op::MoveDone(num(n)?),
-        ["W", from, to] => Op::Whole {
+        ["m", n] => Op::MoveDone(canonical(n)?),
+        ["W", files, size, mtime, from, to] => Op::Whole {
+            files: canonical(files)?,
+            size: canonical(size)?,
+            mtime: canonical(mtime)?,
             from: decode_rel(from)?,
             to: decode_rel(to)?,
         },
         ["w"] => Op::WholeDone,
         ["D+", d] => Op::DirCreated(decode_rel(d)?),
         ["D-", d] => Op::DirRemoved(decode_rel(d)?),
-        ["C", u] => Op::Commit(num(u)?),
+        ["C", u] => Op::Commit(canonical(u)?),
         ["E"] => Op::End,
         ["I"] => Op::Identities,
         ["U"] => Op::Undone,
@@ -239,8 +446,284 @@ fn parse_op(line: &str) -> Option<Op> {
     })
 }
 
-/// Parses a whole journal; the error is a French message without any of the file's content.
-pub(crate) fn parse(bytes: &[u8]) -> Result<Journal, String> {
+/// Where the validator is between two lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Forward,
+    AfterE,
+    AfterEI,
+    Undo,
+    AfterU,
+    AfterUI,
+}
+
+/// Checks of the open block.
+struct Open {
+    block: Block,
+    /// `n` → link written.
+    moves: HashMap<u32, bool>,
+    /// `W` seen → rename written.
+    whole: Option<bool>,
+    final_dir: Option<PathBuf>,
+}
+
+impl Open {
+    fn new(unit: u32) -> Self {
+        Open {
+            block: Block {
+                unit,
+                body: Vec::new(),
+                committed: false,
+            },
+            moves: HashMap::new(),
+            whole: None,
+            final_dir: None,
+        }
+    }
+}
+
+/// Strictly under `dir` (not `dir` itself).
+fn strictly_under(path: &Path, dir: &Path) -> bool {
+    path.strip_prefix(dir)
+        .is_ok_and(|rest| !rest.as_os_str().is_empty())
+}
+
+/// A `D+` of a block with `S`: under `<D>/`, or a strict ancestor of `<D>` the block created (RV1 I4).
+fn dir_allowed(dir: &Path, final_dir: &Path) -> bool {
+    strictly_under(dir, final_dir) || strictly_under(final_dir, dir)
+}
+
+struct Validator {
+    phase: Phase,
+    forward: Vec<Block>,
+    undo: Vec<Block>,
+    open: Option<Open>,
+    seen: HashSet<u32>,
+    /// Committed forward blocks by unit (index in `forward`).
+    committed: HashMap<u32, usize>,
+}
+
+impl Validator {
+    fn close_open(&mut self) {
+        if let Some(open) = self.open.take() {
+            match self.phase {
+                Phase::Undo => self.undo.push(open.block),
+                _ => self.forward.push(open.block),
+            }
+        }
+    }
+
+    fn forward_of(&self, unit: u32) -> Option<&Block> {
+        self.committed.get(&unit).map(|&i| &self.forward[i])
+    }
+
+    fn begin(&mut self, u: u32) -> Option<()> {
+        match self.phase {
+            Phase::Forward | Phase::Undo => {}
+            Phase::AfterE | Phase::AfterEI => {
+                self.phase = Phase::Undo;
+                self.seen.clear();
+            }
+            Phase::AfterU | Phase::AfterUI => return None,
+        }
+        self.close_open();
+        if !self.seen.insert(u) {
+            return None;
+        }
+        if self.phase == Phase::Undo && !self.committed.contains_key(&u) {
+            return None;
+        }
+        self.open = Some(Open::new(u));
+        Some(())
+    }
+
+    fn commit(&mut self, u: u32) -> Option<()> {
+        let open = self.open.as_ref()?;
+        if open.block.unit != u
+            || open.moves.values().any(|done| !done)
+            || open.whole == Some(false)
+        {
+            return None;
+        }
+        if self.phase == Phase::Undo {
+            let forward = self.forward_of(u)?;
+            let forward_moves: HashSet<u32> = forward
+                .body
+                .iter()
+                .filter_map(|op| match op {
+                    Op::Move { n, .. } => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            let undo_moves: HashSet<u32> = open.moves.keys().copied().collect();
+            let forward_whole = forward.body.iter().any(|op| matches!(op, Op::Whole { .. }));
+            if forward_moves != undo_moves || forward_whole != open.whole.is_some() {
+                return None;
+            }
+        }
+        let mut open = self.open.take()?;
+        open.block.committed = true;
+        if self.phase == Phase::Undo {
+            self.undo.push(open.block);
+        } else {
+            self.committed.insert(u, self.forward.len());
+            self.forward.push(open.block);
+        }
+        Some(())
+    }
+
+    fn body(&mut self, body: Op) -> Option<()> {
+        let undo = match self.phase {
+            Phase::Forward => false,
+            Phase::Undo => true,
+            _ => return None,
+        };
+        let forward = match &self.open {
+            Some(open) if undo => Some(self.forward_of(open.block.unit)?.clone()),
+            _ => None,
+        };
+        let open = self.open.as_mut()?;
+        let inverse_of =
+            |pred: &dyn Fn(&Op) -> bool| forward.as_ref().is_none_or(|f| f.body.iter().any(pred));
+        match &body {
+            Op::DirCreated(d) => {
+                if open.final_dir.as_ref().is_some_and(|f| !dir_allowed(d, f)) {
+                    return None;
+                }
+            }
+            Op::DirRemoved(_) => {}
+            Op::Part(p) => {
+                if undo
+                    || open.final_dir.is_some()
+                    || open.whole.is_some()
+                    || !open.moves.is_empty()
+                {
+                    return None;
+                }
+                let final_dir = final_of_part(p)?;
+                let earlier_ok = open.block.body.iter().all(|op| match op {
+                    Op::DirCreated(d) => dir_allowed(d, &final_dir),
+                    _ => true,
+                });
+                if !earlier_ok {
+                    return None;
+                }
+                open.final_dir = Some(final_dir);
+            }
+            Op::Move {
+                n, size, from, to, ..
+            } => {
+                if open.whole.is_some() || open.moves.contains_key(n) || same_place(from, to) {
+                    return None;
+                }
+                if open
+                    .final_dir
+                    .as_ref()
+                    .is_some_and(|f| !strictly_under(to, f))
+                {
+                    return None;
+                }
+                let inverse = inverse_of(&|op: &Op| {
+                    matches!(op, Op::Move { n: fn_, size: fs_, from: ff, to: ft, .. }
+                        if fn_ == n && fs_ == size && ff == to && ft == from)
+                });
+                if !inverse {
+                    return None;
+                }
+                open.moves.insert(*n, false);
+            }
+            Op::MoveDone(n) => match open.moves.get_mut(n) {
+                Some(done @ false) => *done = true,
+                _ => return None,
+            },
+            Op::Whole {
+                files,
+                size,
+                from,
+                to,
+                ..
+            } => {
+                if open.final_dir.is_some()
+                    || open.whole.is_some()
+                    || !open.moves.is_empty()
+                    || same_place(from, to)
+                {
+                    return None;
+                }
+                let inverse = inverse_of(&|op: &Op| {
+                    matches!(op, Op::Whole { files: ff_, size: fs_, from: ff, to: ft, .. }
+                        if ff_ == files && fs_ == size && ff == to && ft == from)
+                });
+                if !inverse {
+                    return None;
+                }
+                open.whole = Some(false);
+            }
+            Op::WholeDone => match &mut open.whole {
+                Some(done @ false) => *done = true,
+                _ => return None,
+            },
+            _ => return None,
+        }
+        open.block.body.push(body);
+        Some(())
+    }
+
+    fn line(&mut self, op: Op) -> Option<()> {
+        match op {
+            Op::Begin(u) => self.begin(u),
+            Op::Commit(u) => self.commit(u),
+            Op::End => {
+                if self.phase != Phase::Forward {
+                    return None;
+                }
+                self.close_open();
+                self.phase = Phase::AfterE;
+                Some(())
+            }
+            Op::Undone => {
+                if !matches!(self.phase, Phase::AfterE | Phase::AfterEI | Phase::Undo) {
+                    return None;
+                }
+                self.close_open();
+                self.phase = Phase::AfterU;
+                Some(())
+            }
+            Op::Identities => {
+                self.phase = match self.phase {
+                    Phase::AfterE => Phase::AfterEI,
+                    Phase::AfterU => Phase::AfterUI,
+                    _ => return None,
+                };
+                Some(())
+            }
+            body => self.body(body),
+        }
+    }
+}
+
+/// `true` for an empty file or a cut header: « nothing moved » (FV0 11).
+fn is_cut_header(bytes: &[u8]) -> bool {
+    if bytes.iter().filter(|&&b| b == b'\n').count() >= 2 {
+        return false;
+    }
+    let first = format!("{MAGIC}\n");
+    if bytes.len() <= first.len() {
+        return first.as_bytes().starts_with(bytes);
+    }
+    let Some(rest) = bytes.strip_prefix(first.as_bytes()) else {
+        return false;
+    };
+    // `R …` without its `\n` (a second `\n` would make two complete lines, excluded above).
+    b"R ".starts_with(&rest[..rest.len().min(2)])
+}
+
+/// Parses a whole journal; `Ok(None)`: empty or cut header. The error is a French message without any of the
+/// file's content.
+pub(crate) fn parse(bytes: &[u8]) -> Result<Option<Journal>, String> {
+    if is_cut_header(bytes) {
+        return Ok(None);
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| "texte non UTF-8".to_owned())?;
     let torn = !text.is_empty() && !text.ends_with('\n');
     let complete = match text.rfind('\n') {
@@ -257,11 +740,36 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Journal, String> {
         .and_then(unescape_root)
         .filter(|r| r.is_absolute())
         .ok_or_else(|| "racine absente ou invalide (ligne 2)".to_owned())?;
-    let mut ops = Vec::new();
+    let mut v = Validator {
+        phase: Phase::Forward,
+        forward: Vec::new(),
+        undo: Vec::new(),
+        open: None,
+        seen: HashSet::new(),
+        committed: HashMap::new(),
+    };
     for (index, line) in lines.enumerate() {
-        ops.push(parse_op(line).ok_or_else(|| format!("ligne {} invalide", index + 3))?);
+        let invalid = || format!("ligne {} invalide", index + 3);
+        let op = parse_op(line).ok_or_else(invalid)?;
+        v.line(op).ok_or_else(invalid)?;
     }
-    Ok(Journal { root, ops, torn })
+    let state = match v.phase {
+        Phase::Forward => State::Running,
+        Phase::AfterE => State::Ended,
+        Phase::AfterEI => State::EndedMarked,
+        Phase::Undo => State::Undoing,
+        Phase::AfterU => State::Undone,
+        Phase::AfterUI => State::UndoneMarked,
+    };
+    v.close_open();
+    Ok(Some(Journal {
+        root,
+        forward: v.forward,
+        undo: v.undo,
+        state,
+        torn,
+        len: complete.len() as u64 + 1,
+    }))
 }
 
 fn unescape_root(field: &str) -> Option<PathBuf> {
@@ -281,16 +789,16 @@ fn unescape_root(field: &str) -> Option<PathBuf> {
     os_string(bytes).map(PathBuf::from)
 }
 
-/// Reads and parses `path` (at most [`MAX_JOURNAL_SIZE`] bytes).
-pub(crate) fn read(path: &Path) -> Result<Journal, LibraryError> {
+fn read_bytes(path: &Path) -> Result<Vec<u8>, LibraryError> {
     let io = |source| LibraryError::Io {
         path: path.to_path_buf(),
         source,
     };
-    let file = File::open(path).map_err(io)?;
-    if !file.metadata().map_err(io)?.is_file() {
+    let meta = fs::symlink_metadata(path).map_err(io)?;
+    if !meta.is_file() {
         return Err(journal_error(path, "pas un fichier ordinaire"));
     }
+    let file = File::open(path).map_err(io)?;
     let mut bytes = Vec::new();
     file.take(MAX_JOURNAL_SIZE + 1)
         .read_to_end(&mut bytes)
@@ -298,20 +806,29 @@ pub(crate) fn read(path: &Path) -> Result<Journal, LibraryError> {
     if bytes.len() as u64 > MAX_JOURNAL_SIZE {
         return Err(journal_error(path, "fichier trop gros"));
     }
+    Ok(bytes)
+}
+
+/// Reads and parses `path` (at most [`MAX_JOURNAL_SIZE`] bytes); `Ok(None)`: empty or cut header.
+pub(crate) fn read(path: &Path) -> Result<Option<Journal>, LibraryError> {
+    let bytes = read_bytes(path)?;
     parse(&bytes).map_err(|m| journal_error(path, m))
 }
 
-/// `journal-<unix>.txt` / `journal-<unix>-<k>.txt` → `(unix, k)`.
+/// `journal-<unix>.txt` / `journal-<unix>-<k>.txt` (k ≥ 1) → `(unix, k)`; canonical digits only (M3).
 pub(crate) fn parse_name(name: &str) -> Option<(i64, u32)> {
     let body = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?;
     let (unix, k) = match body.split_once('-') {
-        Some((u, k)) => (u, k.parse().ok()?),
+        Some((u, k)) => {
+            let k: u32 = canonical(k)?;
+            if k == 0 {
+                return None;
+            }
+            (u, k)
+        }
         None => (body, 0),
     };
-    if unix.is_empty() || !unix.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some((unix.parse().ok()?, k))
+    Some((canonical(unix)?, k))
 }
 
 pub(crate) fn file_name(unix: i64, k: u32) -> String {
@@ -322,8 +839,16 @@ pub(crate) fn file_name(unix: i64, k: u32) -> String {
     }
 }
 
-/// Journals of `dir`, oldest first, with their creation time; a missing folder has none.
-pub(crate) fn list(dir: &Path) -> Result<Vec<(PathBuf, i64)>, LibraryError> {
+/// One journal file of the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub(crate) path: PathBuf,
+    pub(crate) unix: i64,
+    pub(crate) k: u32,
+}
+
+/// Journals of `dir`, oldest first (`(unix, k)` order); a missing folder has none.
+pub(crate) fn list(dir: &Path) -> Result<Vec<Listed>, LibraryError> {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -334,77 +859,137 @@ pub(crate) fn list(dir: &Path) -> Result<Vec<(PathBuf, i64)>, LibraryError> {
             });
         }
     };
-    let mut found: Vec<((i64, u32), PathBuf)> = entries
+    let mut found: Vec<Listed> = entries
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter_map(|e| Some((parse_name(e.file_name().to_str()?)?, e.path())))
+        .filter_map(|e| {
+            let (unix, k) = parse_name(e.file_name().to_str()?)?;
+            Some(Listed {
+                path: e.path(),
+                unix,
+                k,
+            })
+        })
         .collect();
-    found.sort();
-    Ok(found
+    found.sort_by_key(|l| (l.unix, l.k));
+    Ok(found)
+}
+
+/// What a listed file holds.
+#[derive(Debug)]
+pub(crate) enum Content {
+    /// Empty or cut header: « nothing moved ».
+    Empty,
+    Unreadable(LibraryError),
+    Journal(Box<Journal>),
+}
+
+/// Every journal of `dir`, oldest first, read.
+pub(crate) fn load_all(dir: &Path) -> Result<Vec<(Listed, Content)>, LibraryError> {
+    Ok(list(dir)?
         .into_iter()
-        .map(|((unix, _), path)| (path, unix))
+        .map(|l| {
+            let content = match read(&l.path) {
+                Ok(None) => Content::Empty,
+                Ok(Some(j)) => Content::Journal(Box::new(j)),
+                Err(e) => Content::Unreadable(e),
+            };
+            (l, content)
+        })
         .collect())
 }
 
 impl Journal {
     pub(crate) fn info(&self, path: PathBuf, created_unix: i64) -> TidyJournalInfo {
-        let closing = self
-            .ops
-            .iter()
-            .rposition(|op| matches!(op, Op::End | Op::Undone));
-        let identities_done = self
-            .ops
-            .iter()
-            .enumerate()
-            .any(|(i, op)| *op == Op::Identities && closing.is_some_and(|c| i > c));
         TidyJournalInfo {
             path,
             created_unix,
             moved: self.committed_moves(),
-            undone: self.ops.contains(&Op::Undone),
-            complete: self.ops.contains(&Op::End),
-            identities_done,
+            undone: matches!(self.state, State::Undone | State::UndoneMarked),
+            complete: !self.state.in_progress(),
+            identities_done: matches!(self.state, State::EndedMarked | State::UndoneMarked),
         }
     }
 
-    /// Moves done (`m`, `w`) by the committed units of the run (records before its first `E`).
+    /// Moves (`M` / `W`) of the committed blocks of the forward section.
     pub(crate) fn committed_moves(&self) -> u64 {
-        let mut total = 0;
-        let mut current = 0;
-        for op in &self.ops {
-            match op {
-                Op::Begin(_) => current = 0,
-                Op::MoveDone(_) | Op::WholeDone => current += 1,
-                Op::Commit(_) => total += std::mem::take(&mut current),
-                Op::End => break,
-                _ => {}
+        self.forward
+            .iter()
+            .filter(|b| b.committed)
+            .map(|b| b.pairs().len() as u64)
+            .sum()
+    }
+
+    /// Net moves `(stale, current)`, relative (design v7.1 §3.4.1): for every committed forward unit, its pairs
+    /// as written when it was not brought back by a committed undo block, swapped otherwise.
+    pub(crate) fn net_moves(&self) -> Vec<(PathBuf, PathBuf)> {
+        let back: HashSet<u32> = self
+            .undo
+            .iter()
+            .filter(|b| b.committed)
+            .map(|b| b.unit)
+            .collect();
+        let mut out = Vec::new();
+        for block in self.forward.iter().filter(|b| b.committed) {
+            for (from, to) in block.pairs() {
+                if back.contains(&block.unit) {
+                    out.push((to, from));
+                } else {
+                    out.push((from, to));
+                }
             }
         }
-        total
+        out
+    }
+
+    /// Blocks of the section in progress (the forward one in state 1, the undo one in state 4).
+    pub(crate) fn current_section(&self) -> &[Block] {
+        match self.state {
+            State::Undoing => &self.undo,
+            _ => &self.forward,
+        }
     }
 }
 
-/// Appends records to a journal, each followed by `sync_all`.
+/// Appends records to a journal, every write followed by `sync_all`.
 pub(crate) struct JournalWriter {
     file: File,
     path: PathBuf,
+    len: u64,
+    poisoned: bool,
 }
 
 impl JournalWriter {
-    /// Creates `<dir>/journal-<unix>[-k].txt` (never an existing file) and writes the header, synced.
-    pub(crate) fn create(dir: &Path, root: &Path, unix: i64) -> Result<Self, LibraryError> {
+    /// Creates `<dir>/journal-<unix>[-k].txt` (never an existing file), syncs the folder (I4), writes the
+    /// header, synced. `dir` must exist.
+    pub(crate) fn create(
+        sys: &dyn Sys,
+        dir: &Path,
+        root: &Path,
+        unix: i64,
+    ) -> Result<Self, LibraryError> {
         let header =
             header(root).ok_or_else(|| journal_error(root, "racine non absolue ou non UTF-8"))?;
-        fs::create_dir_all(dir).map_err(|source| LibraryError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
         for k in 0..1000 {
             let path = dir.join(file_name(unix, k));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(file) => {
-                    let mut writer = JournalWriter { file, path };
-                    writer.write(&header)?;
+                    sys.sync_dir(dir).map_err(|source| LibraryError::Io {
+                        path: dir.to_path_buf(),
+                        source,
+                    })?;
+                    let mut writer = JournalWriter {
+                        file,
+                        path,
+                        len: 0,
+                        poisoned: false,
+                    };
+                    writer.write(sys, &header)?;
                     return Ok(writer);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -414,18 +999,33 @@ impl JournalWriter {
         Err(journal_error(dir, "trop de journaux pour la même seconde"))
     }
 
-    /// Opens an existing journal to append to it (recovery, undo, `I` marker).
+    /// Opens an existing journal to append to it: first cuts it back to its last `\n` and syncs (I1), so a torn
+    /// line is never glued to the next record. No `\n` is ever added to « repair » a line.
     pub(crate) fn append_to(path: &Path) -> Result<Self, LibraryError> {
-        let file = OpenOptions::new()
-            .append(true)
+        let io = |source| LibraryError::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let bytes = read_bytes(path)?;
+        let len = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i as u64 + 1);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
             .open(path)
-            .map_err(|source| LibraryError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+            .map_err(io)?;
+        if len != bytes.len() as u64 {
+            file.set_len(len).map_err(io)?;
+            file.sync_all().map_err(io)?;
+        }
+        file.seek(SeekFrom::Start(len)).map_err(io)?;
         Ok(JournalWriter {
             file,
             path: path.to_path_buf(),
+            len,
+            poisoned: false,
         })
     }
 
@@ -433,256 +1033,47 @@ impl JournalWriter {
         &self.path
     }
 
-    pub(crate) fn append(&mut self, op: &Op) -> Result<(), LibraryError> {
-        let line = encode(op)
-            .ok_or_else(|| journal_error(&self.path, "chemin impossible à journaliser"))?;
-        self.write(&line)
+    /// Bytes written so far (header included).
+    pub(crate) fn len(&self) -> u64 {
+        self.len
     }
 
-    fn write(&mut self, text: &str) -> Result<(), LibraryError> {
-        let io = |source| LibraryError::Io {
-            path: self.path.clone(),
-            source,
-        };
-        self.file.write_all(text.as_bytes()).map_err(io)?;
-        self.file.sync_all().map_err(io)
+    /// Appends `ops` in one write and one `sync_all`.
+    pub(crate) fn append(&mut self, sys: &dyn Sys, ops: &[Op]) -> Result<(), LibraryError> {
+        let mut text = String::new();
+        for op in ops {
+            text.push_str(
+                &encode(op)
+                    .ok_or_else(|| journal_error(&self.path, "chemin impossible à journaliser"))?,
+            );
+        }
+        self.write(sys, &text)
     }
+
+    fn write(&mut self, sys: &dyn Sys, text: &str) -> Result<(), LibraryError> {
+        if self.poisoned {
+            return Err(journal_error(&self.path, "écriture du journal interrompue"));
+        }
+        if let Err(source) = sys.write_synced(&mut self.file, text.as_bytes()) {
+            // A failed write may have left a torn line: this writer never writes again; the next one cuts the
+            // file back to its last `\n` first (I1).
+            self.poisoned = true;
+            return Err(LibraryError::Io {
+                path: self.path.clone(),
+                source,
+            });
+        }
+        self.len += text.len() as u64;
+        Ok(())
+    }
+}
+
+/// Encoded size of `ops`, `None` when a path cannot be journaled.
+pub(crate) fn encoded_len(ops: &[Op]) -> Option<u64> {
+    ops.iter()
+        .map(|op| encode(op).map(|l| l.len() as u64))
+        .sum()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn p(s: &str) -> PathBuf {
-        s.split('/').collect()
-    }
-
-    fn all_ops() -> Vec<Op> {
-        vec![
-            Op::Begin(0),
-            Op::DirCreated(p("psx")),
-            Op::Part(p("psx/Game (Europe).emu-rust-part")),
-            Op::Move {
-                n: 0,
-                from: p("Game (Europe).cue"),
-                to: p("psx/Game (Europe)/Game (Europe).cue"),
-            },
-            Op::MoveDone(0),
-            Op::Move {
-                n: 1,
-                from: p("Game (Europe) (Track 1).bin"),
-                to: p("psx/Game (Europe)/Game (Europe) (Track 1).bin"),
-            },
-            Op::MoveDone(1),
-            Op::Commit(0),
-            Op::Begin(7),
-            Op::Whole {
-                from: p("vrac/Doom"),
-                to: p("dos/Doom"),
-            },
-            Op::WholeDone,
-            Op::DirRemoved(p("vrac")),
-            Op::Commit(7),
-            Op::End,
-            Op::Identities,
-            Op::Undone,
-        ]
-    }
-
-    fn text(root: &Path, ops: &[Op]) -> String {
-        let mut t = header(root).unwrap();
-        for op in ops {
-            t.push_str(&encode(op).unwrap());
-        }
-        t
-    }
-
-    fn abs_root() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"C:\Users\Jo Ë\emu rust\roms")
-        } else {
-            PathBuf::from("/home/jo Ë/emu rust/roms")
-        }
-    }
-
-    #[test]
-    fn every_record_round_trips() {
-        let root = abs_root();
-        let t = text(&root, &all_ops());
-        let j = parse(t.as_bytes()).unwrap();
-        assert_eq!(j.root, root);
-        assert_eq!(j.ops, all_ops());
-        assert!(!j.torn);
-    }
-
-    #[test]
-    fn escaping_keeps_fields_free_of_spaces_and_separators() {
-        let line = encode(&Op::Move {
-            n: 3,
-            from: p("a b%c/é\u{7}.st"),
-            to: p("atarist/a b%c/é\u{7}.st"),
-        })
-        .unwrap();
-        assert_eq!(
-            line,
-            "M 3 a%20b%25c/%C3%A9%07.st atarist/a%20b%25c/%C3%A9%07.st\n"
-        );
-        assert_eq!(line.matches(' ').count(), 3);
-        let j = parse(text(&abs_root(), &[]).as_bytes()).unwrap();
-        assert!(j.ops.is_empty());
-        let header = header(&abs_root()).unwrap();
-        assert!(header.starts_with("emu-rust tidy 1\nR "));
-        assert!(
-            !header["emu-rust tidy 1\nR ".len()..]
-                .trim_end()
-                .contains(' ')
-        );
-    }
-
-    #[test]
-    fn unsafe_paths_are_never_written_nor_read() {
-        for bad in ["../x", "/abs", "a/../b", "./a", ""] {
-            assert_eq!(encode(&Op::Part(PathBuf::from(bad))), None, "{bad}");
-        }
-        assert_eq!(header(Path::new("relative/roms")), None);
-        let base = header(&abs_root()).unwrap();
-        for bad in [
-            "S ..",
-            "S a/../b",
-            "S %2E%2E",
-            "S a/%2F/b",
-            "S a//b",
-            "S a%00b",
-            "S a%zz",
-            "S a%2f",
-            "S a b",
-            "M 1 a",
-            "M x a b",
-            "m -1",
-            "B 99999999999",
-            "X",
-            "E extra",
-            "",
-        ] {
-            let t = format!("{base}{bad}\n");
-            assert!(parse(t.as_bytes()).is_err(), "{bad:?}");
-        }
-        assert!(parse(b"emu-rust tidy 2\nR /x\n").is_err());
-        assert!(parse(b"emu-rust tidy 1\nR relative\n").is_err());
-        assert!(parse(b"emu-rust tidy 1\n").is_err());
-        assert!(parse(b"").is_err());
-        assert!(parse(b"emu-rust tidy 1\nR /x\n\xff\n").is_err());
-    }
-
-    #[test]
-    fn error_messages_never_quote_the_content() {
-        let t = format!("{}B secret-name\n", header(&abs_root()).unwrap());
-        let message = parse(t.as_bytes()).unwrap_err();
-        assert_eq!(message, "ligne 3 invalide");
-    }
-
-    /// A crash may cut the journal after any byte: every prefix ending on a line boundary parses to the records
-    /// written so far, a prefix cut inside a line drops that line (and only it).
-    #[test]
-    fn a_truncated_journal_keeps_its_complete_lines() {
-        let root = abs_root();
-        let ops = all_ops();
-        let full = text(&root, &ops);
-        let header_len = header(&root).unwrap().len();
-        let mut boundaries = vec![header_len];
-        let mut at = header_len;
-        for op in &ops {
-            at += encode(op).unwrap().len();
-            boundaries.push(at);
-        }
-        for cut in header_len..=full.len() {
-            let j = parse(&full.as_bytes()[..cut]).unwrap();
-            let complete = boundaries.iter().filter(|&&b| b <= cut).count() - 1;
-            assert_eq!(j.ops, ops[..complete], "cut at {cut}");
-            assert_eq!(j.torn, !boundaries.contains(&cut), "cut at {cut}");
-        }
-        // Cut inside the header: unreadable, never guessed.
-        assert!(parse(&full.as_bytes()[..header_len - 1]).is_err());
-    }
-
-    #[test]
-    fn names_and_listing() {
-        assert_eq!(
-            parse_name("journal-1700000000.txt"),
-            Some((1_700_000_000, 0))
-        );
-        assert_eq!(
-            parse_name("journal-1700000000-2.txt"),
-            Some((1_700_000_000, 2))
-        );
-        for bad in [
-            "journal-.txt",
-            "journal-12a.txt",
-            "journal-1.txt.bak",
-            "lock",
-            "journal--1.txt",
-        ] {
-            assert_eq!(parse_name(bad), None, "{bad}");
-        }
-        let dir = tempfile::tempdir().unwrap();
-        assert!(list(&dir.path().join("absent")).unwrap().is_empty());
-        let root = dir.path().canonicalize().unwrap();
-        let a = JournalWriter::create(dir.path(), &root, 20).unwrap();
-        let b = JournalWriter::create(dir.path(), &root, 20).unwrap();
-        let c = JournalWriter::create(dir.path(), &root, 3).unwrap();
-        fs::write(dir.path().join("lock"), b"").unwrap();
-        let listed: Vec<PathBuf> = list(dir.path())
-            .unwrap()
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect();
-        assert_eq!(
-            listed,
-            vec![
-                c.path().to_path_buf(),
-                a.path().to_path_buf(),
-                b.path().to_path_buf()
-            ]
-        );
-        assert!(b.path().ends_with("journal-20-1.txt"));
-    }
-
-    #[test]
-    fn writer_appends_synced_lines_and_info_reads_them() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let mut w = JournalWriter::create(&dir.path().join("rangement"), &root, 42).unwrap();
-        for op in &all_ops()[..14] {
-            w.append(op).unwrap();
-        }
-        assert!(w.append(&Op::Part(PathBuf::from("../escape"))).is_err());
-        let path = w.path().to_path_buf();
-        drop(w);
-        let j = read(&path).unwrap();
-        assert_eq!(j.root, root);
-        let info = j.info(path.clone(), 42);
-        assert_eq!(info.moved, 3);
-        assert!(info.complete && !info.undone && !info.identities_done);
-        let mut w = JournalWriter::append_to(&path).unwrap();
-        w.append(&Op::Identities).unwrap();
-        let info = read(&path).unwrap().info(path.clone(), 42);
-        assert!(info.identities_done);
-        w.append(&Op::Undone).unwrap();
-        let info = read(&path).unwrap().info(path.clone(), 42);
-        assert!(info.undone && !info.identities_done);
-        w.append(&Op::Identities).unwrap();
-        assert!(read(&path).unwrap().info(path.clone(), 42).identities_done);
-    }
-
-    #[test]
-    fn an_oversized_journal_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("journal-1.txt");
-        let mut t = header(&abs_root()).unwrap();
-        while (t.len() as u64) <= MAX_JOURNAL_SIZE {
-            t.push_str("E\n");
-        }
-        fs::write(&path, t).unwrap();
-        assert!(matches!(read(&path), Err(LibraryError::Journal { .. })));
-    }
-}
+mod tests;

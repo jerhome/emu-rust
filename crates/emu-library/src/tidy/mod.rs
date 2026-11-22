@@ -2,9 +2,11 @@
 //! journal written before acting, never overwrites, never renames, never deletes user data, undo and recovery.
 //! Only the roms root is tidied (never `[library] roots`). The scan classifier is reused, not duplicated.
 
+mod exec;
 mod journal;
 mod plan;
 mod relocate;
+mod sys;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -13,12 +15,8 @@ use crate::db::{GameId, Library};
 use crate::error::LibraryError;
 use crate::scan::{ScanOptions, ScanProgress};
 
-#[cfg_attr(
-    not(test),
-    allow(unused_imports, reason = "used by the tidy execution (FB1b)")
-)]
-pub(crate) use journal::{JournalWriter, Op};
 pub(crate) use plan::Fingerprint;
+use sys::RealSys;
 
 /// Bounds and paths of a tidying run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +219,7 @@ pub struct TidyPlan {
     /// One entry per unit (same index): files as analysed, layout and status before the destination checks.
     meta: Vec<plan::UnitMeta>,
     context: plan::PlanContext,
+    crc_cache: plan::CrcCache,
 }
 
 /// Bound of [`TidyPlan::ignored_paths`] (the count itself is not bounded).
@@ -262,20 +261,12 @@ impl TidyPlan {
     }
 
     /// Canonical roms root the plan was made for ([`Library::apply_tidy`] refuses another one).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "used by the tidy execution (FB1b)")
-    )]
     pub(crate) fn roms_root(&self) -> &Path {
         &self.context.root
     }
 
     /// `(path relative to the root, size, mtime)` of every file of `unit` as analysed (primary file first; every
     /// file below a game folder), rechecked just before the unit is moved.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "used by the tidy execution (FB1b)")
-    )]
     pub(crate) fn fingerprints(&self, unit: u32) -> Option<&[Fingerprint]> {
         let index = self.units.iter().position(|u| u.id == unit)?;
         Some(&self.meta[index].files)
@@ -307,18 +298,26 @@ pub struct TidyReport {
     pub cancelled: bool,
 }
 
-/// One tidy journal (`<journal_dir>/journal-<unix>.txt`).
+/// One tidy journal (`<journal_dir>/journal-<unix>.txt`, design v7.1 §3.4.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TidyJournalInfo {
     pub path: PathBuf,
     pub created_unix: i64,
+    /// Moves of the units committed by the run (its undo does not change it).
     pub moved: u64,
-    /// `U` line: undone.
+    /// Holds a `U` line: undone (possibly partly: units that could not come back stay tidied).
     pub undone: bool,
-    /// `E` line: run finished (or recovered).
+    /// Closed: last line `E`, `U` or `I` (otherwise in progress, the recovery is due).
     pub complete: bool,
-    /// `I` line: identity registries rewritten.
+    /// Last line `I`: identity registries rewritten since the last closing line.
     pub identities_done: bool,
+}
+
+impl TidyJournalInfo {
+    /// « Annuler le dernier rangement » may be offered for it (closed run, not undone).
+    pub fn can_undo(&self) -> bool {
+        self.complete && !self.undone
+    }
 }
 
 /// Creates `roms/<id>/` for every system of the catalog, moving nothing. Returns the created ones only. The roms
@@ -344,13 +343,22 @@ pub fn create_system_folders(roms_root: &Path) -> Result<Vec<PathBuf>, LibraryEr
     Ok(created)
 }
 
-/// Newest journal, if any (« Annuler le dernier rangement » is offered when it is complete and not undone).
+/// Newest journal, if any (empty files, « nothing moved », are skipped); an unreadable newest journal is an error
+/// (nothing older is ever offered). « Annuler le dernier rangement » is offered when
+/// [`TidyJournalInfo::can_undo`] and its root is the current one (another root: `TidyRootMismatch`).
 pub fn last_tidy(options: &TidyOptions) -> Result<Option<TidyJournalInfo>, LibraryError> {
-    let Some((path, created_unix)) = journal::list(options.journal_dir())?.pop() else {
-        return Ok(None);
-    };
-    let journal = journal::read(&path)?;
-    Ok(Some(journal.info(path, created_unix)))
+    for listed in journal::list(options.journal_dir())?.into_iter().rev() {
+        let Some(journal) = journal::read(&listed.path)? else {
+            continue;
+        };
+        if journal.root != options.roms_root() {
+            return Err(LibraryError::TidyRootMismatch {
+                journal: listed.path,
+            });
+        }
+        return Ok(Some(journal.info(listed.path, listed.unix)));
+    }
+    Ok(None)
 }
 
 impl Library {
@@ -365,6 +373,11 @@ impl Library {
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.
+    /// Under the OS lock (`TidyBusy`); refused (`Journal`) while a journal is in progress or unreadable (run
+    /// [`Library::recover_tidy`] first). A unit changed since the plan, or whose destination got taken, is left
+    /// (`TidyReport::left`, paths absolute). The journal is created by the first unit started (`journal = None`
+    /// when none was). `moved` is the net list of the journal. `Err` after a failed journal write or a failed
+    /// undo of a block: the journal stays in progress for the next recovery.
     pub fn apply_tidy(
         &mut self,
         options: &TidyOptions,
@@ -373,11 +386,14 @@ impl Library {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(&TidyProgress),
     ) -> Result<TidyReport, LibraryError> {
-        let _ = (options, plan, selected, cancel, progress);
-        todo!("FB1b: execution")
+        exec::Exec::new(&RealSys, &mut self.conn, options).apply(plan, selected, cancel, progress)
     }
 
-    /// Replays `journal` backwards, unit by unit (ADR 0023 §4.6).
+    /// Replays `journal` backwards, unit by unit (ADR 0023 §4.6, design §3.4.1). It must be the newest journal
+    /// (empty files aside), readable, of this root (`TidyRootMismatch` otherwise, also for a newer journal of
+    /// another root), closed and not undone. A unit comes back only whole (all files unchanged at their tidied
+    /// place, original places free), otherwise it stays in `left`. Writes `U` at the end or on cancellation: one
+    /// undo per journal. `moved` is the net list of the whole journal (input of `relocate_identities`).
     pub fn undo_tidy(
         &mut self,
         options: &TidyOptions,
@@ -385,36 +401,40 @@ impl Library {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(&TidyProgress),
     ) -> Result<TidyReport, LibraryError> {
-        let _ = (options, journal, cancel, progress);
-        todo!("FB1b: undo")
+        exec::Exec::new(&RealSys, &mut self.conn, options).undo(journal, cancel, progress)
     }
 
-    /// Rolls back every started, uncommitted unit of an interrupted run and closes its journal. `None`: nothing.
+    /// Rolls back every started, uncommitted unit of an interrupted run or undo of this root and closes its
+    /// journal (`E` / `U`); removes empty journals. `None`: nothing was in progress. Then `Err(Journal)` if an
+    /// unreadable journal remains, `Err(TidyRootMismatch)` if one of another root is in progress. An I/O error
+    /// while undoing a block stops without closing (the next call starts over). An interrupted undo becomes final:
+    /// the units it had not brought back stay tidied (`TidyJournalInfo::undone`).
     pub fn recover_tidy(
         &mut self,
         options: &TidyOptions,
     ) -> Result<Option<TidyReport>, LibraryError> {
-        let _ = options;
-        todo!("FB1b: recovery")
+        exec::Exec::new(&RealSys, &mut self.conn, options).recover()
     }
 
-    /// Complete journals whose identity step is not marked done, with the moves to replay (oldest first).
+    /// Closed journals (last line `E` or `U`) of this root, oldest first, each with its net moves `(stale path,
+    /// current path)` (design §3.4.1). Unreadable journals and those of another root are skipped.
     pub fn pending_tidy_identities(
         &self,
         options: &TidyOptions,
     ) -> Result<Vec<(PathBuf, AbsoluteMoves)>, LibraryError> {
-        let _ = options;
-        todo!("FB1b: pending identity steps")
+        exec::pending(options)
     }
 
-    /// Appends the « identities done » marker; called by the UI after `emu_runtime::relocate_identities` succeeded.
+    /// Appends the « identities done » marker; called by the UI after `emu_runtime::relocate_identities` succeeded
+    /// on the net list of this journal. `Ok` without writing when already marked; `Journal` when the journal is
+    /// in progress, empty or not one of `journal_dir`; `TidyRootMismatch` for another root. Then purges: beyond
+    /// the 20 newest journals, only readable ones whose last line is `I` are removed.
     pub fn mark_tidy_identities(
         &mut self,
         options: &TidyOptions,
         journal: &Path,
     ) -> Result<(), LibraryError> {
-        let _ = (options, journal);
-        todo!("FB1b: I marker")
+        exec::mark(&RealSys, options, journal)
     }
 
     /// One transaction: `game.path`, `game_media.path`, `game.pinned`. A path under a moved folder follows it.

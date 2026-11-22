@@ -14,12 +14,12 @@ use crate::{CoverKind, CoverState, Library, ScanOptions};
 const CNF: &[u8] = b"BOOT = cdrom:\\SLES_000.32;1\r\n";
 const EUROPE: &str = "Sony Computer Entertainment Euro pe";
 
-fn write(path: &Path, data: &[u8]) {
+pub(super) fn write(path: &Path, data: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, data).unwrap();
 }
 
-fn psx_track() -> Vec<u8> {
+pub(super) fn psx_track() -> Vec<u8> {
     to_raw(&psx_iso(Some(EUROPE), Some(CNF)), 2)
 }
 
@@ -29,7 +29,7 @@ fn opera_track() -> Vec<u8> {
     to_raw(&iso, 1)
 }
 
-fn cue(tracks: &[&str]) -> Vec<u8> {
+pub(super) fn cue(tracks: &[&str]) -> Vec<u8> {
     let mut text = String::new();
     for (i, t) in tracks.iter().enumerate() {
         let kind = if i == 0 { "MODE2/2352" } else { "AUDIO" };
@@ -42,7 +42,7 @@ fn cue(tracks: &[&str]) -> Vec<u8> {
 }
 
 /// Writes `<dir>/<name>.cue` and its tracks (first one a data track built by `data`).
-fn cd(dir: &Path, name: &str, audio: usize, data: fn() -> Vec<u8>) {
+pub(super) fn cd(dir: &Path, name: &str, audio: usize, data: fn() -> Vec<u8>) {
     let mut tracks = vec![format!("{name} (Track 1).bin")];
     tracks.extend((0..audio).map(|i| format!("{name} (Track {}).bin", i + 2)));
     let refs: Vec<&str> = tracks.iter().map(String::as_str).collect();
@@ -65,7 +65,7 @@ fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 /// Pseudo-random bytes (no header of any kind).
-fn noise(len: usize, seed: u32) -> Vec<u8> {
+pub(super) fn noise(len: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2_654_435_761).max(1);
     (0..len)
         .map(|_| {
@@ -644,36 +644,42 @@ fn system_folders_are_created_once() {
 
 #[test]
 fn last_tidy_reads_the_newest_journal() {
+    use super::journal::{JournalWriter, Op};
+    use super::sys::RealSys;
     let f = fixture();
     let options = f.options();
     assert_eq!(last_tidy(&options).unwrap(), None);
-    let mut old = JournalWriter::create(&f.journals, options.roms_root(), 10).unwrap();
-    old.append(&Op::End).unwrap();
-    let mut new = JournalWriter::create(&f.journals, options.roms_root(), 20).unwrap();
-    for op in [
-        Op::Begin(0),
-        Op::Move {
-            n: 0,
-            from: rel("a.sfc"),
-            to: rel("snes/a.sfc"),
-        },
-        Op::MoveDone(0),
-        Op::Commit(0),
-        Op::Begin(1),
-        Op::Move {
-            n: 0,
-            from: rel("b.sfc"),
-            to: rel("snes/b.sfc"),
-        },
-        Op::MoveDone(0),
-    ] {
-        new.append(&op).unwrap();
-    }
+    fs::create_dir_all(&f.journals).unwrap();
+    let mut old = JournalWriter::create(&RealSys, &f.journals, options.roms_root(), 10).unwrap();
+    old.append(&RealSys, &[Op::End]).unwrap();
+    let mut new = JournalWriter::create(&RealSys, &f.journals, options.roms_root(), 20).unwrap();
+    let mv = |from: &str, to: &str| Op::Move {
+        n: 0,
+        size: 1,
+        mtime: 2,
+        from: rel(from),
+        to: rel(to),
+    };
+    new.append(
+        &RealSys,
+        &[
+            Op::Begin(0),
+            mv("a.sfc", "snes/a.sfc"),
+            Op::MoveDone(0),
+            Op::Commit(0),
+            Op::Begin(1),
+            mv("b.sfc", "snes/b.sfc"),
+            Op::MoveDone(0),
+        ],
+    )
+    .unwrap();
+    // An empty newer file (cut header) means « nothing moved »: skipped.
+    fs::write(f.journals.join("journal-30.txt"), b"emu-rust tidy").unwrap();
     let info = last_tidy(&options).unwrap().unwrap();
     assert_eq!(info.path, new.path());
     assert_eq!(info.created_unix, 20);
     assert_eq!(info.moved, 1, "an uncommitted unit does not count");
-    assert!(!info.complete && !info.undone && !info.identities_done);
+    assert!(!info.complete && !info.undone && !info.identities_done && !info.can_undo());
     fs::write(new.path(), b"garbage").unwrap();
     assert!(matches!(
         last_tidy(&options),

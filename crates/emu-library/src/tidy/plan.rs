@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension};
 
+use super::journal::{fold_path, same_place};
 use super::{
     MAX_IGNORED_PATHS, TidyBlock, TidyMove, TidyOptions, TidyPlan, TidyReason, TidyStatus, TidyUnit,
 };
@@ -52,6 +53,43 @@ pub(super) struct PlanContext {
     pub(super) root: PathBuf,
     /// Device of the root (Unix): a destination or a source on another device is blocked.
     root_dev: Option<u64>,
+    /// Files above it are never hashed for a collision: `Conflict`, not `Duplicate` (FV0 I6).
+    pub(super) max_file_size: u64,
+}
+
+/// CRC32 of the files compared for collisions, by `(path, size, mtime)` (FV0 I6): `choose_system` re-runs every
+/// check, a file is hashed once per plan. Not part of the plan's identity (always equal).
+#[derive(Debug, Clone, Default)]
+pub(super) struct CrcCache(HashMap<(PathBuf, u64, i64), Option<u32>>);
+
+impl PartialEq for CrcCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for CrcCache {}
+
+impl CrcCache {
+    /// Same size and CRC32 (ADR 0023 §4.4); a file above `max` is never read (different).
+    fn same_file(&mut self, a: &Path, b: &Path, max: u64) -> bool {
+        match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+            (Ok(ma), Ok(mb))
+                if ma.is_file() && mb.is_file() && ma.len() == mb.len() && ma.len() <= max =>
+            {
+                let ca = self.crc(a, &ma);
+                ca.is_some() && ca == self.crc(b, &mb)
+            }
+            _ => false,
+        }
+    }
+
+    fn crc(&mut self, path: &Path, meta: &fs::Metadata) -> Option<u32> {
+        *self
+            .0
+            .entry((path.to_path_buf(), meta.len(), mtime_of(meta)))
+            .or_insert_with(|| crc_of(path))
+    }
 }
 
 /// How the files of a unit are laid out at the destination.
@@ -1342,7 +1380,9 @@ pub(super) fn run(
         context: PlanContext {
             root: root.to_path_buf(),
             root_dev,
+            max_file_size: options.max_file_size(),
         },
+        crc_cache: CrcCache::default(),
     };
     plan.place_all();
     state.current = None;
@@ -1363,11 +1403,9 @@ fn dos_id() -> String {
 /// Destination paths already taken by the plan, lower-cased (`/`-joined): `(unit, first file of the claimant)`.
 type Claims = HashMap<String, (u32, Option<Fingerprint>)>;
 
+/// The fold of the journal's « same place » rule (RV1 I1): one function for both.
 fn claim_key(path: &Path) -> String {
-    path.components()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-        .collect::<Vec<_>>()
-        .join("/")
+    fold_path(path)
 }
 
 /// Lower-cased names of the folders read during one placement pass.
@@ -1381,16 +1419,11 @@ impl Listings {
         let names = self.0.entry(parent.clone()).or_insert_with(|| {
             fs::read_dir(root.join(&parent)).ok().map(|it| {
                 it.filter_map(Result::ok)
-                    .map(|e| {
-                        (
-                            e.file_name().to_string_lossy().to_lowercase(),
-                            e.file_name(),
-                        )
-                    })
+                    .map(|e| (fold_path(Path::new(&e.file_name())), e.file_name()))
                     .collect()
             })
         });
-        let wanted = rel.file_name()?.to_string_lossy().to_lowercase();
+        let wanted = fold_path(Path::new(rel.file_name()?));
         names
             .as_ref()?
             .get(&wanted)
@@ -1398,7 +1431,7 @@ impl Listings {
     }
 }
 
-fn crc_of(path: &Path) -> Option<u32> {
+pub(super) fn crc_of(path: &Path) -> Option<u32> {
     let mut file = fs::File::open(path).ok()?;
     let mut hasher = crc32fast::Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -1410,16 +1443,6 @@ fn crc_of(path: &Path) -> Option<u32> {
         hasher.update(&buf[..n]);
     }
     Some(hasher.finalize())
-}
-
-/// Same size and CRC32 (ADR 0023 §4.4).
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
-        (Ok(ma), Ok(mb)) if ma.is_file() && mb.is_file() && ma.len() == mb.len() => {
-            crc_of(a).is_some_and(|ca| crc_of(b) == Some(ca))
-        }
-        _ => false,
-    }
 }
 
 fn destinations(meta: &UnitMeta, system: &str) -> (Vec<TidyMove>, Option<TidyMove>) {
@@ -1465,6 +1488,19 @@ fn windows_length(root: &Path, to: &Path) -> usize {
 }
 
 impl TidyPlan {
+    /// `<D>` of a unit assembled under `<D>.emu-rust-part` (folder layout, not moved whole).
+    pub(super) fn assembly_dir(&self, index: usize) -> Option<PathBuf> {
+        match (&self.meta[index].layout, &self.units[index].system) {
+            (
+                Layout::Folder {
+                    name, whole: false, ..
+                },
+                Some(system),
+            ) => Some(PathBuf::from(system).join(name)),
+            _ => None,
+        }
+    }
+
     pub(super) fn set_system(&mut self, unit: u32, system: &str) -> Result<(), LibraryError> {
         let refused = || LibraryError::TidyChoice {
             unit,
@@ -1507,6 +1543,7 @@ impl TidyPlan {
                         &self.context,
                         &mut claims,
                         &mut listings,
+                        &mut self.crc_cache,
                     );
                 }
             }
@@ -1520,6 +1557,7 @@ fn place(
     context: &PlanContext,
     claims: &mut Claims,
     listings: &mut Listings,
+    crcs: &mut CrcCache,
 ) {
     unit.moves.clear();
     unit.whole_dir = None;
@@ -1534,7 +1572,7 @@ fn place(
     let (moves, whole) = destinations(meta, &system);
     unit.moves = moves;
     unit.whole_dir = whole;
-    if let Some(block) = check(unit, meta, context, claims, listings, &system) {
+    if let Some(block) = check(unit, meta, context, claims, listings, crcs, &system) {
         unit.status = TidyStatus::Blocked(block);
     }
 }
@@ -1545,9 +1583,12 @@ fn check(
     context: &PlanContext,
     claims: &mut Claims,
     listings: &mut Listings,
+    crcs: &mut CrcCache,
     system: &str,
 ) -> Option<TidyBlock> {
     let root = &context.root;
+    let max = context.max_file_size;
+    let mut same_file = |a: &Path, b: &Path| crcs.same_file(a, b, max);
     if meta.other_volume {
         return Some(TidyBlock::OtherVolume);
     }
@@ -1591,6 +1632,18 @@ fn check(
             .any(|m| windows_length(root, &m.to) > MAX_WINDOWS_PATH)
     {
         return Some(TidyBlock::PathTooLong);
+    }
+    // A move that only changes case or Unicode form names one file on a case-insensitive volume: the journal
+    // refuses it (RV1 I1), the plan never produces it.
+    if let Some(same) = unit
+        .moves
+        .iter()
+        .chain(unit.whole_dir.iter())
+        .find(|m| same_place(&m.from, &m.to))
+    {
+        return Some(TidyBlock::Conflict {
+            existing: same.from.clone(),
+        });
     }
     let folder = match &meta.layout {
         Layout::Folder { name, .. } => Some(PathBuf::from(system).join(name)),

@@ -180,3 +180,38 @@ pub(super) fn run(
     tx.commit().map_err(db_error)?;
     Ok(game_moves.len() as u64)
 }
+
+/// Inverse rewrite of the recovery (FV0 I5): `moves` are the `(from, to)` of an undone block; each pair is rewritten
+/// back `to → from` only when no row already holds the key of `from` (or a path below it): such a row is the
+/// original one (the transaction of the block never ran), and the plain inverse would take it for stale.
+pub(super) fn revert(
+    conn: &mut Connection,
+    roms_root: &Path,
+    moves: &[(PathBuf, PathBuf)],
+) -> Result<u64, LibraryError> {
+    let root = normalize_root(roms_root);
+    let mut inverse = Vec::new();
+    for (from, to) in moves {
+        let Some(key) = root.join(from).to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !plain_relative(from) || !plain_relative(to) {
+            continue;
+        }
+        if !key_taken(conn, &key)? {
+            inverse.push((to.clone(), from.clone()));
+        }
+    }
+    run(conn, roms_root, &inverse)
+}
+
+/// A `game` or `game_media` row at `key` or below it (a folder key).
+fn key_taken(conn: &Connection, key: &str) -> Result<bool, LibraryError> {
+    let sep = std::path::MAIN_SEPARATOR;
+    // `substr` instead of LIKE: file names may hold `%` and `_`.
+    let below = format!("{key}{sep}");
+    let sql = "SELECT EXISTS(SELECT 1 FROM game WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2) \
+               OR EXISTS(SELECT 1 FROM game_media WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2)";
+    conn.query_row(sql, params![key, below], |r| r.get::<_, bool>(0))
+        .map_err(db_error)
+}
