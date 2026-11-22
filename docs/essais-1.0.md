@@ -55,3 +55,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Windows | GTA, **swanstation** (changement de core) | ✅ **OK** : le jeu tourne ; reprise de carte mémoire non vérifiée (pas de sauvegarde possible avant une fin de mission) |
 | Windows | GTA, **mednafen_psx (Beetle PSX)** | ✅ **OK** : « ça marche quand même sacrément bien » (pas de lenteur signalée) |
 | Windows | Road Rash (3DO), opera, **sans `panafz10.bin` (Opera Boot intégré)** | ✅ **impeccable** — question ouverte de la 7.0 tranchée : le jeu démarre avec le BIOS libre intégré |
+| Windows | Road Rash (3DO), opera, **avec `panafz10.bin`** | ✅ **OK** : import reconnu, jeu fonctionnel. Remarque UX : la 3DO n'apparaît pas dans « Core utilisé par système » (liste limitée aux systèmes à plusieurs cores, cores_ui/mod.rs:770) ; on ne retrouve le core qu'en cherchant « opera » → 7.1 : afficher aussi les systèmes à core unique (sans choix) et chercher par nom de système |
