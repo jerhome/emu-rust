@@ -972,3 +972,43 @@ fn a_new_file_at_the_old_place_does_not_steal_the_moved_game_saves() {
     assert_eq!((moved.save_name.as_str(), moved.index), ("Game", 1));
     assert_eq!(fs::read(&srm).unwrap(), b"progress");
 }
+
+mod plan_moves_tests {
+    use super::super::{fold_windows_key, plan_moves};
+
+    fn fold(k: &[u8]) -> Vec<u8> {
+        fold_windows_key(&String::from_utf8_lossy(k)).into_bytes()
+    }
+
+    fn plan(olds: &[&str], news: &[Option<&str>]) -> Vec<bool> {
+        let olds: Vec<&[u8]> = olds.iter().map(|s| s.as_bytes()).collect();
+        let news: Vec<Option<Vec<u8>>> = news
+            .iter()
+            .map(|n| n.map(|s| s.as_bytes().to_vec()))
+            .collect();
+        plan_moves(&olds, &news, fold)
+    }
+
+    #[test]
+    fn case_only_move_is_not_a_collision() {
+        assert_eq!(
+            plan(&[r"C:\SNES\jeu.sfc"], &[Some(r"C:\snes\jeu.sfc")]),
+            [true]
+        );
+    }
+
+    #[test]
+    fn chain_and_swap_are_applied() {
+        assert_eq!(plan(&["a", "b"], &[Some("b"), Some("c")]), [true, true]);
+        assert_eq!(plan(&["b", "a"], &[Some("c"), Some("b")]), [true, true]);
+        assert_eq!(plan(&["a", "b"], &[Some("b"), Some("a")]), [true, true]);
+    }
+
+    #[test]
+    fn real_collisions_are_refused() {
+        // Onto an entry that stays.
+        assert_eq!(plan(&["a", "b"], &[Some("b"), None]), [false, false]);
+        // Two entries onto the same target: the first wins.
+        assert_eq!(plan(&["a", "b"], &[Some("c"), Some("c")]), [true, false]);
+    }
+}

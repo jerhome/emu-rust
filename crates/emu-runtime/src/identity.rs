@@ -923,7 +923,8 @@ pub struct RelocateReport {
     pub entries: u32,
     /// `.disks` manifests (`.emu-rust-disks`) rewritten.
     pub manifests: u32,
-    /// Unreadable registries or manifests, left as they are, with a French reason.
+    /// Unreadable registries or manifests, and moves refused because the target path is already used by another
+    /// identity (entry left as is), with a French reason.
     pub skipped: Vec<(PathBuf, String)>,
 }
 
@@ -1017,10 +1018,29 @@ fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
     (key != raw).then_some(key)
 }
 
-/// A move onto a path already held by another entry (stored or moved earlier in this pass) is refused: the entry
-/// keeps its old path, so no identity is ever overwritten; the result does not depend on anything but file order.
-fn claim(taken: &mut HashSet<Vec<u8>>, new_key: &[u8]) -> bool {
-    taken.insert(registry_key(new_key))
+/// Decides which of the moves `olds[i] -> news[i]` (`None` = stays) are applied. The old keys of the entries that
+/// move are released first, so chains (A->B, B->C), swaps and case-only changes work; a move onto a key still held
+/// by an entry that stays, or by an earlier move of the pass, is refused (the entry keeps its path). Deterministic:
+/// it depends only on entry order. `fold` is the registry comparison key.
+fn plan_moves(
+    olds: &[&[u8]],
+    news: &[Option<Vec<u8>>],
+    fold: impl Fn(&[u8]) -> Vec<u8>,
+) -> Vec<bool> {
+    let mut taken: HashSet<Vec<u8>> = olds
+        .iter()
+        .zip(news)
+        .filter(|(_, n)| n.is_none())
+        .map(|(o, _)| fold(o))
+        .collect();
+    let mut applied = vec![false; olds.len()];
+    for (i, new) in news.iter().enumerate() {
+        let Some(new) = new else { continue };
+        if taken.insert(fold(new)) {
+            applied[i] = true;
+        }
+    }
+    applied
 }
 
 fn collision_note(key: &[u8]) -> String {
@@ -1063,11 +1083,13 @@ fn relocate_core_dir(
             )),
             Registry::Entries(mut entries) => {
                 let mut changed = 0u32;
-                let mut taken: HashSet<Vec<u8>> =
-                    entries.iter().map(|e| registry_key(&e.path)).collect();
-                for e in &mut entries {
-                    if let Some(key) = moved_key(&e.path, table) {
-                        if claim(&mut taken, &key) {
+                let news: Vec<Option<Vec<u8>>> =
+                    entries.iter().map(|e| moved_key(&e.path, table)).collect();
+                let olds: Vec<&[u8]> = entries.iter().map(|e| e.path.as_slice()).collect();
+                let ok = plan_moves(&olds, &news, registry_key);
+                for ((e, new), ok) in entries.iter_mut().zip(news).zip(ok) {
+                    if let Some(key) = new {
+                        if ok {
                             e.path = key;
                             changed += 1;
                         } else {
@@ -1089,13 +1111,15 @@ fn relocate_core_dir(
         match workcopy::inspect(&folder, any_name)? {
             DirState::Manifest(mut entries) => {
                 let mut changed = false;
-                let mut taken: HashSet<Vec<u8>> = entries
+                let news: Vec<Option<Vec<u8>>> = entries
                     .iter()
-                    .map(|e| registry_key(e.source_key()))
+                    .map(|e| moved_key(e.source_key(), table))
                     .collect();
-                for e in &mut entries {
-                    if let Some(key) = moved_key(e.source_key(), table) {
-                        if claim(&mut taken, &key) {
+                let olds: Vec<&[u8]> = entries.iter().map(|e| e.source_key()).collect();
+                let ok = plan_moves(&olds, &news, registry_key);
+                for ((e, new), ok) in entries.iter_mut().zip(news).zip(ok) {
+                    if let Some(key) = new {
+                        if ok {
                             e.set_source_key(key);
                             changed = true;
                         } else {
