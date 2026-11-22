@@ -1,7 +1,8 @@
 //! « Ranger les ROMs… » (ADR 0023 §4, design v7.1 §2.2): analysis in a worker (`Library::plan_tidy`, read only),
 //! then a preview where the user checks units and resolves ambiguous ones. States: Analyse → Aperçu (FU2a);
-//! Exécution → Rapport come with the execution (FU2b). Pure parts are unit-tested here; drawing is in `view`.
+//! Exécution → Rapport (FU2b, `exec`). Pure parts are unit-tested here; drawing is in `view`.
 
+pub(crate) mod exec;
 pub(super) mod text;
 mod view;
 
@@ -37,6 +38,8 @@ pub(super) struct BiosFound {
 pub(super) struct Analysis {
     pub plan: TidyPlan,
     pub bios: Vec<BiosFound>,
+    /// Drives « Annuler le dernier rangement » and the unreadable-journal block.
+    pub last: exec::LastTidy,
 }
 
 pub(super) type PlanTask = Task<ScanProgress, Result<Analysis, String>>;
@@ -267,6 +270,7 @@ pub(super) struct Preview {
     /// Choice being applied in a worker, and the ones made meanwhile (applied in order, none is lost).
     pub choosing: Option<(Choice, ChoiceTask)>,
     pub queued: std::collections::VecDeque<Choice>,
+    pub last: exec::LastTidy,
 }
 
 impl Preview {
@@ -281,6 +285,7 @@ impl Preview {
             note: None,
             choosing: None,
             queued: std::collections::VecDeque::new(),
+            last: analysis.last,
         }
     }
 
@@ -370,6 +375,11 @@ impl Preview {
         }
     }
 
+    /// « Ranger » is enabled ([`exec::can_apply`]).
+    pub(super) fn can_apply(&self) -> bool {
+        exec::can_apply(self.updating(), self.checked.len(), self.last.blocked)
+    }
+
     pub(super) fn is_bios_unit(&self, id: u32) -> bool {
         self.bios.iter().any(|b| b.unit == Some(id))
     }
@@ -422,6 +432,14 @@ pub(super) enum Stage {
     },
     Preview(Box<Preview>),
     Failed(String),
+    /// `apply_tidy` / `undo_tidy` then the identity step, in a worker. Not left before the end (the window may
+    /// close: the journal makes the next start finish it).
+    Running {
+        task: exec::RunTask,
+        progress: Option<emu_library::TidyProgress>,
+        undo: bool,
+    },
+    Report(Box<exec::Outcome>),
 }
 
 #[derive(Default)]
@@ -434,11 +452,37 @@ pub(super) struct TidyUi {
 
 impl TidyUi {
     pub(super) fn busy(&self) -> bool {
-        matches!(self.stage, Stage::Analysing { .. })
+        matches!(self.stage, Stage::Analysing { .. } | Stage::Running { .. })
     }
 
-    /// Drains the worker; `true` when something changed.
+    /// Drains the workers; `true` when something changed.
     pub(super) fn poll(&mut self) -> bool {
+        if let Stage::Running {
+            task,
+            progress,
+            undo,
+        } = &mut self.stage
+        {
+            let (steps, done) = task.poll();
+            let changed = !steps.is_empty() || done.is_some();
+            if let Some(p) = steps.into_iter().last() {
+                *progress = Some(p);
+            }
+            if let Some(done) = done {
+                let outcome = done.unwrap_or_else(|| {
+                    let mut out = exec::Outcome::new(if *undo {
+                        exec::RunKind::Undo
+                    } else {
+                        exec::RunKind::Tidy
+                    });
+                    out.messages.push(text::RUN_INTERRUPTED.to_owned());
+                    out
+                });
+                self.stage = Stage::Report(Box::new(outcome));
+                self.focus_first = true;
+            }
+            return changed;
+        }
         let Stage::Analysing { task, progress } = &mut self.stage else {
             return false;
         };
@@ -534,6 +578,9 @@ pub(super) fn spawn_plan(
     notify: Notify,
 ) -> PlanTask {
     Task::spawn("tidy-plan", notify, move |cancel, progress| {
+        if !roms.is_dir() {
+            return Err(text::no_roms_folder(&roms));
+        }
         let library =
             Library::open_existing(&db).map_err(|e| text::analysis_failed(&e.to_string()))?;
         let catalogue = crate::bios_import::firmware_catalogue(manager.as_deref());
@@ -566,7 +613,8 @@ pub(super) fn spawn_plan(
                 });
             }
         }
-        Ok(Analysis { plan, bios })
+        let last = exec::read_last(&options);
+        Ok(Analysis { plan, bios, last })
     })
 }
 

@@ -74,6 +74,7 @@ fn preview(t: &Tree) -> Preview {
     Preview::new(Analysis {
         plan: plan(t, &["scph5502.bin"]),
         bios: Vec::new(),
+        last: Default::default(),
     })
 }
 
@@ -284,6 +285,7 @@ fn stage_machine_poll_and_close() {
         Ok(Analysis {
             plan,
             bios: Vec::new(),
+            last: Default::default(),
         })
     });
     ui.stage = Stage::Analysing {
@@ -400,4 +402,73 @@ fn a_cancelled_choice_does_nothing() {
     assert_eq!(plan, p.plan);
     assert!(p.apply(&choice, plan, outcome).is_err());
     assert!(unit(&p.plan, "Pocket.gb").system.is_none());
+}
+
+#[test]
+fn missing_roms_folder_is_explained_without_os_details() {
+    let t = text::no_roms_folder(std::path::Path::new("/data/roms"));
+    assert!(t.starts_with("Aucun dossier de ROMs : /data/roms n'existe pas encore"));
+    assert!(!t.contains("os error"));
+}
+
+#[test]
+fn apply_is_enabled_only_once_the_preview_is_settled() {
+    let t = tree();
+    let mut p = preview(&t);
+    assert!(!p.checked.is_empty());
+    assert_eq!(p.updating(), 0);
+    assert!(p.can_apply());
+    p.queued.push_back(Choice::Extension {
+        extension: "bin".into(),
+        system: "psx".into(),
+    });
+    assert!(p.updating() > 0);
+    assert!(!p.can_apply());
+    p.queued.clear();
+    p.last.blocked = true;
+    assert!(!p.can_apply());
+    p.last.blocked = false;
+    p.checked.clear();
+    assert!(!p.can_apply());
+}
+
+/// Real files: « Ranger » then « Annuler le dernier rangement » through the worker body.
+#[test]
+fn run_job_tidies_then_undoes_and_offers_undo_once() {
+    use super::exec::{Job, RunKind, run_job};
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = crate::config::DataDirs::under(dir.path());
+    let roms = dirs.root.join("roms");
+    write(&roms.join("Advance.gba"), &noise(4096, 1));
+    write(&roms.join("Quest.sfc"), &noise(1024, 7));
+    Library::open(&dirs.library_db).unwrap();
+    let options = TidyOptions::new(&roms, &dirs.tidy_journals).unwrap();
+    let plan = Library::open_existing(&dirs.library_db)
+        .unwrap()
+        .plan_tidy(&options, &AtomicBool::new(false), &mut |_| {})
+        .unwrap();
+    let selected: Vec<u32> = plan
+        .units
+        .iter()
+        .filter(|u| selectable(u))
+        .map(|u| u.id)
+        .collect();
+    assert_eq!(selected.len(), 2);
+    let cancel = AtomicBool::new(false);
+    let out = run_job(&dirs, Job::Apply { plan, selected }, &cancel, &mut |_| {});
+    assert_eq!(out.kind, RunKind::Tidy);
+    assert!(out.messages.is_empty(), "{:?}", out.messages);
+    assert_eq!(out.report.as_ref().unwrap().moved.len(), 2);
+    assert!(roms.join("gba/Advance.gba").is_file());
+    let journal = out.last.undo_target().expect("undo offered").to_path_buf();
+    assert!(super::exec::recovery_needed(&dirs));
+
+    let out = run_job(&dirs, Job::Undo { journal }, &cancel, &mut |_| {});
+    assert!(out.messages.is_empty(), "{:?}", out.messages);
+    assert!(roms.join("Advance.gba").is_file());
+    assert!(out.last.undo_target().is_none(), "one undo per journal");
+
+    // Nothing left to recover: the start-up replay is silent.
+    let out = run_job(&dirs, Job::Recovery, &cancel, &mut |_| {});
+    assert!(out.messages.is_empty(), "{:?}", out.messages);
 }

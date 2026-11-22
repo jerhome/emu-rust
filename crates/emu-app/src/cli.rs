@@ -15,7 +15,7 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20                [--pad-device digital|dualshock]\n\
                          \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad]\n\
-                         \x20                [--screen library|library-settings|cores|library-log|library-tidy|library-launch]\n\
+                         \x20                [--screen library|library-settings|cores|library-log|library-tidy|library-tidy-report|library-launch]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -287,11 +287,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "cores" => ScreenArg::Library(LibraryScreen::Cores),
                     "library-log" => ScreenArg::Library(LibraryScreen::Log),
                     "library-tidy" => ScreenArg::Library(LibraryScreen::Tidy),
+                    "library-tidy-report" => ScreenArg::Library(LibraryScreen::TidyReport),
                     "library-launch" => ScreenArg::Library(LibraryScreen::Launch),
                     _ => {
                         return Err(
                             "--screen attend menu, keys, options, disks, computer, vkbd, library, \
-                                    library-settings, library-log, library-tidy, library-launch ou cores"
+                                    library-settings, library-log, library-tidy, library-tidy-report, library-launch ou cores"
                                 .into(),
                         );
                     }

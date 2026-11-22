@@ -69,6 +69,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
         Some(LibraryScreen::Log) => library.open_log(),
         Some(LibraryScreen::Tidy) => library.open_tidy_on_first_frame(),
+        Some(LibraryScreen::TidyReport) => library.open_tidy_report_demo(),
         _ => {}
     }
     let mut host = Host {

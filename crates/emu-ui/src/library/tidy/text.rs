@@ -36,8 +36,6 @@ pub const CANCEL: &str = "Annuler";
 pub const STOP: &str = "Arrêter l'analyse";
 pub const RETRY: &str = "Analyser de nouveau";
 pub const APPLY: &str = "Ranger";
-pub const APPLY_LATER: &str = "Le déplacement des fichiers arrive à l'étape suivante du développement : cet \
-                               écran ne montre pour l'instant que l'aperçu.";
 pub const INTRO: &str = "Aperçu : rien n'a encore été déplacé. Les fichiers sont déplacés sans jamais être \
                          renommés, écrasés ni supprimés ; un jeu déjà dans la bibliothèque garde ses favoris, \
                          sauvegardes et jaquettes.";
@@ -65,6 +63,14 @@ pub fn updating(pending: usize) -> String {
         0 | 1 => "Mise à jour de l'aperçu…".to_owned(),
         n => format!("Mise à jour de l'aperçu… ({n} choix en cours)"),
     }
+}
+
+pub fn no_roms_folder(p: &Path) -> String {
+    format!(
+        "Aucun dossier de ROMs : {} n'existe pas encore. Créez-le (« Créer les dossiers des systèmes ») et \
+         placez-y vos jeux.",
+        path(p)
+    )
 }
 
 pub fn analysis_failed(e: &str) -> String {
@@ -201,3 +207,100 @@ pub fn bios_found(p: &Path, names: &[String]) -> String {
 
 pub const BIOS_IMPORT: &str = "Importer ce BIOS…";
 pub const BIOS_UNIT: &str = "BIOS connu : utilisez « Importer ce BIOS… » plutôt que le rangement";
+
+// Execution, report, undo and recovery (FU2b).
+
+pub const BUSY: &str = "Rangement impossible : une autre fenêtre d'emu-rust range déjà les ROMs. Réessayez quand \
+                        elle aura fini.";
+
+pub fn journal_unreadable(p: &Path, message: &str) -> String {
+    format!(
+        "Journal de rangement illisible : {} ({}). Il bloque le rangement et son annulation tant que ce fichier \
+         n'est pas retiré du dossier (déplacez-le ailleurs ou supprimez-le).",
+        path(p),
+        clean(message)
+    )
+}
+
+pub fn other_root(journal: &Path) -> String {
+    format!(
+        "Le journal {} concerne un autre dossier des ROMs : il n'est ni rejoué ni annulable ici.",
+        path(journal)
+    )
+}
+
+pub fn relocate_failed(e: &str) -> String {
+    format!(
+        "Sauvegardes non mises à jour : {}. Ce sera retenté au prochain démarrage.",
+        clean(e)
+    )
+}
+
+pub const UNDO_INTERRUPTED_FINAL: &str = "L'annulation précédente a été interrompue : elle est définitive. Les jeux \
+                                          qu'elle n'avait pas encore remis en place restent rangés ; déplacez-les \
+                                          à la main si besoin.";
+pub const RUN_INTERRUPTED_RECOVERED: &str = "Le rangement précédent a été interrompu : le jeu en cours de \
+                                             déplacement a été remis à sa place, les autres restent rangés.";
+
+pub const APPLY_UPDATING: &str = "« Ranger » sera disponible une fois l'aperçu à jour.";
+pub const UNDO: &str = "Annuler le dernier rangement";
+pub const NEW_ANALYSIS: &str = "Nouvelle analyse";
+pub const STOP_RUN: &str = "Arrêter après le jeu en cours";
+
+pub fn last_tidy(moved: u64, unix: i64) -> String {
+    let date = chrono_free_date(unix);
+    format!("Dernier rangement : {date}, {moved} fichier(s) déplacé(s).")
+}
+
+/// `AAAA-MM-JJ HH:MM` UTC without a date crate (civil-from-days).
+fn chrono_free_date(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    let secs = unix.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        secs / 3600,
+        secs % 3600 / 60
+    )
+}
+
+pub fn running(kind_undo: bool, done: u64, total: u64) -> String {
+    if kind_undo {
+        format!("Annulation du rangement… {done} / {total} jeu(x)")
+    } else {
+        format!("Rangement… {done} / {total} jeu(x)")
+    }
+}
+
+pub const REPORT_TIDY: &str = "Rapport du rangement";
+pub const REPORT_UNDO: &str = "Rapport de l'annulation";
+pub const REPORT_RECOVERY: &str = "Reprise d'un rangement interrompu";
+pub const CANCELLED: &str = "Arrêté à votre demande : les jeux déjà traités le restent.";
+pub const RUN_INTERRUPTED: &str = "Tâche interrompue : relancez emu-rust pour terminer la reprise.";
+
+pub fn moved(files: usize, dirs_created: u64, dirs_removed: u64) -> String {
+    format!(
+        "Fichiers déplacés : {files} · dossiers créés : {dirs_created} · dossiers retirés : {dirs_removed}"
+    )
+}
+
+pub const LEFT_TITLE: &str = "Laissés en place :";
+pub const ERRORS_TITLE: &str = "Erreurs :";
+pub const SKIPPED_TITLE: &str =
+    "Sauvegardes non rattachées (le chemin est déjà pris par un autre jeu) :";
+
+pub fn left(p: &Path, b: &TidyBlock) -> String {
+    format!("{} : {}", path(p), block(b))
+}
+
+pub fn error_line(p: &Path, message: &str) -> String {
+    format!("{} : {}", path(p), clean(message))
+}

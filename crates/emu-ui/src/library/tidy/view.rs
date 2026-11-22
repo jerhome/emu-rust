@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use egui::{Button, Key, RichText, ScrollArea, Ui};
 
+use super::exec::{self, Job, Outcome, RunKind};
 use super::{Choice, Group, Preview, RowKind, Stage, row_kind, selectable, text};
 use crate::library::{ERROR, Level, LibraryUi, Page, WARNING, notify, weak};
 
@@ -19,6 +20,9 @@ enum Action {
     Bulk(String, String),
     ToggleOther(u32),
     ImportBios(PathBuf),
+    Apply,
+    Undo(PathBuf),
+    StopRun,
 }
 
 impl LibraryUi {
@@ -70,19 +74,42 @@ impl LibraryUi {
         self.tidy.busy()
     }
 
+    /// « Ranger » / « Annuler le dernier rangement »: same refusals as the analysis, then the worker.
+    fn start_run(&mut self, job: Job, ctx: &egui::Context) {
+        if let Some(msg) = super::refusal(self.tidy_busy_state()) {
+            self.set_status(msg.to_owned(), Level::Warn);
+            return;
+        }
+        let undo = matches!(job, Job::Undo { .. });
+        let task = exec::spawn_run(self.dirs.clone(), job, notify(ctx));
+        self.tidy.stage = Stage::Running {
+            task,
+            progress: None,
+            undo,
+        };
+        self.tidy.focus_first = true;
+    }
+
     fn leave_tidy(&mut self) {
         self.tidy.close();
         self.set_page(Page::Settings);
     }
 
     pub(in crate::library) fn tidy_page(&mut self, ui: &mut Ui) {
+        let was_running = matches!(self.tidy.stage, Stage::Running { .. });
         self.tidy.poll();
+        if was_running && matches!(self.tidy.stage, Stage::Report(_)) {
+            // Rows were relocated by the run.
+            self.reload_games();
+        }
+        let running = matches!(self.tidy.stage, Stage::Running { .. });
         if let Stage::Preview(p) = &mut self.tidy.stage
             && let Some(Err(e)) = p.poll_choice(notify(ui.ctx()))
         {
             self.set_status(e, Level::Warn);
         }
-        let escape = self.dialog.is_none()
+        let escape = !running
+            && self.dialog.is_none()
             && !self.cores.import.is_active()
             && ui.input(|i| i.key_pressed(Key::Escape));
         let mut actions: Vec<Action> = Vec::new();
@@ -93,8 +120,8 @@ impl LibraryUi {
         let focus_first = std::mem::take(&mut self.tidy.focus_first);
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
-                let back = ui.button(text::BACK);
-                if focus_first {
+                let back = ui.add_enabled(!running, Button::new(text::BACK));
+                if focus_first && !running {
                     back.request_focus();
                 }
                 if back.clicked() {
@@ -123,6 +150,30 @@ impl LibraryUi {
                     }
                 }
                 Stage::Preview(p) => preview(ui, p, &mut actions),
+                Stage::Running {
+                    progress,
+                    undo,
+                    task,
+                } => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let (done, total) = progress
+                            .as_ref()
+                            .map_or((0, 0), |p| (p.done_units, p.total_units));
+                        ui.label(text::running(*undo, done, total));
+                    });
+                    if let Some(current) = progress.as_ref().and_then(|p| p.current.as_deref()) {
+                        weak(ui, text::path(current));
+                    }
+                    let stop = ui.add_enabled(!task.is_cancelled(), Button::new(text::STOP_RUN));
+                    if focus_first {
+                        stop.request_focus();
+                    }
+                    if stop.clicked() {
+                        actions.push(Action::StopRun);
+                    }
+                }
+                Stage::Report(outcome) => report(ui, outcome, focus_first, &mut actions),
             }
         });
         if escape {
@@ -170,6 +221,27 @@ impl LibraryUi {
                     let ctx = ui.ctx().clone();
                     self.cores.import.start_with_file(path, &ctx);
                 }
+                Action::Apply => {
+                    if let Stage::Preview(p) = &self.tidy.stage
+                        && p.can_apply()
+                    {
+                        let job = Job::Apply {
+                            plan: p.plan.clone(),
+                            selected: p.checked.iter().copied().collect(),
+                        };
+                        let ctx = ui.ctx().clone();
+                        self.start_run(job, &ctx);
+                    }
+                }
+                Action::Undo(journal) => {
+                    let ctx = ui.ctx().clone();
+                    self.start_run(Job::Undo { journal }, &ctx);
+                }
+                Action::StopRun => {
+                    if let Stage::Running { task, .. } = &self.tidy.stage {
+                        task.cancel();
+                    }
+                }
             }
         }
     }
@@ -181,15 +253,24 @@ fn preview(ui: &mut Ui, p: &mut Preview, actions: &mut Vec<Action>) {
     let t = super::totals(&p.plan, &p.checked);
     ui.label(RichText::new(text::summary(t.units, t.files, t.bytes, t.dirs)).strong());
     weak(ui, text::counts(p.plan.already_tidy, p.plan.ignored));
+    let updating = p.updating();
     ui.horizontal(|ui| {
-        // FU2b enables it (execution, report, undo) once `p.updating() == 0`: the plan may still change.
-        ui.add_enabled(false, Button::new(text::APPLY));
+        // Disabled while a choice is pending: the plan may still change.
+        if ui
+            .add_enabled(p.can_apply(), Button::new(text::APPLY))
+            .clicked()
+        {
+            actions.push(Action::Apply);
+        }
         if ui.button(text::CANCEL).clicked() {
             actions.push(Action::Back);
         }
+        undo_button(ui, &p.last, actions);
     });
-    weak(ui, text::APPLY_LATER);
-    let updating = p.updating();
+    if updating > 0 {
+        weak(ui, text::APPLY_UPDATING);
+    }
+    last_tidy_lines(ui, &p.last);
     if updating > 0 {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -340,4 +421,82 @@ fn unit_row(ui: &mut Ui, p: &Preview, index: usize, actions: &mut Vec<Action>) {
             actions.push(Action::ToggleOther(u.id));
         }
     });
+}
+
+fn undo_button(ui: &mut Ui, last: &exec::LastTidy, actions: &mut Vec<Action>) {
+    if let Some(journal) = last.undo_target()
+        && ui.button(text::UNDO).clicked()
+    {
+        actions.push(Action::Undo(journal.to_path_buf()));
+    }
+}
+
+fn last_tidy_lines(ui: &mut Ui, last: &exec::LastTidy) {
+    if let Some(e) = &last.error {
+        ui.colored_label(WARNING, e.as_str());
+    }
+    if let Some(info) = last.info.as_ref().filter(|i| i.can_undo()) {
+        weak(ui, text::last_tidy(info.moved, info.created_unix));
+    }
+}
+
+/// Path under the roms root shown relative to it.
+fn shown(root: Option<&std::path::Path>, p: &std::path::Path) -> std::path::PathBuf {
+    root.and_then(|r| p.strip_prefix(r).ok())
+        .map_or_else(|| p.to_path_buf(), std::path::Path::to_path_buf)
+}
+
+fn report(ui: &mut Ui, out: &Outcome, focus_first: bool, actions: &mut Vec<Action>) {
+    let title = match out.kind {
+        RunKind::Tidy => text::REPORT_TIDY,
+        RunKind::Undo => text::REPORT_UNDO,
+        RunKind::Recovery => text::REPORT_RECOVERY,
+    };
+    ui.label(RichText::new(title).strong());
+    ui.horizontal(|ui| {
+        let again = ui.button(text::NEW_ANALYSIS);
+        if focus_first {
+            again.request_focus();
+        }
+        if again.clicked() {
+            actions.push(Action::Retry);
+        }
+        undo_button(ui, &out.last, actions);
+    });
+    last_tidy_lines(ui, &out.last);
+    for m in &out.messages {
+        ui.colored_label(WARNING, m.as_str());
+    }
+    let root = out.root.as_deref();
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if let Some(r) = &out.report {
+                ui.label(text::moved(r.moved.len(), r.dirs_created, r.dirs_removed));
+                if r.cancelled {
+                    ui.colored_label(INFO, text::CANCELLED);
+                }
+                if !r.left.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(text::LEFT_TITLE).strong());
+                    for (p, b) in &r.left {
+                        ui.colored_label(WARNING, text::left(&shown(root, p), b));
+                    }
+                }
+                if !r.errors.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(text::ERRORS_TITLE).strong());
+                    for (p, m) in &r.errors {
+                        ui.colored_label(ERROR, text::error_line(&shown(root, p), m));
+                    }
+                }
+            }
+            if !out.skipped.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(text::SKIPPED_TITLE).strong());
+                for (p, m) in &out.skipped {
+                    ui.colored_label(WARNING, text::error_line(p, m));
+                }
+            }
+        });
 }

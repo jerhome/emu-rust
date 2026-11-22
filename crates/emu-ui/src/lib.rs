@@ -82,10 +82,17 @@ pub const CREDIT: &str = "dev by claude@jerhome";
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
 /// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
 /// `Library::pending_tidy_identities`. Called when the library opens and before a direct launch (`run`); errors
-/// are logged, never fatal.
+/// are logged (« Journal » panel), never fatal. Runs on the calling thread: call it before the window exists.
 pub fn finish_pending_identities(dirs: &DataDirs) {
-    let _ = dirs;
-    todo!("FU2b: replay of the identity step")
+    use crate::library::tidy::exec;
+    if !exec::recovery_needed(dirs) {
+        return;
+    }
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let out = exec::run_job(dirs, exec::Job::Recovery, &cancel, &mut |_| {});
+    for line in exec::recovery_log(&out) {
+        tracing::warn!("{line}");
+    }
 }
 
 /// Screen to open for a deterministic capture (`--screen`); rendered by the egui layer (task U2).
@@ -185,6 +192,8 @@ pub enum LibraryScreen {
     Log,
     /// « Ranger les ROMs… » preview (`--screen library-tidy`): read-only analysis of `roms/`, nothing moved.
     Tidy,
+    /// Report of a tidying with sample content (`--screen library-tidy-report`): nothing is read or moved.
+    TidyReport,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

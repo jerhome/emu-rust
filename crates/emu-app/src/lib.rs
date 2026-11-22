@@ -299,6 +299,8 @@ pub fn run(flavor: Flavor) -> ExitCode {
                     if let Some(code) = start_window_mode(flavor, &dirs, &config) {
                         return code;
                     }
+                    // An interrupted ROM tidying is finished before the library opens (ADR 0023 §4.5).
+                    emu_ui::finish_pending_identities(&dirs);
                     install_signal_handler();
                     report(
                         flavor,
@@ -321,6 +323,8 @@ pub fn run(flavor: Flavor) -> ExitCode {
                     if let Some(code) = start_window_mode(flavor, &dirs, &config) {
                         return code;
                     }
+                    // Before a direct launch too: the game's path may be one the tidying moved.
+                    emu_ui::finish_pending_identities(&dirs);
                     match build_options(*c, dirs, config) {
                         Ok(options) => {
                             install_signal_handler();

@@ -11,7 +11,7 @@ mod host;
 mod pad_settings;
 mod settings;
 pub(crate) mod text;
-mod tidy;
+pub(crate) mod tidy;
 mod worker;
 
 use std::path::PathBuf;
@@ -1817,6 +1817,13 @@ impl LibraryUi {
     /// `--screen library-tidy`: the analysis starts on the first frame (it needs the egui context).
     pub(crate) fn open_tidy_on_first_frame(&mut self) {
         self.tidy.pending = true;
+    }
+
+    /// `--screen library-tidy-report`: the report screen with sample content (capture of its layout).
+    pub(crate) fn open_tidy_report_demo(&mut self) {
+        self.tidy.stage = tidy::Stage::Report(Box::new(tidy::exec::demo_outcome(&self.dirs)));
+        self.tidy.focus_first = true;
+        self.set_page(Page::Tidy);
     }
 
     pub(crate) fn wants_launch_capture(&mut self) {
