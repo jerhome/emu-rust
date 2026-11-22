@@ -17,7 +17,7 @@ téléchargement des cores et des BIOS libres. Usage personnel.
 | PC MS-DOS (SoundFont libre GeneralUser GS sur action) | dosbox_pure | 4.0 |
 | Amstrad CPC, Commodore 64 | cap32, vice_x64 | 5.0 |
 | Game Boy Advance, 32X | mgba, picodrive | 6.0 |
-| PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 (pré-release) |
+| PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 |
 
 Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1. Les jeux se rangent dans `roms/<système>/`.
 
