@@ -51,3 +51,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Windows | GTA (PlayStation), pcsx_rearmed, **BIOS HLE intégré** (sans `scph*.bin`) | ✅ **impeccable** : image, son, manette PS4 |
 | Windows | GTA (PlayStation), pcsx_rearmed, **BIOS Europe de l'utilisateur** | ✅ jeu OK après lancement forcé ; ❌ **empreinte du BIOS non reconnue** à l'import (seul md5 accepté pour `scph5502.bin` : 32736f17… = SCPH-5502 v3.0E) — md5, taille et nom du fichier demandés à l'utilisateur |
 | Windows | GTA (PlayStation), pcsx_rearmed, **BIOS `scph5502.bin` reconnu** (bon fichier récupéré par l'utilisateur ; le premier n'était pas le SCPH-5502 v3.0E) | ✅ **OK** : import reconnu, jeu fonctionnel. Point ouvert : accepter les autres révisions européennes valides (SCPH-1002/7002/7502/9002…) au lieu de « empreinte inconnue » |
+| Windows | GTA, pcsx_rearmed — mode manette DualShock | ✅ **OK** : bascule Numérique → DualShock, mode retenu après réinitialisation |
