@@ -62,3 +62,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Windows | Maniac Mansion (C64, 2 `.d64`), vice_x64 — 7.0.0 | ⚠️ hors de `roms/c64/` : « FILE NOT FOUND ERROR » (démarrage probable sur la face 2) ; ✅ rangé dans `roms/c64/` + scan : fonctionne. À examiner : ordre/regroupement des faces `.d64` hors dossier système (non bloquant ; le rangement 7.1 les placera dans `c64/`) |
 | Windows | Maniac Mansion (C64), 2 `.d64` dans `roms/c64/` | ⚠️ **deux tuiles** (une par face, celle de la face 2 ne démarre pas) : faces non regroupées en un jeu → noms des fichiers demandés ; contournement : le zip |
 | Windows | Skweek (CPC), cap32 — 7.0.0 | ✅ **musique OK** : le son CPC (puce AY) est complet ; l'absence de musique en jeu dans Gryzor / B.A.T. vient des jeux eux-mêmes. Point clos |
+| Windows | **v7.0.0 stable** (zip de la release) à la place de la rc | ✅ démarre, bibliothèque, sauvegardes et réglages retrouvés |
