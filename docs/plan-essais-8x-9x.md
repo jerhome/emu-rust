@@ -10,7 +10,7 @@ Les jeux sont fournis par l'utilisateur ; emu-rust ne télécharge aucune ROM ni
 | 8.0 cartouches | MSX | Metal Gear | cartouche Konami MSX1 |
 | 8.0 cartouches | Atari 2600 | Pitfall! | console fondatrice, core `stella` |
 | 8.0 cartouches | Neo Geo Pocket Color | Metal Slug: 1st Mission | portable SNK ; comparaison avec Metal Slug arcade (8.3) |
-| 8.0 cartouches | Nintendo DS | Mario Kart DS | **deux écrans + écran tactile (souris)** : nouveauté d'interface, core `melonds` en rendu logiciel |
+| 8.0 cartouches | Nintendo DS | Mario Kart DS | **pas urgente du tout** (utilisateur) ; deux écrans + écran tactile (souris) = nouveauté d'interface, core `melonds` en rendu logiciel ; palier à part possible, en fin de 8.x |
 | 8.0 cartouches | Atari Lynx | California Games | portable, écran tournable, BIOS Lynx (`lynxboot.img`, fourni par l'utilisateur) |
 | 8.1 CD | PC Engine CD | Castlevania: Rondo of Blood | musique CD, BIOS System Card |
 | 8.1 CD | Amiga CD32 | Speedball 2 | prolonge l'Amiga (puae), manette CD32, Bitmap Brothers |
