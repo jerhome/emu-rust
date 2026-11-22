@@ -53,3 +53,4 @@ Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Wind
 | Windows | GTA (PlayStation), pcsx_rearmed, **BIOS `scph5502.bin` reconnu** (bon fichier récupéré par l'utilisateur ; le premier n'était pas le SCPH-5502 v3.0E) | ✅ **OK** : import reconnu, jeu fonctionnel. Point ouvert : accepter les autres révisions européennes valides (SCPH-1002/7002/7502/9002…) au lieu de « empreinte inconnue » |
 | Windows | GTA, pcsx_rearmed — mode manette DualShock | ✅ **OK** : bascule Numérique → DualShock, mode retenu après réinitialisation |
 | Windows | GTA, **swanstation** (changement de core) | ✅ **OK** : le jeu tourne ; reprise de carte mémoire non vérifiée (pas de sauvegarde possible avant une fin de mission) |
+| Windows | GTA, **mednafen_psx (Beetle PSX)** | ✅ **OK** : « ça marche quand même sacrément bien » (pas de lenteur signalée) |
