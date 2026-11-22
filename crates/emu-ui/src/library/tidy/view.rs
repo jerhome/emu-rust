@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use egui::{Button, Key, RichText, ScrollArea, Ui};
 
-use super::{Group, Preview, RowKind, Stage, row_kind, selectable, text};
+use super::{Choice, Group, Preview, RowKind, Stage, row_kind, selectable, text};
 use crate::library::{ERROR, Level, LibraryUi, Page, WARNING, notify, weak};
 
 const INFO: egui::Color32 = egui::Color32::from_rgb(130, 180, 255);
@@ -77,6 +77,11 @@ impl LibraryUi {
 
     pub(in crate::library) fn tidy_page(&mut self, ui: &mut Ui) {
         self.tidy.poll();
+        if let Stage::Preview(p) = &mut self.tidy.stage
+            && let Some(Err(e)) = p.poll_choice(notify(ui.ctx()))
+        {
+            self.set_status(e, Level::Warn);
+        }
         let escape = self.dialog.is_none()
             && !self.cores.import.is_active()
             && ui.input(|i| i.key_pressed(Key::Escape));
@@ -144,18 +149,14 @@ impl LibraryUi {
                         p.set_checked(id, on);
                     }
                 }
-                Action::Choose(id, system) => {
-                    let result = match &mut self.tidy.stage {
-                        Stage::Preview(p) => p.choose(id, &system),
-                        _ => Ok(()),
-                    };
-                    if let Err(e) = result {
-                        self.set_status(e.to_string(), Level::Warn);
+                Action::Choose(unit, system) => {
+                    if let Stage::Preview(p) = &mut self.tidy.stage {
+                        p.request(Choice::Unit { unit, system }, notify(ui.ctx()));
                     }
                 }
                 Action::Bulk(extension, system) => {
                     if let Stage::Preview(p) = &mut self.tidy.stage {
-                        p.choose_for_extension(&extension, &system);
+                        p.request(Choice::Extension { extension, system }, notify(ui.ctx()));
                     }
                 }
                 Action::ToggleOther(id) => {
@@ -181,13 +182,20 @@ fn preview(ui: &mut Ui, p: &mut Preview, actions: &mut Vec<Action>) {
     ui.label(RichText::new(text::summary(t.units, t.files, t.bytes, t.dirs)).strong());
     weak(ui, text::counts(p.plan.already_tidy, p.plan.ignored));
     ui.horizontal(|ui| {
-        // FU2b enables it (execution, report, undo).
+        // FU2b enables it (execution, report, undo) once `p.updating() == 0`: the plan may still change.
         ui.add_enabled(false, Button::new(text::APPLY));
         if ui.button(text::CANCEL).clicked() {
             actions.push(Action::Back);
         }
     });
     weak(ui, text::APPLY_LATER);
+    let updating = p.updating();
+    if updating > 0 {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(text::updating(updating));
+        });
+    }
     if let Some(note) = &p.note {
         ui.colored_label(INFO, note.as_str());
     }

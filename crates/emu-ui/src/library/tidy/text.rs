@@ -56,6 +56,16 @@ pub fn analysing(files: u64) -> String {
 }
 
 pub const ANALYSIS_STOPPED: &str = "Analyse arrêtée.";
+pub const CHOICE_INTERRUPTED: &str =
+    "Choix non appliqué : la mise à jour de l'aperçu a été interrompue.";
+
+/// A system choice is being applied (collisions may need large files to be read).
+pub fn updating(pending: usize) -> String {
+    match pending {
+        0 | 1 => "Mise à jour de l'aperçu…".to_owned(),
+        n => format!("Mise à jour de l'aperçu… ({n} choix en cours)"),
+    }
+}
 
 pub fn analysis_failed(e: &str) -> String {
     format!("Analyse impossible : {e}")

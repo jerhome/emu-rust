@@ -108,6 +108,8 @@ pub(crate) fn hint_state(state: &FirmwareState) -> HintState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionalHint {
     pub core: CoreId,
+    /// What the banner shows: [`core_display_name`].
+    pub core_name: String,
     /// Library system name (« Game Boy Advance »).
     pub system: String,
     pub file: String,
@@ -120,11 +122,20 @@ impl OptionalHint {
     }
 }
 
+/// `display_name` of the core's `.info` (sanitized: untrusted text), its id without one.
+pub(crate) fn core_display_name(core: &CoreId, info: Option<&CoreInfo>) -> String {
+    info.map(|i| crate::ui::text::sanitize_core_line(&i.display_name))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| core.as_str().to_owned())
+}
+
 /// `Optional` files absent and whose key is not in `seen` (design v7.1 §2.3: « bandeau d'information
-/// refermable »). `Fallback` files are announced by the launch dialog of the 7.0 instead.
+/// refermable »). `Fallback` files are announced by the launch dialog of the 7.0 instead. `infos`: `.info` of
+/// the installed cores, for their display name.
 pub(crate) fn pending_hints(
     enhancements: &BTreeMap<CoreId, Vec<CoreEnhancement>>,
     seen: &BTreeSet<String>,
+    infos: &BTreeMap<CoreId, CoreInfo>,
 ) -> Vec<OptionalHint> {
     let mut out = Vec::new();
     for (core, list) in enhancements {
@@ -138,6 +149,7 @@ pub(crate) fn pending_hints(
             }
             out.push(OptionalHint {
                 core: core.clone(),
+                core_name: core_display_name(core, infos.get(core)),
                 system: system_name(&e.database),
                 file: f.file.clone(),
                 benefit: f.benefit.clone(),
@@ -220,14 +232,14 @@ mod tests {
                 ),
             ],
         );
-        let hints = pending_hints(&map, &BTreeSet::new());
+        let hints = pending_hints(&map, &BTreeSet::new(), &BTreeMap::new());
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].file, "gba_bios.bin");
         assert_eq!(hints[0].system, "Game Boy Advance");
         assert_eq!(hints[0].key(), "mgba/gba_bios.bin");
         // Once per (core, file): the same file of another core is still announced.
         let seen: BTreeSet<String> = ["mgba/gba_bios.bin".to_owned()].into();
-        assert!(pending_hints(&map, &seen).is_empty());
+        assert!(pending_hints(&map, &seen, &BTreeMap::new()).is_empty());
         map.insert(
             id("vba_next"),
             vec![enh(
@@ -236,9 +248,19 @@ mod tests {
                 FirmwareState::Missing,
             )],
         );
-        let hints = pending_hints(&map, &seen);
+        let info = emu_assets::cores::parse_info(
+            id("vba_next"),
+            "display_name = \"Nintendo - Game Boy Advance (VBA Next)\"\n",
+        )
+        .unwrap();
+        let infos: BTreeMap<CoreId, CoreInfo> = [(id("vba_next"), info)].into();
+        let hints = pending_hints(&map, &seen, &infos);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].core, id("vba_next"));
+        assert_eq!(hints[0].core_name, "Nintendo - Game Boy Advance (VBA Next)");
+        assert_eq!(hints[0].key(), "vba_next/gba_bios.bin");
+        // Without a `.info`: the id.
+        assert_eq!(core_display_name(&id("mgba"), None), "mgba");
     }
 
     #[test]

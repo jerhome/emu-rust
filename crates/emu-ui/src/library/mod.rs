@@ -607,14 +607,14 @@ impl LibraryUi {
         };
         let ids: Vec<CoreId> = manager.installed().into_iter().map(|c| c.id).collect();
         let prefs = cores_ui::preferences(&self.config.cores);
-        let all = crate::firmware_hints::installed_enhancements(
-            &ids,
-            &manager.infos(),
-            &prefs,
-            &self.dirs.system,
+        let infos = manager.infos();
+        let all =
+            crate::firmware_hints::installed_enhancements(&ids, &infos, &prefs, &self.dirs.system);
+        self.firmware_hints = crate::firmware_hints::pending_hints(
+            &all,
+            &self.config.interface.firmware_hints_seen,
+            &infos,
         );
-        self.firmware_hints =
-            crate::firmware_hints::pending_hints(&all, &self.config.interface.firmware_hints_seen);
     }
 
     /// Closable information banner (home page): each line once per (core, file), recorded when closed.
@@ -628,7 +628,7 @@ impl LibraryUi {
             for h in &self.firmware_hints {
                 ui.label(text::optional_hint(
                     &h.file,
-                    h.core.as_str(),
+                    &h.core_name,
                     &h.system,
                     &h.benefit,
                 ));

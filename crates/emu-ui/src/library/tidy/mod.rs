@@ -212,6 +212,34 @@ pub(super) fn bulk_choices(plan: &TidyPlan) -> Vec<BulkChoice> {
     out
 }
 
+/// A system choice of the preview. Applied in a worker: re-placing the units may CRC large files to tell a
+/// collision from a duplicate (FV0 I6), which must not freeze the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Choice {
+    Unit { unit: u32, system: String },
+    Extension { extension: String, system: String },
+}
+
+#[derive(Debug)]
+pub(super) enum ChoiceOutcome {
+    Unit(Result<(), LibraryError>),
+    /// Units resolved.
+    Extension(u32),
+}
+
+/// Result: the plan with the choice applied (left unused when the choice is refused).
+pub(super) type ChoiceTask = Task<(), (TidyPlan, ChoiceOutcome)>;
+
+/// `TidyPlan::choose_system*` on `plan` (worker side).
+pub(super) fn run_choice(plan: &mut TidyPlan, choice: &Choice) -> ChoiceOutcome {
+    match choice {
+        Choice::Unit { unit, system } => ChoiceOutcome::Unit(plan.choose_system(*unit, system)),
+        Choice::Extension { extension, system } => {
+            ChoiceOutcome::Extension(plan.choose_system_for_extension(extension, system))
+        }
+    }
+}
+
 /// The preview being edited.
 pub(super) struct Preview {
     pub plan: TidyPlan,
@@ -221,6 +249,9 @@ pub(super) struct Preview {
     pub other_open: BTreeSet<u32>,
     /// Result of the last bulk choice.
     pub note: Option<String>,
+    /// Choice being applied in a worker, and the ones made meanwhile (applied in order, none is lost).
+    pub choosing: Option<(Choice, ChoiceTask)>,
+    pub queued: std::collections::VecDeque<Choice>,
 }
 
 impl Preview {
@@ -233,6 +264,92 @@ impl Preview {
             bios: analysis.bios,
             other_open: BTreeSet::new(),
             note: None,
+            choosing: None,
+            queued: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// A choice is being applied or waits (« Mise à jour de l'aperçu… »; FU2b: no execution meanwhile).
+    pub(super) fn updating(&self) -> usize {
+        usize::from(self.choosing.is_some()) + self.queued.len()
+    }
+
+    /// Queues `choice`; the worker starts at once when none runs.
+    pub(super) fn request(&mut self, choice: Choice, notify: Notify) {
+        self.queued.push_back(choice);
+        self.start_next(notify);
+    }
+
+    fn start_next(&mut self, notify: Notify) {
+        if self.choosing.is_some() {
+            return;
+        }
+        let Some(choice) = self.queued.pop_front() else {
+            return;
+        };
+        let mut plan = self.plan.clone();
+        let job = choice.clone();
+        let task = Task::spawn("tidy-choice", notify, move |_cancel, _progress| {
+            let outcome = run_choice(&mut plan, &job);
+            (plan, outcome)
+        });
+        self.choosing = Some((choice, task));
+    }
+
+    /// Drains the choice worker: `Some(Err(message))` for a refused or interrupted choice, `Some(Ok)` when the
+    /// plan changed. The next queued choice starts on the new plan.
+    pub(super) fn poll_choice(&mut self, notify: Notify) -> Option<Result<(), String>> {
+        let (choice, task) = self.choosing.as_mut()?;
+        let (_, done) = task.poll();
+        let done = done?;
+        let choice = choice.clone();
+        self.choosing = None;
+        let result = match done {
+            Some((plan, outcome)) => self.apply(&choice, plan, outcome),
+            None => Err(text::CHOICE_INTERRUPTED.to_owned()),
+        };
+        self.start_next(notify);
+        Some(result)
+    }
+
+    /// UI side of a choice computed by [`run_choice`] on a copy of `self.plan`.
+    pub(super) fn apply(
+        &mut self,
+        choice: &Choice,
+        plan: TidyPlan,
+        outcome: ChoiceOutcome,
+    ) -> Result<(), String> {
+        match (choice, outcome) {
+            (_, ChoiceOutcome::Unit(Err(e))) => Err(e.to_string()),
+            (Choice::Unit { unit, .. }, ChoiceOutcome::Unit(Ok(()))) => {
+                self.plan = plan;
+                self.other_open.remove(unit);
+                sync_checked(&self.plan, &mut self.checked, &[*unit]);
+                Ok(())
+            }
+            (Choice::Extension { extension, system }, ChoiceOutcome::Extension(n)) => {
+                let before: BTreeSet<u32> = self
+                    .plan
+                    .units
+                    .iter()
+                    .filter(|u| row_kind(u) == RowKind::Choose)
+                    .map(|u| u.id)
+                    .collect();
+                self.plan = plan;
+                let chosen: Vec<u32> = self
+                    .plan
+                    .units
+                    .iter()
+                    .filter(|u| before.contains(&u.id) && u.system.is_some())
+                    .map(|u| u.id)
+                    .collect();
+                sync_checked(&self.plan, &mut self.checked, &chosen);
+                self.note = Some(text::bulk_done(n, extension, system));
+                Ok(())
+            }
+            // `run_choice` pairs each choice with its outcome kind.
+            (Choice::Unit { .. }, ChoiceOutcome::Extension(_))
+            | (Choice::Extension { .. }, ChoiceOutcome::Unit(Ok(()))) => Ok(()),
         }
     }
 
@@ -240,32 +357,31 @@ impl Preview {
         self.bios.iter().any(|b| b.unit == Some(id))
     }
 
-    /// `TidyPlan::choose_system`; a refused choice (`TidyChoice`) changes nothing.
-    pub(super) fn choose(&mut self, unit: u32, system: &str) -> Result<(), LibraryError> {
-        self.plan.choose_system(unit, system)?;
-        self.other_open.remove(&unit);
-        sync_checked(&self.plan, &mut self.checked, &[unit]);
-        Ok(())
+    /// [`run_choice`] then [`Preview::apply`] on this thread; a refused choice (`TidyChoice`) changes nothing.
+    #[cfg(test)]
+    pub(super) fn choose(&mut self, unit: u32, system: &str) -> Result<(), String> {
+        let choice = Choice::Unit {
+            unit,
+            system: system.to_owned(),
+        };
+        let mut plan = self.plan.clone();
+        let outcome = run_choice(&mut plan, &choice);
+        self.apply(&choice, plan, outcome)
     }
 
+    #[cfg(test)]
     pub(super) fn choose_for_extension(&mut self, extension: &str, system: &str) -> u32 {
-        let before: BTreeSet<u32> = self
-            .plan
-            .units
-            .iter()
-            .filter(|u| row_kind(u) == RowKind::Choose)
-            .map(|u| u.id)
-            .collect();
-        let n = self.plan.choose_system_for_extension(extension, system);
-        let chosen: Vec<u32> = self
-            .plan
-            .units
-            .iter()
-            .filter(|u| before.contains(&u.id) && u.system.is_some())
-            .map(|u| u.id)
-            .collect();
-        sync_checked(&self.plan, &mut self.checked, &chosen);
-        self.note = Some(text::bulk_done(n, extension, system));
+        let choice = Choice::Extension {
+            extension: extension.to_owned(),
+            system: system.to_owned(),
+        };
+        let mut plan = self.plan.clone();
+        let outcome = run_choice(&mut plan, &choice);
+        let n = match outcome {
+            ChoiceOutcome::Extension(n) => n,
+            ChoiceOutcome::Unit(_) => 0,
+        };
+        let _ = self.apply(&choice, plan, outcome);
         n
     }
 

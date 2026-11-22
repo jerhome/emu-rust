@@ -1,13 +1,15 @@
 //! Log capture (ADR 0023 §3): a `tracing` layer feeding a bounded in-memory ring, shown by the « Journal » panel
 //! and followed by `<data>/logs/emu-rust.log`. Installed by `emu-app` next to the stderr output, which stays.
-//! Core lines are cleaned (`sanitize_core_line`) before they are stored; secrets are never logged (`Secret`).
+//! Every line is cleaned (one line, no control nor bidi character) before it is stored; core lines are also cut
+//! like `sanitize_core_line`. Below `warn`, only our crates (`emu_*`) are kept. Secrets are never logged (`Secret`).
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 
 /// Bound of the ring: the oldest record goes when a new one comes.
 pub const MAX_LOG_RECORDS: usize = 2000;
@@ -15,6 +17,9 @@ pub const MAX_LOG_RECORDS: usize = 2000;
 pub const MAX_LOG_MESSAGE: usize = 2000;
 /// The log file stops growing at this size (a « journal tronqué » line is written once).
 pub const MAX_LOG_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Panic lines may still be written past [`MAX_LOG_FILE_BYTES`], up to this much: the file is the only trace of
+/// a crash without a console, and a panicking loop must not fill the disk.
+const PANIC_RESERVE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LogLevel {
@@ -50,6 +55,12 @@ pub struct LogBuffer {
     state: Mutex<State>,
     /// Folder of the log file as given to [`LogBuffer::attach_file`] (even when the attach failed).
     dir: Mutex<Option<PathBuf>>,
+    /// `<log>.lock`, held (OS lock) for the life of the process: a second instance neither rotates nor writes.
+    lock_file: Mutex<Option<File>>,
+    /// Second handle on the log file (append mode) for panic lines written while `state` is locked.
+    panic_file: OnceLock<File>,
+    /// Bytes written through [`PANIC_RESERVE_BYTES`].
+    panic_bytes: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -85,6 +96,9 @@ impl LogBuffer {
                 file: None,
             }),
             dir: Mutex::new(None),
+            lock_file: Mutex::new(None),
+            panic_file: OnceLock::new(),
+            panic_bytes: AtomicU64::new(0),
         }
     }
 
@@ -121,33 +135,29 @@ impl LogBuffer {
         lock(&self.dir).clone()
     }
 
-    /// Rotates `<path>` to `<path>.1`, writes what the ring already holds, then follows it (cap
-    /// [`MAX_LOG_FILE_BYTES`], mode 0600 on Unix). A failed rotation or open (second instance) is returned once
-    /// and leaves the ring working without a file.
+    /// Takes the OS lock of `<path>.lock`, rotates `<path>` to `<path>.1`, writes what the ring already holds,
+    /// then follows it (cap [`MAX_LOG_FILE_BYTES`], mode 0600 on Unix). A lock held by another instance, or a
+    /// failed rotation or open, is returned once and leaves the ring working without a file.
     pub fn attach_file(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             *lock(&self.dir) = Some(parent.to_owned());
             std::fs::create_dir_all(parent)?;
         }
+        let lock_file = take_lock(&suffixed(path, ".lock"))?;
         if path.exists() {
-            let mut previous = path.as_os_str().to_owned();
-            previous.push(".1");
-            // Windows refuses to replace an existing target on some versions: remove it first. A second instance
-            // holding the file open makes either step fail, which is reported to the caller.
-            let previous = PathBuf::from(previous);
+            // Windows refuses to replace an existing target on some versions: remove it first.
+            let previous = suffixed(path, ".1");
             if previous.exists() {
                 std::fs::remove_file(&previous)?;
             }
             std::fs::rename(path, &previous)?;
         }
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
+        // Append mode: the panic handle and the sink both write at the end, never over each other.
+        let file = private_options().append(true).create_new(true).open(path)?;
+        if let Ok(clone) = file.try_clone() {
+            let _ = self.panic_file.set(clone);
         }
-        let file = options.open(path)?;
+        *lock(&self.lock_file) = Some(lock_file);
         let mut sink = FileSink {
             file,
             written: 0,
@@ -161,44 +171,41 @@ impl LogBuffer {
         Ok(())
     }
 
-    fn push(&self, level: LogLevel, origin: LogOrigin, target: &str, message: &str) {
-        let message = match origin {
-            LogOrigin::Core => crate::sanitize_core_line(message),
-            LogOrigin::App => message.to_owned(),
-        };
-        let message = truncate_chars(&message, MAX_LOG_MESSAGE);
-        let unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let mut s = lock(&self.state);
-        self.store(&mut s, unix_ms, level, origin, target, message);
+    /// Releases the file and its lock (a test standing for the end of the process).
+    #[cfg(test)]
+    fn detach_file(&self) {
+        lock(&self.state).file = None;
+        *lock(&self.lock_file) = None;
     }
 
-    fn store(
-        &self,
-        s: &mut State,
-        unix_ms: u64,
-        level: LogLevel,
-        origin: LogOrigin,
-        target: &str,
-        message: String,
-    ) {
+    fn push(&self, level: LogLevel, origin: LogOrigin, target: &str, message: &str) {
+        let message = clean_message(origin, message);
         let record = LogRecord {
-            seq: s.next_seq,
-            unix_ms,
+            seq: 0,
+            unix_ms: now_ms(),
             level,
             origin,
             target: target.to_owned(),
             message,
         };
+        let mut s = lock(&self.state);
+        self.store(&mut s, record, false);
+    }
+
+    /// Numbers `record` (its `seq` is ignored), counts it, writes it to the file and keeps it in the ring.
+    fn store(&self, s: &mut State, mut record: LogRecord, panic: bool) {
+        record.seq = s.next_seq;
         s.next_seq += 1;
-        match level {
+        match record.level {
             LogLevel::Error => s.errors = s.errors.saturating_add(1),
             LogLevel::Warn => s.warnings = s.warnings.saturating_add(1),
             LogLevel::Info | LogLevel::Debug => {}
         }
-        if let Some(sink) = &mut s.file {
-            sink.write(&record);
+        if let Some(sink) = &mut s.file
+            && !sink.write(&record)
+            && panic
+        {
+            self.write_panic_line(&record);
         }
         if s.ring.len() >= MAX_LOG_RECORDS {
             s.ring.pop_front();
@@ -206,30 +213,121 @@ impl LogBuffer {
         s.ring.push_back(record);
     }
 
-    /// Panic hook entry: never blocks (the panicking thread may hold the lock itself).
-    fn push_nonblocking(&self, message: String) {
-        let Ok(mut s) = self.state.try_lock() else {
+    /// Panic hook entry: never blocks (the panicking thread may hold the lock itself). The line reaches the file
+    /// past its cap ([`PANIC_RESERVE_BYTES`]) and, when the lock is taken, through the second handle (the ring
+    /// misses it then; stderr still gets it from the previous hook).
+    fn push_nonblocking(&self, message: &str) {
+        let record = LogRecord {
+            seq: 0,
+            unix_ms: now_ms(),
+            level: LogLevel::Error,
+            origin: LogOrigin::App,
+            target: PANIC_TARGET.to_owned(),
+            message: clean_message(LogOrigin::App, message),
+        };
+        let mut s = match self.state.try_lock() {
+            Ok(s) => s,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                self.write_panic_line(&record);
+                return;
+            }
+        };
+        self.store(&mut s, record, true);
+    }
+
+    fn write_panic_line(&self, record: &LogRecord) {
+        let Some(mut file) = self.panic_file.get() else {
             return;
         };
-        let unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let message = truncate_chars(&message, MAX_LOG_MESSAGE);
-        self.store(
-            &mut s,
-            unix_ms,
-            LogLevel::Error,
-            LogOrigin::App,
-            "emu_ui::panic",
-            message,
-        );
+        let mut line = format_record(record);
+        line.push('\n');
+        let len = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        let before = self.panic_bytes.fetch_add(len, Ordering::Relaxed);
+        if before.saturating_add(len) <= PANIC_RESERVE_BYTES {
+            let _ = file.write_all(line.as_bytes());
+        }
     }
 }
 
+const PANIC_TARGET: &str = "emu_ui::panic";
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// `<path><suffix>` (`emu-rust.log.1`, `emu-rust.log.lock`).
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// Mode 0600 on Unix (the log may hold paths of the user's files).
+fn private_options() -> OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut options = OpenOptions::new();
+        options.mode(0o600);
+        options
+    }
+    #[cfg(not(unix))]
+    OpenOptions::new()
+}
+
+/// Exclusive OS lock (`flock` / `LockFileEx`) of `path`, released when the process ends even after a crash.
+fn take_lock(path: &Path) -> std::io::Result<File> {
+    let file = private_options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "journal déjà utilisé par une autre instance d'emu-rust",
+        )),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// One line whatever its origin (M4): newlines, control and format (bidi…) characters become spaces, ends
+/// trimmed; core lines are also cut like [`crate::sanitize_core_line`]; then at most [`MAX_LOG_MESSAGE`] chars.
+fn clean_message(origin: LogOrigin, message: &str) -> String {
+    let line = match origin {
+        LogOrigin::Core => crate::sanitize_core_line(message),
+        LogOrigin::App => message
+            .chars()
+            .take(MAX_LOG_MESSAGE + 1)
+            .map(|c| {
+                if c.is_control() || crate::ui::text::is_format_char(c) {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect::<String>()
+            .trim()
+            .to_owned(),
+    };
+    truncate_chars(&line, MAX_LOG_MESSAGE)
+}
+
+/// Below `warn`, third-party crates (`RUST_LOG=debug`: hyper, wgpu…) stay on stderr and out of the file (M7).
+fn captured(level: LogLevel, target: &str) -> bool {
+    level <= LogLevel::Warn || target.starts_with("emu_")
+}
+
 impl FileSink {
-    fn write(&mut self, record: &LogRecord) {
+    /// `false` when the line was not written (cap reached, write error).
+    fn write(&mut self, record: &LogRecord) -> bool {
         if self.truncated {
-            return;
+            return false;
         }
         let mut line = format_record(record);
         line.push('\n');
@@ -240,13 +338,15 @@ impl FileSink {
             let _ = self
                 .file
                 .write_all(b"journal tronqu\xc3\xa9 (taille maximale atteinte)\n");
-            return;
+            return false;
         }
         if self.file.write_all(line.as_bytes()).is_ok() {
             self.written += len;
+            true
         } else {
             // Disk full or file gone: stop trying, the ring keeps working.
             self.truncated = true;
+            false
         }
     }
 }
@@ -296,7 +396,8 @@ pub fn format_record(r: &LogRecord) -> String {
 }
 
 /// `tracing_subscriber::Layer` feeding [`LogBuffer::global`]; composed by `emu-app` next to the stderr layer, so
-/// it sees what the filter lets through (`warn`, `info` for our crates and the core; `RUST_LOG` wins).
+/// it sees what the filter lets through (`warn`, `info` for our crates and the core; `RUST_LOG` wins), minus the
+/// third-party events below `warn`.
 pub fn capture_layer<S>() -> impl tracing_subscriber::Layer<S>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -350,6 +451,9 @@ where
             tracing::Level::INFO => LogLevel::Info,
             _ => LogLevel::Debug,
         };
+        if !captured(level, meta.target()) {
+            return;
+        }
         let origin = if meta.target() == CORE_TARGET {
             LogOrigin::Core
         } else {
@@ -382,7 +486,7 @@ pub fn install_panic_hook() {
         let place = info
             .location()
             .map_or_else(String::new, |l| format!(" ({}:{})", l.file(), l.line()));
-        GLOBAL.push_nonblocking(format!("panique : {what}{place}"));
+        GLOBAL.push_nonblocking(&format!("panique : {what}{place}"));
         previous(info);
     }));
 }
@@ -485,6 +589,7 @@ mod tests {
         assert!(text.find("before") < text.find("after"));
         assert_eq!(b.log_dir().as_deref(), path.parent());
 
+        b.detach_file();
         let second = leaked();
         capture_into(second, || tracing::warn!("again"));
         second.attach_file(&path).unwrap();
@@ -498,6 +603,27 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn second_instance_neither_rotates_nor_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("emu-rust.log");
+        let first = leaked();
+        first.attach_file(&path).unwrap();
+        capture_into(first, || tracing::warn!("first"));
+        let second = leaked();
+        let err = second.attach_file(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "{err}");
+        assert!(!dir.path().join("emu-rust.log.1").exists());
+        capture_into(second, || tracing::warn!("second"));
+        capture_into(first, || tracing::warn!("first again"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("first again") && !text.contains("second"),
+            "{text}"
+        );
+        assert_eq!(second.snapshot(0).len(), 1, "the ring still works");
     }
 
     #[test]
@@ -532,6 +658,94 @@ mod tests {
         assert!(size <= MAX_LOG_FILE_BYTES + 100, "{size}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches("journal tronqué").count(), 1);
+    }
+
+    #[test]
+    fn every_line_is_one_line_without_control_nor_bidi() {
+        let b = leaked();
+        capture_into(b, || {
+            tracing::warn!(target: "emu_ui::x", "a\nfake 2026 ERREUR\r\u{202e}b\u{7}c");
+            tracing::warn!(target: "emu_ui::x", path = "x\ny", "field");
+        });
+        for r in b.snapshot(0) {
+            assert!(
+                !r.message
+                    .chars()
+                    .any(|c| c.is_control() || crate::ui::text::is_format_char(c)),
+                "{:?}",
+                r.message
+            );
+        }
+        assert_eq!(b.snapshot(0)[0].message, "a fake 2026 ERREUR  b c");
+        let line = format_record(&b.snapshot(0)[1]);
+        assert!(!line.contains('\n'), "{line:?}");
+    }
+
+    #[test]
+    fn third_party_events_below_warn_are_not_captured() {
+        let b = leaked();
+        capture_into(b, || {
+            tracing::debug!(target: "hyper::client", "noise");
+            tracing::info!(target: "rustls::conn", "noise");
+            tracing::warn!(target: "rustls::conn", "kept warn");
+            tracing::error!(target: "glutin", "kept error");
+            tracing::debug!(target: "emu_runtime::audio", "kept debug");
+            tracing::info!(target: "emu_libretro::core", "kept core");
+        });
+        let messages: Vec<String> = b.snapshot(0).into_iter().map(|r| r.message).collect();
+        assert_eq!(
+            messages,
+            ["kept warn", "kept error", "kept debug", "kept core"]
+        );
+    }
+
+    #[test]
+    fn panic_line_passes_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("emu-rust.log");
+        let b = leaked();
+        b.attach_file(&path).unwrap();
+        let chunk = "x".repeat(1500);
+        capture_into(b, || {
+            for _ in 0..2000 {
+                tracing::warn!("{chunk}");
+            }
+        });
+        b.push_nonblocking("panique : capped-boom");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let notice = text.find("journal tronqué").unwrap();
+        let boom = text.find("capped-boom").expect("panic line written");
+        assert!(boom > notice);
+        assert!(
+            b.snapshot(0)
+                .last()
+                .unwrap()
+                .message
+                .contains("capped-boom")
+        );
+    }
+
+    #[test]
+    fn panic_line_passes_a_held_lock_and_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("emu-rust.log");
+        let b = leaked();
+        b.attach_file(&path).unwrap();
+        capture_into(b, || tracing::warn!("before"));
+        {
+            // The panicking thread itself holds the lock (try_lock gives WouldBlock, never a deadlock).
+            let _held = b.state.lock().unwrap();
+            b.push_nonblocking("panique : locked-boom\nsecond line");
+            for _ in 0..200 {
+                b.push_nonblocking(&"y".repeat(1000));
+            }
+        }
+        capture_into(b, || tracing::warn!("after"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("panique : locked-boom second line"), "{text}");
+        assert!(text.find("locked-boom") < text.find("after"));
+        let reserved = text.matches(&"y".repeat(1000)).count();
+        assert!(reserved > 0 && reserved < 200, "{reserved}");
     }
 
     #[test]

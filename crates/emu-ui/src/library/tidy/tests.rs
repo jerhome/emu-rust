@@ -337,3 +337,50 @@ fn texts_explain_every_block_in_french() {
     // Untrusted file names lose their control characters.
     assert!(!text::path(Path::new("a\u{1b}[31mb")).contains('\u{1b}'));
 }
+
+/// Choices run in a worker (FV0 I6), one at a time and in order; a refused one is reported and changes nothing.
+#[test]
+fn choices_are_applied_in_a_worker_in_order() {
+    let t = tree();
+    let mut p = preview(&t);
+    let id = unit(&p.plan, "Pocket.gb").id;
+    let notify: Notify = Arc::new(|| {});
+    p.request(
+        Choice::Unit {
+            unit: id,
+            system: "snes".to_owned(),
+        },
+        Arc::clone(&notify),
+    );
+    p.request(
+        Choice::Unit {
+            unit: id,
+            system: "gbc".to_owned(),
+        },
+        Arc::clone(&notify),
+    );
+    p.request(
+        Choice::Extension {
+            extension: "chd".to_owned(),
+            system: "psx".to_owned(),
+        },
+        Arc::clone(&notify),
+    );
+    assert_eq!(p.updating(), 3);
+    let mut results = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while p.updating() > 0 && std::time::Instant::now() < deadline {
+        if let Some(r) = p.poll_choice(Arc::clone(&notify)) {
+            results.push(r);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(results.len(), 3, "{results:?}");
+    assert!(results[0].is_err(), "snes is not a candidate");
+    assert!(results[1].is_ok() && results[2].is_ok());
+    let u = unit(&p.plan, "Pocket.gb");
+    assert_eq!(u.moves[0].to, Path::new("gbc").join("Pocket.gb"));
+    assert!(p.checked.contains(&id));
+    assert_eq!(unit(&p.plan, "Vagrant.chd").system.as_deref(), Some("psx"));
+    assert!(p.note.is_some());
+}

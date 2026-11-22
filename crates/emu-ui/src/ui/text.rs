@@ -257,7 +257,7 @@ pub fn format_unix_utc(secs: u64) -> String {
 const MAX_CORE_TEXT: usize = 512;
 
 /// Unicode category Cf (bidi controls, zero-width, BOM...): they can reorder or hide displayed text.
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(c,
         '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
