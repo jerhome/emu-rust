@@ -9,7 +9,7 @@ Les jeux sont fournis par l'utilisateur ; emu-rust ne télécharge aucune ROM ni
 | 8.0 cartouches | PC Engine | R-Type | défilement, sprites, son |
 | 8.0 cartouches | MSX | Metal Gear | cartouche Konami MSX1 |
 | 8.1 CD | PC Engine CD | Castlevania: Rondo of Blood | musique CD, BIOS System Card |
-| 8.1 CD | Amiga CD32 | Banshee | prolonge l'Amiga (puae), manette CD32 |
+| 8.1 CD | Amiga CD32 | Speedball 2 | prolonge l'Amiga (puae), manette CD32, Bitmap Brothers |
 | 8.2 ordinateurs | Sharp X68000 | Final Fight | conversion arcade, disquettes, son FM / MIDI |
 | 8.2 ordinateurs | ZX Spectrum | Saboteur | cassette / chargement ; comparaison avec la version CPC |
 | 8.3 arcade | FinalBurn Neo (Neo Geo) | Metal Slug | BIOS Neo Geo, zip arcade |
