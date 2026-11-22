@@ -242,12 +242,30 @@ impl HttpClient {
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, AssetError> {
+        self.get_with_last_modified(url, max_bytes, progress, cancel)
+            .map(|(body, _)| body)
+    }
+
+    /// Like [`Self::get_with_progress`], also returning the `Last-Modified` header as Unix seconds
+    /// (`None` when absent or not an IMF-fixdate).
+    pub fn get_with_last_modified(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, Option<u64>), AssetError> {
         if cancel.is_cancelled() {
             return Err(AssetError::Cancelled);
         }
         let deadline = self.deadline();
         let mut response = self.execute(Method::Get, url, &[], None, deadline)?;
         expect_ok(&response)?;
+        let last_modified = response
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_http_date);
         let capacity = response
             .content_length()
             .unwrap_or(0)
@@ -265,7 +283,7 @@ impl HttpClient {
                 Ok(())
             },
         )?;
-        Ok(body)
+        Ok((body, last_modified))
     }
 
     fn deadline(&self) -> Instant {
@@ -499,3 +517,58 @@ pub struct Progress {
 
 #[cfg(test)]
 mod tests;
+
+/// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) into Unix seconds; other formats give `None`.
+fn parse_http_date(text: &str) -> Option<u64> {
+    let mut parts = text.trim().split_ascii_whitespace();
+    parts.next()?;
+    let day: u64 = parts.next()?.parse().ok()?;
+    let name = parts.next()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == name)? as u64
+        + 1;
+    let year: u64 = parts.next()?.parse().ok()?;
+    let mut hms = parts.next()?.split(':');
+    let (h, m, s): (u64, u64, u64) = (
+        hms.next()?.parse().ok()?,
+        hms.next()?.parse().ok()?,
+        hms.next()?.parse().ok()?,
+    );
+    if parts.next()? != "GMT"
+        || !(1..=31).contains(&day)
+        || year < 1970
+        || h > 23
+        || m > 59
+        || s > 60
+    {
+        return None;
+    }
+    // Days from civil date (Hinnant), year >= 1970.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = (era * 146_097 + doe).checked_sub(719_468)?;
+    Some(days * 86_400 + h * 3600 + m * 60 + s)
+}
+
+#[cfg(test)]
+mod http_date_tests {
+    use super::parse_http_date;
+
+    #[test]
+    fn imf_fixdate() {
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(parse_http_date("hier"), None);
+        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 UTC"), None);
+    }
+}

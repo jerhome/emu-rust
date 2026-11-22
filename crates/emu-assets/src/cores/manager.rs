@@ -199,6 +199,9 @@ pub enum CoreError {
         expected: u32,
         found: u32,
     },
+    /// The zip is newer than the index it was checked against: the buildbot is rebuilding it. Nothing installed.
+    #[error("core `{0}` : le buildbot est en cours de mise à jour, réessayez plus tard")]
+    BuildbotUpdating(CoreId),
     #[error("pas encore de catalogue : vérifier les mises à jour d'abord")]
     NoCatalog,
     /// Network, HTTP status, size limit, cancellation (`AssetError::Cancelled`, added by task A1).
@@ -557,8 +560,10 @@ impl CoreManager {
         let url = self.source.core_url(self.platform, id);
         let file_name = self.platform.core_file_name(id);
         let mut remote = self.remote_core(id)?;
+        let mut index_fetched = self.catalog_fetched_unix();
         let (data, crc32) = loop {
-            let zip = self.download(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
+            let (zip, last_modified) =
+                self.download_meta(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
             let data = extract_core(&zip, &file_name, ExtractLimits::CORE)?;
             drop(zip);
             let crc32 = crc32fast::hash(&data);
@@ -569,11 +574,13 @@ impl CoreManager {
             // Never accept a file that disagrees with an index fetched after the download.
             let previous = remote.clone();
             if refreshed || !self.refresh_for_install(progress, cancel)? {
-                return Err(CoreError::CrcMismatch {
-                    id: id.clone(),
-                    expected: remote.crc32,
-                    found: crc32,
-                });
+                return Err(crc_failure(
+                    id,
+                    &remote,
+                    crc32,
+                    last_modified,
+                    index_fetched,
+                ));
             }
             refreshed = true;
             remote = self.remote_core(id)?;
@@ -583,12 +590,15 @@ impl CoreManager {
             }
             drop(data);
             if remote.crc32 == previous.crc32 {
-                return Err(CoreError::CrcMismatch {
-                    id: id.clone(),
-                    expected: remote.crc32,
-                    found: crc32,
-                });
+                return Err(crc_failure(
+                    id,
+                    &remote,
+                    crc32,
+                    last_modified,
+                    index_fetched,
+                ));
             }
+            index_fetched = self.catalog_fetched_unix();
         };
         if cancel.is_cancelled() {
             return Err(AssetError::Cancelled.into());
@@ -604,6 +614,10 @@ impl CoreManager {
         let temp = write_temp(&self.dirs.cores, &file_name, &data, true)?;
         drop(data);
         self.commit_install(id, temp, record, cancel)
+    }
+
+    fn catalog_fetched_unix(&self) -> u64 {
+        self.lock().catalog.as_ref().map_or(0, |c| c.fetched_unix)
     }
 
     fn remote_core(&self, id: &CoreId) -> Result<RemoteCore, CoreError> {
@@ -968,11 +982,23 @@ impl CoreManager {
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, AssetError> {
+        self.download_meta(url, max_bytes, progress, cancel)
+            .map(|(body, _)| body)
+    }
+
+    /// [`Self::download`] also returning the response's `Last-Modified` (Unix seconds).
+    fn download_meta(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, Option<u64>), AssetError> {
         let mut attempt = 1;
         loop {
             match self
                 .http
-                .get_with_progress(url, max_bytes, progress, cancel)
+                .get_with_last_modified(url, max_bytes, progress, cancel)
             {
                 Err(e) if e.is_transient() && attempt < DOWNLOAD_ATTEMPTS => {
                     tracing::warn!(
@@ -983,6 +1009,25 @@ impl CoreManager {
                 }
                 other => return other,
             }
+        }
+    }
+}
+
+/// `BuildbotUpdating` when the zip was modified after the index was fetched: the buildbot rebuilt it since. Otherwise a plain `CrcMismatch`. The file is never installed.
+fn crc_failure(
+    id: &CoreId,
+    remote: &RemoteCore,
+    found: u32,
+    last_modified: Option<u64>,
+    index_fetched: u64,
+) -> CoreError {
+    if last_modified.is_some_and(|lm| lm > index_fetched) {
+        CoreError::BuildbotUpdating(id.clone())
+    } else {
+        CoreError::CrcMismatch {
+            id: id.clone(),
+            expected: remote.crc32,
+            found,
         }
     }
 }

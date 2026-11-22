@@ -68,6 +68,14 @@ impl Buildbot {
     }
 
     fn publish_raw(&self, date: &str, index_crc: u32, zip: Vec<u8>) {
+        self.publish_zip(
+            date,
+            index_crc,
+            ResponseTemplate::new(200).set_body_bytes(zip),
+        );
+    }
+
+    fn publish_zip(&self, date: &str, index_crc: u32, zip_response: ResponseTemplate) {
         self.rt.block_on(self.server.reset());
         self.serve_info();
         self.mount(
@@ -76,9 +84,17 @@ impl Buildbot {
                     .set_body_string(format!("{date} {index_crc:08x} gambatte_libretro.so.zip\n")),
             ),
         );
-        self.mount(
-            Mock::given(path(GAMBATTE_ZIP))
-                .respond_with(ResponseTemplate::new(200).set_body_bytes(zip)),
+        self.mount(Mock::given(path(GAMBATTE_ZIP)).respond_with(zip_response));
+    }
+
+    /// Like `publish`, the core zip being served with a `Last-Modified` header.
+    fn publish_with_last_modified(&self, index_crc: u32, core: &[u8], modified: &str) {
+        self.publish_zip(
+            "2026-11-20",
+            index_crc,
+            ResponseTemplate::new(200)
+                .insert_header("Last-Modified", modified)
+                .set_body_bytes(zip_of(&[("gambatte_libretro.so", core)])),
         );
     }
 
@@ -560,4 +576,45 @@ fn offline_with_an_old_catalog_lets_the_crc_check_decide() {
         ResponseTemplate::new(200).set_body_bytes(zip_of(&[("gambatte_libretro.so", &new)])),
     ));
     install(&m, "gambatte").unwrap();
+}
+
+const FUTURE: &str = "Fri, 01 Jan 2100 00:00:00 GMT";
+const PAST: &str = "Mon, 01 Jan 2001 00:00:00 GMT";
+
+fn install_with_wrong_crc(modified: Option<&str>) -> CoreError {
+    let new = mock_core_bytes(Variant::Rgb565);
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    let m = open(&bot, data.path());
+    let wrong = crc32fast::hash(&new) ^ 1;
+    match modified {
+        Some(lm) => bot.publish_with_last_modified(wrong, &new, lm),
+        None => bot.publish("2026-11-20", wrong, "gambatte_libretro.so", &new),
+    }
+    refresh(&m).unwrap();
+    let err = install(&m, "gambatte").unwrap_err();
+    assert!(m.installed().is_empty());
+    assert!(!cores_dir(data.path()).join("gambatte_libretro.so").exists());
+    assert!(tmp_leftovers(data.path()).is_empty());
+    err
+}
+
+#[test]
+fn wrong_crc_with_a_zip_newer_than_the_index_is_buildbot_updating() {
+    let err = install_with_wrong_crc(Some(FUTURE));
+    assert!(matches!(err, CoreError::BuildbotUpdating(_)), "{err:?}");
+    assert!(err.to_string().contains("en cours de mise à jour"));
+    assert!(!err.to_string().contains("CRC"));
+}
+
+#[test]
+fn wrong_crc_with_an_old_zip_stays_a_crc_error() {
+    let err = install_with_wrong_crc(Some(PAST));
+    assert!(matches!(err, CoreError::CrcMismatch { .. }), "{err:?}");
+}
+
+#[test]
+fn wrong_crc_without_last_modified_stays_a_crc_error() {
+    let err = install_with_wrong_crc(None);
+    assert!(matches!(err, CoreError::CrcMismatch { .. }), "{err:?}");
 }
