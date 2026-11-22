@@ -43,3 +43,9 @@
 | Windows | Alex Kidd (Master System), Sonic 2 (Game Gear), Super Mario Land (Game Boy), Mouse Trap (Atari ST) — non-régression | ✅ **tous OK** (« tous les tests ok sur tous les jeux sur la 6 ») |
 
 Bilan 6.0.0-rc.1 (2026-11-21) : **toutes les plates-formes validées** sous Windows (jeux de la liste de l'utilisateur). Défauts trouvés : zip CPC (corrigé pour la 7.0), zip 32X (symptôme à préciser), IPF/capsimg (mis de côté), index buildbot VICE (externe). Restent : Docker WSLg ; PS1 et 3DO avec la 7.0.
+
+## Essais 7.0.0-rc.1 (Windows, 2026-11-22)
+
+| Plate-forme | Jeu, core | Résultat |
+|---|---|---|
+| Windows | GTA (PlayStation), pcsx_rearmed, **BIOS HLE intégré** (sans `scph*.bin`) | ✅ **impeccable** : image, son, manette PS4 |
