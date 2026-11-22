@@ -444,7 +444,11 @@ pub fn firmware_enhancements(
             variant: None,
             kind: EnhancementKind::Optional,
             benefit: opt.benefit.clone(),
-            state: state_of(&opt.file),
+            // Dumps of other revisions exist and only some md5 are known: never claim a wrong hash.
+            state: match state_of(&opt.file) {
+                FirmwareState::WrongHash { .. } if opt.outside_info => FirmwareState::Unverified,
+                other => other,
+            },
         });
     }
     Ok(found)
@@ -999,8 +1003,8 @@ mod tests {
         }
         std::fs::write(dir.path().join("MT32_PCM.ROM"), b"x").unwrap();
         let found = enhancements("dosbox_pure", "DOS", None, dir.path());
-        // firmware.toml already knows MT32_PCM.ROM hashes: foreign content is a wrong hash.
-        assert!(matches!(found[1].state, FirmwareState::WrongHash { .. }));
+        // Other revisions are valid: an unknown md5 is Unverified, not a wrong hash.
+        assert_eq!(found[1].state, FirmwareState::Unverified);
     }
 
     #[test]

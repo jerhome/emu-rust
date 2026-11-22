@@ -360,11 +360,13 @@ europe = "panafz10.bin"
 
 # Roland ROMs read by dosbox_pure from the system directory (pairs: CONTROL + PCM; MT32_* or CM32L_*). The .info
 # declares no firmware, hence outside_info. Names from dosbox_pure's documentation (recalled, not re-verified
-# offline). No hash imposed: dumps vary. Never downloaded.
+# offline). firmware.toml knows one md5 per file (libretro System.dat); other revisions are valid too, so an
+# outside_info file with another md5 is shown Unverified, never as a wrong hash. Never downloaded.
+# Linux file names are case-sensitive: upper case.
 [cores.dosbox_pure.optional_firmware]
 "DOS" = [
-  { file = "MT32_CONTROL.ROM", benefit = "musique Roland MT-32 (avec MT32_PCM.ROM)", outside_info = true },
-  { file = "MT32_PCM.ROM", benefit = "musique Roland MT-32 (avec MT32_CONTROL.ROM)", outside_info = true },
-  { file = "CM32L_CONTROL.ROM", benefit = "musique Roland CM-32L (avec CM32L_PCM.ROM)", outside_info = true },
-  { file = "CM32L_PCM.ROM", benefit = "musique Roland CM-32L (avec CM32L_CONTROL.ROM)", outside_info = true },
+  { file = "MT32_CONTROL.ROM", benefit = "musique Roland MT-32 (avec MT32_PCM.ROM); choisir aussi le périphérique MIDI dans les options de dosbox_pure (dosbox_pure_midi) ; nom en MAJUSCULES sous Linux", outside_info = true },
+  { file = "MT32_PCM.ROM", benefit = "musique Roland MT-32 (avec MT32_CONTROL.ROM); choisir aussi le périphérique MIDI dans les options de dosbox_pure (dosbox_pure_midi) ; nom en MAJUSCULES sous Linux", outside_info = true },
+  { file = "CM32L_CONTROL.ROM", benefit = "musique Roland CM-32L (avec CM32L_PCM.ROM); choisir aussi le périphérique MIDI dans les options de dosbox_pure (dosbox_pure_midi) ; nom en MAJUSCULES sous Linux", outside_info = true },
+  { file = "CM32L_PCM.ROM", benefit = "musique Roland CM-32L (avec CM32L_CONTROL.ROM); choisir aussi le périphérique MIDI dans les options de dosbox_pure (dosbox_pure_midi) ; nom en MAJUSCULES sous Linux", outside_info = true },
 ]
