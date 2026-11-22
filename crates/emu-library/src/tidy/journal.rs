@@ -295,10 +295,13 @@ fn base_letter(c: char) -> char {
     }
 }
 
-/// Case and accent folding of a relative path (RV1 I1): lower case, combining marks dropped, accented Latin
-/// letters reduced to their base letter, `\` read as `/`. Coarser than Unicode normalization (no table can be added
-/// to this crate): it may call two distinct names equal, never the reverse for case-only, NFC / NFD or accent
-/// differences of Latin text, which is what matters — equal folds are refused, never merged.
+/// Case and accent folding of a relative path (RV1 I1): lower case, combining marks of the listed blocks dropped,
+/// the accented Latin-1 / Latin Extended-A letters of [`base_letter`] reduced to their base letter, `\` read as `/`.
+/// It is incomplete (FV1a m9): letters such as `ř ť ł ș`, Cyrillic, Greek or Vietnamese precomposed letters, the
+/// kana marks U+3099 / U+309A and the NTFS `$UpCase` table are not folded, so two names one volume treats as the same
+/// may fold differently there; the creation itself then fails (`AlreadyExists`), nothing is overwritten. Where it
+/// does fold, it is coarser than NFC (`Pokémon.gb` and `Pokemon.gb` fold equal): equal folds are refused, never
+/// merged, which is the safe direction.
 pub(crate) fn fold_path(path: &Path) -> String {
     let mut out = String::new();
     for c in path.to_string_lossy().chars() {
@@ -1001,7 +1004,7 @@ impl JournalWriter {
 
     /// Opens an existing journal to append to it: first cuts it back to its last `\n` and syncs (I1), so a torn
     /// line is never glued to the next record. No `\n` is ever added to « repair » a line.
-    pub(crate) fn append_to(path: &Path) -> Result<Self, LibraryError> {
+    pub(crate) fn append_to(sys: &dyn Sys, path: &Path) -> Result<Self, LibraryError> {
         let io = |source| LibraryError::Io {
             path: path.to_path_buf(),
             source,
@@ -1017,8 +1020,7 @@ impl JournalWriter {
             .open(path)
             .map_err(io)?;
         if len != bytes.len() as u64 {
-            file.set_len(len).map_err(io)?;
-            file.sync_all().map_err(io)?;
+            sys.truncate_synced(&file, len).map_err(io)?;
         }
         file.seek(SeekFrom::Start(len)).map_err(io)?;
         Ok(JournalWriter {

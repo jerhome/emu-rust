@@ -377,7 +377,8 @@ impl Library {
     /// [`Library::recover_tidy`] first). A unit changed since the plan, or whose destination got taken, is left
     /// (`TidyReport::left`, paths absolute). The journal is created by the first unit started (`journal = None`
     /// when none was). `moved` is the net list of the journal. `Err` after a failed journal write or a failed
-    /// undo of a block: the journal stays in progress for the next recovery.
+    /// undo of a block: the journal stays in progress and the report of the run is lost (FV1a m7); the caller then
+    /// runs [`Library::recover_tidy`] and [`Library::pending_tidy_identities`] to learn what moved.
     pub fn apply_tidy(
         &mut self,
         options: &TidyOptions,
@@ -393,7 +394,9 @@ impl Library {
     /// (empty files aside), readable, of this root (`TidyRootMismatch` otherwise, also for a newer journal of
     /// another root), closed and not undone. A unit comes back only whole (all files unchanged at their tidied
     /// place, original places free), otherwise it stays in `left`. Writes `U` at the end or on cancellation: one
-    /// undo per journal. `moved` is the net list of the whole journal (input of `relocate_identities`).
+    /// undo per journal. `moved` is the net list of the whole journal (input of `relocate_identities`). `Err` after
+    /// a failed journal write or a failed undo of a block: as for [`Library::apply_tidy`], the journal stays in
+    /// progress, the report is lost; run [`Library::recover_tidy`] then [`Library::pending_tidy_identities`].
     pub fn undo_tidy(
         &mut self,
         options: &TidyOptions,

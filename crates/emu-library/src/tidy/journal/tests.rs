@@ -577,7 +577,7 @@ fn writer_appends_synced_lines() {
     let j = read(&path).unwrap().unwrap();
     assert_eq!(j.root, root);
     assert_eq!(j.state, State::Ended);
-    let mut w = JournalWriter::append_to(&path).unwrap();
+    let mut w = JournalWriter::append_to(&RealSys, &path).unwrap();
     w.append(&RealSys, &[Op::Identities]).unwrap();
     assert_eq!(read(&path).unwrap().unwrap().state, State::EndedMarked);
 }
@@ -598,7 +598,7 @@ fn appending_cuts_a_torn_line_first() {
         fs::write(&path, format!("{good}{torn}")).unwrap();
         let j = read(&path).unwrap().unwrap();
         assert!(j.torn);
-        let mut w = JournalWriter::append_to(&path).unwrap();
+        let mut w = JournalWriter::append_to(&RealSys, &path).unwrap();
         assert_eq!(w.len(), good.len() as u64);
         w.append(&RealSys, &[Op::End]).unwrap();
         assert_eq!(
@@ -611,6 +611,25 @@ fn appending_cuts_a_torn_line_first() {
         assert_eq!(j.state, State::Ended);
         assert!(!j.forward[0].committed);
     }
+}
+
+/// FV1a I4 d: cutting a torn line goes through `Sys` (a fault there is an error, nothing appended).
+#[test]
+fn cutting_a_torn_line_goes_through_sys() {
+    use crate::tidy::sys::faulty::{Faulty, Mode};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = dir.path().join("journal-1.txt");
+    let good = text(&root, &[Op::Begin(0)]);
+    fs::write(&path, format!("{good}C 0")).unwrap();
+    for mode in [Mode::Once, Mode::Crash, Mode::DoneButFailed] {
+        assert!(JournalWriter::append_to(&Faulty::new(0, mode), &path).is_err());
+    }
+    // The done-but-failed cut is on disk; the next opening finds nothing to cut and makes no call.
+    assert_eq!(fs::read_to_string(&path).unwrap(), good);
+    let counter = Faulty::new(u64::MAX, Mode::Once);
+    JournalWriter::append_to(&counter, &path).unwrap();
+    assert_eq!(counter.calls(), 0);
 }
 
 #[test]

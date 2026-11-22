@@ -6,7 +6,8 @@
 //! announced by a synced journal line; a block without `C` is undone from what is on disk; a journal of another
 //! root is never replayed. The OS lock `journal_dir/lock` is held for the whole call.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -109,21 +110,33 @@ fn parent_ok(root: &Path, rel: &Path) -> bool {
     }
 }
 
+/// Folder listings read by [`free`], kept while the checks of one block run (FV1a m8: one read per folder, not
+/// one per file). Never kept across a change made by the block.
+type Listings = HashMap<PathBuf, Vec<OsString>>;
+
 /// An entry whose name folds like `rel`'s in its parent folder (case-insensitive volumes, Unicode forms).
-fn existing_folded(root: &Path, rel: &Path) -> Option<PathBuf> {
+fn existing_folded(root: &Path, rel: &Path, listings: &mut Listings) -> Option<PathBuf> {
     let parent = rel.parent().unwrap_or(Path::new(""));
     let name = rel.file_name()?;
-    let entries = fs::read_dir(root.join(parent)).ok()?;
-    entries
-        .filter_map(Result::ok)
-        .find(|e| same_place(Path::new(&e.file_name()), Path::new(name)))
-        .map(|e| parent.join(e.file_name()))
+    if !listings.contains_key(parent) {
+        let names = fs::read_dir(root.join(parent))
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        listings.insert(parent.to_path_buf(), names);
+    }
+    listings
+        .get(parent)?
+        .iter()
+        .find(|n| same_place(Path::new(n), Path::new(name)))
+        .map(|n| parent.join(n))
 }
 
 /// Free for a new entry: nothing at `rel` and nothing that folds like it; `Err(existing)` otherwise.
-fn free(root: &Path, rel: &Path) -> Result<(), PathBuf> {
+fn free(root: &Path, rel: &Path, listings: &mut Listings) -> Result<(), PathBuf> {
     match probe(root, rel) {
-        Probe::Absent => match existing_folded(root, rel) {
+        Probe::Absent => match existing_folded(root, rel, listings) {
             Some(existing) => Err(existing),
             None => Ok(()),
         },
@@ -401,6 +414,10 @@ impl<'a> Exec<'a> {
                     }
                     Probe::Dir => {}
                     Probe::Error(e) => return Err(io_at(&root.join(d), e)),
+                    Probe::Absent => self.signal(
+                        d,
+                        "dossier à recréer : dossier parent absent ou remplacé, laissé tel quel",
+                    ),
                     _ => self.signal(d, "dossier à recréer : emplacement occupé, laissé tel quel"),
                 }
             }
@@ -782,12 +799,13 @@ impl<'a> Exec<'a> {
             self.write(writer, block, Op::MoveDone(f.n))?;
         }
         if let Some(w) = &spec.whole {
-            free(&root, &w.to).map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
+            free(&root, &w.to, &mut Listings::new())
+                .map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
             self.write(writer, block, whole_op(w))?;
             let (from, to) = (root.join(&w.from), root.join(&w.to));
             self.sys
                 .rename(&from, &to)
-                .map_err(|e| link_error(&to, e))?;
+                .map_err(|e| rename_error(&to, e))?;
             self.write(writer, block, Op::WholeDone)?;
         }
         // Destinations durable before any source goes.
@@ -800,7 +818,8 @@ impl<'a> Exec<'a> {
         dest_dirs.extend(made_in);
         self.sync_dirs(dest_dirs)?;
         if let (Some(p), Some(d)) = (&part, &spec.assembly) {
-            free(&root, d).map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
+            free(&root, d, &mut Listings::new())
+                .map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
             let (from, to) = (root.join(p), root.join(d));
             self.sys
                 .rename(&from, &to)
@@ -914,7 +933,7 @@ impl<'a> Exec<'a> {
             if aggregate(root, &w.from, self.options.max_depth()) != Some(expected) {
                 return Err(TidyBlock::ChangedSincePlan);
             }
-            self.destination_ok(&w.to)?;
+            self.destination_ok(&w.to, &mut Listings::new())?;
             return Ok(Spec {
                 unit: unit.id,
                 files: Vec::new(),
@@ -953,12 +972,14 @@ impl<'a> Exec<'a> {
         };
         match (&spec.assembly, spec.part()) {
             (Some(d), Some(part)) => {
-                self.destination_ok(d)?;
-                self.destination_ok(&part)?;
+                let mut listings = Listings::new();
+                self.destination_ok(d, &mut listings)?;
+                self.destination_ok(&part, &mut listings)?;
             }
             _ => {
+                let mut listings = Listings::new();
                 for f in &spec.files {
-                    self.destination_ok(&f.to)?;
+                    self.destination_ok(&f.to, &mut listings)?;
                 }
             }
         }
@@ -966,7 +987,7 @@ impl<'a> Exec<'a> {
     }
 
     /// Every existing component a plain folder, the entry itself free.
-    fn destination_ok(&self, rel: &Path) -> Result<(), TidyBlock> {
+    fn destination_ok(&self, rel: &Path, listings: &mut Listings) -> Result<(), TidyBlock> {
         for a in ancestors(rel) {
             match probe(&self.root, &a) {
                 Probe::Dir | Probe::Absent => {}
@@ -974,7 +995,7 @@ impl<'a> Exec<'a> {
                 _ => return Err(TidyBlock::Conflict { existing: a }),
             }
         }
-        free(&self.root, rel).map_err(|existing| TidyBlock::Conflict { existing })
+        free(&self.root, rel, listings).map_err(|existing| TidyBlock::Conflict { existing })
     }
 
     pub(super) fn apply(
@@ -1051,10 +1072,14 @@ impl<'a> Exec<'a> {
                 || journal::header(&self.root).map_or(0, |h| h.len() as u64),
                 JournalWriter::len,
             );
-            let fits = spec
-                .max_journal_len()
-                .is_some_and(|len| current + len + 2 <= MAX_FORWARD_SIZE);
-            if !fits {
+            // A path the journal cannot hold leaves this unit only (FV1a m5).
+            let Some(len) = spec.max_journal_len() else {
+                self.report
+                    .errors
+                    .push((self.abs(&first), UNJOURNALABLE.to_owned()));
+                continue;
+            };
+            if current + len + 2 > MAX_FORWARD_SIZE {
                 closed = true;
                 self.report
                     .errors
@@ -1093,6 +1118,7 @@ impl<'a> Exec<'a> {
         let root = &self.root;
         let mut files = Vec::new();
         let mut whole = None;
+        let mut listings = Listings::new();
         for op in &forward.body {
             match op {
                 Op::Move {
@@ -1113,7 +1139,8 @@ impl<'a> Exec<'a> {
                     if !same_state(&meta, *size, *mtime) {
                         return Err(TidyBlock::ChangedSincePlan);
                     }
-                    free(root, from).map_err(|existing| TidyBlock::Conflict { existing })?;
+                    free(root, from, &mut listings)
+                        .map_err(|existing| TidyBlock::Conflict { existing })?;
                     files.push(FileMove {
                         n: *n,
                         from: to.clone(),
@@ -1141,7 +1168,8 @@ impl<'a> Exec<'a> {
                     {
                         return Err(TidyBlock::ChangedSincePlan);
                     }
-                    free(root, from).map_err(|existing| TidyBlock::Conflict { existing })?;
+                    free(root, from, &mut listings)
+                        .map_err(|existing| TidyBlock::Conflict { existing })?;
                     whole = Some(WholeMove {
                         files: now.0,
                         size: now.1,
@@ -1222,7 +1250,7 @@ impl<'a> Exec<'a> {
         if !matches!(journal.state, State::Ended | State::EndedMarked) {
             return Err(journal_error(path, "ce rangement ne peut pas être annulé"));
         }
-        let mut writer = JournalWriter::append_to(&newest.path)?;
+        let mut writer = JournalWriter::append_to(self.sys, &newest.path)?;
         let units: Vec<&Block> = journal
             .forward
             .iter()
@@ -1252,10 +1280,13 @@ impl<'a> Exec<'a> {
                     continue;
                 }
             };
-            let fits = spec
-                .max_journal_len()
-                .is_some_and(|len| writer.len() + len <= MAX_UNDO_SIZE);
-            if !fits {
+            let Some(len) = spec.max_journal_len() else {
+                self.report
+                    .errors
+                    .push((self.abs(&first), UNJOURNALABLE.to_owned()));
+                continue;
+            };
+            if writer.len() + len > MAX_UNDO_SIZE {
                 self.report
                     .errors
                     .push((self.abs(&first), JOURNAL_FULL.to_owned()));
@@ -1305,7 +1336,7 @@ impl<'a> Exec<'a> {
                     } else {
                         Op::End
                     };
-                    JournalWriter::append_to(&listed.path)?.append(self.sys, &[close])?;
+                    JournalWriter::append_to(self.sys, &listed.path)?.append(self.sys, &[close])?;
                     self.finish(&listed.path)?;
                     moved.extend(std::mem::take(&mut self.report.moved));
                     recovered = true;
@@ -1324,6 +1355,8 @@ impl<'a> Exec<'a> {
     }
 }
 
+const UNJOURNALABLE: &str = "chemin impossible à écrire dans le journal : unité laissée en place";
+
 const JOURNAL_FULL: &str =
     "journal de rangement plein : unité laissée en place, relancez le rangement";
 
@@ -1335,16 +1368,32 @@ enum Step {
     Io(LibraryError),
 }
 
-/// Hard link / rename failure: another volume or no hard links leave the unit blocked; anything else is an error.
+/// Hard link failure: another volume or no hard links (`EPERM` on Linux, `ERROR_INVALID_FUNCTION` on FAT under
+/// Windows) leave the unit blocked; anything else is an error.
 fn link_error(path: &Path, e: io::Error) -> Step {
+    #[cfg(windows)]
+    const ERROR_INVALID_FUNCTION: i32 = 1;
+    #[cfg(windows)]
+    if e.raw_os_error() == Some(ERROR_INVALID_FUNCTION) {
+        return Step::Left(TidyBlock::NoHardLinks);
+    }
     match e.kind() {
-        io::ErrorKind::CrossesDevices => Step::Left(TidyBlock::OtherVolume),
         io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied => {
             Step::Left(TidyBlock::NoHardLinks)
         }
-        io::ErrorKind::AlreadyExists => Step::Left(TidyBlock::Conflict {
-            existing: path.to_path_buf(),
-        }),
+        _ => rename_error(path, e),
+    }
+}
+
+/// Rename failure (FV1a m2): a refused right is an error, not a lack of hard links.
+fn rename_error(path: &Path, e: io::Error) -> Step {
+    match e.kind() {
+        io::ErrorKind::CrossesDevices => Step::Left(TidyBlock::OtherVolume),
+        io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty => {
+            Step::Left(TidyBlock::Conflict {
+                existing: path.to_path_buf(),
+            })
+        }
         _ => Step::Io(io_at(path, e)),
     }
 }
@@ -1424,7 +1473,7 @@ pub(super) fn mark(sys: &dyn Sys, options: &TidyOptions, path: &Path) -> Result<
             return Err(journal_error(path, "rangement non terminé"));
         }
     }
-    JournalWriter::append_to(path)?.append(sys, &[Op::Identities])?;
+    JournalWriter::append_to(sys, path)?.append(sys, &[Op::Identities])?;
     let all = journal::list(options.journal_dir())?;
     let old = all.len().saturating_sub(KEPT_JOURNALS);
     for listed in &all[..old] {

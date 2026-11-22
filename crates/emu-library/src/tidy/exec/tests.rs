@@ -232,6 +232,51 @@ fn game_ids(library: &Library) -> BTreeMap<i64, String> {
         .unwrap()
 }
 
+/// FV1a I4 e: the same game ids as before, each row on the side where its unit now is.
+fn check_rows(
+    library: &Library,
+    before: &BTreeMap<i64, String>,
+    plan: &TidyPlan,
+    roms: &Path,
+    context: &str,
+) {
+    let now = game_ids(library);
+    assert_eq!(
+        now.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>(),
+        "{context}: ids changed"
+    );
+    let snap = snapshot(roms);
+    let chosen = selectable(plan);
+    for (id, old) in before {
+        let old_path = Path::new(old);
+        let Ok(old_rel) = old_path.strip_prefix(roms) else {
+            panic!("{context}: row outside the root {old}");
+        };
+        // A row may start on either side (run or undo): the side is read from the disk now.
+        let mut expected = old_path.to_path_buf();
+        for unit in plan.units.iter().filter(|u| chosen.contains(&u.id)) {
+            if let Some(m) = unit
+                .moves
+                .iter()
+                .find(|m| m.from == old_rel || m.to == old_rel)
+            {
+                let at_dest = unit.moves.iter().all(|m| snap.contains_key(&m.to));
+                expected = roms.join(if at_dest { &m.to } else { &m.from });
+            } else if let Some(w) = &unit.whole_dir {
+                let rest = old_rel
+                    .strip_prefix(&w.from)
+                    .or_else(|_| old_rel.strip_prefix(&w.to));
+                if let Ok(rest) = rest {
+                    let at_dest = snap.keys().any(|k| k.starts_with(&w.to));
+                    expected = roms.join(if at_dest { &w.to } else { &w.from }).join(rest);
+                }
+            }
+        }
+        assert_eq!(Path::new(&now[id]), expected, "{context}: row {id}");
+    }
+}
+
 fn apply_with(
     sys: &dyn Sys,
     library: &mut Library,
@@ -401,6 +446,7 @@ fn fault_at_every_call_of_the_run_then_recovery() {
             let options = fx.options();
             let units = sides(&plan, &initial);
             let context = format!("{mode:?} at {at}");
+            let ids = game_ids(&library);
             let result = apply_with(&Faulty::new(at, mode), &mut library, &options, &plan);
             if mode == Mode::Crash && at < total {
                 assert!(result.is_err(), "{context}: a crash cannot end well");
@@ -414,6 +460,7 @@ fn fault_at_every_call_of_the_run_then_recovery() {
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &units, &context);
             db_paths_exist(&library, &context);
+            check_rows(&library, &ids, &plan, &fx.roms, &context);
             for path in fx.journals() {
                 let j = journal::read(&path).unwrap().unwrap();
                 assert!(!j.state.in_progress(), "{context}");
@@ -491,6 +538,7 @@ fn fault_at_every_call_of_the_undo_then_recovery() {
             let options = fx.options();
             let units = sides(&plan, &initial);
             let context = format!("undo {mode:?} at {at}");
+            let ids = game_ids(&library);
             let result = undo_with(&Faulty::new(at, mode), &mut library, &options, &journal);
             if mode == Mode::Crash && at < total {
                 assert!(result.is_err(), "{context}");
@@ -499,6 +547,7 @@ fn fault_at_every_call_of_the_undo_then_recovery() {
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &units, &context);
             db_paths_exist(&library, &context);
+            check_rows(&library, &ids, &plan, &fx.roms, &context);
             let j = journal::read(&journal).unwrap().unwrap();
             assert!(!j.state.in_progress(), "{context}");
             if j.state == State::Undone {
@@ -1097,4 +1146,211 @@ fn a_plan_of_another_root_is_refused() {
     assert!(apply_with(&RealSys, &mut library, &options, &plan).is_err());
     assert!(fx.roms.join("Hero.sfc").is_file());
     assert!(fx.journals().is_empty());
+}
+
+/// FV1a I4 f: a second link of a file above `max_file_size` is still proven (same-file, no CRC), and two equal
+/// copies are never enough.
+#[test]
+fn recovery_proves_a_second_link_of_a_big_file_and_keeps_a_copy() {
+    let fx = Fx::new();
+    let data = noise(4096, 1);
+    write(&fx.roms.join("a.sfc"), &data);
+    let mut options = fx.options();
+    options.max_file_size = 1024;
+    fs::create_dir_all(&fx.journals).unwrap();
+    let journal_at = |unix: i64| {
+        let mut w =
+            JournalWriter::create(&RealSys, &fx.journals, options.roms_root(), unix).unwrap();
+        w.append(
+            &RealSys,
+            &[
+                Op::Begin(0),
+                Op::Move {
+                    n: 0,
+                    size: 4096,
+                    mtime: 0,
+                    from: rel("a.sfc"),
+                    to: rel("snes/a.sfc"),
+                },
+                Op::MoveDone(0),
+            ],
+        )
+        .unwrap();
+    };
+    write(&fx.roms.join("snes/a.sfc"), &data);
+    journal_at(5);
+    let mut library = Library::open_in_memory().unwrap();
+    let report = library.recover_tidy(&options).unwrap().unwrap();
+    assert!(fx.roms.join("snes/a.sfc").is_file(), "equal copy kept");
+    assert_eq!(report.errors.len(), 1, "{report:?}");
+    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
+    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    journal_at(6);
+    let report = library.recover_tidy(&options).unwrap().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(!fx.roms.join("snes/a.sfc").exists(), "second link removed");
+    assert_eq!(fs::read(fx.roms.join("a.sfc")).unwrap(), data);
+}
+
+/// FV1a I4 g: after a crash and its recovery, a new plan applies, and its undo works.
+#[test]
+fn after_a_recovery_a_new_plan_applies_and_undoes() {
+    let total = calls_of(|sys| {
+        let (fx, mut library, plan, _) = setup();
+        apply_with(sys, &mut library, &fx.options(), &plan).unwrap();
+    });
+    for at in [total / 4, total / 2, total * 3 / 4] {
+        let (fx, mut library, plan, initial) = setup();
+        let options = fx.options();
+        let units = sides(&plan, &initial);
+        let context = format!("crash at {at}");
+        assert!(apply_with(&Faulty::new(at, Mode::Crash), &mut library, &options, &plan).is_err());
+        recover_with(&RealSys, &mut library, &options).unwrap();
+        let again = fx.plan(&library);
+        let report = apply_with(&RealSys, &mut library, &options, &again).unwrap();
+        assert!(report.errors.is_empty(), "{context}: {:?}", report.errors);
+        let now = snapshot(&fx.roms);
+        for (_, after) in &units {
+            assert!(
+                after.iter().all(|(p, c)| now.get(p) == Some(c)),
+                "{context}: unit not tidied {after:?}"
+            );
+        }
+        db_paths_exist(&library, &context);
+        let newest = fx.journals().last().unwrap().clone();
+        let report = undo_with(&RealSys, &mut library, &options, &newest).unwrap();
+        assert!(
+            report.errors.is_empty() && report.left.is_empty(),
+            "{context}: {report:?}"
+        );
+        check_invariant(&fx.roms, &initial, &units, &context);
+        db_paths_exist(&library, &context);
+    }
+}
+
+/// Records every call of [`Sys`] (then runs it for real): the order of durability (FV1a I4 a).
+#[derive(Default)]
+struct Recorder {
+    events: std::cell::RefCell<Vec<(&'static str, PathBuf, PathBuf)>>,
+}
+
+impl Recorder {
+    fn push(&self, kind: &'static str, a: &Path, b: &Path) {
+        self.events
+            .borrow_mut()
+            .push((kind, a.to_path_buf(), b.to_path_buf()));
+    }
+
+    /// Every name removed after a link was made from it: the folder of the new name synced in between, and the
+    /// folder of the removed name synced before the next journal line.
+    fn check(&self, context: &str) {
+        let events = self.events.borrow();
+        let mut checked = 0;
+        for (i, (kind, removed, _)) in events.iter().enumerate() {
+            if *kind != "remove_file" {
+                continue;
+            }
+            let Some(j) = events[..i]
+                .iter()
+                .rposition(|(k, from, _)| *k == "hard_link" && from == removed)
+            else {
+                continue;
+            };
+            let linked = &events[j].2;
+            assert!(
+                events[j..i]
+                    .iter()
+                    .any(|(k, dir, _)| *k == "sync_dir" && linked.starts_with(dir)),
+                "{context}: {removed:?} removed before {linked:?} was durable"
+            );
+            let next_write = events[i..]
+                .iter()
+                .position(|(k, _, _)| *k == "write")
+                .map_or(events.len(), |n| i + n);
+            let folder = removed.parent().unwrap();
+            assert!(
+                events[i..next_write]
+                    .iter()
+                    .any(|(k, dir, _)| *k == "sync_dir" && dir == folder),
+                "{context}: removal of {removed:?} not synced before the next line"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 0 || context.starts_with("recovery"),
+            "{context}: nothing checked"
+        );
+    }
+}
+
+impl Sys for Recorder {
+    fn create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.push("create_dir", path, Path::new(""));
+        RealSys.create_dir(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.push("remove_dir", path, Path::new(""));
+        RealSys.remove_dir(path)
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.push("hard_link", from, to);
+        RealSys.hard_link(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.push("remove_file", path, Path::new(""));
+        RealSys.remove_file(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.push("rename", from, to);
+        RealSys.rename(from, to)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.push("sync_dir", path, Path::new(""));
+        RealSys.sync_dir(path)
+    }
+
+    fn write_synced(&self, file: &mut fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        self.push("write", Path::new(""), Path::new(""));
+        RealSys.write_synced(file, bytes)
+    }
+
+    fn truncate_synced(&self, file: &fs::File, len: u64) -> std::io::Result<()> {
+        self.push("truncate", Path::new(""), Path::new(""));
+        RealSys.truncate_synced(file, len)
+    }
+
+    fn checkpoint(&self) -> std::io::Result<()> {
+        self.push("checkpoint", Path::new(""), Path::new(""));
+        Ok(())
+    }
+}
+
+#[test]
+fn durability_order_of_the_run_the_undo_and_the_recovery() {
+    let (fx, mut library, plan, _) = setup();
+    let options = fx.options();
+    let run = Recorder::default();
+    apply_with(&run, &mut library, &options, &plan).unwrap();
+    run.check("run");
+    let journal = fx.journals()[0].clone();
+    let undo = Recorder::default();
+    undo_with(&undo, &mut library, &options, &journal).unwrap();
+    undo.check("undo");
+    let total = calls_of(|sys| {
+        let (fx, mut library, plan, _) = setup();
+        apply_with(sys, &mut library, &fx.options(), &plan).unwrap();
+    });
+    for at in (0..total).step_by(2) {
+        let (fx, mut library, plan, _) = setup();
+        let options = fx.options();
+        let _ = apply_with(&Faulty::new(at, Mode::Crash), &mut library, &options, &plan);
+        let recovery = Recorder::default();
+        recover_with(&recovery, &mut library, &options).unwrap();
+        recovery.check(&format!("recovery after a crash at {at}"));
+    }
 }

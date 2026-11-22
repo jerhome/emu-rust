@@ -17,6 +17,8 @@ pub(crate) trait Sys {
     fn sync_dir(&self, path: &Path) -> io::Result<()>;
     /// Writes `bytes` at the current position, then `sync_all`.
     fn write_synced(&self, file: &mut File, bytes: &[u8]) -> io::Result<()>;
+    /// Cuts `file` back to `len` bytes, then `sync_all` (a torn journal line, before appending).
+    fn truncate_synced(&self, file: &File, len: u64) -> io::Result<()>;
     /// Around the database transaction: lets the tests stop just before or just after it.
     fn checkpoint(&self) -> io::Result<()>;
 }
@@ -58,6 +60,11 @@ impl Sys for RealSys {
 
     fn write_synced(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
+        file.sync_all()
+    }
+
+    fn truncate_synced(&self, file: &File, len: u64) -> io::Result<()> {
+        file.set_len(len)?;
         file.sync_all()
     }
 
@@ -171,29 +178,37 @@ pub(crate) mod faulty {
             RealSys.rename(from, to)
         }
 
-        fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        // No real `fsync` in `sync_dir` / `write_synced`: nothing here survives a power loss, thousands of syncs
+        // only make the tests slow; the order of the calls is what they check.
+        fn sync_dir(&self, _path: &Path) -> io::Result<()> {
             if self.fails() {
-                if self.mode == Mode::DoneButFailed {
-                    RealSys.sync_dir(path)?;
-                }
                 return Err(Self::injected());
             }
-            RealSys.sync_dir(path)
+            Ok(())
         }
 
         fn write_synced(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
             if self.fails() {
                 if self.mode == Mode::DoneButFailed {
-                    RealSys.write_synced(file, bytes)?;
+                    file.write_all(bytes)?;
                 }
                 if self.mode == Mode::Crash && self.calls.get() == self.at + 1 {
                     // The crash cut the write: half of it reached the disk.
                     file.write_all(&bytes[..bytes.len() / 2])?;
-                    file.sync_all()?;
                 }
                 return Err(Self::injected());
             }
-            RealSys.write_synced(file, bytes)
+            file.write_all(bytes)
+        }
+
+        fn truncate_synced(&self, file: &File, len: u64) -> io::Result<()> {
+            if self.fails() {
+                if self.mode == Mode::DoneButFailed {
+                    RealSys.truncate_synced(file, len)?;
+                }
+                return Err(Self::injected());
+            }
+            RealSys.truncate_synced(file, len)
         }
 
         fn checkpoint(&self) -> io::Result<()> {
