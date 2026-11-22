@@ -880,6 +880,20 @@ fn relocation_follows_a_moved_file_and_is_idempotent() {
 }
 
 #[test]
+fn relocation_onto_an_existing_identity_is_refused() {
+    let fx = Fx::new();
+    let a = fx.rom("a.sfc", b"rom a");
+    let b = fx.rom("b.sfc", b"rom b");
+    fx.resolve(&a);
+    fx.resolve(&b);
+    let before = fx.registry();
+    let report = relocate_identities(&top_saves(&fx), &[(a, b)]).unwrap();
+    assert_eq!((report.registries, report.entries), (0, 0));
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(fx.registry(), before, "no identity overwritten");
+}
+
+#[test]
 fn relocation_follows_a_moved_folder_and_rewrites_manifests() {
     let fx = Fx::new();
     let rom = fx.rom("old/Game.st", b"disk a");

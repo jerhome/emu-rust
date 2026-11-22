@@ -6,6 +6,7 @@
 //! `.emu-rust-games.lock`), the lock file itself, a `.corrupt-<unix>` copy of an unusable registry, and the
 //! inherited `<save_name>.srm` of a homonym (atomic, only when absent). Nothing is ever renamed, moved or deleted.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -1016,6 +1017,19 @@ fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
     (key != raw).then_some(key)
 }
 
+/// A move onto a path already held by another entry (stored or moved earlier in this pass) is refused: the entry
+/// keeps its old path, so no identity is ever overwritten; the result does not depend on anything but file order.
+fn claim(taken: &mut HashSet<Vec<u8>>, new_key: &[u8]) -> bool {
+    taken.insert(registry_key(new_key))
+}
+
+fn collision_note(key: &[u8]) -> String {
+    format!(
+        "chemin déjà utilisé par une autre identité ({}), entrée laissée telle quelle",
+        path_from_key(key).display()
+    )
+}
+
 fn any_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(['/', '\\'])
 }
@@ -1049,10 +1063,18 @@ fn relocate_core_dir(
             )),
             Registry::Entries(mut entries) => {
                 let mut changed = 0u32;
+                let mut taken: HashSet<Vec<u8>> =
+                    entries.iter().map(|e| registry_key(&e.path)).collect();
                 for e in &mut entries {
                     if let Some(key) = moved_key(&e.path, table) {
-                        e.path = key;
-                        changed += 1;
+                        if claim(&mut taken, &key) {
+                            e.path = key;
+                            changed += 1;
+                        } else {
+                            report
+                                .skipped
+                                .push((registry.clone(), collision_note(&key)));
+                        }
                     }
                 }
                 if changed > 0 {
@@ -1067,10 +1089,20 @@ fn relocate_core_dir(
         match workcopy::inspect(&folder, any_name)? {
             DirState::Manifest(mut entries) => {
                 let mut changed = false;
+                let mut taken: HashSet<Vec<u8>> = entries
+                    .iter()
+                    .map(|e| registry_key(e.source_key()))
+                    .collect();
                 for e in &mut entries {
                     if let Some(key) = moved_key(e.source_key(), table) {
-                        e.set_source_key(key);
-                        changed = true;
+                        if claim(&mut taken, &key) {
+                            e.set_source_key(key);
+                            changed = true;
+                        } else {
+                            report
+                                .skipped
+                                .push((folder.join(workcopy::MANIFEST_NAME), collision_note(&key)));
+                        }
                     }
                 }
                 if changed {

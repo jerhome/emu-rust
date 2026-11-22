@@ -21,10 +21,24 @@ fn wide(text: &str) -> Vec<u16> {
         .collect()
 }
 
+/// Longest message handed to the box, in characters; longer text is cut and ends with an ellipsis.
+#[cfg(any(windows, test))]
+const MAX_MESSAGE_CHARS: usize = 2000;
+
+#[cfg(any(windows, test))]
+fn truncate_message(message: &str) -> std::borrow::Cow<'_, str> {
+    match message.char_indices().nth(MAX_MESSAGE_CHARS) {
+        None => message.into(),
+        Some((cut, _)) => format!("{}…", &message[..cut]).into(),
+    }
+}
+
 #[cfg(windows)]
 fn show(title: &str, message: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-    let (title, message) = (wide(title), wide(message));
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MessageBoxW,
+    };
+    let (title, message) = (wide(title), wide(&truncate_message(message)));
     // SAFETY: both buffers are valid, NUL-terminated UTF-16 strings (`wide` removes interior NULs) that outlive the
     // call; the parent window is null, so no window handle is dereferenced. The call blocks until dismissed and
     // its return value carries nothing we need.
@@ -33,7 +47,7 @@ fn show(title: &str, message: &str) {
             std::ptr::null_mut(),
             message.as_ptr(),
             title.as_ptr(),
-            MB_OK | MB_ICONERROR,
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
         );
     }
 }
@@ -48,6 +62,17 @@ mod tests {
         assert_eq!(w.iter().filter(|&&u| u == 0).count(), 1);
         assert_eq!(w.last(), Some(&0));
         assert_eq!(String::from_utf16(&w[..w.len() - 1]).unwrap(), "a\u{FFFD}é");
+    }
+
+    #[test]
+    fn long_messages_are_cut_on_a_char_boundary() {
+        assert_eq!(truncate_message("court"), "court");
+        let exact = "é".repeat(MAX_MESSAGE_CHARS);
+        assert_eq!(truncate_message(&exact), exact.as_str());
+        let long = "é".repeat(MAX_MESSAGE_CHARS + 5);
+        let cut = truncate_message(&long);
+        assert_eq!(cut.chars().count(), MAX_MESSAGE_CHARS + 1);
+        assert!(cut.ends_with('…'));
     }
 
     #[test]
