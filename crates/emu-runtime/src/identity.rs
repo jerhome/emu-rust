@@ -1019,28 +1019,36 @@ fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
 }
 
 /// Decides which of the moves `olds[i] -> news[i]` (`None` = stays) are applied. The old keys of the entries that
-/// move are released first, so chains (A->B, B->C), swaps and case-only changes work; a move onto a key still held
-/// by an entry that stays, or by an earlier move of the pass, is refused (the entry keeps its path). Deterministic:
-/// it depends only on entry order. `fold` is the registry comparison key.
+/// move are released, so chains (A->B, B->C), swaps and case-only changes work; a move onto a key held by an entry
+/// that stays, or by an earlier accepted move, is refused. A refused entry keeps its old key, which is therefore
+/// held again: moves accepted onto it are re-examined, until a fixed point (at most one pass per entry). Final keys
+/// are unique if the initial ones were. Deterministic: depends only on entry order. `fold` is the comparison key.
 fn plan_moves(
     olds: &[&[u8]],
     news: &[Option<Vec<u8>>],
     fold: impl Fn(&[u8]) -> Vec<u8>,
 ) -> Vec<bool> {
-    let mut taken: HashSet<Vec<u8>> = olds
-        .iter()
-        .zip(news)
-        .filter(|(_, n)| n.is_none())
-        .map(|(o, _)| fold(o))
-        .collect();
-    let mut applied = vec![false; olds.len()];
-    for (i, new) in news.iter().enumerate() {
-        let Some(new) = new else { continue };
-        if taken.insert(fold(new)) {
-            applied[i] = true;
+    let mut applied: Vec<bool> = news.iter().map(Option::is_some).collect();
+    loop {
+        let mut taken: HashSet<Vec<u8>> = olds
+            .iter()
+            .zip(&applied)
+            .filter(|(_, a)| !**a)
+            .map(|(o, _)| fold(o))
+            .collect();
+        let mut refused = false;
+        for (i, new) in news.iter().enumerate() {
+            if let (true, Some(new)) = (applied[i], new)
+                && !taken.insert(fold(new))
+            {
+                applied[i] = false;
+                refused = true;
+            }
+        }
+        if !refused {
+            return applied;
         }
     }
-    applied
 }
 
 fn collision_note(key: &[u8]) -> String {

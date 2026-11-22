@@ -1011,4 +1011,45 @@ mod plan_moves_tests {
         // Two entries onto the same target: the first wins.
         assert_eq!(plan(&["a", "b"], &[Some("c"), Some("c")]), [true, false]);
     }
+
+    #[test]
+    fn refused_move_does_not_free_its_old_path() {
+        assert_eq!(
+            plan(&["a", "b", "c"], &[Some("c"), Some("a"), None]),
+            [false; 3]
+        );
+        assert_eq!(
+            plan(&["b", "a", "c"], &[Some("a"), Some("c"), None]),
+            [false; 3]
+        );
+    }
+
+    #[test]
+    fn final_keys_are_unique_for_any_small_table() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..5000 {
+            let n = 1 + next(6) as usize;
+            let olds: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let news: Vec<Option<String>> = (0..n)
+                .map(|_| match next(7) {
+                    6 => None,
+                    k => Some(format!("p{k}")),
+                })
+                .collect();
+            let o: Vec<&str> = olds.iter().map(String::as_str).collect();
+            let nw: Vec<Option<&str>> = news.iter().map(|x| x.as_deref()).collect();
+            let ok = plan(&o, &nw);
+            let finals: Vec<&str> = (0..n)
+                .map(|i| if ok[i] { nw[i].unwrap() } else { o[i] })
+                .collect();
+            let set: std::collections::HashSet<_> = finals.iter().collect();
+            assert_eq!(set.len(), n, "{o:?} -> {nw:?} gave {finals:?}");
+        }
+    }
 }
