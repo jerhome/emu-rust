@@ -196,6 +196,7 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-21 | 7.2 | CD 32X et préférence « Core utilisé » du Mega CD | La préférence ne s'applique pas aux jeux marqués : picodrive est imposé (`cd32x_cores` de `cores.toml`), jamais de repli sur genesis_plus_gx (dialogue « Installer picodrive » s'il manque). Marquer un jeu déjà joué avec genesis_plus_gx le fait repartir sans ses sauvegardes `.brm` (dit dans le message). | décidé (architecte) |
 | 2026-11-21 | 7.2 | CD 32X en `.cue` : pistes 01 de plus de 512 Mio (Night Trap disque 1, Corpse Killer, Slam City, Fahrenheit disque 2) jamais comparées au DAT | Borne de CRC du Mega CD portée à **800 Mio** (comme la 3DO). Un `.cue` déjà scanné n'est pas ré-analysé : rescan complet ou marquage manuel (guide d'essai). | décidé (architecte) |
 | 2026-11-21 | 7.2 | **À relever par l'utilisateur** : nom exact des deux fichiers de son Night Trap 32X (réponse du 2026-11-21 : **deux disques, en `.chd`**) | Un `.chd` n'est jamais lu : reconnaissance par l'étiquette du nom, sinon marquage manuel (invitation dans la ligne d'aide). Nommés `… (Disc 1)` / `… (Disc 2)`, les deux disques forment un seul jeu ; sinon chacun est à marquer. À ranger sous `roms/megacd/`. | **relevé le 2026-11-22** : `Night Trap (Europe) (Disc 1) (Mega-CD 32X).chd` et `… (Disc 2) (Mega-CD 32X).chd` — étiquette « Mega-CD 32X » et « (Disc N) » présentes : à reconnaître par le nom en 7.2 (vérifier que le motif de SB1 accepte « Mega-CD 32X »). |
+| 2026-11-22 | 7.1 | Faces `.d64` non regroupées : `MANIACD0.D64` et `MANIACD1.D64` (Maniac Mansion C64, essai utilisateur) donnent deux tuiles, la face 2 ne démarre pas ; le zip fonctionne | Défaut proposé : regrouper aussi les noms « préfixe commun + chiffre final » (`…D0`/`…D1`, `…1`/`…2`, en 8.3 majuscules) **dans un même dossier système d'ordinateur** (c64, amiga, st, cpc, dos), ordre numérique, seulement si le préfixe fait ≥ 4 caractères et qu'il n'y a pas d'autre fichier du même préfixe ; à faire en 7.1 (library-assets) | défaut |
 
 ## 7.2 — à discuter avec l'utilisateur
 
@@ -330,7 +331,6 @@ Les autres questions prennent le défaut recommandé :
 | Q9 | Comportement du dépôt et de « Annuler » : défauts retenus |
 | Q10 | Sous « Mega CD », avec une pastille « 32X » |
 | Q12 | Pré-release sur la base des tests factices ; l'essai de l'utilisateur décide de la suite |
-| 2026-11-22 | 7.1 | Faces `.d64` non regroupées : `MANIACD0.D64` et `MANIACD1.D64` (Maniac Mansion C64, essai utilisateur) donnent deux tuiles, la face 2 ne démarre pas ; le zip fonctionne | Défaut proposé : regrouper aussi les noms « préfixe commun + chiffre final » (`…D0`/`…D1`, `…1`/`…2`, en 8.3 majuscules) **dans un même dossier système d'ordinateur** (c64, amiga, st, cpc, dos), ordre numérique, seulement si le préfixe fait ≥ 4 caractères et qu'il n'y a pas d'autre fichier du même préfixe ; à faire en 7.1 (library-assets) | défaut |
 
 ## 9.0 — rendu matériel : à discuter avec l'utilisateur
 
