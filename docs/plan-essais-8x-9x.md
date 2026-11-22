@@ -8,6 +8,7 @@ Les jeux sont fournis par l'utilisateur ; emu-rust ne télécharge aucune ROM ni
 |---|---|---|---|
 | 8.0 cartouches | PC Engine | R-Type | défilement, sprites, son |
 | 8.0 cartouches | MSX | Metal Gear | cartouche Konami MSX1 |
+| 8.0 cartouches | Atari Lynx | California Games | portable, écran tournable, BIOS Lynx (`lynxboot.img`, fourni par l'utilisateur) |
 | 8.1 CD | PC Engine CD | Castlevania: Rondo of Blood | musique CD, BIOS System Card |
 | 8.1 CD | Amiga CD32 | Speedball 2 | prolonge l'Amiga (puae), manette CD32, Bitmap Brothers |
 | 8.2 ordinateurs | Sharp X68000 | Final Fight | conversion arcade, disquettes, son FM / MIDI |
