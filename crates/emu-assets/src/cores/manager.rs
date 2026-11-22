@@ -995,10 +995,10 @@ impl CoreManager {
     }
 }
 
-/// `BuildbotUpdating` when the zip was modified on or after the day of its index line: an index entry
-/// describes a build of that day, so a zip no older than it that still disagrees means the buildbot is
-/// rebuilding (the index lags). Depends only on the index line and the zip, hence stable across attempts.
-/// Otherwise a plain `CrcMismatch`. The file is never installed.
+/// `BuildbotUpdating` when the zip was modified on a UTC day strictly after the date of its index line: on the
+/// real buildbot that date is the day the zip was built, so a later day means the zip was rebuilt after the
+/// index was published (the index lags). A same-day mismatch is not explained by that and stays an error.
+/// Depends only on the index line and the zip, hence stable across attempts. The file is never installed.
 fn crc_failure(
     id: &CoreId,
     remote: &RemoteCore,
@@ -1008,8 +1008,9 @@ fn crc_failure(
     let d = remote.date;
     let day_start =
         crate::http::civil_to_unix(d.year.into(), d.month.into(), d.day.into(), 0, 0, 0);
-    if let (Some(lm), Some(start)) = (last_modified, day_start)
-        && lm >= start
+    if let (Some(lm), Some(next_day)) =
+        (last_modified, day_start.and_then(|s| s.checked_add(86_400)))
+        && lm >= next_day
     {
         tracing::warn!(
             "buildbot en cours de mise à jour : CRC32 attendu {:08x}, trouvé {found:08x}",

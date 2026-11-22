@@ -619,21 +619,46 @@ fn wrong_crc_without_last_modified_stays_a_crc_error() {
     assert!(matches!(err, CoreError::CrcMismatch { .. }), "{err:?}");
 }
 
-#[test]
-fn buildbot_updating_is_stable_across_attempts() {
+/// Index dated 2026-11-20, wrong CRC, zip served with `modified`.
+fn install_dated(modified: &str, attempts: usize) -> Vec<CoreError> {
     let new = mock_core_bytes(Variant::Rgb565);
     let bot = Buildbot::start();
     let data = tempfile::tempdir().unwrap();
     let m = open(&bot, data.path());
-    // Zip modified on the index day, index CRC lagging: persistent.
-    bot.publish_with_last_modified(
-        crc32fast::hash(&new) ^ 1,
-        &new,
-        "Fri, 20 Nov 2026 12:00:00 GMT",
-    );
+    bot.publish_with_last_modified(crc32fast::hash(&new) ^ 1, &new, modified);
     refresh(&m).unwrap();
-    for _ in 0..2 {
-        let err = install(&m, "gambatte").unwrap_err();
+    (0..attempts)
+        .map(|_| install(&m, "gambatte").unwrap_err())
+        .collect()
+}
+
+#[test]
+fn buildbot_updating_is_stable_across_attempts() {
+    for err in install_dated("Sat, 21 Nov 2026 07:30:00 GMT", 2) {
         assert!(matches!(err, CoreError::BuildbotUpdating(_)), "{err:?}");
+    }
+}
+
+#[test]
+fn zip_modified_the_day_after_the_index_is_buildbot_updating() {
+    let errs = install_dated("Sat, 21 Nov 2026 00:00:00 GMT", 1);
+    assert!(
+        matches!(errs[0], CoreError::BuildbotUpdating(_)),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn zip_modified_on_the_index_day_stays_a_crc_error() {
+    for lm in [
+        "Fri, 20 Nov 2026 12:00:00 GMT",
+        "Fri, 20 Nov 2026 23:59:59 GMT",
+    ] {
+        for err in install_dated(lm, 2) {
+            assert!(
+                matches!(err, CoreError::CrcMismatch { .. }),
+                "{lm}: {err:?}"
+            );
+        }
     }
 }

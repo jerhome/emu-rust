@@ -548,9 +548,9 @@ pub(crate) fn civil_to_unix(
     days.checked_mul(86_400)?.checked_add(h * 3600 + m * 60 + s)
 }
 
-/// Strictly ASCII digits (no sign, no blanks), at most `max_len` of them.
-fn digits(text: &str, max_len: usize) -> Option<u64> {
-    if text.is_empty() || text.len() > max_len || !text.bytes().all(|c| c.is_ascii_digit()) {
+/// Exactly `len` ASCII digits (no sign, no blanks).
+fn digits(text: &str, len: usize) -> Option<u64> {
+    if text.len() != len || !text.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
     text.parse().ok()
@@ -559,7 +559,8 @@ fn digits(text: &str, max_len: usize) -> Option<u64> {
 /// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) into Unix seconds; anything else gives `None`.
 fn parse_http_date(text: &str) -> Option<u64> {
     let mut parts = text.trim().split(' ');
-    if !parts.next()?.ends_with(',') {
+    let weekday = parts.next()?.strip_suffix(',')?;
+    if !["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].contains(&weekday) {
         return None;
     }
     let day = digits(parts.next()?, 2)?;
@@ -620,6 +621,10 @@ mod http_date_tests {
             "Sun, 06 Nov 1994 08:49:37",
             "Sun, 06 Xxx 1994 08:49:37 GMT",
             "Sun 06 Nov 1994 08:49:37 GMT",
+            "Xyz, 06 Nov 1994 08:49:37 GMT",
+            "Sun, 6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 94 08:49:37 GMT",
+            "Sun, 06 Nov 1994 8:49:37 GMT",
         ] {
             assert_eq!(parse_http_date(bad), None, "{bad:?}");
         }
