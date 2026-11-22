@@ -320,6 +320,11 @@ fn setup() -> (Fx, Library, TidyPlan, BTreeMap<PathBuf, Vec<u8>>) {
     (fx, library, plan, initial)
 }
 
+/// A [`Sys`] without faults nor real `fsync` (fast tests; `RealSys` is used where the real calls matter).
+fn fast() -> Faulty {
+    Faulty::new(u64::MAX, Mode::Once)
+}
+
 fn calls_of(run: impl FnOnce(&Faulty)) -> u64 {
     let counter = Faulty::new(u64::MAX, Mode::Once);
     run(&counter);
@@ -391,10 +396,7 @@ fn a_full_run_moves_every_selected_unit_and_keeps_the_rows() {
     assert_ne!(ids_before, ids_after);
     db_paths_exist(&library, "full run");
     // Recovery has nothing to do; identities are due once.
-    assert_eq!(
-        recover_with(&RealSys, &mut library, &options).unwrap(),
-        None
-    );
+    assert_eq!(recover_with(&fast(), &mut library, &options).unwrap(), None);
     let pending = library.pending_tidy_identities(&options).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].1, report.moved);
@@ -421,7 +423,7 @@ fn an_existing_system_folder_gets_no_dir_line() {
     fs::create_dir(fx.roms.join("snes")).unwrap();
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
-    apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+    apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
     let j = fx.only_journal();
     assert!(
         !j.forward[0]
@@ -456,7 +458,7 @@ fn fault_at_every_call_of_the_run_then_recovery() {
                     }
                 }
             }
-            recover_with(&RealSys, &mut library, &options)
+            recover_with(&fast(), &mut library, &options)
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &units, &context);
             db_paths_exist(&library, &context);
@@ -486,7 +488,7 @@ fn crash_during_the_recovery_then_recovery_again() {
         );
         (fx, library, plan, initial)
     };
-    for at in (0..total).step_by(3) {
+    for at in 0..total {
         let recovery_calls = calls_of(|sys| {
             let (fx, mut library, _, _) = crashed(at);
             recover_with(sys, &mut library, &fx.options()).unwrap();
@@ -507,7 +509,7 @@ fn crash_during_the_recovery_then_recovery_again() {
                     );
                 }
             }
-            recover_with(&RealSys, &mut library, &options)
+            recover_with(&fast(), &mut library, &options)
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &units, &context);
             db_paths_exist(&library, &context);
@@ -520,7 +522,7 @@ fn crash_during_the_recovery_then_recovery_again() {
 fn fault_at_every_call_of_the_undo_then_recovery() {
     let prepared = || {
         let (fx, mut library, plan, initial) = setup();
-        apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+        apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
         let journal = fx.journals()[0].clone();
         (fx, library, plan, initial, journal)
     };
@@ -543,7 +545,7 @@ fn fault_at_every_call_of_the_undo_then_recovery() {
             if mode == Mode::Crash && at < total {
                 assert!(result.is_err(), "{context}");
             }
-            recover_with(&RealSys, &mut library, &options)
+            recover_with(&fast(), &mut library, &options)
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &units, &context);
             db_paths_exist(&library, &context);
@@ -568,7 +570,7 @@ fn fault_at_every_call_of_the_undo_then_recovery() {
 fn crash_during_the_recovery_of_an_undo() {
     let interrupted = |at: u64| {
         let (fx, mut library, plan, initial) = setup();
-        apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+        apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
         let journal = fx.journals()[0].clone();
         let _ = undo_with(
             &Faulty::new(at, Mode::Crash),
@@ -578,7 +580,13 @@ fn crash_during_the_recovery_of_an_undo() {
         );
         (fx, library, plan, initial)
     };
-    for at in [5u64, 9, 14, 20] {
+    let undo_calls = calls_of(|sys| {
+        let (fx, mut library, plan, _) = setup();
+        apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
+        let journal = fx.journals()[0].clone();
+        undo_with(sys, &mut library, &fx.options(), &journal).unwrap();
+    });
+    for at in 0..undo_calls {
         let recovery_calls = calls_of(|sys| {
             let (fx, mut library, _, _) = interrupted(at);
             recover_with(sys, &mut library, &fx.options()).unwrap();
@@ -591,7 +599,7 @@ fn crash_during_the_recovery_of_an_undo() {
                 recover_with(&Faulty::new(again, Mode::Crash), &mut library, &options).is_err(),
                 "{context}"
             );
-            recover_with(&RealSys, &mut library, &options)
+            recover_with(&fast(), &mut library, &options)
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             check_invariant(&fx.roms, &initial, &sides(&plan, &initial), &context);
             db_paths_exist(&library, &context);
@@ -604,7 +612,7 @@ fn undo_brings_everything_back_with_the_same_rows() {
     let (fx, mut library, plan, initial) = setup();
     let options = fx.options();
     let ids_before = game_ids(&library);
-    apply_with(&RealSys, &mut library, &options, &plan).unwrap();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
     let journal = fx.journals()[0].clone();
     let report = library
         .undo_tidy(&options, &journal, &AtomicBool::new(false), &mut |_| {})
@@ -635,7 +643,7 @@ fn undo_brings_everything_back_with_the_same_rows() {
     );
     // Only once.
     assert!(matches!(
-        undo_with(&RealSys, &mut library, &options, &journal),
+        undo_with(&fast(), &mut library, &options, &journal),
         Err(LibraryError::Journal { .. })
     ));
     assert!(!last_tidy_can_undo(&options));
@@ -645,12 +653,12 @@ fn undo_brings_everything_back_with_the_same_rows() {
 fn undo_leaves_a_changed_unit_and_a_taken_place_entire() {
     let (fx, mut library, plan, initial) = setup();
     let options = fx.options();
-    apply_with(&RealSys, &mut library, &options, &plan).unwrap();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
     // After the run: one disk of the group changes (size), the original place of the flat file is taken.
     fs::write(fx.roms.join("atarist/Quest (Disk 2 of 2).st"), b"changed").unwrap();
     fs::write(fx.roms.join("Hero.sfc"), b"new file").unwrap();
     let journal = fx.journals()[0].clone();
-    let report = undo_with(&RealSys, &mut library, &options, &journal).unwrap();
+    let report = undo_with(&fast(), &mut library, &options, &journal).unwrap();
     assert_eq!(report.left.len(), 2, "{report:?}");
     assert!(
         report
@@ -688,13 +696,13 @@ fn undo_refuses_a_file_with_another_hard_link() {
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
     let options = fx.options();
-    apply_with(&RealSys, &mut library, &options, &plan).unwrap();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
     fs::hard_link(
         fx.roms.join("snes/Hero.sfc"),
         fx.tmp.path().join("elsewhere"),
     )
     .unwrap();
-    let report = undo_with(&RealSys, &mut library, &options, &fx.journals()[0]).unwrap();
+    let report = undo_with(&fast(), &mut library, &options, &fx.journals()[0]).unwrap();
     assert_eq!(report.left.len(), 1);
     assert!(fx.roms.join("snes/Hero.sfc").is_file());
 }
@@ -703,7 +711,7 @@ fn undo_refuses_a_file_with_another_hard_link() {
 fn undo_only_the_newest_journal_of_this_root() {
     let (fx, mut library, plan, _) = setup();
     let options = fx.options();
-    apply_with(&RealSys, &mut library, &options, &plan).unwrap();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
     let first = fx.journals()[0].clone();
     let newer = fx.journals.join("journal-99999999999.txt");
     // A newer journal: the older one cannot be undone.
@@ -713,21 +721,21 @@ fn undo_only_the_newest_journal_of_this_root() {
     )
     .unwrap();
     assert!(matches!(
-        undo_with(&RealSys, &mut library, &options, &first),
+        undo_with(&fast(), &mut library, &options, &first),
         Err(LibraryError::Journal { .. })
     ));
     // A newer unreadable one blocks too (never skipped).
     fs::write(&newer, b"emu-rust tidy 1\nR /x\nZ\n").unwrap();
-    assert!(undo_with(&RealSys, &mut library, &options, &first).is_err());
+    assert!(undo_with(&fast(), &mut library, &options, &first).is_err());
     // A newer one of another root blocks (TidyRootMismatch).
     fs::write(&newer, format!("{}E\n", header(Fx::other_root()).unwrap())).unwrap();
     assert!(matches!(
-        undo_with(&RealSys, &mut library, &options, &first),
+        undo_with(&fast(), &mut library, &options, &first),
         Err(LibraryError::TidyRootMismatch { .. })
     ));
     // An empty newer file (state 0) is ignored.
     fs::write(&newer, b"").unwrap();
-    undo_with(&RealSys, &mut library, &options, &first).unwrap();
+    undo_with(&fast(), &mut library, &options, &first).unwrap();
 }
 
 /// FV0 3: a journal of another root is never replayed nor completed, not even by a closing line.
@@ -784,7 +792,7 @@ fn an_unreadable_journal_is_never_replayed_and_blocks() {
     ));
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     let plan = fx.plan(&library);
-    assert!(apply_with(&RealSys, &mut library, &options, &plan).is_err());
+    assert!(apply_with(&fast(), &mut library, &options, &plan).is_err());
     assert!(fx.roms.join("Hero.sfc").is_file());
     assert!(
         library
@@ -837,7 +845,7 @@ fn a_unit_changed_since_the_plan_is_left() {
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
     fs::write(fx.roms.join("Hero.sfc"), b"changed").unwrap();
-    let report = apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+    let report = apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
     assert_eq!(report.left.len(), 1);
     assert_eq!(report.left[0].1, TidyBlock::ChangedSincePlan);
     assert!(fx.roms.join("Hero.sfc").is_file());
@@ -847,7 +855,7 @@ fn a_unit_changed_since_the_plan_is_left() {
     write(&fx.roms.join("Hero.sfc"), &noise(4096, 1));
     let plan = fx.plan(&library);
     write(&fx.roms.join("snes/HERO.SFC"), b"other");
-    let report = apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+    let report = apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
     assert!(matches!(report.left[0].1, TidyBlock::Conflict { .. }));
     assert_eq!(fs::read(fx.roms.join("snes/HERO.SFC")).unwrap(), b"other");
     assert!(fx.roms.join("Hero.sfc").is_file());
@@ -887,7 +895,7 @@ fn the_lock_refuses_a_second_run() {
     ));
     let plan = fx.plan(&library);
     assert!(matches!(
-        apply_with(&RealSys, &mut library, &options, &plan),
+        apply_with(&fast(), &mut library, &options, &plan),
         Err(LibraryError::TidyBusy)
     ));
 }
@@ -1066,7 +1074,7 @@ fn an_interrupted_assembly_is_cleaned_up() {
             &fx.options(),
             &plan,
         );
-        recover_with(&RealSys, &mut library, &fx.options()).unwrap();
+        recover_with(&fast(), &mut library, &fx.options()).unwrap();
         let context = format!("assembly crash at {at}");
         check_invariant(&fx.roms, &initial, &units, &context);
         let done = fx.roms.join("psx/Deep (Europe)/Deep (Europe).cue").exists();
@@ -1124,7 +1132,7 @@ fn a_linked_system_folder_is_never_used() {
     let outside = fx.tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, fx.roms.join("snes")).unwrap();
-    let report = apply_with(&RealSys, &mut library, &fx.options(), &plan).unwrap();
+    let report = apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
     assert!(matches!(
         report.left[0].1,
         TidyBlock::DestinationNotPlainDir { .. }
@@ -1143,7 +1151,7 @@ fn a_plan_of_another_root_is_refused() {
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
     let options = TidyOptions::new(&other, &fx.journals).unwrap();
-    assert!(apply_with(&RealSys, &mut library, &options, &plan).is_err());
+    assert!(apply_with(&fast(), &mut library, &options, &plan).is_err());
     assert!(fx.roms.join("Hero.sfc").is_file());
     assert!(fx.journals().is_empty());
 }
@@ -1205,9 +1213,9 @@ fn after_a_recovery_a_new_plan_applies_and_undoes() {
         let units = sides(&plan, &initial);
         let context = format!("crash at {at}");
         assert!(apply_with(&Faulty::new(at, Mode::Crash), &mut library, &options, &plan).is_err());
-        recover_with(&RealSys, &mut library, &options).unwrap();
+        recover_with(&fast(), &mut library, &options).unwrap();
         let again = fx.plan(&library);
-        let report = apply_with(&RealSys, &mut library, &options, &again).unwrap();
+        let report = apply_with(&fast(), &mut library, &options, &again).unwrap();
         assert!(report.errors.is_empty(), "{context}: {:?}", report.errors);
         let now = snapshot(&fx.roms);
         for (_, after) in &units {
@@ -1218,7 +1226,7 @@ fn after_a_recovery_a_new_plan_applies_and_undoes() {
         }
         db_paths_exist(&library, &context);
         let newest = fx.journals().last().unwrap().clone();
-        let report = undo_with(&RealSys, &mut library, &options, &newest).unwrap();
+        let report = undo_with(&fast(), &mut library, &options, &newest).unwrap();
         assert!(
             report.errors.is_empty() && report.left.is_empty(),
             "{context}: {report:?}"
