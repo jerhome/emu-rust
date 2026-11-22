@@ -618,3 +618,22 @@ fn wrong_crc_without_last_modified_stays_a_crc_error() {
     let err = install_with_wrong_crc(None);
     assert!(matches!(err, CoreError::CrcMismatch { .. }), "{err:?}");
 }
+
+#[test]
+fn buildbot_updating_is_stable_across_attempts() {
+    let new = mock_core_bytes(Variant::Rgb565);
+    let bot = Buildbot::start();
+    let data = tempfile::tempdir().unwrap();
+    let m = open(&bot, data.path());
+    // Zip modified on the index day, index CRC lagging: persistent.
+    bot.publish_with_last_modified(
+        crc32fast::hash(&new) ^ 1,
+        &new,
+        "Fri, 20 Nov 2026 12:00:00 GMT",
+    );
+    refresh(&m).unwrap();
+    for _ in 0..2 {
+        let err = install(&m, "gambatte").unwrap_err();
+        assert!(matches!(err, CoreError::BuildbotUpdating(_)), "{err:?}");
+    }
+}
