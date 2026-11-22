@@ -27,3 +27,9 @@ Les jeux sont fournis par l'utilisateur ; emu-rust ne télécharge aucune ROM ni
 | Nintendo 64 | GoldenEye 007 |
 | Saturn | Sega Rally (core logiciel : possible avant la 9.x) |
 | PSP | Gran Turismo |
+
+## Non-régression et « lot son »
+
+| Plate-forme | Jeu | Note |
+|---|---|---|
+| Atari ST | Le Manoir de Mortevielle | remplace Mouse Trap comme jeu d'essai ST ; synthèse vocale = test du son |
