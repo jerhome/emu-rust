@@ -573,7 +573,7 @@ pub struct RequiredFirmware {
     pub fallback: Option<FirmwareFallback>,
 }
 
-/// One entry of `optional_firmware."<system>"` (7.1): `{ file, benefit }`.
+/// One entry of `optional_firmware."<system>"` (7.1): `{ file, benefit, outside_info? }`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptionalFirmware {
@@ -581,6 +581,10 @@ pub struct OptionalFirmware {
     pub file: String,
     /// French, shown as is (« musique Roland MT-32 »).
     pub benefit: String,
+    /// `true`: proposed even when the installed `.info` does not list the file (the core reads it from the
+    /// system directory without declaring it, e.g. dosbox_pure and the Roland ROMs).
+    #[serde(default)]
+    pub outside_info: bool,
 }
 
 /// ROMs compiled into a core: nothing to provide, nothing downloaded. `notice` is the attribution shown in

@@ -429,13 +429,14 @@ pub fn firmware_enhancements(
             });
         }
     }
-    // Inert unless the installed `.info` lists the file: an unconfirmed name is never proposed.
+    // Inert unless the installed `.info` lists the file (an unconfirmed name is never proposed), except for
+    // entries marked `outside_info` whose name comes from the core's own documentation.
     for opt in prefs.optional_firmware(core, system) {
         if !is_safe_relative_path(&opt.file) {
             return Err(FirmwareError::UnsafePath(opt.file.clone()));
         }
         let listed = info.is_some_and(|i| i.firmware.iter().any(|s| s.path == opt.file));
-        if !listed || found.iter().any(|e| e.file == opt.file) {
+        if !(listed || opt.outside_info) || found.iter().any(|e| e.file == opt.file) {
             continue;
         }
         found.push(FirmwareEnhancement {
@@ -974,6 +975,35 @@ mod tests {
     }
 
     #[test]
+    fn dosbox_pure_roland_roms_are_proposed_without_info_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = parse_info(CoreId::new("dosbox_pure").unwrap(), "").unwrap();
+        for info in [None, Some(&info)] {
+            let found = enhancements("dosbox_pure", "DOS", info, dir.path());
+            let files: Vec<_> = found.iter().map(|e| e.file.as_str()).collect();
+            assert_eq!(
+                files,
+                [
+                    "MT32_CONTROL.ROM",
+                    "MT32_PCM.ROM",
+                    "CM32L_CONTROL.ROM",
+                    "CM32L_PCM.ROM"
+                ]
+            );
+            assert!(
+                found
+                    .iter()
+                    .all(|e| e.kind == EnhancementKind::Optional
+                        && e.state == FirmwareState::Missing)
+            );
+        }
+        std::fs::write(dir.path().join("MT32_PCM.ROM"), b"x").unwrap();
+        let found = enhancements("dosbox_pure", "DOS", None, dir.path());
+        // firmware.toml already knows MT32_PCM.ROM hashes: foreign content is a wrong hash.
+        assert!(matches!(found[1].state, FirmwareState::WrongHash { .. }));
+    }
+
+    #[test]
     fn shipped_optional_firmware_is_consistent() {
         let prefs = CorePreferences::builtin();
         let mut seen = 0;
@@ -986,6 +1016,6 @@ mod tests {
                 }
             }
         }
-        assert!(seen >= 3, "mgba and gambatte entries expected");
+        assert!(seen >= 7, "mgba and gambatte entries expected");
     }
 }
