@@ -63,7 +63,7 @@ ou noir et blanc). Source : connaissance générale, **non vérifiée** ici ; le
 mais SimCity tourne sur 68000 et 68020 : pas de blocage attendu. SimCity 2000 demande davantage (7.x, couleur, 4 Mo
 de RAM, taille de RAM du core non vérifiée) : à ne pas promettre.
 
-**Palier conseillé** : 8.2 (ordinateurs), **après** la 2.0 `HardwareMouse`-like « souris → stick » décidée et après
+**Palier conseillé** : 8.2 (ordinateurs), **après** décision sur le mode « souris → stick » et après
 vérification par un essai du core sur un poste de test (démarrage depuis une image System 6, souris, son).
 
 ## 4. Recommandation
