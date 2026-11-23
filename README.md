@@ -4,7 +4,7 @@ Frontend [libretro](https://www.libretro.com/) écrit en Rust. L'émulation est 
 emu-rust fournit l'image, le son, le clavier et la manette PS4, la bibliothèque de jeux avec jaquettes, le
 téléchargement des cores et des BIOS libres. Usage personnel.
 
-**Version stable : 6.0.0** · **pré-release : 7.0.0-rc.1** ([releases](../../releases))
+**Version stable : 7.0.0** ([releases](../../releases))
 
 ## Systèmes pris en charge
 
@@ -17,7 +17,7 @@ téléchargement des cores et des BIOS libres. Usage personnel.
 | PC MS-DOS (SoundFont libre GeneralUser GS sur action) | dosbox_pure | 4.0 |
 | Amstrad CPC, Commodore 64 | cap32, vice_x64 | 5.0 |
 | Game Boy Advance, 32X | mgba, picodrive | 6.0 |
-| PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 (pré-release) |
+| PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 |
 
 Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1. Les jeux se rangent dans `roms/<système>/`.
 
