@@ -19,6 +19,8 @@
  *   MOCK_DISK_DUMP  set -> after every disk change `mock-disk.txt` is rewritten in GET_SAVE_DIRECTORY:
  *                   lines "interface=basic|ext", "ejected=0|1", "index=N", "num=N", "initial=N|-",
  *                   "image<i>=<path>|<label>" (label = file name without extension; empty for a freshly added slot).
+ *   MOCK_DISK_REPLACE_CLOSED  set -> replace_image_index also works with the tray closed (genesis_plus_gx, picodrive:
+ *                   the 7.0.1 multi-disc path appends discs without touching the tray).
  *   MOCK_DISK_NO_INITIAL  set (with MOCK_DISK=ext) -> the ext interface is registered with set_initial_image = NULL
  *                   (like puae): "initial=-" in the dump and band 3 cell 6 stays 0.
  *   MOCK_ENV_PROBE  set -> retro_set_environment also asks 28 GET_PERF_INTERFACE, 45 GET_VFS_INTERFACE,
@@ -440,7 +442,7 @@ static char disk_label[MAX_DISKS][DISK_PATH_MAX];
 static unsigned disk_num, disk_index, disk_set_calls;
 static bool disk_ejected;
 static bool initial_set;
-static bool no_initial_on, env_probe_on;
+static bool no_initial_on, env_probe_on, replace_closed_on;
 static int probe_answer[4]; /* 28, 45, 46, 64 */
 static unsigned initial_index;
 static char initial_path[DISK_PATH_MAX];
@@ -459,6 +461,7 @@ static void read_protocol_env(void) {
     no_game_on = env_flag("MOCK_NO_GAME");
     disk_dump = env_flag("MOCK_DISK_DUMP");
     no_initial_on = env_flag("MOCK_DISK_NO_INITIAL");
+    replace_closed_on = env_flag("MOCK_DISK_REPLACE_CLOSED");
     env_probe_on = env_flag("MOCK_ENV_PROBE");
     disk_mode = !disk ? 0 : !strcmp(disk, "ext") ? 2 : disk[0] ? 1 : 0;
     mock_visible = kb_cb_on || kb_poll_on || mouse_on || no_game_on || disk_mode != 0;
@@ -542,7 +545,7 @@ static bool disk_set_image_index(unsigned index) {
 static unsigned disk_get_num_images(void) { return disk_num; }
 static bool disk_replace_image_index(unsigned index, const struct retro_game_info *info) {
     unsigned i;
-    if (!disk_ejected || index >= disk_num) return false;
+    if ((!disk_ejected && !replace_closed_on) || index >= disk_num) return false;
     replace_called = true;
     if (!info) { /* removal: later images shift down */
         for (i = index; i + 1 < disk_num; i++) {

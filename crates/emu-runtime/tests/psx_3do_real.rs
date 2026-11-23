@@ -15,8 +15,8 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use emu_runtime::{
-    CollectSink, ContentSpec, Emulator, EmulatorOptions, LibretroError, MemoryKind, NullInput,
-    RuntimeError, SaveScope,
+    CollectSink, ContentSpec, Emulator, EmulatorOptions, LibretroError, M3uLaunch, MAX_COPY_BYTES,
+    MediaPolicy, MediaRules, MediaSet, MemoryKind, MultiDisc, NullInput, RuntimeError, SaveScope,
 };
 
 const PS1_CORES: [&str; 3] = ["pcsx_rearmed", "swanstation", "mednafen_psx"];
@@ -499,6 +499,64 @@ fn generated_bootable_disc_starts_or_is_skipped() {
         } else {
             eprintln!("SKIP {core}: generated disc does not boot (blank)");
         }
+    }
+}
+
+/// Grouped discs as the library hands them over (`MediaSet::images`, generated `.m3u` of absolute paths in a
+/// private temporary folder), folder with spaces and parentheses: every PS1 core opens the set and sees two
+/// discs (pcsx_rearmed, swanstation and mednafen_psx keep absolute m3u entries as they are, unlike
+/// genesis_plus_gx / picodrive, see `gba_32x_megacd_real::grouped_discs_by_disk_control_reach_the_first_disc`).
+#[test]
+#[ignore = "needs the PS1 cores: scripts/fetch-test-assets.sh --with-7.0"]
+fn ps1_grouped_discs_generated_playlist_loads_both_discs() {
+    let _g = lock();
+    let dir = out_dir("grouped discs (Europe)");
+    let status = Command::new("python3")
+        .arg("-I")
+        .arg(root().join("tests/tools/mkcd.py"))
+        .args([
+            "psx",
+            "--region",
+            "E",
+            "--name",
+            "Game (Europe)",
+            "--discs",
+            "2",
+        ])
+        .arg(&dir)
+        .status()
+        .expect("python3");
+    assert!(status.success(), "mkcd.py psx failed");
+    let mut images: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "cue"))
+        .collect();
+    images.sort();
+    assert_eq!(images.len(), 2, "{images:?}");
+    for core in PS1_CORES {
+        let spec = ContentSpec::Media {
+            set: MediaSet {
+                name: "Game (Europe)".into(),
+                images: images.clone(),
+                playlist: None,
+                launch: None,
+            },
+            rules: MediaRules {
+                policy: MediaPolicy::Direct,
+                media_direct: ["cue", "chd", "iso", "pbp", "bin"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                max_copy_bytes: MAX_COPY_BYTES,
+                m3u_launch: M3uLaunch::None,
+                multi_disc: MultiDisc::Playlist,
+            },
+        };
+        let mut emu = load_spec(core, spec, &dir.join(format!("data-{core}")), &[])
+            .unwrap_or_else(|e| panic!("{core}: grouped discs refused: {e}"));
+        let slots = emu.disks().map(|mut d| d.slots().len());
+        assert_eq!(slots, Some(2), "{core}: disc slots");
     }
 }
 
