@@ -136,6 +136,7 @@ fn rules() -> MediaRules {
             .to_vec(),
         max_copy_bytes: MAX_COPY_BYTES,
         m3u_launch: emu_runtime::M3uLaunch::None,
+        multi_disc: emu_runtime::MultiDisc::Playlist,
     }
 }
 

@@ -114,6 +114,7 @@ impl Machine {
                 media_direct: Vec::new(),
                 max_copy_bytes: MAX_COPY_BYTES,
                 m3u_launch: M3uLaunch::Command,
+                multi_disc: emu_runtime::MultiDisc::Playlist,
             },
             // cores.toml: media = "working_copy", m3u_launch = "program".
             Machine::C64 => MediaRules {
@@ -121,6 +122,7 @@ impl Machine {
                 media_direct: Vec::new(),
                 max_copy_bytes: MAX_COPY_BYTES,
                 m3u_launch: M3uLaunch::Program,
+                multi_disc: emu_runtime::MultiDisc::Playlist,
             },
         }
     }

@@ -100,6 +100,17 @@ pub enum MediaPolicy {
     WorkingCopy,
 }
 
+/// How several disk images of one set reach the core (`multi_disc` of `cores.toml`, ADR 0020 amendment).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MultiDisc {
+    /// Several images: generated `.m3u` (4.0 behaviour).
+    #[default]
+    Playlist,
+    /// Several images: image 0 given to `retro_load_game`, the others appended through the disk control
+    /// interface right after loading (tray untouched). Needs `MediaPolicy::Direct` and no playlist.
+    DiskControl,
+}
+
 /// Largest file copied into a working-copy folder (Amiga `.hdf`); see [`MediaRules::max_copy_bytes`].
 pub const MAX_COPY_BYTES: u64 = 2 << 30;
 
@@ -119,6 +130,8 @@ pub struct MediaRules {
     /// `cores.toml` `m3u_launch`. Anything but `None` also makes every user `.m3u` read back and regenerated
     /// with the white list, under `Direct` too (design v5.0 §3.2, revue V3a, §10 n° 13).
     pub m3u_launch: M3uLaunch,
+    /// `cores.toml` `multi_disc`: how several images are given to the core.
+    pub multi_disc: MultiDisc,
 }
 
 impl MediaRules {
@@ -129,6 +142,7 @@ impl MediaRules {
             media_direct: Vec::new(),
             max_copy_bytes: MAX_COPY_BYTES,
             m3u_launch: M3uLaunch::None,
+            multi_disc: MultiDisc::Playlist,
         }
     }
 
@@ -292,6 +306,16 @@ fn prepare_media_inner(
         return Err(too_many());
     }
     let launch = validate_launch(set.launch.as_deref(), rules.m3u_launch)?;
+    if rules.multi_disc == MultiDisc::DiskControl {
+        if rules.policy != MediaPolicy::Direct || set.playlist.is_some() {
+            return Err(RuntimeError::InvalidMediaSet(
+                "multi_disc = disk_control needs direct media and no playlist".into(),
+            ));
+        }
+        if launch.is_none() && set.images.len() > 1 {
+            return prepare_disk_control(set, rules, exts, limits);
+        }
+    }
 
     // A core declaring `m3u_launch` never gets a user `.m3u` as is: it may carry a `#COMMAND:` (VICE: core
     // arguments). It is read back with the white list and regenerated below.
@@ -358,6 +382,34 @@ fn prepare_media_inner(
         work_dir: None,
         notice: None,
         dropped_lines,
+        temp_dir: stage.temp_dir,
+    })
+}
+
+/// `MultiDisc::DiskControl`: no playlist; the first image is the content, `images` lists them all.
+fn prepare_disk_control(
+    set: &MediaSet,
+    rules: &MediaRules,
+    exts: &[String],
+    limits: Limits,
+) -> Result<PreparedMedia, RuntimeError> {
+    let mut stage = Stage::new(MediaPolicy::Direct, exts, limits, PathBuf::new())?;
+    stage.media_direct = &rules.media_direct;
+    stage.max_copy = rules.max_copy_bytes;
+    for source in &set.images {
+        stage.add_source(source, MAX_MEDIA_IMAGES)?;
+    }
+    let content = stage
+        .images
+        .first()
+        .cloned()
+        .ok_or_else(|| RuntimeError::InvalidMediaSet("no disk image".into()))?;
+    Ok(PreparedMedia {
+        content,
+        images: stage.images,
+        work_dir: None,
+        notice: None,
+        dropped_lines: 0,
         temp_dir: stage.temp_dir,
     })
 }
@@ -2141,6 +2193,76 @@ mod tests {
         }
     }
 
+    fn disk_control_rules(policy: MediaPolicy) -> MediaRules {
+        MediaRules {
+            multi_disc: MultiDisc::DiskControl,
+            ..MediaRules::new(policy)
+        }
+    }
+
+    fn cue_exts() -> Vec<String> {
+        strs(&["cue", "chd"])
+    }
+
+    #[test]
+    fn disk_control_gives_first_disk_and_writes_no_playlist() {
+        let f = Fixture::new();
+        let d1 = f.file("Game (Disc 1).cue", b"a");
+        let d2 = f.file("Game (Disc 2).cue", b"b");
+        let p = prepare_media(
+            &set("Game", vec![d1.clone(), d2.clone()]),
+            &disk_control_rules(MediaPolicy::Direct),
+            &cue_exts(),
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, d1);
+        assert_eq!(p.images, [d1, d2]);
+        assert!(p.temp_dir().is_none());
+        assert!(f.written().is_empty());
+    }
+
+    #[test]
+    fn disk_control_single_disk_is_unchanged() {
+        let f = Fixture::new();
+        let d1 = f.file("Game.cue", b"a");
+        let p = prepare_media(
+            &set("Game", vec![d1.clone()]),
+            &disk_control_rules(MediaPolicy::Direct),
+            &cue_exts(),
+            &f.saves(),
+        )
+        .unwrap();
+        assert_eq!(p.content, d1);
+        assert_eq!(p.images, [d1]);
+    }
+
+    #[test]
+    fn disk_control_refuses_working_copy_and_playlist() {
+        let f = Fixture::new();
+        let d1 = f.file("Game (Disc 1).cue", b"a");
+        let d2 = f.file("Game (Disc 2).cue", b"b");
+        let m3u = f.file("Game.m3u", b"Game (Disc 1).cue\n");
+        let err = prepare_media(
+            &set("Game", vec![d1.clone(), d2.clone()]),
+            &disk_control_rules(MediaPolicy::WorkingCopy),
+            &cue_exts(),
+            &f.saves(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)));
+        let mut with_playlist = set("Game", vec![d1, d2]);
+        with_playlist.playlist = Some(m3u);
+        let err = prepare_media(
+            &with_playlist,
+            &disk_control_rules(MediaPolicy::Direct),
+            &cue_exts(),
+            &f.saves(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RuntimeError::InvalidMediaSet(_)));
+    }
+
     fn sha(paths: &[PathBuf]) -> Vec<u32> {
         paths
             .iter()
@@ -2321,6 +2443,7 @@ mod tests {
         let r = MediaRules {
             max_copy_bytes: 63,
             m3u_launch: M3uLaunch::None,
+            multi_disc: MultiDisc::Playlist,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let err = prepare_media(&set("Big", vec![hdf.clone()]), &r, &exts, &f.saves()).unwrap_err();
@@ -2329,6 +2452,7 @@ mod tests {
         let r = MediaRules {
             max_copy_bytes: 64,
             m3u_launch: M3uLaunch::None,
+            multi_disc: MultiDisc::Playlist,
             ..r
         };
         let p = prepare_media(&set("Big", vec![hdf]), &r, &exts, &f.saves()).unwrap();
@@ -2430,6 +2554,7 @@ mod tests {
         let rules = MediaRules {
             max_copy_bytes: 150,
             m3u_launch: M3uLaunch::None,
+            multi_disc: MultiDisc::Playlist,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let zip = f.file(
@@ -2700,6 +2825,7 @@ mod tests {
         let small = MediaRules {
             max_copy_bytes: 99,
             m3u_launch: M3uLaunch::None,
+            multi_disc: MultiDisc::Playlist,
             ..MediaRules::new(MediaPolicy::WorkingCopy)
         };
         let err = prepare_media_with(

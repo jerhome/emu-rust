@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use crate::identity::{GameIdentity, SaveScope, identity_request_for, resolve_game_identity};
 use crate::input::{AnalogStick, InputBackend, InputFrame, KeyboardState, MouseState};
-use crate::media::{ContentSpec, Disks, MediaRules, PreparedMedia, prepare_media_with};
+use crate::media::{ContentSpec, Disks, MediaRules, MultiDisc, PreparedMedia, prepare_media_with};
 use crate::saves::{
     FileMode, STATE_SLOTS, StateFileError, StateHeader, StateOrigin, core_id_from_path,
     decode_state, encode_state, read_bounded, read_state_header, write_atomic,
@@ -196,6 +196,24 @@ fn key_event(key: RetroKey, down: bool) -> KeyEvent {
 /// Copies the `.srm` file into the core's SRAM (right after `retro_load_game`); returns the resulting SRAM,
 /// which counts as already flushed. A read error other than "not found" fails the load: carrying on would
 /// overwrite the user's save with a blank one at the next flush.
+/// `MultiDisc::DiskControl`: images 1.. go in after `retro_load_game` (image 0 is the content), tray untouched.
+fn append_launch_disks(core: &mut Core, images: &[PathBuf]) -> Result<(), RuntimeError> {
+    if images.len() < 2 {
+        return Ok(());
+    }
+    let mut disks = core.disk_control().ok_or(RuntimeError::NoDiskControl)?;
+    for (num, path) in (1u32..).zip(&images[1..]) {
+        disks.add_image()?;
+        if let Err(e) = disks.replace_image(num, Some(path)) {
+            if let Err(e2) = disks.replace_image(num, None) {
+                tracing::warn!("cannot remove disk slot {num}: {e2}");
+            }
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
 fn restore_sram(core: &mut Core, path: &Path) -> Result<Vec<u8>, RuntimeError> {
     let Some(sram) = core.memory_mut(MemoryKind::SaveRam) else {
         return Ok(Vec::new());
@@ -354,12 +372,20 @@ impl Emulator {
             _ => None,
         });
         let sram_path = crate::saves::sram_path(&options.save_dir, &core_id, &game_name);
+        let disk_control_launch = media_rules
+            .as_ref()
+            .is_some_and(|r| r.multi_disc == MultiDisc::DiskControl);
         let loaded = match source {
             Some(source) => core.load_game_from(source),
             None => core.load_no_game(),
         }
         .map_err(RuntimeError::from)
-        .and_then(|av_info| Ok((av_info, restore_sram(&mut core, &sram_path)?)));
+        .and_then(|av_info| {
+            if let Some(media) = prepared.as_ref().filter(|_| disk_control_launch) {
+                append_launch_disks(&mut core, &media.images)?;
+            }
+            Ok((av_info, restore_sram(&mut core, &sram_path)?))
+        });
         let (av_info, sram_snapshot) = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {

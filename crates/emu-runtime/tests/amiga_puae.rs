@@ -83,6 +83,7 @@ fn rules() -> MediaRules {
         media_direct: vec!["ipf".into(), "lha".into()],
         max_copy_bytes: emu_runtime::MAX_COPY_BYTES,
         m3u_launch: emu_runtime::M3uLaunch::None,
+        multi_disc: emu_runtime::MultiDisc::Playlist,
     }
 }
 

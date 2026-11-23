@@ -52,7 +52,7 @@ pub use crate::input::{
 };
 pub use crate::media::{
     ContentSpec, DiskSlot, Disks, M3uLaunch, MAX_COPY_BYTES, MAX_MEDIA_IMAGES, MediaPolicy,
-    MediaRules, MediaSet, NO_GAME_NAME, PreparedMedia, WorkDirNotice, prepare_media,
+    MediaRules, MediaSet, MultiDisc, NO_GAME_NAME, PreparedMedia, WorkDirNotice, prepare_media,
     reset_core_game_files, reset_work_dir, reset_working_copies,
 };
 pub use crate::pacing::{
