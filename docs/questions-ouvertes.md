@@ -381,4 +381,4 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 10. GameCube / Wii, 3DS, PS2 : hors 9.x, plus tard.
 11. Vulkan : en dernier palier ; **l'utilisateur l'essaiera lui-même d'abord** (sur l'Iris Xe, même si ce n'est pas idéal), puis le camarade.
 12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
-13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. **Reste : version du pilote graphique Intel** (onglet « Affichage » de dxdiag).
+13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. Pilote graphique Intel 32.0.101.7088.
