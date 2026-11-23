@@ -15,6 +15,8 @@ lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
 - **`unsafe`** interdit sauf dans `emu-libretro` et `emu-runtime` ; chaque bloc `unsafe` a un commentaire `// SAFETY:`.
 - **Cibles** : image Docker (WSLg / X11 / Wayland / noVNC), puis Linux, Windows, macOS **Intel** (`x86_64-apple-darwin`,
   OpenGL ≤ 4.1). Code spécifique OS via `#[cfg(...)]`.
+  Mac de test de l'utilisateur, modeste : MacBook Pro 13" début 2015, i5 2,7 GHz 2 cœurs, 8 Go DDR3,
+  Intel Iris 6100, macOS 12.7.6. Réglages par défaut légers ; ne pas exiger plus que cette machine.
 - **Entrées** : clavier d'abord ; manette PS4 (DualShock 4) plus tard. Ne jamais coder en dur une hypothèse « clavier seulement ».
 - **Pas d'OpenSSL** : `rustls` partout.
 - **Secrets** (identifiants ScreenScraper, clés IGDB) : jamais en dur, jamais loggés, jamais commités ; fichier de config en `600`.

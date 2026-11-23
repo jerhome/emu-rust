@@ -24,6 +24,16 @@ pub const VIEW_FAVORITES: &str = "Favoris";
 pub const VIEW_RECENT: &str = "Récemment joués";
 pub const SORT_TITLE: &str = "Tri : titre";
 pub const SORT_LAST_PLAYED: &str = "Tri : dernière partie";
+pub const CREDIT: &str = "dev by claude@jerhome";
+
+/// Footer line: the version comes from the workspace (shared by all crates).
+pub fn footer() -> String {
+    footer_for(env!("CARGO_PKG_VERSION"))
+}
+
+pub fn footer_for(version: &str) -> String {
+    format!("v{version} · {CREDIT}")
+}
 pub const SCAN: &str = "Scanner";
 pub const SCAN_CANCEL: &str = "Arrêter le scan";
 pub const CORES: &str = "Cores";

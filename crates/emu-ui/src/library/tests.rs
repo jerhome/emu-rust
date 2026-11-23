@@ -1335,3 +1335,9 @@ fn dos_programs_dialog_by_keyboard() {
     h.key(Key::Escape);
     assert!(!h.ui.programs_open());
 }
+
+#[test]
+fn footer_shows_version_and_credit() {
+    assert_eq!(text::footer_for("1.2.3"), "v1.2.3 · dev by claude@jerhome");
+    assert!(text::footer().starts_with(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+}
