@@ -399,3 +399,16 @@ L'utilisateur confirmera plus tard, sans bloquer aucune validation ni release :
 - changement de CD en cours de partie : Night Trap (Mega CD 32X, picodrive, disque 2), et plus largement Mega CD / PS1 / 3DO ;
 - **tous** les changements de disquettes (Atari ST, Amiga, CPC, C64, DOS) et de **cassettes** (CPC, C64…) par le menu en jeu.
 À intégrer à un futur guide d'essai (liste par système, jeu d'essai, étapes, quoi rapporter).
+
+## Mac 68k (étude du 2026-11-23, `docs/etude-mac68k.md`)
+
+Constat : le seul core libretro (minivmac, buildbot OK sur nos 3 cibles) émule un **Mac II** (pas un Mac Plus), sans
+savestates, sans changement de disque libretro, et **sans `RETRO_DEVICE_MOUSE`** (pointeur piloté par le stick gauche).
+
+1. Possèdes-tu une ROM de Mac II (`MacII.ROM`, 256 Ko, md5 `66223be1497460f1e60885eeb35e03cc` d'après le `.info`) ? Une ROM de Mac Plus ne servirait pas.
+2. Possèdes-tu une disquette ou image système bootable (System 6.0.x / 7.x) ? Sans elle, le Mac affiche seulement la disquette au point d'interrogation.
+3. Quelle version de SimCity (Classic 1.x en noir et blanc ou couleur ? SimCity 2000 ?) et sous quel format (disquette réelle ou image, `.dsk`/`.img`/DiskCopy `.dc42`) ?
+4. Souris : acceptes-tu que la souris de l'ordinateur soit convertie en stick gauche (précision limitée) ? Si non, le Mac 68k est déconseillé.
+5. Changement de disquette : acceptes-tu le navigateur de fichiers interne du core (manette Y) plutôt que notre menu « Changer de média » ?
+6. Veux-tu un essai préalable du core hors emu-rust (RetroArch ou essai simple) avant tout développement ?
+7. Snow (Rust, MIT, Mac 128K à LC III, très actif) n'est pas un core libretro : une exception à l'ADR 0001 (« pas de core maison ») est hors de question sans ton accord explicite. Veux-tu que je l'écarte définitivement ?
