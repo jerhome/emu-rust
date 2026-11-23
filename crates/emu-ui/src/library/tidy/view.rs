@@ -563,6 +563,13 @@ fn report(
                         ui.colored_label(WARNING, text::left(&shown(p), b));
                     }
                 }
+                if !r.extra_names.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(text::EXTRA_NAMES_TITLE).strong());
+                    for line in exec::extra_name_lines(out, r) {
+                        ui.colored_label(WARNING, line);
+                    }
+                }
                 if !r.errors.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::ERRORS_TITLE).strong());

@@ -13,6 +13,16 @@ pub fn path(p: &Path) -> String {
     clean(&p.to_string_lossy().replace('\\', "/"))
 }
 
+/// `roms/<p>` for a path relative to the roms root; `roms` for the root itself (`.` or empty).
+pub fn root_path(p: &Path) -> String {
+    let p = path(p);
+    if p.is_empty() || p == "." {
+        "le dossier roms".to_owned()
+    } else {
+        format!("roms/{p}")
+    }
+}
+
 pub const CREATE_FOLDERS: &str = "Créer les dossiers des systèmes";
 pub const OPEN_TIDY: &str = "Ranger les ROMs…";
 pub const TIDY_SETTINGS_NOTE: &str = "Range le dossier des ROMs d'emu-rust (pas les autres dossiers) : un aperçu \
@@ -184,13 +194,14 @@ pub fn block(b: &TidyBlock) -> String {
         ),
         TidyBlock::ChangedSincePlan => "modifié depuis l'aperçu".to_owned(),
         TidyBlock::ReadOnlyFile { path: p } => format!(
-            "fichier en lecture seule : roms/{} (retirez l'attribut « Lecture seule » dans ses propriétés, puis \
-             relancez)",
-            path(p)
+            "fichier en lecture seule : {}. emu-rust ne modifie jamais cet attribut : retirez-le vous-même \
+             (Propriétés du fichier, décocher « Lecture seule »), puis relancez le rangement",
+            root_path(p)
         ),
         TidyBlock::NotWritable { dir } => format!(
-            "écriture refusée dans roms/{} (droits du dossier ou disque protégé en écriture)",
-            path(dir)
+            "écriture refusée dans {} (droits du dossier ou disque protégé en écriture). emu-rust ne modifie \
+             jamais ces protections : levez-les vous-même, puis relancez le rangement",
+            root_path(dir)
         ),
     }
 }
@@ -224,16 +235,22 @@ pub const BIOS_UNIT: &str = "BIOS connu : utilisez « Importer ce BIOS… » plu
 pub const BUSY: &str = "Rangement impossible : une autre fenêtre d'emu-rust range déjà les ROMs. Réessayez quand \
                         elle aura fini.";
 
-/// Any refusal of the journal by the library (in progress, not the newest, write failure…): stated as is.
-pub fn journal_error(p: &Path, message: &str) -> String {
-    format!("Journal de rangement : {} ({})", path(p), clean(message))
+/// A write failure of the library (journal included): `LibraryError::Io`.
+pub fn write_error(p: &Path, cause: &str) -> String {
+    format!("Écriture impossible : {} ({})", path(p), clean(cause))
 }
 
-/// `last_tidy` could not read the newest journal: it blocks until removed.
+/// `TidyRefused`: the reason text of the library, said as is (it is already neutral French).
+pub fn refused(reason: &str) -> String {
+    format!("Action impossible : {}.", clean(reason))
+}
+
+/// Unreadable journal (`LibraryError::Journal`): it blocks tidying and undoing until it is moved away.
 pub fn journal_unreadable(p: &Path, message: &str) -> String {
     format!(
-        "Journal de rangement illisible : {} ({}). Il bloque le rangement et son annulation tant que ce fichier \
-         n'est pas retiré du dossier (déplacez-le ailleurs ou supprimez-le).",
+        "Journal de rangement illisible : {} ({}). Il bloque le rangement et son annulation tant qu'il reste \
+         dans le dossier des journaux : déplacez-le ailleurs et gardez-le, il permet de retrouver où sont \
+         allés les fichiers.",
         path(p),
         clean(message)
     )
@@ -337,6 +354,20 @@ pub fn moved(files: usize, dirs_created: u64, dirs_removed: u64) -> String {
 }
 
 pub const LEFT_TITLE: &str = "Laissés en place :";
+pub const EXTRA_NAMES_TITLE: &str = "Deux noms pour le même fichier :";
+
+/// `remove` and `keep` are already shown relative (`roms/…`). Same file, so nothing is lost either way.
+pub fn extra_name(remove: &Path, keep: &Path) -> String {
+    format!(
+        "{} n'a pas pu être retiré (lecture seule ou écriture refusée) ; emu-rust ne change jamais ces \
+         protections. {} est gardé : levez la protection de {} vous-même (Propriétés, « Lecture seule »), \
+         puis retirez ce nom.",
+        path(remove),
+        path(keep),
+        path(remove)
+    )
+}
+
 pub const ERRORS_TITLE: &str = "Erreurs :";
 pub const SKIPPED_TITLE: &str = "Sauvegardes non mises à jour :";
 

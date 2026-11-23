@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 
 use emu_library::{
     AbsoluteMoves, Library, LibraryError, TidyJournalInfo, TidyOptions, TidyPlan, TidyProgress,
-    TidyReport,
+    TidyReport, TidySection,
 };
 
 use super::text;
@@ -73,7 +73,9 @@ pub(crate) trait TidySteps {
 pub(crate) fn error_text(e: &LibraryError) -> String {
     match e {
         LibraryError::TidyBusy => text::BUSY.to_owned(),
-        LibraryError::Journal { path, message } => text::journal_error(path, message),
+        LibraryError::Journal { path, message } => text::journal_unreadable(path, message),
+        LibraryError::TidyRefused { reason, .. } => text::refused(&reason.to_string()),
+        LibraryError::Io { path, source } => text::write_error(path, &source.to_string()),
         LibraryError::TidyRootMismatch { journal } => text::other_root(journal),
         e => crate::ui::text::sanitize_core_text(&e.to_string()),
     }
@@ -97,12 +99,7 @@ impl LastTidy {
                 ..Self::default()
             },
             Err(e) => {
-                let error = match &e {
-                    LibraryError::Journal { path, message } => {
-                        text::journal_unreadable(path, message)
-                    }
-                    e => error_text(e),
-                };
+                let error = error_text(&e);
                 Self {
                     info: None,
                     // Another root: tidying here would fail on its in-progress journal, or undo the wrong one.
@@ -159,26 +156,32 @@ fn defer_note(out: &mut Outcome) {
     }
 }
 
-/// What `recover_tidy` closed. It does not say (rv-fu2b m2, need sent to library-assets): the newest journal is
-/// read back, and trusted only when it is the one of the report; otherwise a wording that fits both cases.
-fn recovered_text<S: TidySteps>(steps: &mut S, report: &TidyReport) -> &'static str {
-    match steps.last() {
-        Ok(Some(info)) if report.journal.as_deref() == Some(info.path.as_path()) => {
-            if info.undone {
-                text::UNDO_INTERRUPTED_FINAL
-            } else {
-                text::RUN_INTERRUPTED_RECOVERED
-            }
+/// What `recover_tidy` closed, from `TidyReport::closed` (an interrupted undo is now final).
+fn recovered_texts(report: &TidyReport) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    let mut add = |t| {
+        if !v.contains(&t) {
+            v.push(t);
         }
-        _ => text::INTERRUPTED_RECOVERED,
+    };
+    for (_, section) in &report.closed {
+        add(match section {
+            TidySection::Undo => text::UNDO_INTERRUPTED_FINAL,
+            TidySection::Tidy => text::RUN_INTERRUPTED_RECOVERED,
+        });
     }
+    if v.is_empty() {
+        v.push(text::INTERRUPTED_RECOVERED);
+    }
+    v
 }
 
 /// `recover_tidy`, then the identity step of every pending journal. Errors are reported, never fatal.
 pub(crate) fn finish_pending<S: TidySteps>(steps: &mut S, out: &mut Outcome) {
     match steps.recover() {
         Ok(Some(report)) => {
-            out.messages.push(recovered_text(steps, &report).to_owned());
+            out.messages
+                .extend(recovered_texts(&report).into_iter().map(str::to_owned));
             if out.report.is_none() {
                 out.report = Some(report);
             }
@@ -387,7 +390,11 @@ pub(crate) fn report_lines(kind: RunKind, r: &TidyReport) -> ReportLines {
     match kind {
         RunKind::Undo => ReportLines {
             // `moved` is the net list of the whole journal, not what came back: not shown as a count.
-            headline: if r.left.is_empty() && r.errors.is_empty() && !r.cancelled {
+            headline: if r.left.is_empty()
+                && r.errors.is_empty()
+                && r.extra_names.is_empty()
+                && !r.cancelled
+            {
                 text::UNDO_ALL_BACK.to_owned()
             } else {
                 text::UNDO_SOME_LEFT.to_owned()
@@ -403,6 +410,14 @@ pub(crate) fn report_lines(kind: RunKind, r: &TidyReport) -> ReportLines {
     }
 }
 
+/// One line per extra name left behind (`TidyReport::extra_names`), paths relative to the roms folder.
+pub(crate) fn extra_name_lines(out: &Outcome, r: &TidyReport) -> Vec<String> {
+    r.extra_names
+        .iter()
+        .map(|n| text::extra_name(&shown_path(out, &n.remove), &shown_path(out, &n.keep)))
+        .collect()
+}
+
 /// Lines logged after the start-up recovery: messages, what was left or failed, identity collisions.
 pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
     let mut lines = out.messages.clone();
@@ -413,6 +428,7 @@ pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
                 .map(|(p, b)| text::left(&shown_path(out, p), b)),
         );
         lines.extend(r.errors.iter().map(|(p, m)| error_entry(out, p, m)));
+        lines.extend(extra_name_lines(out, r));
     }
     if !out.skipped.is_empty() {
         lines.push(text::SKIPPED_TITLE.to_owned());
@@ -495,6 +511,7 @@ pub(crate) fn read_last(options: &TidyOptions) -> LastTidy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use emu_library::TidyBlock;
 
     #[derive(Default)]
     struct Fake {
@@ -555,6 +572,13 @@ mod tests {
         }
     }
 
+    fn closed(section: TidySection) -> TidyReport {
+        TidyReport {
+            closed: vec![(PathBuf::from("/j/journal-1.txt"), section)],
+            ..report(Some("/j/journal-1.txt"))
+        }
+    }
+
     #[test]
     fn apply_relocates_then_marks_its_journal() {
         let mut f = Fake::default();
@@ -585,7 +609,7 @@ mod tests {
     #[test]
     fn error_recovers_then_finishes_pending() {
         let mut f = Fake {
-            recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
+            recover: Some(Ok(Some(closed(TidySection::Tidy)))),
             pending: vec![(PathBuf::from("/j/journal-1.txt"), Vec::new())],
             last: Some(info(false, true)),
             ..Fake::default()
@@ -599,7 +623,6 @@ mod tests {
             f.calls,
             [
                 "recover",
-                "last",
                 "pending",
                 "relocate 0",
                 "mark /j/journal-1.txt",
@@ -621,8 +644,7 @@ mod tests {
     #[test]
     fn interrupted_undo_is_reported_as_final() {
         let mut f = Fake {
-            recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
-            last: Some(info(true, true)),
+            recover: Some(Ok(Some(closed(TidySection::Undo)))),
             ..Fake::default()
         };
         let mut out = Outcome::new(RunKind::Recovery);
@@ -631,20 +653,114 @@ mod tests {
     }
 
     #[test]
-    fn recovery_wording_is_neutral_when_the_newest_journal_is_another() {
-        // `last_tidy` names another journal (or fails): the closed one may be a run or an undo.
-        let mut other = info(true, true);
-        other.path = PathBuf::from("/j/journal-2.txt");
-        for last in [Some(other), None] {
-            let mut f = Fake {
-                recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
-                last,
-                ..Fake::default()
-            };
-            let mut out = Outcome::new(RunKind::Recovery);
-            finish_pending(&mut f, &mut out);
-            assert_eq!(out.messages, [text::INTERRUPTED_RECOVERED]);
+    fn recovery_wording_follows_the_closed_sections() {
+        // No `closed` entry (older report): wording that fits both cases.
+        let mut f = Fake {
+            recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
+            ..Fake::default()
+        };
+        let mut out = Outcome::new(RunKind::Recovery);
+        finish_pending(&mut f, &mut out);
+        assert_eq!(out.messages, [text::INTERRUPTED_RECOVERED]);
+        // A run and an undo closed together: both are said, once each.
+        let mut both = closed(TidySection::Tidy);
+        both.closed
+            .push((PathBuf::from("/j/journal-2.txt"), TidySection::Undo));
+        both.closed
+            .push((PathBuf::from("/j/journal-3.txt"), TidySection::Undo));
+        let mut f = Fake {
+            recover: Some(Ok(Some(both))),
+            ..Fake::default()
+        };
+        let mut out = Outcome::new(RunKind::Recovery);
+        finish_pending(&mut f, &mut out);
+        assert_eq!(
+            out.messages,
+            [
+                text::RUN_INTERRUPTED_RECOVERED,
+                text::UNDO_INTERRUPTED_FINAL
+            ]
+        );
+    }
+
+    #[test]
+    fn recovery_after_a_failure_keeps_the_errors_of_its_report() {
+        let mut r = closed(TidySection::Tidy);
+        r.errors.push((
+            PathBuf::from("/r/journal-2.txt"),
+            "journal illisible".into(),
+        ));
+        let mut f = Fake {
+            recover: Some(Ok(Some(r))),
+            ..Fake::default()
+        };
+        let err = LibraryError::Io {
+            path: PathBuf::from("/j/journal-1.txt"),
+            source: std::io::Error::other("disque plein"),
+        };
+        let out = after_run(RunKind::Tidy, Err(err), &mut f);
+        assert_eq!(out.report.as_ref().unwrap().errors.len(), 1);
+        assert!(out.messages[0].contains("Écriture impossible"));
+        assert!(out.messages[0].contains("disque plein"));
+        assert!(!out.messages.iter().any(|m| m == text::AFTER_ERROR));
+    }
+
+    #[test]
+    fn extra_names_are_shown_relative_and_stop_the_all_back_headline() {
+        let mut out = Outcome::new(RunKind::Undo);
+        out.root = Some(PathBuf::from("/data/roms"));
+        let mut r = report(Some("/j/journal-1.txt"));
+        assert_eq!(
+            report_lines(RunKind::Undo, &r).headline,
+            text::UNDO_ALL_BACK
+        );
+        r.extra_names.push(emu_library::TidyExtraName {
+            remove: PathBuf::from("/data/roms/snes/a.sfc"),
+            keep: PathBuf::from("/data/roms/a.sfc"),
+        });
+        assert_eq!(
+            report_lines(RunKind::Undo, &r).headline,
+            text::UNDO_SOME_LEFT
+        );
+        let lines = extra_name_lines(&out, &r);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("roms/snes/a.sfc"));
+        assert!(lines[0].contains("roms/a.sfc est gardé"));
+        assert!(!lines[0].contains("/data"));
+        assert!(!lines[0].contains("supprimez"));
+        out.report = Some(r);
+        assert!(recovery_log(&out).iter().any(|l| l.contains("est gardé")));
+    }
+
+    #[test]
+    fn block_texts_for_read_only_and_not_writable() {
+        for b in [
+            TidyBlock::ReadOnlyFile {
+                path: PathBuf::from("Sonic.md"),
+            },
+            TidyBlock::NotWritable {
+                dir: PathBuf::from("."),
+            },
+            TidyBlock::NotWritable {
+                dir: PathBuf::from("snes"),
+            },
+        ] {
+            let t = text::block(&b);
+            assert!(t.contains("jamais"), "{t}");
+            assert!(t.contains("relancez"), "{t}");
+            assert!(!t.contains("supprimez"), "{t}");
         }
+        let t = text::block(&TidyBlock::NotWritable {
+            dir: PathBuf::from("."),
+        });
+        assert!(
+            t.contains("le dossier roms") && !t.contains("roms/."),
+            "{t}"
+        );
+        let t = text::block(&TidyBlock::ReadOnlyFile {
+            path: PathBuf::from("a/Sonic.md"),
+        });
+        assert!(t.contains("roms/a/Sonic.md"), "{t}");
     }
 
     #[test]
@@ -767,7 +883,7 @@ mod tests {
         }));
         assert!(other.undo_target().is_none());
         assert!(other.blocked);
-        assert!(unreadable.error.as_deref().unwrap().contains("retiré"));
+        assert!(unreadable.error.as_deref().unwrap().contains("déplacez-le"));
     }
 
     #[test]
@@ -871,8 +987,20 @@ mod tests {
         });
         assert!(t.contains("/data/rangement/journal-5.txt"));
         assert!(t.contains("ligne 3 invalide"));
-        // Not every journal refusal means « unreadable »: no removal advice here.
-        assert!(!t.contains("retiré"));
+        assert!(t.contains("illisible") && t.contains("déplacez-le"));
+        assert!(!t.contains("supprimez"));
+        let t = error_text(&LibraryError::TidyRefused {
+            journal: PathBuf::from("/j/journal-5.txt"),
+            reason: emu_library::TidyRefusal::AlreadyUndone,
+        });
+        assert!(t.contains("ce rangement est déjà annulé"));
+        assert!(!t.contains("illisible"));
+        let t = error_text(&LibraryError::Io {
+            path: PathBuf::from("/j/journal-5.txt"),
+            source: std::io::Error::other("écriture du journal interrompue"),
+        });
+        assert!(t.starts_with("Écriture impossible"));
+        assert!(!t.contains("illisible"));
         let t = error_text(&LibraryError::TidyRootMismatch {
             journal: PathBuf::from("/data/rangement/journal-6.txt"),
         });
