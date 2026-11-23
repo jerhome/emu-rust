@@ -27,6 +27,6 @@ pub use manager::{
 pub use platform::Platform;
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
-    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, PadDevices, RequiredFirmware,
-    SaveScopePref, choose_core,
+    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, PadDevices,
+    RequiredFirmware, SaveScopePref, choose_core,
 };
