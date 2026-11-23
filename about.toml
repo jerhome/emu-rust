@@ -17,6 +17,8 @@ accepted = [
     # epaint_default_fonts: bundled fonts.
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    # clipboard-win, error-code (via arboard, egui-winit `clipboard`, Windows): Boost, permissive.
+    "BSL-1.0",
 ]
 # Shipped targets only (keeps platform crates of other OSes out of the report).
 targets = [

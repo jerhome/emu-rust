@@ -48,7 +48,7 @@ Faits relevés dans le code de `wip-7.1` (= `v7.0.0-rc.1`) :
   `CoreFallback`, avertissement une fois par jeu depuis la 3.0 / 7.0) et `builtin_firmware` ; les `.info` installés
   listent `firmwareN_path` / `firmwareN_opt` (facultatif) ; `firmware.toml` donne les md5 de référence.
 - Interface : thème sombre d'egui, accent bleu `#285AA0`, contour de focus `#96C8FF`, avertissement `#FFBE50`.
-  Aucune icône (ni fenêtre, ni exécutable, ni `.app`, ni `.desktop`). Pas de presse-papiers (choix d'ADR 0002).
+  Aucune icône (ni fenêtre, ni exécutable, ni `.app`, ni `.desktop`). Presse-papiers : voir l'amendement en fin d'ADR.
 - Outils ici : ImageMagick (rendu SVG interne) et Python 3 sans Pillow ; ni `rsvg-convert` ni Inkscape.
 
 ## Décision
@@ -119,7 +119,7 @@ dessiné par-dessus l'image du jeu.
   ouverture impossible (seconde instance) ⇒ pas de fichier pour cette instance, un avertissement, rien d'autre.
 - **Panneau « Journal »** (pied de page, avec un compteur d'erreurs et d'avertissements non lus ; aussi dans le menu
   en jeu) : liste horodatée, filtre Erreurs / Avertissements / Tout, origine (application ou core) et « Ouvrir le dossier
-  des journaux » (pas de presse-papiers ; le fichier suffit, pas d'« Enregistrer sous… »). Ce qui n'existait que sur le terminal y
+  des journaux » (le fichier suffit, pas d'« Enregistrer sous… » ; copie par le bouton « Copier », voir l'amendement presse-papiers). Ce qui n'existait que sur le terminal y
   figure : racine des données, core et jeu chargés, messages du core, refus d'un core (`core_error`), conseils de
   `diagnostics`. Les messages déjà affichés (bandeaux, OSD) restent où ils sont.
 
@@ -382,3 +382,7 @@ n'a encore été écrit chez un utilisateur.
 - Les jeux à la racine de `roms/` de l'utilisateur (ses consoles) gardent favoris, historique, jaquettes,
   sauvegardes, états et options après rangement, et après annulation.
 - Feuille de route : ligne 7.1 et tableau des schémas mis à jour (« 7.1 : aucune migration »).
+- **Amendement (presse-papiers, revue FV1b B1)** : sur demande explicite de l'utilisateur (copier/coller des messages
+  d'erreur), la feature `clipboard` d'`egui-winit` est activée au niveau workspace (arboard ; smithay-clipboard sous
+  Wayland ; clipboard-win et error-code sous Windows). Cela lève la restriction « pas de presse-papiers » d'ADR 0002.
+  Licences : MIT / Apache-2.0, plus BSL-1.0 (permissive) ajoutée à `about.toml` ; aucun OpenSSL, aucune GPL.
