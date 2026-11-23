@@ -254,6 +254,19 @@ jobs:
           if ($gui -ne 2) { throw "emu-rust.exe must use the GUI subsystem (2), got $gui" }
           if ($cui -ne 3) { throw "emu-rust-cli.exe must use the console subsystem (3), got $cui" }
 
+      - name: Windows resources (name and version in both executables)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'target/x86_64-pc-windows-msvc/release'
+          # winresource derives the version from the package; compare the numeric core (7.1.0 for 7.1.0-rc.1).
+          $core = ($env:VERSION -split '[-+]')[0]
+          foreach ($exe in 'emu-rust.exe', 'emu-rust-cli.exe') {
+            $vi = (Get-Item "$dir/$exe").VersionInfo
+            Write-Output "$exe ProductName='$($vi.ProductName)' ProductVersion='$($vi.ProductVersion)' FileVersion='$($vi.FileVersion)'"
+            if ([string]::IsNullOrWhiteSpace($vi.ProductName)) { throw "$exe has no version resource (ProductName empty)" }
+            if (-not ([string]$vi.ProductVersion).StartsWith($core)) { throw "$exe ProductVersion '$($vi.ProductVersion)' does not match workspace version $env:VERSION" }
+          }
+
       - name: Package (zip)
         run: |
           $ErrorActionPreference = 'Stop'
