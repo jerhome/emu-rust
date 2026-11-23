@@ -325,10 +325,15 @@ pub(crate) fn run_job(
         Job::Undo { journal } => Some(library.undo_tidy(&options, journal, cancel, progress)),
         Job::Recovery => None,
     };
+    // Canonical like the roms root, so that reported paths and messages can be shown as `saves/…`.
+    let saves = dirs
+        .saves
+        .canonicalize()
+        .unwrap_or_else(|_| dirs.saves.clone());
     let mut steps = RealSteps {
         library: &mut library,
         options: &options,
-        saves: &dirs.saves,
+        saves: &saves,
         deferred: saves_overridden(dirs),
     };
     let mut out = match result {
@@ -342,9 +347,9 @@ pub(crate) fn run_job(
     };
     out.root = Some(options.roms_root().to_path_buf());
     for m in &mut out.messages {
-        *m = text::relativize(m, options.roms_root());
+        *m = text::relativize_as(&text::relativize(m, options.roms_root()), &saves, "saves");
     }
-    out.saves = Some(dirs.saves.clone());
+    out.saves = Some(saves);
     out
 }
 
@@ -431,6 +436,41 @@ pub(crate) fn extra_name_lines(out: &Outcome, r: &TidyReport) -> Vec<String> {
         .iter()
         .map(|n| text::extra_name(&shown_path(out, &n.remove), &shown_path(out, &n.keep)))
         .collect()
+}
+
+/// The whole report as plain text, what « Copier le rapport » puts in the clipboard.
+pub(crate) fn report_text(out: &Outcome) -> String {
+    let mut lines: Vec<String> = out.messages.clone();
+    if let Some(r) = &out.report {
+        let l = report_lines(out.kind, r);
+        lines.push(l.headline.clone());
+        lines.extend(l.cancelled.map(str::to_owned));
+        if !r.left.is_empty() {
+            lines.push(l.left_title.to_owned());
+            lines.extend(
+                r.left
+                    .iter()
+                    .map(|(p, b)| text::left(&shown_path(out, p), b)),
+            );
+        }
+        if !r.extra_names.is_empty() {
+            lines.push(text::EXTRA_NAMES_TITLE.to_owned());
+            lines.extend(extra_name_lines(out, r));
+        }
+        if !r.errors.is_empty() {
+            lines.push(text::ERRORS_TITLE.to_owned());
+            lines.extend(r.errors.iter().map(|(p, m)| error_entry(out, p, m)));
+        }
+    }
+    if !out.skipped.is_empty() {
+        lines.push(text::SKIPPED_TITLE.to_owned());
+        lines.extend(
+            out.skipped
+                .iter()
+                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
+        );
+    }
+    crate::copyable::joined(&lines)
 }
 
 /// Lines logged after the start-up recovery: messages, what was left or failed, identity collisions.
@@ -974,6 +1014,29 @@ mod tests {
         };
         let out = after_run(RunKind::Tidy, Err(err), &mut f);
         assert_eq!(out.messages.last().unwrap(), text::AFTER_ERROR);
+    }
+
+    #[test]
+    fn saves_folder_is_relativized_in_messages() {
+        let m = text::relativize_as(
+            "Sauvegardes non mises à jour : /home/u/data/saves/snes9x/x illisible",
+            Path::new("/home/u/data/saves"),
+            "saves",
+        );
+        assert_eq!(m, "Sauvegardes non mises à jour : saves/snes9x/x illisible");
+    }
+
+    #[test]
+    fn report_text_has_every_section() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(PathBuf::from("/d/roms"));
+        out.saves = Some(PathBuf::from("/d/saves"));
+        out.messages.push("note".into());
+        out.skipped
+            .push((PathBuf::from("/d/saves/a/.reg"), "illisible".into()));
+        let t = report_text(&out);
+        assert!(t.contains("note") && t.contains(text::SKIPPED_TITLE), "{t}");
+        assert!(t.contains("saves/a/.reg") && !t.contains("/d/saves"), "{t}");
     }
 
     #[test]

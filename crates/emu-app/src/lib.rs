@@ -283,6 +283,7 @@ pub fn run(flavor: Flavor) -> ExitCode {
         }
         Ok(cli::Command::Cores(c)) => {
             if flavor == Flavor::Gui && !has_stdout() {
+                // Unlike --help/--version (informational, SUCCESS), the requested action was not run: FAILURE.
                 return cli_refused(flavor, ExitCode::FAILURE);
             }
             match prepare(c.data_dir, c.system_dir, None)

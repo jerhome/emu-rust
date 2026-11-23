@@ -257,11 +257,16 @@ pub const STALE_PREVIEW: &str = "Cet aperçu a été fait pour un autre dossier 
 
 /// Replaces the absolute roms folder (as shown) by `roms` in a message built from library paths.
 pub fn relativize(message: &str, root: &Path) -> String {
+    relativize_as(message, root, "roms")
+}
+
+/// Same for another folder shown under `name` (`saves`).
+pub fn relativize_as(message: &str, root: &Path, name: &str) -> String {
     let root = path(root);
     if root.is_empty() {
         return message.to_owned();
     }
-    message.replace(&format!("{root}/"), "roms/")
+    message.replace(&format!("{root}/"), &format!("{name}/"))
 }
 
 /// Advice added to the line of an unreadable journal that is still in the journal folder.

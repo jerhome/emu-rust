@@ -121,8 +121,9 @@ impl LibraryUi {
         let was_running = matches!(self.tidy.stage, Stage::Running { .. });
         self.tidy.poll();
         if was_running && matches!(self.tidy.stage, Stage::Report(_)) {
-            // Rows were relocated by the run.
+            // Rows were relocated by the run: reload them, then rescan so that the library matches the disk.
             self.reload_games();
+            self.start_scan(ui.ctx());
         }
         let running = matches!(self.tidy.stage, Stage::Running { .. });
         if let Stage::Preview(p) = &mut self.tidy.stage
@@ -547,55 +548,52 @@ fn report(
         crate::copyable::message(ui, WARNING, m);
     }
     let shown = |p: &std::path::Path| exec::shown_path(out, p);
+    let sel = |ui: &mut Ui, color: egui::Color32, s: String| {
+        ui.add(egui::Label::new(RichText::new(s).color(color)).selectable(true));
+    };
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if let Some(r) = &out.report {
                 let lines = exec::report_lines(out.kind, r);
-                ui.label(lines.headline);
+                ui.add(egui::Label::new(lines.headline).selectable(true));
                 if let Some(c) = lines.cancelled {
-                    ui.colored_label(INFO, c);
+                    sel(ui, INFO, c.to_owned());
                 }
                 if !r.left.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(lines.left_title).strong());
                     for (p, b) in &r.left {
-                        ui.colored_label(WARNING, text::left(&shown(p), b));
+                        sel(ui, WARNING, text::left(&shown(p), b));
                     }
                 }
                 if !r.extra_names.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::EXTRA_NAMES_TITLE).strong());
                     for line in exec::extra_name_lines(out, r) {
-                        ui.colored_label(WARNING, line);
+                        sel(ui, WARNING, line);
                     }
                 }
                 if !r.errors.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::ERRORS_TITLE).strong());
-                    let entries: Vec<String> = r
-                        .errors
-                        .iter()
-                        .map(|(p, m)| exec::error_entry(out, p, m))
-                        .collect();
-                    for entry in &entries {
-                        ui.add(
-                            egui::Label::new(RichText::new(entry).color(ERROR)).selectable(true),
-                        );
+                    for (p, m) in &r.errors {
+                        sel(ui, ERROR, exec::error_entry(out, p, m));
                     }
-                    crate::copyable::copy_button_labelled(
-                        ui,
-                        crate::ui::text::COPY_REPORT,
-                        &crate::copyable::joined(&entries),
-                    );
                 }
             }
             if !out.skipped.is_empty() {
                 ui.add_space(6.0);
                 ui.label(RichText::new(text::SKIPPED_TITLE).strong());
                 for (p, m) in &out.skipped {
-                    ui.colored_label(WARNING, text::error_line(&shown(p), m));
+                    sel(ui, WARNING, text::error_line(&shown(p), m));
                 }
             }
+            ui.add_space(6.0);
+            crate::copyable::copy_button_labelled(
+                ui,
+                crate::ui::text::COPY_REPORT,
+                &exec::report_text(out),
+            );
         });
 }
