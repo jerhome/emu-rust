@@ -2,6 +2,20 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.0.2] - 2026-11-23
+
+### Corrigé
+
+- **Jaquettes** : aucune jaquette n'arrivait, car `thumbnails.libretro.com` répond désormais « introuvable » pour
+  toutes les images. Les jaquettes libretro sont maintenant prises d'abord sur le dépôt GitHub
+  `libretro-thumbnails` (`raw.githubusercontent.com`), le site libretro restant en secours ; HTTPS et ces deux hôtes
+  seulement, sans redirection, au plus 2 requêtes simultanées.
+- Une source en panne (réponses « introuvable » en série pour des jeux reconnus d'au moins 3 systèmes) ou une erreur
+  réseau ne marque plus les jeux « sans jaquette » pendant 30 jours ; au premier démarrage de la 7.0.2, les marques
+  « sans jaquette » déjà enregistrées sont effacées une fois pour que tout soit redemandé.
+- Statut lisible : « Jaquettes : X trouvées, Y introuvables » (et « source injoignable » le cas échéant) ; chaque échec
+  est écrit dans le journal.
+
 ## [7.0.1] - 2026-11-23
 
 ### Corrigé

@@ -149,7 +149,8 @@ fn libretro_found_and_absent() {
             ))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
     );
-    let mut source = LibretroThumbnails::new(client(), &s.uri());
+    let mut source =
+        LibretroThumbnails::with_bases(client(), &format!("{}/raw/", s.uri()), &s.uri());
     let found = source
         .fetch(&query("Fictional: Quest? (USA)"))
         .unwrap()
@@ -174,7 +175,8 @@ fn libretro_invalid_image_and_size_limit() {
             ResponseTemplate::new(200).set_body_bytes(vec![0u8; 8 * 1024 * 1024 + 1]),
         ),
     );
-    let mut source = LibretroThumbnails::new(client(), &s.uri());
+    let mut source =
+        LibretroThumbnails::with_bases(client(), &format!("{}/raw/", s.uri()), &s.uri());
     assert!(matches!(
         source.fetch(&query("Bad")),
         Err(AssetError::InvalidImage(_))
@@ -188,11 +190,213 @@ fn libretro_invalid_image_and_size_limit() {
 #[test]
 fn https_only_outside_loopback_tests() {
     let strict = HttpClient::new(HttpConfig::default()).unwrap();
-    let mut source = LibretroThumbnails::new(strict, "http://example.invalid/");
+    let mut source = LibretroThumbnails::with_bases(
+        strict,
+        "http://example.invalid/",
+        "http://example.invalid/",
+    );
     assert!(matches!(
         source.fetch(&query("x")),
         Err(AssetError::UrlRefused)
     ));
+}
+
+const RAW_SNES: &str = "/raw/Nintendo_-_Super_Nintendo_Entertainment_System/master/Named_Boxarts";
+
+fn mirrors(s: &Server) -> LibretroThumbnails {
+    LibretroThumbnails::with_bases(client(), &format!("{}/raw/", s.uri()), &s.uri())
+}
+
+fn titled(n: u32) -> CoverQuery {
+    query(&format!("Game {n}"))
+}
+
+/// Identified game of one of 3 systems, by `n % 3`.
+fn titled_in_systems(n: u32) -> CoverQuery {
+    let mut q = titled(n);
+    q.database = [
+        "Sega - Mega Drive - Genesis",
+        "Nintendo - Game Boy",
+        "Sega - Master System - Mark III",
+    ][(n % 3) as usize]
+        .into();
+    q
+}
+
+fn titled_single_system(n: u32) -> CoverQuery {
+    titled(n)
+}
+
+fn unidentified(n: u32) -> CoverQuery {
+    let mut q = titled(n);
+    q.identified = false;
+    q.database = "Atari - ST".into();
+    q
+}
+
+#[test]
+fn libretro_raw_first_and_exact_url() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(method("GET"))
+            .and(path(
+                format!("{RAW_SNES}/Super%20Mario%20World_%20%28USA%29.png").as_str(),
+            ))
+            .and(header(
+                "user-agent",
+                concat!("emu-rust/", env!("CARGO_PKG_VERSION")),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
+    );
+    let mut source = mirrors(&s);
+    let found = source
+        .fetch(&query("Super Mario World: (USA)"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.bytes, png());
+    // The fallback was never asked.
+    let total =
+        s.rt.block_on(s.server.received_requests())
+            .unwrap_or_default()
+            .len();
+    assert_eq!(total, 1);
+}
+
+#[test]
+fn libretro_falls_back_when_raw_misses() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{SNES}/Only%20Fallback.png").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
+    );
+    let mut source = mirrors(&s);
+    assert!(source.fetch(&query("Only Fallback")).unwrap().is_some());
+}
+
+#[test]
+fn libretro_redirect_is_inconclusive_and_not_followed() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{RAW_SNES}/Moved.png").as_str())).respond_with(
+            ResponseTemplate::new(302).insert_header("location", format!("{}/elsewhere", s.uri())),
+        ),
+    );
+    let mut chain = CoverChain::new(vec![Box::new(mirrors(&s))]);
+    assert!(matches!(
+        chain.fetch(&query("Moved")),
+        Err(AssetError::Http { status: 302 })
+    ));
+    assert_eq!(s.hits("/elsewhere"), 0);
+    assert_eq!(chain.stats().missing, 0);
+    assert_eq!(chain.stats().errors, 1);
+}
+
+#[test]
+fn libretro_429_stops_the_source_for_the_session() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{RAW_SNES}/A.png").as_str()))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1")),
+    );
+    s.mount(
+        Mock::given(path(format!("{SNES}/A.png").as_str()))
+            .respond_with(ResponseTemplate::new(403)),
+    );
+    let mut source = mirrors(&s);
+    assert!(matches!(
+        source.fetch(&query("A")),
+        Err(AssetError::Quota { retry_after: None })
+    ));
+    assert!(matches!(
+        source.fetch(&query("A")),
+        Err(AssetError::Quota { retry_after: None })
+    ));
+    // Neither mirror was asked again.
+    assert_eq!(s.hits(&format!("{RAW_SNES}/A.png")), 1);
+    assert_eq!(s.hits(&format!("{SNES}/A.png")), 1);
+    source.reset();
+    let _ = source.fetch(&query("A"));
+    assert_eq!(s.hits(&format!("{RAW_SNES}/A.png")), 2);
+}
+
+#[test]
+#[ignore = "real network (raw.githubusercontent.com)"]
+fn real_raw_mirror_serves_super_mario_world() {
+    let strict = HttpClient::new(HttpConfig::default()).unwrap();
+    let mut source = LibretroThumbnails::new(strict, LibretroThumbnails::BASE_URL);
+    let found = source
+        .fetch(&query("Super Mario World (USA)"))
+        .unwrap()
+        .expect("cover on the GitHub mirror");
+    assert_eq!(found.format, ImageFormat::Png);
+}
+
+#[test]
+fn libretro_all_404_is_source_broken_not_missing() {
+    let s = Server::start();
+    let mut chain = CoverChain::new(vec![Box::new(mirrors(&s))]);
+    let mut results = Vec::new();
+    for n in 0..12 {
+        results.push(chain.fetch(&titled_in_systems(n)));
+    }
+    // Under the threshold a 404 is a plain absence; from the 8th on nothing is conclusive.
+    assert!(results[..7].iter().all(|r| matches!(r, Ok(None))));
+    assert!(
+        results[7..]
+            .iter()
+            .all(|r| matches!(r, Err(AssetError::SourceBroken)))
+    );
+    let stats = chain.stats();
+    assert_eq!((stats.missing, stats.errors, stats.found), (7, 0, 0));
+    assert!(stats.source_broken);
+    // Broken sources are skipped: 8 requests per mirror, no more.
+    assert_eq!(
+        s.rt.block_on(s.server.received_requests()).unwrap().len(),
+        16
+    );
+    chain.reset();
+    assert!(!chain.stats().source_broken);
+    assert!(matches!(chain.fetch(&titled(99)), Ok(None)));
+}
+
+#[test]
+fn libretro_unidentified_404_never_count_towards_broken() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{RAW_SNES}/Good.png").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
+    );
+    let mut chain = CoverChain::new(vec![Box::new(mirrors(&s))]);
+    for n in 0..20 {
+        assert!(matches!(chain.fetch(&unidentified(n)), Ok(None)));
+    }
+    assert!(matches!(chain.fetch(&query("Good")), Ok(Some(_))));
+    assert!(!chain.stats().source_broken);
+}
+
+#[test]
+fn libretro_404_of_a_single_system_is_not_a_breakdown() {
+    let s = Server::start();
+    let mut source = mirrors(&s);
+    for n in 0..12 {
+        assert_eq!(source.fetch(&titled_single_system(n)).unwrap(), None);
+    }
+}
+
+#[test]
+fn libretro_a_success_resets_the_404_counter() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{RAW_SNES}/Good.png").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
+    );
+    let mut source = mirrors(&s);
+    for round in 0..3 {
+        for n in 0..7 {
+            assert_eq!(source.fetch(&titled(round * 10 + n)).unwrap(), None);
+        }
+        assert!(source.fetch(&query("Good")).unwrap().is_some());
+    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------
@@ -505,8 +709,9 @@ fn chain_libretro_then_screenscraper() {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
     );
     let mut chain = CoverChain::new(vec![
-        Box::new(LibretroThumbnails::new(
+        Box::new(LibretroThumbnails::with_bases(
             client(),
+            &format!("{}/raw/", s.uri()),
             &format!("{}/thumbs/", s.uri()),
         )),
         Box::new(ss(&s)),

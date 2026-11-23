@@ -432,3 +432,115 @@ fn worker_thread_stops_cleanly_without_database() {
     assert!(!missing.exists());
     assert!(covers.status().is_some());
 }
+
+#[test]
+fn source_broken_records_nothing_and_undoes_session_missing() {
+    let mut r = rig(true);
+    let games = r.worker.db.games().unwrap();
+    // Two early 404s look like genuine absences...
+    for g in games.iter().take(2) {
+        r.answer(Ok(None));
+        r.show(g.id);
+        assert!(matches!(r.state(g.id), Some(CoverState::Missing { .. })));
+    }
+    // ...until the source is judged broken: nothing recorded, earlier absences forgotten.
+    r.answer(Err(AssetError::SourceBroken));
+    r.show(games[2].id);
+    for g in games.iter().take(3) {
+        assert_eq!(r.state(g.id), None, "{}", g.title);
+    }
+    let status = r.worker.status();
+    assert!(status.source_broken);
+    assert_eq!(status.missing, 2);
+    // Later "not found" answers are not trusted either.
+    r.answer(Ok(None));
+    r.show(games[3].id);
+    assert_eq!(r.state(games[3].id), None);
+    assert!(r.worker.session_missing.is_empty());
+    // A reset brings the chain and the counters back.
+    r.worker.handle(Command::RetryMissing);
+    assert_eq!(r.worker.status().found + r.worker.status().missing, 0);
+    assert!(!r.worker.status().source_broken);
+}
+
+#[test]
+fn inconclusive_errors_never_write_missing() {
+    let mut r = rig(true);
+    let game = r.first_game();
+    for e in [
+        AssetError::Network("x".into()),
+        AssetError::Quota { retry_after: None },
+    ] {
+        r.answer(Err(e));
+        r.show(game.id);
+        assert_eq!(r.state(game.id), None);
+        r.worker.handle(Command::RetryMissing);
+    }
+}
+
+#[test]
+fn summary_status_when_the_queue_is_empty() {
+    let ctx = egui::Context::default();
+    let (mut covers, tx, _cmds) = ui_side();
+    tx.send(Reply::Status(WorkerStatus {
+        found: 12,
+        missing: 3,
+        ..WorkerStatus::default()
+    }))
+    .unwrap();
+    covers.poll(&ctx);
+    assert_eq!(
+        covers.status().as_deref(),
+        Some("Jaquettes : 12 trouvées, 3 introuvables")
+    );
+    tx.send(Reply::Status(WorkerStatus {
+        missing: 3,
+        source_broken: true,
+        ..WorkerStatus::default()
+    }))
+    .unwrap();
+    covers.poll(&ctx);
+    assert_eq!(
+        covers.status().as_deref(),
+        Some("Jaquettes : 0 trouvées, 3 introuvables, source injoignable")
+    );
+    tx.send(Reply::Status(WorkerStatus {
+        queued: 4,
+        found: 1,
+        ..WorkerStatus::default()
+    }))
+    .unwrap();
+    covers.poll(&ctx);
+    assert_eq!(covers.status(), Some(text::covers_queued(4)));
+}
+
+#[test]
+fn missing_purge_runs_once_from_generation_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    let mut db = library();
+    let game = db.games().unwrap().remove(0);
+    let missing = CoverState::Missing { checked_unix: 1 };
+    db.set_cover(game.id, CoverKind::Boxart, &missing).unwrap();
+
+    let mut config = Config::default();
+    config.library.roots = vec![PathBuf::from("/keep")];
+    assert_eq!(config.library.covers_missing_reset, 0);
+    crate::library::purge_missing_covers_once(&mut db, &mut config, &path);
+    assert_eq!(db.cover(game.id, CoverKind::Boxart).unwrap(), None);
+    assert_eq!(config.library.covers_missing_reset, 2);
+    let saved = Config::load(&path).unwrap();
+    assert_eq!(saved.library.covers_missing_reset, 2);
+    assert_eq!(saved.library.roots, vec![PathBuf::from("/keep")]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Generation 2: new Missing records are kept.
+    db.set_cover(game.id, CoverKind::Boxart, &missing).unwrap();
+    crate::library::purge_missing_covers_once(&mut db, &mut config, &path);
+    assert!(db.cover(game.id, CoverKind::Boxart).unwrap().is_some());
+}
