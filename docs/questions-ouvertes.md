@@ -366,3 +366,14 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 - **BIOS PS1** : reconnaître **autant de révisions que possible** (toutes régions : SCPH-1000/1001/1002/3000/3500/
   5500/5501/5502/5552/7000/7001/7002/7502/9000/9001/9002/100/101/102, PSone…), par hash, sans aucun
   téléchargement. Tâche secondaire 7.1 (library-assets).
+
+### Réponses 9.0 du 2026-11-23 (partielles)
+
+1. a) PlayStation haute résolution (swanstation) en premier, sans nouveau système.
+2. « N64 seule, Dreamcast seule » : pas les deux ensemble, une version chacune. **Ordre à confirmer** (N64 d'abord ?).
+3. a) pcsx_rearmed logiciel reste le défaut ; la haute résolution est un réglage.
+4. a) ×2 à l'activation, réglable de ×1 à ×8.
+6. a) Pont d'abord (choix laissé à l'architecte, recommandation retenue).
+7. a) Bouton « Mesurer 60 s » + rapport à coller.
+8. a) macOS Intel : cores/réglages absents affichés grisés.
+Restent : 5 (déjà « pas d'urgence » le 2026-11-22), 9 (Saturn en 9.3 validé ; DS ?), 10, 11 (déjà « encore moins »), 12, 13.
