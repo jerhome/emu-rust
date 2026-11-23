@@ -67,6 +67,8 @@ struct CoreEntry {
     #[serde(default)]
     m3u_launch: Option<M3uLaunchPref>,
     #[serde(default)]
+    multi_disc: MultiDiscPref,
+    #[serde(default)]
     actions: Option<ActionsEntry>,
     // 7.0 keys (design v7.0 §3.3).
     #[serde(default)]
@@ -146,6 +148,7 @@ struct CoreProps {
     variable_state_size: bool,
     options_by_extension: BTreeMap<String, Vec<(String, String)>>,
     m3u_launch: Option<M3uLaunchPref>,
+    multi_disc: MultiDiscPref,
     actions: CoreActions,
     pad_devices: Option<PadDevices>,
     save_family: Option<String>,
@@ -375,6 +378,14 @@ impl CorePreferences {
         self.cores.get(core)?.m3u_launch
     }
 
+    /// `multi_disc` of `data/cores.toml`; `Playlist` without the key or for an unknown core.
+    pub fn multi_disc(&self, core: &CoreId) -> MultiDiscPref {
+        self.cores
+            .get(core)
+            .map(|p| p.multi_disc)
+            .unwrap_or_default()
+    }
+
     /// `pad_devices` of `data/cores.toml`: device id per pad mode; `None` for a core without the key.
     pub fn pad_devices(&self, core: &CoreId) -> Option<PadDevices> {
         self.cores.get(core)?.pad_devices.clone()
@@ -428,6 +439,17 @@ pub enum M3uLaunchPref {
     Command,
     /// `<image>:<launch>` first entry (VICE).
     Program,
+}
+
+/// `multi_disc` of `data/cores.toml` (7.0.1, design v6.0 §12).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiDiscPref {
+    /// Several images ⇒ generated `.m3u`.
+    #[default]
+    Playlist,
+    /// Several images ⇒ first one loaded, the others added through the disk control interface.
+    DiskControl,
 }
 
 /// `[cores.<core>.actions]` of `data/cores.toml`: libretro key names without the `RETROK_` prefix (`"HOME"`,
@@ -708,6 +730,14 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
             "m3u_launch = \"program\" exige media = \"working_copy\" pour {core}"
         ));
     }
+    if entry.multi_disc == MultiDiscPref::DiskControl
+        && entry.media.unwrap_or_default() == CoreMediaPolicy::WorkingCopy
+    {
+        // The disk control path hands the images over in place, without working copies.
+        return Err(format!(
+            "multi_disc = \"disk_control\" est incompatible avec media = \"working_copy\" pour {core}"
+        ));
+    }
     let pad_devices = entry
         .pad_devices
         .map(|p| pad_devices(core, p))
@@ -748,6 +778,7 @@ fn core_props(core: &str, entry: CoreEntry) -> Result<CoreProps, String> {
         variable_state_size: entry.variable_state_size,
         options_by_extension,
         m3u_launch: entry.m3u_launch,
+        multi_disc: entry.multi_disc,
         actions,
         pad_devices,
         save_family: entry.save_family,
@@ -1739,6 +1770,11 @@ mod tests {
         assert!(parse("m3u_launch = \"program\"\nmedia = \"working_copy\"\n").is_ok());
         assert!(parse("m3u_launch = \"command\"\n").is_ok());
         assert!(parse("save_scope = \"all\"\n").is_err());
+        assert!(parse("multi_disc = \"other\"\n").is_err());
+        assert!(parse("multi_disc = \"disk_control\"\n").is_ok());
+        assert!(parse("multi_disc = \"disk_control\"\nmedia = \"direct\"\n").is_ok());
+        assert!(parse("multi_disc = \"disk_control\"\nmedia = \"working_copy\"\n").is_err());
+        assert!(parse("multi_disc = \"playlist\"\nmedia = \"working_copy\"\n").is_ok());
         assert!(parse("[cores.x.options_by_extension]\ncpr = { k = \"v\" }\n").is_ok());
         for bad in [
             "CPR = { k = \"v\" }",
@@ -1932,5 +1968,32 @@ mod tests {
                 .game_save_patterns(&opera)
                 .contains(&"opera/per_game/{game}.*.srm".to_owned())
         );
+    }
+
+    #[test]
+    fn multi_disc_builtin() {
+        let prefs = CorePreferences::builtin();
+        for core in ["genesis_plus_gx", "picodrive"] {
+            assert_eq!(
+                prefs.multi_disc(&id(core)),
+                MultiDiscPref::DiskControl,
+                "{core}"
+            );
+        }
+        for core in [
+            "pcsx_rearmed",
+            "swanstation",
+            "mednafen_psx",
+            "opera",
+            "puae",
+            "cap32",
+            "unknown",
+        ] {
+            assert_eq!(
+                prefs.multi_disc(&id(core)),
+                MultiDiscPref::Playlist,
+                "{core}"
+            );
+        }
     }
 }

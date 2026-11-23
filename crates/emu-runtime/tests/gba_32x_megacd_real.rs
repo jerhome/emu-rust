@@ -15,8 +15,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use emu_runtime::{
     CollectSink, ContentSpec, Emulator, EmulatorOptions, JoypadButton, LibretroError, M3uLaunch,
-    MAX_COPY_BYTES, MediaPolicy, MediaRules, MediaSet, MemoryKind, NullInput, RuntimeError,
-    SaveScope, ScriptedInput, prepare_media,
+    MAX_COPY_BYTES, MediaPolicy, MediaRules, MediaSet, MemoryKind, MultiDisc, NullInput,
+    RuntimeError, SaveScope, ScriptedInput, prepare_media,
 };
 
 /// One libretro core per process (ADR 0008): tests must not overlap.
@@ -471,6 +471,15 @@ fn direct_rules() -> MediaRules {
         media_direct: ["cue", "chd", "iso"].map(str::to_owned).to_vec(),
         max_copy_bytes: MAX_COPY_BYTES,
         m3u_launch: M3uLaunch::None,
+        multi_disc: MultiDisc::Playlist,
+    }
+}
+
+/// Rules of the library for genesis_plus_gx / picodrive (`cores.toml`: `multi_disc = "disk_control"`).
+fn disk_control_rules() -> MediaRules {
+    MediaRules {
+        multi_disc: MultiDisc::DiskControl,
+        ..direct_rules()
     }
 }
 
@@ -524,12 +533,9 @@ fn two_disc_playlist_is_handed_over_in_place_and_nothing_is_copied() {
         options(&data),
     );
     let text = core_error_of(result);
-    // With a playlist genesis_plus_gx logs the BIOS error, then "Could not load <first disc> from M3U file list"
-    // (the last error is the one kept): either way the first disc is what it names, or the BIOS.
-    assert!(
-        text.contains("bios_CD_E.bin") || text.contains("Game (Disc 1).cue"),
-        "`{text}`"
-    );
+    // The disc was opened: the core stops on the missing BIOS (« Could not load <disc> from M3U file list »
+    // alone means the playlist entry did not lead to the disc).
+    assert!(text.contains("bios_CD_E.bin"), "`{text}`");
     assert_eq!(tree(&discs), before, "the disc folder was modified");
     let copies: Vec<_> = walk_names(&data.join("saves"))
         .into_iter()
@@ -549,4 +555,65 @@ fn walk_names(dir: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// Grouped discs as the library hands them over for these cores (`multi_disc = "disk_control"`, no `.m3u`):
+/// the first disc goes to `retro_load_game`, the others are appended through the disk control interface once
+/// the game is loaded. A generated `.m3u` does not work with genesis_plus_gx / picodrive (they join every entry
+/// to the playlist's folder: « Could not load … from M3U file list » / « Invalid CD image », user report,
+/// Night Trap 32X, 7.0.0). Folder with spaces and parentheses as in a user's library. Without BIOS the load
+/// stops after the first disc was opened, on the BIOS error; the second disc cannot be observed (no running
+/// game), the success path is covered by `multi_disc_mock`.
+#[test]
+#[ignore = "needs genesis_plus_gx, picodrive: scripts/fetch-test-assets.sh --with-6.0"]
+fn grouped_discs_by_disk_control_reach_the_first_disc() {
+    let _g = lock();
+    let discs = out_dir("grouped discs (Europe)");
+    mkcd(&[
+        "megacd",
+        discs.to_str().unwrap(),
+        "--name",
+        "Game (Europe)",
+        "--discs",
+        "2",
+        "--region",
+        "E",
+    ]);
+    let mut images: Vec<PathBuf> = fs::read_dir(&discs)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "cue"))
+        .collect();
+    images.sort();
+    assert_eq!(images.len(), 2, "{images:?}");
+    let before = tree(&discs);
+    let mut failures = Vec::new();
+    for core in ["genesis_plus_gx", "picodrive"] {
+        let set = MediaSet {
+            name: "Game (Europe)".into(),
+            images: images.clone(),
+            playlist: None,
+            launch: None,
+        };
+        let data = out_dir(&format!("grouped-{core}"));
+        let text = core_error_of(Emulator::load_content(
+            &core_path(core),
+            ContentSpec::Media {
+                set,
+                rules: disk_control_rules(),
+            },
+            options(&data),
+        ));
+        // First disc opened, no BIOS: « Unable to open CD BIOS » (genesis_plus_gx), « Missing BIOS » (picodrive).
+        if !text.contains("BIOS") {
+            failures.push(format!("{core}: `{text}`"));
+        }
+        assert_eq!(tree(&discs), before, "{core}: the disc folder was modified");
+    }
+    assert!(
+        failures.is_empty(),
+        "the first disc was not opened:\n{}",
+        failures.join("\n")
+    );
 }

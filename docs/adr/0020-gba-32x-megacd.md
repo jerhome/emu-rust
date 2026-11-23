@@ -1,7 +1,7 @@
 # ADR 0020 — Version 6.0 : Game Boy Advance, 32X et Mega CD (rendu logiciel)
 
-Statut : **accepté** (2026-11-21, après re-validation contre le code réel : les deux amendements du 2026-11-21 en fin
-de document **priment** sur le texte antérieur ; `docs/design/v6.0-gba-32x-megacd.md` §10) — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
+Statut : **accepté** (2026-11-21, après re-validation contre le code réel : les amendements en fin de document
+(2026-11-21 ×2, 2026-11-23 multi-CD) **priment** sur le texte antérieur ; `docs/design/v6.0-gba-32x-megacd.md` §10) — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
 PlayStation + 3DO en rendu logiciel** ; Saturn, Dreamcast et rendu matériel plus tard ; revue croisée : corrections
 I2, I9, I13, M3, M4, M5, M6, M8). Remplace l'intitulé de la phase 7 de la feuille de route (« 32 bits : PS1, Saturn,
 3DO, GBA, 32X ; rendu matériel GL ») : **la 6.0 = GBA + 32X + Mega CD**. La mention initiale « PS1, Saturn et 3DO ne
@@ -219,3 +219,38 @@ Complète l'amendement précédent ; détail : design 6.0 §10.
   (`docs/design/donnees-test-4-7.md`) ; il reste qu'aucun jeu Mega CD ne démarre sans BIOS commercial.
 - **§7, suite** : la 7.0 n'est pas abordée sans le feu vert de l'utilisateur (ADR 0021 abandonnée) ; le §7 vaut
   pour mémoire.
+
+## Amendement du 2026-11-23 — multi-CD Mega CD sans `.m3u` généré (correctif 7.0.1)
+
+**Contexte.** Essai utilisateur (Night Trap, 2 `.chd` regroupés), reproduit en headless par qa-systems avec les vrais
+cores : le `.m3u` généré dans le dossier temporaire privé (§3, chemins **absolus**) est illisible par
+`genesis_plus_gx` (« could not load … from m3u file list ») et `picodrive` (« invalid CD image ») : ces deux cores
+préfixent **toujours** chaque ligne par le dossier du `.m3u`, sans tester l'absolu (Linux et Windows). Les cores PS1
+(`pcsx_rearmed`, `swanstation`, `mednafen_psx`) acceptent l'absolu ; `opera` ne lit pas de `.m3u` (déjà
+`group_discs = false`, ADR 0021 §6). Écrire le `.m3u` à côté des ROMs est exclu (on n'écrit jamais chez
+l'utilisateur) ; des chemins relatifs au dossier temporaire sont impossibles sous Windows quand les ROMs sont sur un
+autre lecteur que `%TEMP%`.
+
+**Décision.** Remplace, pour ces deux cores seulement, la phrase « `MediaSet` + `.m3u` généré … » du §3 :
+
+- Nouvelle clé `cores.toml` `multi_disc = "playlist" | "disk_control"` (défaut `"playlist"` = comportement actuel).
+  `"disk_control"` sur `genesis_plus_gx` et `picodrive` ; refusée au chargement du fichier avec
+  `media = "working_copy"` (comme `m3u_launch = "program"`, à l'inverse).
+- Pour un `MediaSet` de N ≥ 2 disques avec `disk_control` : **aucun `.m3u`**, le disque 1 est donné en place à
+  `retro_load_game` ; juste après un chargement réussi (avant `restore_sram`), les disques 2..N sont ajoutés par
+  l'interface disque (`add_image_index` + `replace_image_index` sur le nouvel index), **sans manipuler le tiroir** :
+  le disque inséré (index 0) n'est jamais touché, et une éjection / réinsertion avant la première image ferait
+  relire le disque 1 au core. Échec (pas d'interface disque, refus du core) ⇒ échec du lancement
+  (`RuntimeError::NoDiskControl` / `Libretro`), pas de session amputée de disques.
+- Rien d'autre ne change : politique `Direct`, `media_direct`, menu **Disquettes / CD**, `.m3u` de l'utilisateur
+  (`ContentSpec::File`, ses entrées relatives fonctionnent), cores PS1 (`playlist`). `set_initial_image` n'est pas
+  utilisé (emu-rust ne mémorise pas le disque inséré : chaque lancement commence au disque 1, comme avant) ; la liste
+  des disques étant identique à celle d'un `.m3u`, les savestates ne sont pas affectés.
+- §4 précisé : le nom du jeu vu par le core est celui du **disque 1** (`content_name`), donc `<disque 1>.brm`, commun
+  à tous les disques (le core ne change pas de fichier en cours de session) ; `game_saves = ["{game}.brm"]` suit.
+  Aucune migration : ce lancement n'avait jamais fonctionné.
+
+**Conséquences.** Correctif minimal, sans `unsafe` ni réseau nouveaux (l'interface disque d'`emu-libretro` existe).
+Non vérifiable avec un vrai jeu ici (aucun BIOS Mega CD libre) : test sur core factice + essai utilisateur (Night
+Trap Mega CD, genesis_plus_gx). Le CD 32X (7.2, picodrive, ADR 0024) hérite de la clé. Détail et découpage :
+design 6.0 §12.

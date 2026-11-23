@@ -34,6 +34,7 @@ impl Fixture {
     ) -> Result<PreparedMedia, RuntimeError> {
         let rules = MediaRules {
             m3u_launch: launch,
+            multi_disc: crate::media::MultiDisc::Playlist,
             ..MediaRules::new(policy)
         };
         let exts: Vec<String> = ["dsk", "d64", "m3u"].map(str::to_owned).to_vec();

@@ -32,6 +32,7 @@ fn puae_rules() -> MediaRules {
         media_direct: vec!["ipf".into(), "lha".into()],
         max_copy_bytes: emu_runtime::MAX_COPY_BYTES,
         m3u_launch: emu_runtime::M3uLaunch::None,
+        multi_disc: emu_runtime::MultiDisc::Playlist,
     }
 }
 
@@ -304,6 +305,7 @@ fn a_source_over_the_copy_limit_is_refused_before_anything_is_written() {
     let rules = MediaRules {
         max_copy_bytes: 1024,
         m3u_launch: emu_runtime::M3uLaunch::None,
+        multi_disc: emu_runtime::MultiDisc::Playlist,
         ..puae_rules()
     };
     let err = prepare_media(&set("Big", vec![adf]), &rules, &exts(true), &env.saves()).unwrap_err();

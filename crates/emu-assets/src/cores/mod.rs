@@ -30,6 +30,6 @@ pub use platform::Platform;
 pub use ps1_bios::{PS1_BIOS, Ps1Bios, Ps1Region, ps1_bios_for_md5, ps1_region_for_name};
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
-    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, OptionalFirmware, PadDevices,
-    RequiredFirmware, SaveScopePref, choose_core,
+    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, OptionalFirmware,
+    PadDevices, RequiredFirmware, SaveScopePref, choose_core,
 };
