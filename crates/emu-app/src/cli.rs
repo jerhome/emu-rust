@@ -26,6 +26,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] --import-bios <fichier> [--bios-name <nom> --unverified]\n\
                          \x20                [--replace-user-bios]\n\
                          \x20      emu-rust --version | --help\n\
+                         Windows : les commandes en ligne passent par emu-rust-cli.exe (console) ; emu-rust.exe est\n\
+                         l'interface sans console. Ex. : emu-rust-cli --install-core recommended\n\
                          --core accepte l'identifiant d'un core installé (ex. gambatte, puae, puae2021) ou le\n\
                          chemin d'un fichier.\n\
                          --import-bios copie un BIOS que vous possédez (Kickstart, TOS…) sous le nom attendu, après\n\
@@ -666,6 +668,7 @@ mod tests {
         assert!(p(&["--core", "cap32", "--rom", "r", "--launch", " "]).is_err());
         assert!(p(&["--launch", "RUN"]).is_err());
         assert!(p(&["--check-bios", "--no-auto-fast-load"]).is_err());
+        assert!(USAGE.contains("emu-rust-cli --install-core recommended"));
         assert!(USAGE.contains("--launch") && USAGE.contains("--no-auto-fast-load"));
     }
 

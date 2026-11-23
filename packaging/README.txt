@@ -17,12 +17,13 @@ La méthode manuelle ci-dessous reste possible : --core accepte un chemin.
 
 0a. Rangement des ROMs, Journal, console (7.1)
 ----------------------------------------------
-Rangement : bibliothèque > « Ranger ». L'application construit d'abord un APERÇU (déplacements prévus, par système,
-sans rien toucher) ; le bouton Ranger n'agit qu'ensuite. Chaque rangement est journalisé et « Annuler » rétablit
-l'état précédent tant que les fichiers n'ont pas été modifiés depuis. Les fichiers non identifiés ne sont pas déplacés.
-Journal : panneau « Journal » (pied de page de la fenêtre) : messages et erreurs récents de l'application.
-Console (Windows) : Réglages > « Afficher la console » ouvre une console avec emu-rust.exe, utile au diagnostic ;
-sans ce réglage emu-rust.exe n'ouvre aucune fenêtre de terminal.
+Rangement : Réglages > « Ranger les ROMs… ». L'application construit d'abord un APERÇU (déplacements prévus, par
+système, sans rien toucher) ; le bouton « Ranger N jeu(x) » n'agit qu'ensuite. Chaque rangement est journalisé et
+« Annuler le dernier rangement… » rétablit l'état précédent tant que les fichiers n'ont pas été modifiés depuis. Les
+fichiers non identifiés ne sont pas déplacés.
+Journal : bouton « Journal » (pied de page de la fenêtre) : messages et erreurs récents de l'application.
+Console (Windows) : Réglages > Interface > « Afficher la console (après redémarrage) » ouvre une console avec
+emu-rust.exe, utile au diagnostic ; sans ce réglage emu-rust.exe n'ouvre aucune fenêtre de terminal.
 
 0b. Atari ST (2.0, en développement)
 ------------------------------------
