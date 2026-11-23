@@ -496,8 +496,10 @@ impl<'a> Exec<'a> {
                 _ => {}
             }
         }
-        // 4. Cleanup (RV1 I3): created folders deepest first at both places (silent when not empty), then the
-        // assembly folder, then `<D>`.
+        // 4. Cleanup (RV1 I3): folders created inside the assembly folder, the assembly folder, `<D>`, and only then
+        // the created folders at their real place (deepest first, silent when not empty). The assembly folder and
+        // `<D>` usually live inside a created folder (`D+ psx`, `S psx/X.emu-rust-part`): removing that one first
+        // would fail on a non-empty parent and leave it behind.
         let mut created: Vec<PathBuf> = block
             .body
             .iter()
@@ -508,10 +510,8 @@ impl<'a> Exec<'a> {
             .collect();
         created.sort_by_key(|d| std::cmp::Reverse(depth(d)));
         for d in &created {
-            let mut places = vec![d.clone()];
-            places.extend(in_part(d));
-            for place in places {
-                self.remove_dir(&place, true)?;
+            if let Some(inside) = in_part(d) {
+                self.remove_dir(&inside, true)?;
             }
         }
         if let Some(p) = &part {
@@ -519,6 +519,9 @@ impl<'a> Exec<'a> {
         }
         if let Some(d) = &final_dir {
             self.remove_dir(d, false)?;
+        }
+        for d in &created {
+            self.remove_dir(d, true)?;
         }
         // 5. Database: inverse rewrite of what came back, unless a row already holds the source key (I5).
         let back: Vec<(PathBuf, PathBuf)> = block

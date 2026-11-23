@@ -296,6 +296,8 @@ pub type AbsoluteMoves = Vec<(PathBuf, PathBuf)>;
 pub struct TidyReport {
     pub journal: Option<PathBuf>,
     /// `(from, to)` absolute, under the canonical root: input of `emu_runtime::relocate_identities`.
+    /// After a partial undo it is the net of the journal: forward moves of the units that stayed tidied plus the
+    /// returns of the undone units. `relocate_identities` is idempotent, so replaying it on the same list is safe.
     pub moved: AbsoluteMoves,
     pub left: Vec<(PathBuf, TidyBlock)>,
     /// French messages.

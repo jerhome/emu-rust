@@ -371,7 +371,7 @@ fn a_journal_cut_before_the_commit_of_its_last_unit_brings_that_unit_back() {
     write(&fx.roms.join("Disc (Track 2).bin"), &noise(2352 * 2, 2));
     let mut library = Library::open_in_memory().unwrap();
     fx.scan(&mut library);
-    let files_before = files(&fx.roms);
+    let files_before = tree(&fx.roms);
     let (plan, ids) = disc_plan(&library, &fx);
     let report = apply(&mut library, &fx, &plan, &ids);
     let journal = report.journal.unwrap();
@@ -405,10 +405,9 @@ fn a_journal_cut_before_the_commit_of_its_last_unit_brings_that_unit_back() {
             vec![(journal.clone(), TidySection::Tidy)],
             "cut {keep}"
         );
-        // Files only: the recovery leaves the empty `psx/` it had created (design: « arbre d'origine »; reported to
-        // library-assets: `rollback` removes the created folders before the assembly folder inside them).
+        // Whole tree: the folders created by the unit are gone too.
         assert_eq!(
-            files(&fx.roms),
+            tree(&fx.roms),
             files_before,
             "cut after {keep} lines: the unit is not whole at the origin"
         );
