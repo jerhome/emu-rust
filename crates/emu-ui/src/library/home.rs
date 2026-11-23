@@ -171,6 +171,7 @@ impl LibraryUi {
             if self.selected_game().is_some_and(|g| g.is_dir) {
                 super::weak(ui, text::DOS_FOLDER_HINT);
             }
+            super::weak(ui, text::footer());
         });
 
         // Keys that work wherever the focus is (not while typing, not under a dialog).
