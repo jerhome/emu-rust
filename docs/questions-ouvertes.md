@@ -382,3 +382,13 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 11. Vulkan : en dernier palier ; **l'utilisateur l'essaiera lui-même d'abord** (sur l'Iris Xe, même si ce n'est pas idéal), puis le camarade.
 12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
 13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. Pilote graphique Intel 32.0.101.7088.
+
+## Piste capsimg / IPF (essai Hunter du 2026-11-23, remis de côté)
+
+`capsimg.dll` 64 bits (fs3) trouvée par puae dans `system/` mais `LoadLibrary` refuse (« DLOPEN: Failed to open »,
+« Unable to open capsimg.dll ») ; ni `Unblock-File` ni `msvcp140.dll` à côté d'`emu-rust.exe` n'y changent rien ;
+pas de droits admin. puae ne journalise pas l'erreur Windows. **Piste notée (accord utilisateur)** : une sonde
+emu-rust qui charge elle-même `capsimg.dll` (sans l'exécuter au-delà du chargement) et affiche l'erreur Windows exacte
+(`GetLastError`, ex. 126 module introuvable, 193 mauvaise architecture) et la liste des DLL importées (table d'import
+PE) absentes ; à intégrer à l'import guidé de capsimg (validation PE 64 bits + 14 exports `CAPS*`). Rapport :
+`.claude/ipf-capsimg.md` (dépôt A, local).
