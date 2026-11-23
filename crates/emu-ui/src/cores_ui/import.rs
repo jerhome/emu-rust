@@ -273,11 +273,14 @@ impl ImportUi {
                     } else {
                         ui.visuals().text_color()
                     };
-                    if report.lines.is_empty() {
+                    if report.lines.is_empty() && report.warnings.is_empty() {
                         ui.label(text::IMPORT_NOTHING);
                     }
                     for line in &report.lines {
                         ui.colored_label(color, line);
+                    }
+                    for warning in &report.warnings {
+                        crate::copyable::message(ui, WARNING, warning);
                     }
                     let ok = ui.button(text::OK);
                     if focus {

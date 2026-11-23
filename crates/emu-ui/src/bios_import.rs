@@ -168,6 +168,8 @@ pub fn unverified_item(identified: &BiosIdentified, name: &str) -> Option<BiosIm
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BiosImportReport {
     pub lines: Vec<String>,
+    /// Alias copies that could not be made (shown as warnings, the import itself succeeded).
+    pub warnings: Vec<String>,
     pub installed: usize,
     pub failed: usize,
 }
@@ -200,6 +202,12 @@ pub fn import_bios(
                 report
                     .lines
                     .extend(outcome.aliases.iter().map(crate::ps1_bios::alias_line));
+                report.warnings.extend(
+                    outcome
+                        .alias_warnings
+                        .iter()
+                        .map(|w| text::alias_warning(w)),
+                );
             }
             Err(e) => {
                 report.failed += 1;
@@ -241,6 +249,15 @@ pub mod text {
             s.push_str(&format!(", ancien fichier renommé {}", b.to_string_lossy()));
         }
         s
+    }
+
+    /// `detail` is the assets crate text, which names the alias (« alias scph5502.bin non créé : … »).
+    pub fn alias_warning(detail: &str) -> String {
+        format!(
+            "La copie du BIOS sous son autre nom n'a pas pu être créée ({detail}) : swanstation, \
+             beetle_psx et pcsx_rearmed risquent de ne pas trouver ce BIOS ; vous pouvez copier \
+             le fichier vous-même sous ce nom."
+        )
     }
 
     pub fn changed_during_import() -> String {
@@ -293,6 +310,16 @@ mod tests {
             &[(CoreId::new("fake").unwrap(), info)],
             &[],
         )
+    }
+
+    #[test]
+    fn alias_warning_text_keeps_detail_and_explains() {
+        let t = text::alias_warning("alias scph5502.bin non créé : denied");
+        assert!(
+            t.contains("scph5502.bin") && t.contains("swanstation"),
+            "{t}"
+        );
+        assert!(t.contains("vous-même"), "{t}");
     }
 
     #[test]

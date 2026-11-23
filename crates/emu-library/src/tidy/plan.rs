@@ -1049,8 +1049,11 @@ impl Classifier<'_> {
         let resolved = scan::resolve(self.conn, &mut self.names, &analysis)?;
         let by_dat =
             |how: Identification| matches!(how, Identification::Sha1 | Identification::Crc32Size);
-        let grouped = matches!(kind, DraftKind::Group(_) | DraftKind::Playlist(_));
-        let title = |t: String| if grouped { strip_media_marker(&t) } else { t };
+        let title = |t: String| match &kind {
+            DraftKind::Group(_) => strip_group_member_name(&t),
+            DraftKind::Playlist(_) => strip_media_marker(&t),
+            _ => t,
+        };
         let classified = match &analysis.rule {
             Rule::Dos { system, .. } => {
                 let title = resolved.map_or_else(|| analysis.stem.clone(), |(id, _)| id.title);

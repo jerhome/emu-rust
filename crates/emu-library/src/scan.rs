@@ -16,7 +16,7 @@ use crate::db::{
 };
 use crate::disc::{BIN_PROBE_LEN, bin_kind, disc_header, first_track, serial_keys};
 use crate::dos::DosFile;
-use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_media_marker};
+use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_group_member_name, strip_media_marker};
 use crate::systems::{Attribution, attribute, systems};
 use crate::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
@@ -1982,7 +1982,12 @@ fn store(
         id.title
     } else {
         // The DAT names the first disk `Game (Disk 1 of 2)`: the game is the whole set.
-        strip_media_marker(&id.title)
+        // A zip `Foo 2` keeps its digit: only real groups lose a floppy number.
+        if zip_media {
+            strip_media_marker(&id.title)
+        } else {
+            strip_group_member_name(&id.title)
+        }
     };
     let full = analysis.hashes.map(|h| h.full);
     let headerless = analysis.hashes.and_then(|h| h.headerless);
