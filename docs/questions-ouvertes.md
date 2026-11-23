@@ -370,7 +370,7 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 ### Réponses 9.0 du 2026-11-23 (partielles)
 
 1. a) PlayStation haute résolution (swanstation) en premier, sans nouveau système.
-2. « N64 seule, Dreamcast seule » : pas les deux ensemble, une version chacune. **Ordre à confirmer** (N64 d'abord ?).
+2. N64 puis Dreamcast, en deux versions séparées (choix laissé à l'architecte, retenu) : 9.1 N64, 9.2 Dreamcast ; les paliers suivants se décalent (DirectX 11 9.3 si OpenGL est bon, PSP/Saturn 9.4, Vulkan 9.5).
 3. a) pcsx_rearmed logiciel reste le défaut ; la haute résolution est un réglage.
 4. a) ×2 à l'activation, réglable de ×1 à ×8.
 6. a) Pont d'abord (choix laissé à l'architecte, recommandation retenue).
