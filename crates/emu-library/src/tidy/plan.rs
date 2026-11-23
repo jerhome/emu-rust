@@ -18,7 +18,7 @@ use super::{
 };
 use crate::db::{DiscIndex, NameIndex, db_error, identify};
 use crate::disc::cue_file_names;
-use crate::media::{parse_m3u, strip_media_marker};
+use crate::media::{parse_m3u, strip_group_member_name, strip_media_marker};
 use crate::scan::{
     self, AUDIO_TRACK_ALONE, Failure, Found, MAX_CARTRIDGE_BIN, Rule, SEGA_TRACK_ALONE,
     ZIPPED_DISC, audio_track_name, is_candidate, is_console_disc, is_executable, is_m3u, lower_ext,
@@ -1245,7 +1245,7 @@ pub(super) fn run(
             DraftKind::GameDir(_) | DraftKind::Odd(_) => file_name(&rel),
             DraftKind::Group(_) => match &draft.layout {
                 Layout::Folder { name, .. } => name.clone(),
-                Layout::Flat => strip_media_marker(&stem(&rel)),
+                Layout::Flat => strip_group_member_name(&stem(&rel)),
             },
             _ => stem(&rel),
         };

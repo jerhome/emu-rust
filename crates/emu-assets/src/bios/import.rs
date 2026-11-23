@@ -203,6 +203,9 @@ pub struct ImportOutcome {
     /// Region aliases created by this import (PlayStation revisions only; empty otherwise, and when the
     /// canonical name was taken). A failure to make one is logged, never an error of the import.
     pub aliases: Vec<FirmwareAlias>,
+    /// Aliases that could not be made or recorded (technical text, no credential): the import itself succeeded,
+    /// so the UI shows them as a warning.
+    pub alias_warnings: Vec<String>,
 }
 
 /// A copy of a PlayStation BIOS made under the canonical name of its region (`scph5501.bin`...), so that cores
@@ -421,12 +424,14 @@ fn import_with_table(
             }) {
                 tracing::warn!("manifeste des BIOS non mis à jour : {e}");
             }
-            let aliases = install_region_alias(system_dir, src, name, &target, &md5, ps1);
+            let (aliases, alias_warnings) =
+                install_region_alias(system_dir, src, name, &target, &md5, ps1);
             return Ok(ImportOutcome {
                 installed: target,
                 backup: None,
                 md5,
                 aliases,
+                alias_warnings,
             });
         }
         TargetState::Absent => false,
@@ -487,12 +492,13 @@ fn import_with_table(
     }) {
         tracing::warn!("manifeste des BIOS non mis à jour : {e}");
     }
-    let aliases = install_region_alias(system_dir, src, name, &target, &md5, ps1);
+    let (aliases, alias_warnings) = install_region_alias(system_dir, src, name, &target, &md5, ps1);
     Ok(ImportOutcome {
         installed: target,
         backup,
         md5,
         aliases,
+        alias_warnings,
     })
 }
 
@@ -505,7 +511,7 @@ fn source_name(src: &Path) -> String {
 /// Copies the installed `name` under the canonical file name of its PlayStation region when `md5` is a known
 /// revision (never for an unknown hash). The canonical name must be free: an existing file (the user's, or an
 /// alias made earlier from another revision) is left alone. Called with the manifest lock held. Best effort:
-/// the import already succeeded, so a failure is only logged.
+/// the import already succeeded, so a failure is logged and returned as a warning, never as an error.
 fn install_region_alias(
     system_dir: &Path,
     src: &Path,
@@ -513,24 +519,27 @@ fn install_region_alias(
     installed: &Path,
     md5: &[u8; 16],
     ps1: &[Ps1Bios],
-) -> Vec<FirmwareAlias> {
+) -> (Vec<FirmwareAlias>, Vec<String>) {
     let Some(revision) = ps1_lookup(ps1, md5) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let canonical = revision.region.canonical_file();
     if name == canonical {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let target = system_dir.join(canonical);
     match fs::symlink_metadata(&target) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Ok(_) => {
             tracing::info!("alias {canonical} non créé : le nom est déjà pris");
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         Err(e) => {
             tracing::warn!("alias {canonical} non créé : {e}");
-            return Vec::new();
+            return (
+                Vec::new(),
+                vec![format!("alias {canonical} non créé : {e}")],
+            );
         }
     }
     let made = (|| -> io::Result<()> {
@@ -559,7 +568,10 @@ fn install_region_alias(
     })();
     if let Err(e) = made {
         tracing::warn!("alias {canonical} non créé : {e}");
-        return Vec::new();
+        return (
+            Vec::new(),
+            vec![format!("alias {canonical} non créé : {e}")],
+        );
     }
     crate::http::sync_dir(system_dir);
     tracing::info!("BIOS PlayStation : copie sous {canonical} (alias de {name})");
@@ -570,18 +582,23 @@ fn install_region_alias(
         imported_unix: unix_now(),
         alias_of: Some(name.to_owned()),
     };
+    let mut warnings = Vec::new();
     if let Err(e) = update_manifest(system_dir, |m| {
         m.imported.insert(canonical.to_owned(), entry);
     }) {
         // Without its record the copy reads as a user file: kept, never replaced silently (the safe side).
         tracing::warn!("manifeste des BIOS non mis à jour : {e}");
+        warnings.push(format!("alias {canonical} non enregistré : {e}"));
     }
-    vec![FirmwareAlias {
-        name: canonical.to_owned(),
-        source_name: name.to_owned(),
-        revision: revision.model(),
-        region: revision.region,
-    }]
+    (
+        vec![FirmwareAlias {
+            name: canonical.to_owned(),
+            source_name: name.to_owned(),
+            revision: revision.model(),
+            region: revision.region,
+        }],
+        warnings,
+    )
 }
 
 /// Removes a file recorded by [`import_firmware`] when it is still unchanged, together with the region aliases
@@ -599,6 +616,7 @@ pub fn remove_imported_firmware(system_dir: &Path, name: &str) -> Result<Vec<Str
     };
     let mut forget = Vec::new();
     let mut removed = Vec::new();
+    let mut failure = None;
     if unchanged(name, entry) {
         remove_file_of(system_dir, name)?;
         removed.push(name.to_owned());
@@ -608,7 +626,11 @@ pub fn remove_imported_firmware(system_dir: &Path, name: &str) -> Result<Vec<Str
                 continue;
             }
             if unchanged(alias, e) {
-                remove_file_of(system_dir, alias)?;
+                // The source is already gone: record what was removed before reporting the failure.
+                if let Err(err) = remove_file_of(system_dir, alias) {
+                    failure = Some(err);
+                    break;
+                }
                 removed.push(alias.clone());
             }
             // Modified or already gone: nothing of ours is left to protect, the record only goes.
@@ -623,7 +645,10 @@ pub fn remove_imported_firmware(system_dir: &Path, name: &str) -> Result<Vec<Str
             m.imported.retain(|k, _| !forget.contains(k))
         })?;
     }
-    Ok(removed)
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(removed),
+    }
 }
 
 fn remove_file_of(system_dir: &Path, name: &str) -> Result<(), BiosError> {
@@ -1380,6 +1405,69 @@ mod tests {
             fs::read(system.path().join("scph5502.bin")).unwrap(),
             b"edited"
         );
+    }
+
+    #[test]
+    fn alias_failure_is_reported_as_a_warning() {
+        let system = tempfile::tempdir().unwrap();
+        // The installed copy is missing: the alias cannot be made, the import is not an error.
+        let (aliases, warnings) = install_region_alias(
+            system.path(),
+            Path::new("eu.bin"),
+            "scph7002.bin",
+            &system.path().join("scph7002.bin"),
+            &md5_of(b"eu-a"),
+            &table(),
+        );
+        assert!(aliases.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("scph5502.bin"), "{warnings:?}");
+        assert!(!system.path().join("scph5502.bin").exists());
+        // A normal import has none.
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "eu.bin", b"eu-a");
+        assert!(
+            import_ps1(system.path(), &src, "scph7002.bin")
+                .alias_warnings
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_alias_removal_still_updates_the_manifest() {
+        use std::os::unix::fs::PermissionsExt;
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "eu.bin", b"eu-a");
+        import_ps1(system.path(), &src, "scph7002.bin");
+        // Record a second alias in a read-only sub-folder: its removal fails after the source's.
+        let sub = system.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.bin"), b"eu-a").unwrap();
+        let entry = ImportedEntry {
+            source: "eu.bin".into(),
+            md5: hex(&md5_of(b"eu-a")),
+            verified: true,
+            imported_unix: 0,
+            alias_of: Some("scph7002.bin".into()),
+        };
+        update_manifest(system.path(), |m| {
+            m.imported.insert("sub/a.bin".into(), entry);
+        })
+        .unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+        let can_write = fs::write(sub.join("probe"), b"x").is_ok();
+        let result = remove_imported_firmware(system.path(), "scph7002.bin");
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        if can_write {
+            return; // running as root: permissions do not apply
+        }
+        assert!(result.is_err());
+        assert!(!system.path().join("scph7002.bin").exists());
+        let left = imported(system.path());
+        assert!(!left.contains_key("scph7002.bin"), "{left:?}");
+        assert!(left.contains_key("sub/a.bin"), "{left:?}");
     }
 
     #[test]

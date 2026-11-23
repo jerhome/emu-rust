@@ -126,16 +126,27 @@ fn split_digit_suffix(stem: &str) -> Option<(String, u32)> {
     (radical.chars().count() >= MIN_RADICAL_CHARS).then_some((radical, digit))
 }
 
-/// Does the radical end with a disk word of its own (`Quest D`, `Quest_Disk`, `Quest-Side`), or with a `D`
-/// glued to the name (`MANIACD`)? A longer glued word (`Xdisk`) does not count.
+/// Does the radical end with a disk word of its own (`Quest D`, `Quest_Disk`, `Quest-Side`), or with an
+/// uppercase `D` glued to the name (`MANIACD`, `DemoD`)? A longer glued word (`Xdisk`) or a lowercase final `d`
+/// (`Blood`, `World`, `Island`) does not count.
 fn ends_with_disk_word(radical: &str) -> bool {
     let lower = radical.to_lowercase();
     let word = lower
         .rsplit(|c: char| !c.is_alphanumeric())
         .next()
         .unwrap_or("");
+    let last_word = radical
+        .rsplit(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or("");
     (word.len() < lower.len() && DISK_WORDS.contains(&word))
-        || (word.len() > 1 && word.ends_with('d'))
+        || (last_word.chars().count() > 1
+            && last_word.ends_with('D')
+            && last_word
+                .chars()
+                .rev()
+                .nth(1)
+                .is_some_and(char::is_alphabetic))
 }
 
 fn tidy(mut name: String) -> String {
@@ -150,6 +161,16 @@ fn tidy(mut name: String) -> String {
 pub(crate) fn strip_media_marker(stem: &str) -> String {
     match find_marker(stem) {
         Some(m) => tidy(format!("{}{}", &stem[..m.start], &stem[m.end..])),
+        None => stem.to_owned(),
+    }
+}
+
+/// Name of a group member as `group_media` would name its group: the standard marker removed, else the final
+/// digit of a floppy numbered `MANIACD0`. Only for files known to come from a [`MediaGroup`]: on a plain title
+/// (`Tekken 3`) the digit is part of the name.
+pub(crate) fn strip_group_member_name(stem: &str) -> String {
+    match find_marker(stem) {
+        Some(_) => strip_media_marker(stem),
         None => split_digit_suffix(stem).map_or_else(|| stem.to_owned(), |(radical, _)| radical),
     }
 }
@@ -169,7 +190,7 @@ fn ext_lower(path: &Path) -> String {
 /// folder, same extension, same radical of 3 characters or more, and a single final digit (`MANIACD0`,
 /// `MANIACD1`). The digits must form a contiguous run without duplicate, starting at 0 (always accepted) or at 1
 /// (accepted only when the radical ends with a disk word such as `D`, `Disk`, `Side`: bare `Game1` / `Game2`
-/// stay two games, since a series is far more common than a two-disk game with that naming). Two-digit endings
+/// stay two games; a start at 0 needs no such word, so `Level0` / `Level1` do group, an accepted risk, since a series is far more common than a two-disk game with that naming). Two-digit endings
 /// (`Game10`) never match; a gap (`G0`, `G1`, `G3`) cancels the group; a group never has a playlist nor reports
 /// missing disks. The group name is the radical as written (`MANIACD`).
 pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
@@ -443,7 +464,8 @@ mod tests {
             p("d/Quest D3.adf"),
         ]);
         assert_eq!(g[0].name, "Quest D");
-        assert_eq!(strip_media_marker("MANIACD0"), "MANIACD");
+        assert_eq!(strip_group_member_name("MANIACD0"), "MANIACD");
+        assert_eq!(strip_media_marker("MANIACD0"), "MANIACD0");
     }
 
     #[test]
@@ -452,6 +474,9 @@ mod tests {
             // A series, not disks.
             vec!["d/Game1.d64", "d/Game2.d64"],
             vec!["d/Zak1.adf", "d/Zak2.adf"],
+            vec!["d/Blood1.adf", "d/Blood2.adf"],
+            vec!["d/World1.adf", "d/World2.adf"],
+            vec!["d/Island1.d64", "d/Island2.d64"],
             // Radical too short, two-digit endings, gap, duplicate, lone file.
             vec!["d/AB0.d64", "d/AB1.d64"],
             vec!["d/Game10.d64", "d/Game11.d64"],
@@ -541,6 +566,9 @@ mod tests {
         );
         assert_eq!(strip_media_marker("Plain (1990)"), "Plain (1990)");
         assert_eq!(strip_media_marker("Quest Disk 1"), "Quest");
+        for t in ["Tekken 3", "Silent Hill 2", "Final Fantasy 7"] {
+            assert_eq!(strip_media_marker(t), t);
+        }
     }
 
     #[test]
