@@ -8,6 +8,7 @@ mod index;
 mod info;
 mod manager;
 mod platform;
+mod ps1_bios;
 mod select;
 
 pub use archive::{ArchiveError, ExtractLimits, extract_core, read_info_bundle};
@@ -26,6 +27,7 @@ pub use manager::{
     Origin, RemoteCatalog,
 };
 pub use platform::Platform;
+pub use ps1_bios::{PS1_BIOS, Ps1Bios, Ps1Region, ps1_bios_for_md5, ps1_region_for_name};
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
     FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, OptionalFirmware, PadDevices,
