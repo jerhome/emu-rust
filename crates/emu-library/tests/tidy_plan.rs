@@ -667,12 +667,22 @@ fn a_game_known_to_the_library_keeps_its_system() {
 fn group_and_playlist_titles_lose_only_their_own_markers() {
     let tmp = tempfile::tempdir().unwrap();
     let roms = tmp.path().join("roms");
-    write(&roms.join("c64/MANIACD0.D64"), &noise(2048, 1));
-    write(&roms.join("c64/MANIACD1.D64"), &noise(2048, 2));
-    write(&roms.join("c64/t1.d64"), &noise(2048, 3));
-    write(&roms.join("c64/t2.d64"), &noise(2048, 4));
-    write(&roms.join("c64/Tekken 3.m3u"), b"t1.d64\nt2.d64\n");
-    let library = Library::open_in_memory().unwrap();
+    write(&roms.join("MANIACD0.D64"), &noise(2048, 1));
+    write(&roms.join("MANIACD1.D64"), &noise(2048, 2));
+    write(&roms.join("t1.d64"), &noise(2048, 3));
+    write(&roms.join("t2.d64"), &noise(2048, 4));
+    write(&roms.join("Tekken 3.m3u"), b"t1.d64\nt2.d64\n");
+    let mut library = Library::open_in_memory().unwrap();
+    library
+        .scan(
+            &ScanOptions {
+                roots: vec![roms.clone()],
+                ..Default::default()
+            },
+            &never(),
+            &mut |_| {},
+        )
+        .unwrap();
     let plan = plan_of(&library, &roms, &[]);
     find(&plan, "MANIACD");
     find(&plan, "Tekken 3");

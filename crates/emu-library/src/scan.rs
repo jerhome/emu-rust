@@ -1982,8 +1982,8 @@ fn store(
         id.title
     } else {
         // The DAT names the first disk `Game (Disk 1 of 2)`: the game is the whole set.
-        // A zip `Foo 2` keeps its digit: only real groups lose a floppy number.
-        if zip_media {
+        // A zip `Foo 2` keeps its digit: only a group of floppies loses their number.
+        if zip_media || is_playlist(found) {
             strip_media_marker(&id.title)
         } else {
             strip_group_member_name(&id.title)
