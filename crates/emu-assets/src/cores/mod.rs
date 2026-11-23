@@ -27,7 +27,10 @@ pub use manager::{
     Origin, RemoteCatalog,
 };
 pub use platform::Platform;
-pub use ps1_bios::{PS1_BIOS, Ps1Bios, Ps1Region, ps1_bios_for_md5, ps1_region_for_name};
+pub(crate) use ps1_bios::lookup as ps1_lookup;
+pub use ps1_bios::{
+    PS1_BIOS, Ps1Bios, Ps1Region, ps1_bios_for_md5, ps1_region_for_name, ps1_wrong_region,
+};
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
     FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, OptionalFirmware,

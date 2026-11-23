@@ -309,6 +309,17 @@ fn check_one(
     known: &KnownFirmware,
     free: &[(String, [u8; 16], String)],
 ) -> FirmwareState {
+    check_one_with(system_dir, spec, known, free, super::PS1_BIOS)
+}
+
+/// [`check_one`] with the PlayStation revision table as a parameter (tests inject fake fingerprints).
+fn check_one_with(
+    system_dir: &Path,
+    spec: &FirmwareSpec,
+    known: &KnownFirmware,
+    free: &[(String, [u8; 16], String)],
+    ps1: &[super::Ps1Bios],
+) -> FirmwareState {
     // `FirmwareSpec` fields are public: re-checked here, not only at parse time.
     if !is_safe_relative_path(&spec.path) {
         return FirmwareState::Unreadable("chemin refusé".into());
@@ -336,6 +347,13 @@ fn check_one(
         .peekable();
     let has_reference = accepted.peek().is_some();
     if accepted.any(|h| *h == md5) {
+        return FirmwareState::Ok;
+    }
+    // A PlayStation dump of the same region under the canonical name is an alias made by the import (ADR 0021,
+    // amendment 2026-11-23); another region stays `WrongHash` (see `ps1_wrong_region`).
+    if let Some(region) = super::Ps1Region::from_canonical_file(&spec.path)
+        && super::ps1_lookup(ps1, &md5).is_some_and(|b| b.region == region)
+    {
         return FirmwareState::Ok;
     }
     if let Some((_, _, label)) = free.iter().find(|(p, h, _)| *p == spec.path && *h == md5) {
@@ -684,6 +702,75 @@ mod tests {
         assert_eq!(md5("scph5501.bin"), ["490f666e1afb15b7362b406ed1cea246"]);
         assert_eq!(md5("panafz10.bin"), ["51f2f43ae2f3508a14d9f56597e2d3ce"]);
         assert!(known.md5_for("bass.dll").is_empty());
+    }
+
+    fn fake_ps1(
+        file: &'static str,
+        region: crate::cores::Ps1Region,
+        data: &[u8],
+    ) -> crate::cores::Ps1Bios {
+        let md5: &'static str = Box::leak(hexs(md5_of(data)).into_boxed_str());
+        crate::cores::Ps1Bios {
+            file,
+            region,
+            crc32: 0,
+            md5,
+            sha1: "",
+        }
+    }
+
+    #[test]
+    fn ps1_dump_of_the_same_region_is_accepted_under_the_canonical_name() {
+        use crate::cores::Ps1Region::{Europe, Usa};
+        let dir = tempfile::tempdir().unwrap();
+        let table = [
+            fake_ps1("scph7001.bin", Usa, b"usa-7001"),
+            fake_ps1("scph7002.bin", Europe, b"eu-7002"),
+        ];
+        let known = KnownFirmware::default();
+        let spec = |path: &str| FirmwareSpec {
+            path: path.to_owned(),
+            description: String::new(),
+            optional: false,
+            md5: None,
+        };
+        let state = |path: &str| check_one_with(dir.path(), &spec(path), &known, &[], &table);
+        std::fs::write(dir.path().join("scph5501.bin"), b"usa-7001").unwrap();
+        std::fs::write(dir.path().join("scph5502.bin"), b"usa-7001").unwrap();
+        std::fs::write(dir.path().join("scph5500.bin"), b"unknown").unwrap();
+        std::fs::write(dir.path().join("other.bin"), b"usa-7001").unwrap();
+        assert_eq!(state("scph5501.bin"), FirmwareState::Ok);
+        // Other region: not accepted (the caller refines with `ps1_wrong_region`).
+        assert_eq!(state("other.bin"), FirmwareState::Unverified);
+        assert!(matches!(
+            state("scph5502.bin"),
+            FirmwareState::Unverified | FirmwareState::WrongHash { .. }
+        ));
+        assert!(matches!(
+            state("scph5500.bin"),
+            FirmwareState::Unverified | FirmwareState::WrongHash { .. }
+        ));
+    }
+
+    #[test]
+    fn wrong_region_is_told_apart() {
+        // Real table: the SCPH-5501 dump is not a Europe BIOS.
+        let usa = crate::cores::ps1_bios_for_md5("490f666e1afb15b7362b406ed1cea246").unwrap();
+        let md5 = [
+            0x49, 0x0f, 0x66, 0x6e, 0x1a, 0xfb, 0x15, 0xb7, 0x36, 0x2b, 0x40, 0x6e, 0xd1, 0xce,
+            0xa2, 0x46,
+        ];
+        assert_eq!(usa.region, crate::cores::Ps1Region::Usa);
+        assert_eq!(
+            crate::cores::ps1_wrong_region("scph5502.bin", &md5),
+            Some(crate::cores::Ps1Region::Usa)
+        );
+        assert_eq!(crate::cores::ps1_wrong_region("scph5501.bin", &md5), None);
+        assert_eq!(crate::cores::ps1_wrong_region("other.bin", &md5), None);
+        assert_eq!(
+            crate::cores::ps1_wrong_region("scph5502.bin", &[0; 16]),
+            None
+        );
     }
 
     fn table(fallback: bool) -> RequiredFirmware {

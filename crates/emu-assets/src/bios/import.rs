@@ -10,6 +10,9 @@
 //! - an existing file with another content is never overwritten silently: `ReplacePolicy::Refuse` fails with
 //!   `BiosError::TargetExists`, `BackupAndReplace` renames it `<name>.user-<unix>` first; a free BIOS installed
 //!   by emu-rust (manifest) is replaced without backup and leaves the manifest;
+//! - a file recognised by hash as a PlayStation BIOS revision also gets a **region alias** (copy under
+//!   `scph5500/5501/5502.bin`, ADR 0021 amendment 2026-11-23): never over a file that is not our own alias, the
+//!   first alias of a region is kept, `alias_of` is recorded in the manifest;
 //! - `[imported."<name>"]` (`source` = original file name without its folder, `md5`, `verified`) is recorded in
 //!   `system/.emu-rust-bios.toml`; the original path is never logged above `debug`.
 
@@ -25,7 +28,10 @@ use super::{
     BiosError, FreeBios, ImportedEntry, ReplacePolicy, backup_file, hash_file, hex,
     is_temporary_name, read_manifest, unix_now, update_manifest,
 };
-use crate::cores::{CoreId, CoreInfo, KnownFirmware, is_safe_relative_path};
+use crate::cores::{
+    CoreId, CoreInfo, KnownFirmware, PS1_BIOS, Ps1Bios, Ps1Region, is_safe_relative_path,
+    ps1_lookup,
+};
 
 /// Largest file accepted by the import (largest known BIOS: 4 MiB; Amiga extended ROMs: 1 MiB). Distinct from
 /// `cores::MAX_FIRMWARE_SIZE` (64 MiB), the bound of the 1.0 check of files already in the system directory.
@@ -181,7 +187,8 @@ pub enum TargetState {
     Other {
         md5: [u8; 16],
     },
-    /// A free BIOS installed by emu-rust, unchanged (manifest): replaced without backup.
+    /// A free BIOS installed by emu-rust, or a PlayStation region alias made by the import, unchanged
+    /// (manifest): replaced without backup.
     FreeInstalled,
 }
 
@@ -193,6 +200,22 @@ pub struct ImportOutcome {
     /// md5 recomputed on the installed copy: the caller compares it with the one of [`identify_firmware`] (a
     /// source changed between the two calls then shows; a change during the copy is refused).
     pub md5: [u8; 16],
+    /// Region aliases created by this import (PlayStation revisions only; empty otherwise, and when the
+    /// canonical name was taken). A failure to make one is logged, never an error of the import.
+    pub aliases: Vec<FirmwareAlias>,
+}
+
+/// A copy of a PlayStation BIOS made under the canonical name of its region (`scph5501.bin`...), so that cores
+/// that only look that name up find it (ADR 0021 amendment 2026-11-23).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirmwareAlias {
+    /// Canonical file name created, relative to the system directory.
+    pub name: String,
+    /// Name the imported file was installed under (the alias is a copy of it, and goes with it).
+    pub source_name: String,
+    /// Console model recognised by hash (`SCPH-7001`).
+    pub revision: String,
+    pub region: Ps1Region,
 }
 
 /// Hashes `src` (md5 for the lookup, sha1 for display only) and looks it up. `BiosError::TooLarge` beyond
@@ -258,10 +281,15 @@ pub fn target_state(
     if current == *md5 {
         return Ok(TargetState::Same);
     }
-    let ours = read_manifest(system_dir)
+    let manifest = read_manifest(system_dir);
+    let ours = manifest
         .installed
         .iter()
-        .any(|e| e.file == name && e.sha256 == hex(&sha256));
+        .any(|e| e.file == name && e.sha256 == hex(&sha256))
+        || manifest
+            .imported
+            .get(name)
+            .is_some_and(|e| e.alias_of.is_some() && e.md5 == hex(&current));
     Ok(if ours {
         TargetState::FreeInstalled
     } else {
@@ -291,6 +319,28 @@ pub fn import_firmware_expecting(
     policy: ReplacePolicy,
     verified: bool,
     expected_md5: Option<[u8; 16]>,
+) -> Result<ImportOutcome, BiosError> {
+    import_with_table(
+        system_dir,
+        src,
+        name,
+        policy,
+        verified,
+        expected_md5,
+        PS1_BIOS,
+    )
+}
+
+/// [`import_firmware_expecting`] with the PlayStation table as a parameter (tests inject fingerprints of fake
+/// files: no real BIOS is ever needed).
+fn import_with_table(
+    system_dir: &Path,
+    src: &Path,
+    name: &str,
+    policy: ReplacePolicy,
+    verified: bool,
+    expected_md5: Option<[u8; 16]>,
+    ps1: &[Ps1Bios],
 ) -> Result<ImportOutcome, BiosError> {
     validate_target_name(name)?;
     fs::create_dir_all(system_dir).map_err(|source| BiosError::Io {
@@ -353,10 +403,30 @@ pub fn import_firmware_expecting(
     let replaces_free = match target_state(system_dir, name, &md5)? {
         TargetState::Same => {
             tracing::info!("BIOS déjà installé : {name}");
+            // The user's own copy of an alias we made: it is a real file now (kept if the source goes away).
+            let promoted = ImportedEntry {
+                source: source_name(src),
+                md5: hex(&md5),
+                verified,
+                imported_unix: unix_now(),
+                alias_of: None,
+            };
+            if let Err(e) = update_manifest(system_dir, |m| {
+                if let Some(e) = m.imported.get_mut(name)
+                    && e.alias_of.is_some()
+                    && e.md5 == promoted.md5
+                {
+                    *e = promoted;
+                }
+            }) {
+                tracing::warn!("manifeste des BIOS non mis à jour : {e}");
+            }
+            let aliases = install_region_alias(system_dir, src, name, &target, &md5, ps1);
             return Ok(ImportOutcome {
                 installed: target,
                 backup: None,
                 md5,
+                aliases,
             });
         }
         TargetState::Absent => false,
@@ -401,13 +471,11 @@ pub fn import_firmware_expecting(
     tracing::debug!("source de l'import : {}", src.display());
 
     let entry = ImportedEntry {
-        source: src
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        source: source_name(src),
         md5: hex(&md5),
         verified,
         imported_unix: unix_now(),
+        alias_of: None,
     };
     // The file is in place: a manifest that cannot be written only loses the record. A replaced free BIOS whose
     // entry stays reads `Modified`, protected like a user file (the safe side).
@@ -419,11 +487,151 @@ pub fn import_firmware_expecting(
     }) {
         tracing::warn!("manifeste des BIOS non mis à jour : {e}");
     }
+    let aliases = install_region_alias(system_dir, src, name, &target, &md5, ps1);
     Ok(ImportOutcome {
         installed: target,
         backup,
         md5,
+        aliases,
     })
+}
+
+fn source_name(src: &Path) -> String {
+    src.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Copies the installed `name` under the canonical file name of its PlayStation region when `md5` is a known
+/// revision (never for an unknown hash). The canonical name must be free: an existing file (the user's, or an
+/// alias made earlier from another revision) is left alone. Called with the manifest lock held. Best effort:
+/// the import already succeeded, so a failure is only logged.
+fn install_region_alias(
+    system_dir: &Path,
+    src: &Path,
+    name: &str,
+    installed: &Path,
+    md5: &[u8; 16],
+    ps1: &[Ps1Bios],
+) -> Vec<FirmwareAlias> {
+    let Some(revision) = ps1_lookup(ps1, md5) else {
+        return Vec::new();
+    };
+    let canonical = revision.region.canonical_file();
+    if name == canonical {
+        return Vec::new();
+    }
+    let target = system_dir.join(canonical);
+    match fs::symlink_metadata(&target) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            tracing::info!("alias {canonical} non créé : le nom est déjà pris");
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::warn!("alias {canonical} non créé : {e}");
+            return Vec::new();
+        }
+    }
+    let made = (|| -> io::Result<()> {
+        let mut temp = tempfile::Builder::new()
+            .prefix(&format!(".{canonical}.tmp-"))
+            .tempfile_in(system_dir)?;
+        let mut hasher = Md5::new();
+        let mut reader = File::open(installed)?.take(MAX_FIRMWARE_BYTES + 1);
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            hasher.update(&buf[..n]);
+            temp.as_file_mut().write_all(&buf[..n])?;
+        }
+        if <[u8; 16]>::from(hasher.finalize()) != *md5 {
+            return Err(io::Error::other("copie altérée"));
+        }
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(&target).map_err(|e| e.error)?;
+        Ok(())
+    })();
+    if let Err(e) = made {
+        tracing::warn!("alias {canonical} non créé : {e}");
+        return Vec::new();
+    }
+    crate::http::sync_dir(system_dir);
+    tracing::info!("BIOS PlayStation : copie sous {canonical} (alias de {name})");
+    let entry = ImportedEntry {
+        source: source_name(src),
+        md5: hex(md5),
+        verified: true,
+        imported_unix: unix_now(),
+        alias_of: Some(name.to_owned()),
+    };
+    if let Err(e) = update_manifest(system_dir, |m| {
+        m.imported.insert(canonical.to_owned(), entry);
+    }) {
+        // Without its record the copy reads as a user file: kept, never replaced silently (the safe side).
+        tracing::warn!("manifeste des BIOS non mis à jour : {e}");
+    }
+    vec![FirmwareAlias {
+        name: canonical.to_owned(),
+        source_name: name.to_owned(),
+        revision: revision.model(),
+        region: revision.region,
+    }]
+}
+
+/// Removes a file recorded by [`import_firmware`] when it is still unchanged, together with the region aliases
+/// made from it that are themselves unchanged. A file the user modified, or one that was never imported, is
+/// left alone. Returns the names removed (the file first); empty when nothing was.
+pub fn remove_imported_firmware(system_dir: &Path, name: &str) -> Result<Vec<String>, BiosError> {
+    validate_target_name(name)?;
+    let _guard = super::lock_manifests();
+    let manifest = read_manifest(system_dir);
+    let Some(entry) = manifest.imported.get(name) else {
+        return Ok(Vec::new());
+    };
+    let unchanged = |file: &str, entry: &ImportedEntry| {
+        hash_file(&target_path(system_dir, file)).is_ok_and(|(_, md5)| hex(&md5) == entry.md5)
+    };
+    let mut forget = Vec::new();
+    let mut removed = Vec::new();
+    if unchanged(name, entry) {
+        remove_file_of(system_dir, name)?;
+        removed.push(name.to_owned());
+        forget.push(name.to_owned());
+        for (alias, e) in &manifest.imported {
+            if e.alias_of.as_deref() != Some(name) {
+                continue;
+            }
+            if unchanged(alias, e) {
+                remove_file_of(system_dir, alias)?;
+                removed.push(alias.clone());
+            }
+            // Modified or already gone: nothing of ours is left to protect, the record only goes.
+            forget.push(alias.clone());
+        }
+    } else if !target_path(system_dir, name).exists() {
+        forget.push(name.to_owned());
+    }
+    if !forget.is_empty() {
+        crate::http::sync_dir(system_dir);
+        update_manifest(system_dir, |m| {
+            m.imported.retain(|k, _| !forget.contains(k))
+        })?;
+    }
+    Ok(removed)
+}
+
+fn remove_file_of(system_dir: &Path, name: &str) -> Result<(), BiosError> {
+    let path = target_path(system_dir, name);
+    match fs::remove_file(&path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(BiosError::Io { path, source: e }),
+        _ => Ok(()),
+    }
 }
 
 /// Rules of the module doc. `/` is accepted (sub-folders declared by `.info` files, `vice/JiffyDOS_C64.bin`),
@@ -1017,5 +1225,204 @@ mod tests {
         let gb = catalogue.targets_for(&known.md5_for("gb_bios.bin")[0]);
         let gb: Vec<&str> = gb.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(gb, ["dmg_boot.bin", "dmg_rom.bin", "gb_bios.bin"]);
+    }
+
+    // PlayStation region aliases (ADR 0021 amendment). Fake contents, fingerprints injected: no real BIOS.
+
+    fn fake(file: &'static str, region: Ps1Region, data: &[u8]) -> Ps1Bios {
+        Ps1Bios {
+            file,
+            region,
+            crc32: 0,
+            md5: Box::leak(hex(&md5_of(data)).into_boxed_str()),
+            sha1: "",
+        }
+    }
+
+    fn table() -> Vec<Ps1Bios> {
+        vec![
+            fake("scph7001.bin", Ps1Region::Usa, b"usa-a"),
+            fake("scph5501.bin", Ps1Region::Usa, b"usa-b"),
+            fake("scph7002.bin", Ps1Region::Europe, b"eu-a"),
+        ]
+    }
+
+    fn import_ps1(system: &Path, src: &Path, name: &str) -> ImportOutcome {
+        import_with_table(
+            system,
+            src,
+            name,
+            ReplacePolicy::Refuse,
+            true,
+            None,
+            &table(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn region_alias_is_created_and_recorded() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let src = write(src_dir.path(), "7001.bin", b"usa-a");
+        let out = import_ps1(system.path(), &src, "scph7001.bin");
+        assert_eq!(
+            out.aliases,
+            [FirmwareAlias {
+                name: "scph5501.bin".into(),
+                source_name: "scph7001.bin".into(),
+                revision: "SCPH-7001".into(),
+                region: Ps1Region::Usa,
+            }]
+        );
+        assert_eq!(
+            fs::read(system.path().join("scph5501.bin")).unwrap(),
+            b"usa-a"
+        );
+        let record = &imported(system.path())["scph5501.bin"];
+        assert_eq!(record.alias_of.as_deref(), Some("scph7001.bin"));
+        assert_eq!(imported(system.path())["scph7001.bin"].alias_of, None);
+        // Re-import: nothing new, the alias is kept.
+        assert!(
+            import_ps1(system.path(), &src, "scph7001.bin")
+                .aliases
+                .is_empty()
+        );
+        assert!(system.path().join("scph5501.bin").exists());
+        // The alias is ours: shown as replaceable.
+        assert_eq!(
+            target_state(system.path(), "scph5501.bin", &md5_of(b"usa-b")).unwrap(),
+            TargetState::FreeInstalled
+        );
+    }
+
+    #[test]
+    fn user_file_is_never_overwritten_by_an_alias() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        write(system.path(), "scph5501.bin", b"mine");
+        let src = write(src_dir.path(), "7001.bin", b"usa-a");
+        let out = import_ps1(system.path(), &src, "scph7001.bin");
+        assert!(out.aliases.is_empty());
+        assert_eq!(
+            fs::read(system.path().join("scph5501.bin")).unwrap(),
+            b"mine"
+        );
+        assert!(!imported(system.path()).contains_key("scph5501.bin"));
+    }
+
+    #[test]
+    fn first_revision_keeps_the_alias() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let a = write(src_dir.path(), "a.bin", b"usa-a");
+        let b = write(src_dir.path(), "b.bin", b"usa-b");
+        assert_eq!(
+            import_ps1(system.path(), &a, "scph7001.bin").aliases.len(),
+            1
+        );
+        // A second USA revision (named otherwise than canonical) finds the name taken by our alias.
+        assert!(
+            import_ps1(system.path(), &b, "other.bin")
+                .aliases
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read(system.path().join("scph5501.bin")).unwrap(),
+            b"usa-a"
+        );
+    }
+
+    #[test]
+    fn real_file_replaces_our_alias_without_backup() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let a = write(src_dir.path(), "a.bin", b"usa-a");
+        let b = write(src_dir.path(), "b.bin", b"usa-b");
+        import_ps1(system.path(), &a, "scph7001.bin");
+        let out = import_ps1(system.path(), &b, "scph5501.bin");
+        assert_eq!(out.backup, None);
+        assert!(out.aliases.is_empty());
+        assert_eq!(
+            fs::read(system.path().join("scph5501.bin")).unwrap(),
+            b"usa-b"
+        );
+        assert_eq!(imported(system.path())["scph5501.bin"].alias_of, None);
+        assert!(listing(system.path()).iter().all(|n| !n.contains(".user-")));
+        // The same content imported as the real file promotes the alias.
+        let system2 = tempfile::tempdir().unwrap();
+        import_ps1(system2.path(), &a, "scph7001.bin");
+        import_ps1(system2.path(), &a, "scph5501.bin");
+        assert_eq!(imported(system2.path())["scph5501.bin"].alias_of, None);
+        // ...so it survives the removal of its former source.
+        let removed = remove_imported_firmware(system2.path(), "scph7001.bin").unwrap();
+        assert_eq!(removed, ["scph7001.bin"]);
+        assert!(system2.path().join("scph5501.bin").exists());
+    }
+
+    #[test]
+    fn alias_goes_with_its_source() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let a = write(src_dir.path(), "a.bin", b"eu-a");
+        import_ps1(system.path(), &a, "scph7002.bin");
+        assert!(system.path().join("scph5502.bin").exists());
+        let removed = remove_imported_firmware(system.path(), "scph7002.bin").unwrap();
+        assert_eq!(removed, ["scph7002.bin", "scph5502.bin"]);
+        assert!(imported(system.path()).is_empty());
+        assert_eq!(listing(system.path()), [".emu-rust-bios.toml"]);
+        // A modified alias is kept: it is the user's now.
+        import_ps1(system.path(), &a, "scph7002.bin");
+        fs::write(system.path().join("scph5502.bin"), b"edited").unwrap();
+        let removed = remove_imported_firmware(system.path(), "scph7002.bin").unwrap();
+        assert_eq!(removed, ["scph7002.bin"]);
+        assert_eq!(
+            fs::read(system.path().join("scph5502.bin")).unwrap(),
+            b"edited"
+        );
+    }
+
+    #[test]
+    fn region_is_crossed_never_and_unknown_hash_has_no_alias() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let eu = write(src_dir.path(), "eu.bin", b"eu-a");
+        let out = import_ps1(system.path(), &eu, "scph7002.bin");
+        assert_eq!(out.aliases[0].name, "scph5502.bin");
+        assert!(!system.path().join("scph5501.bin").exists());
+        let unknown = write(src_dir.path(), "x.bin", b"who knows");
+        let out = import_with_table(
+            system.path(),
+            &unknown,
+            "scph7000.bin",
+            ReplacePolicy::Refuse,
+            false,
+            None,
+            &table(),
+        )
+        .unwrap();
+        assert!(out.aliases.is_empty());
+        assert_eq!(
+            listing(system.path()),
+            [
+                ".emu-rust-bios.toml",
+                "scph5502.bin",
+                "scph7000.bin",
+                "scph7002.bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn real_table_names_cover_the_canonical_files() {
+        for region in [Ps1Region::Japan, Ps1Region::Usa, Ps1Region::Europe] {
+            let file = region.canonical_file();
+            assert_eq!(Ps1Region::from_canonical_file(file), Some(region));
+            assert!(
+                PS1_BIOS
+                    .iter()
+                    .any(|b| b.file == file && b.region == region)
+            );
+        }
     }
 }

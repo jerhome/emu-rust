@@ -169,6 +169,52 @@ pub const PS1_BIOS: &[Ps1Bios] = &[
     },
 ];
 
+impl Ps1Region {
+    /// File name every core looks the region's BIOS up under (`scph5500/5501/5502.bin`), the target of an alias
+    /// (ADR 0021, amendment 2026-11-23).
+    pub fn canonical_file(self) -> &'static str {
+        match self {
+            Self::Japan => "scph5500.bin",
+            Self::Usa => "scph5501.bin",
+            Self::Europe => "scph5502.bin",
+        }
+    }
+
+    /// Inverse of [`Self::canonical_file`] (exact, case-sensitive: the names cores search for).
+    pub fn from_canonical_file(name: &str) -> Option<Self> {
+        [Self::Japan, Self::Usa, Self::Europe]
+            .into_iter()
+            .find(|r| r.canonical_file() == name)
+    }
+}
+
+impl Ps1Bios {
+    /// Console model for display (`scph7001.bin` -> `SCPH-7001`, `scph102A.bin` -> `SCPH-102A`).
+    pub fn model(&self) -> String {
+        let stem = self.file.strip_suffix(".bin").unwrap_or(self.file);
+        match stem.strip_prefix("scph") {
+            Some(rest) => format!("SCPH-{rest}"),
+            None => stem.to_owned(),
+        }
+    }
+}
+
+/// `Some(region of the dump)` when `md5` is a known PS1 BIOS of a region other than the one `wanted` (a
+/// canonical `scph550x.bin`) is for: the « wrong region » case of `check_required`, whose state stays
+/// `FirmwareState::WrongHash`. `None` for an unknown hash, a same-region dump or a non-canonical `wanted`.
+pub fn ps1_wrong_region(wanted: &str, md5: &[u8; 16]) -> Option<Ps1Region> {
+    let expected = Ps1Region::from_canonical_file(wanted)?;
+    let found = lookup(PS1_BIOS, md5)?.region;
+    (found != expected).then_some(found)
+}
+
+/// Entry of `table` whose md5 is `md5` (the first one for a shared dump). `table` is a parameter so tests can
+/// inject fingerprints of fake files.
+pub(crate) fn lookup<'a>(table: &'a [Ps1Bios], md5: &[u8; 16]) -> Option<&'a Ps1Bios> {
+    let hex: String = md5.iter().map(|b| format!("{b:02x}")).collect();
+    table.iter().find(|b| b.md5.eq_ignore_ascii_case(&hex))
+}
+
 /// Entry for a md5 (hex, any case). Dumps shared by several names return the first one in [`PS1_BIOS`].
 pub fn ps1_bios_for_md5(md5: &str) -> Option<&'static Ps1Bios> {
     let md5 = md5.to_ascii_lowercase();
