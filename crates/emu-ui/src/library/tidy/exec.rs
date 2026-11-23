@@ -75,7 +75,7 @@ pub(crate) fn error_text(e: &LibraryError) -> String {
         LibraryError::TidyBusy => text::BUSY.to_owned(),
         LibraryError::Journal { path, message } => text::journal_unreadable(path, message),
         LibraryError::TidyRefused { reason, .. } => text::refused(&reason.to_string()),
-        LibraryError::Io { path, source } => text::write_error(path, &source.to_string()),
+        LibraryError::Io { path, source } => text::write_error(path, source),
         LibraryError::TidyRootMismatch { journal } => text::other_root(journal),
         e => crate::ui::text::sanitize_core_text(&e.to_string()),
     }
@@ -341,6 +341,9 @@ pub(crate) fn run_job(
         }
     };
     out.root = Some(options.roms_root().to_path_buf());
+    for m in &mut out.messages {
+        *m = text::relativize(m, options.roms_root());
+    }
     out.saves = Some(dirs.saves.clone());
     out
 }
@@ -370,7 +373,19 @@ pub(crate) fn error_entry(out: &Outcome, p: &Path, message: &str) -> String {
         }
         _ => message.to_owned(),
     };
-    text::error_line(&shown, &message)
+    let line = text::error_line(&shown, &message);
+    if is_journal_file(p) {
+        format!("{line} — {}", text::KEEP_JOURNAL_HINT)
+    } else {
+        line
+    }
+}
+
+/// `journal-<unix>[-k].txt`: a journal entry of `TidyReport::errors` (outside the roms folder).
+fn is_journal_file(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("journal-") && n.ends_with(".txt"))
 }
 
 /// Nothing to recover when no tidying ever ran (no journal folder) or the roms folder is missing.
@@ -505,7 +520,11 @@ pub(crate) fn spawn_run(dirs: DataDirs, job: Job, notify: Notify) -> RunTask {
 
 /// For the analysis worker: `last_tidy` read off the UI thread.
 pub(crate) fn read_last(options: &TidyOptions) -> LastTidy {
-    LastTidy::from_result(emu_library::last_tidy(options))
+    let mut last = LastTidy::from_result(emu_library::last_tidy(options));
+    if let Some(m) = &mut last.error {
+        *m = text::relativize(m, options.roms_root());
+    }
+    last
 }
 
 #[cfg(test)]
@@ -700,7 +719,7 @@ mod tests {
         };
         let out = after_run(RunKind::Tidy, Err(err), &mut f);
         assert_eq!(out.report.as_ref().unwrap().errors.len(), 1);
-        assert!(out.messages[0].contains("Écriture impossible"));
+        assert!(out.messages[0].contains("Erreur de fichier"));
         assert!(out.messages[0].contains("disque plein"));
         assert!(!out.messages.iter().any(|m| m == text::AFTER_ERROR));
     }
@@ -730,6 +749,39 @@ mod tests {
         assert!(!lines[0].contains("supprimez"));
         out.report = Some(r);
         assert!(recovery_log(&out).iter().any(|l| l.contains("est gardé")));
+    }
+
+    #[test]
+    fn write_error_texts_are_neutral_and_relative() {
+        let t = text::write_error(
+            Path::new(r"\\?\C:\d\roms\a.iso"),
+            &std::io::Error::from_raw_os_error(32),
+        );
+        assert!(
+            t.starts_with("Erreur de fichier") && !t.contains("//?/"),
+            "{t}"
+        );
+        assert!(t.contains("ouvert par un autre programme"), "{t}");
+        let stale = text::write_error(
+            Path::new("/r"),
+            &std::io::Error::new(std::io::ErrorKind::InvalidInput, "x"),
+        );
+        assert!(stale.contains("autre dossier de ROMs") && !stale.contains("Écriture"));
+        assert_eq!(
+            text::relativize("C:/d/roms/a.iso : x", Path::new(r"\\?\C:\d\roms")),
+            "C:/d/roms/a.iso : x".replace("C:/d/roms/", "roms/")
+        );
+        let j = error_entry(
+            &Outcome::new(RunKind::Recovery),
+            Path::new("/j/journal-9.txt"),
+            "illisible",
+        );
+        assert!(
+            j.contains("déplacez ce journal") && j.contains("gardez-le"),
+            "{j}"
+        );
+        let t = text::block(&TidyBlock::NotWritable { dir: "a".into() });
+        assert!(t.contains("ouvert dans un autre programme"), "{t}");
     }
 
     #[test]
@@ -999,7 +1051,7 @@ mod tests {
             path: PathBuf::from("/j/journal-5.txt"),
             source: std::io::Error::other("écriture du journal interrompue"),
         });
-        assert!(t.starts_with("Écriture impossible"));
+        assert!(t.starts_with("Erreur de fichier"));
         assert!(!t.contains("illisible"));
         let t = error_text(&LibraryError::TidyRootMismatch {
             journal: PathBuf::from("/data/rangement/journal-6.txt"),

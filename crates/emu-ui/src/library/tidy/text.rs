@@ -10,7 +10,9 @@ fn clean(s: &str) -> String {
 
 /// Paths of the user's files: shown with `/`, sanitized (file names are untrusted text).
 pub fn path(p: &Path) -> String {
-    clean(&p.to_string_lossy().replace('\\', "/"))
+    let s = p.to_string_lossy().replace('\\', "/");
+    // Windows verbatim prefix (`\\?\C:\…`): noise for the reader.
+    clean(s.strip_prefix("//?/").unwrap_or(&s))
 }
 
 /// `roms/<p>` for a path relative to the roms root; `roms` for the root itself (`.` or empty).
@@ -199,8 +201,9 @@ pub fn block(b: &TidyBlock) -> String {
             root_path(p)
         ),
         TidyBlock::NotWritable { dir } => format!(
-            "écriture refusée dans {} (droits du dossier ou disque protégé en écriture). emu-rust ne modifie \
-             jamais ces protections : levez-les vous-même, puis relancez le rangement",
+            "écriture refusée dans {} (droits du dossier, disque protégé en écriture, ou un fichier de ce \
+             dossier est ouvert dans un autre programme). emu-rust ne modifie jamais ces protections : \
+             levez-les vous-même, puis relancez le rangement",
             root_path(dir)
         ),
     }
@@ -236,9 +239,34 @@ pub const BUSY: &str = "Rangement impossible : une autre fenêtre d'emu-rust ran
                         elle aura fini.";
 
 /// A write failure of the library (journal included): `LibraryError::Io`.
-pub fn write_error(p: &Path, cause: &str) -> String {
-    format!("Écriture impossible : {} ({})", path(p), clean(cause))
+pub fn write_error(p: &Path, source: &std::io::Error) -> String {
+    if source.kind() == std::io::ErrorKind::InvalidInput {
+        return STALE_PREVIEW.to_owned();
+    }
+    let cause = source.to_string();
+    let line = format!("Erreur de fichier : {} ({})", path(p), clean(&cause));
+    match io_hint(&cause) {
+        Some(hint) => format!("{line} — {hint}"),
+        None => line,
+    }
 }
+
+/// The library refuses a plan made for another roms folder (`ErrorKind::InvalidInput`).
+pub const STALE_PREVIEW: &str = "Cet aperçu a été fait pour un autre dossier de ROMs : fermez-le et refaites \
+                                 l'aperçu.";
+
+/// Replaces the absolute roms folder (as shown) by `roms` in a message built from library paths.
+pub fn relativize(message: &str, root: &Path) -> String {
+    let root = path(root);
+    if root.is_empty() {
+        return message.to_owned();
+    }
+    message.replace(&format!("{root}/"), "roms/")
+}
+
+/// Advice added to the line of an unreadable journal that is still in the journal folder.
+pub const KEEP_JOURNAL_HINT: &str = "déplacez ce journal hors du dossier des journaux et gardez-le : il permet \
+                                     de retrouver où sont allés les fichiers";
 
 /// `TidyRefused`: the reason text of the library, said as is (it is already neutral French).
 pub fn refused(reason: &str) -> String {
