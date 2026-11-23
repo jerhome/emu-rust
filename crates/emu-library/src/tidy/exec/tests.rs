@@ -1873,3 +1873,119 @@ fn windows_counts_the_links_of_a_file() {
     assert_eq!(links_of(&a, &meta), Some(2));
     assert_eq!(links_of(&fx.roms.join("none.sfc"), &meta), None);
 }
+
+/// A [`Sys`] whose `hard_link` and/or `remove_dir` are refused with a given error; everything else is real.
+struct Refuse {
+    inner: Faulty,
+    link: Option<fn() -> std::io::Error>,
+    remove_dir: Option<fn() -> std::io::Error>,
+}
+
+impl Sys for Refuse {
+    fn create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        match self.remove_dir {
+            Some(e) => Err(e()),
+            None => self.inner.remove_dir(path),
+        }
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        match self.link {
+            Some(e) => Err(e()),
+            None => self.inner.hard_link(from, to),
+        }
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_file(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.sync_dir(path)
+    }
+
+    fn write_synced(&self, file: &mut fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write_synced(file, bytes)
+    }
+
+    fn truncate_synced(&self, file: &fs::File, len: u64) -> std::io::Result<()> {
+        self.inner.truncate_synced(file, len)
+    }
+
+    fn checkpoint(&self) -> std::io::Result<()> {
+        self.inner.checkpoint()
+    }
+}
+
+fn denied() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+}
+
+/// FV1c 1: « not supported » (`ENOTSUP`, `EOPNOTSUPP`, with a raw code) means no hard links, not a write error.
+#[test]
+fn an_unsupported_link_is_no_hard_links() {
+    let unsupported = |raw| std::io::Error::from_raw_os_error(raw);
+    #[cfg(target_os = "macos")]
+    let raw = 45;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let raw = 95;
+    #[cfg(unix)]
+    {
+        assert_eq!(refusal(&unsupported(raw), true), Refusal::NoHardLinks);
+        assert_ne!(refusal(&unsupported(raw), false), Refusal::NoHardLinks);
+    }
+    let kind = std::io::Error::from(std::io::ErrorKind::Unsupported);
+    assert_eq!(refusal(&kind, true), Refusal::NoHardLinks);
+}
+
+/// FV1c 6: a refused write under the assembly folder names `<D>`, never `<D>.emu-rust-part`.
+#[test]
+fn a_refused_assembly_never_names_the_part_folder() {
+    let fx = Fx::new();
+    deep_cd(&fx.roms);
+    let mut library = Library::open_in_memory().unwrap();
+    let plan = fx.plan(&library);
+    let sys = Refuse {
+        inner: fast(),
+        link: Some(denied),
+        remove_dir: None,
+    };
+    let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+    assert!(!report.left.is_empty(), "{report:?}");
+    for (_, block) in &report.left {
+        assert!(!format!("{block:?}").contains("emu-rust-part"), "{block:?}");
+    }
+    assert!(!has_part_folder(&fx.roms));
+}
+
+/// FV1c 7: a source folder that cannot be removed once emptied is left; the unit is done.
+#[test]
+fn a_refused_removal_of_the_emptied_folder_is_not_fatal() {
+    let fx = Fx::new();
+    write(&fx.roms.join("sub/Hero2.sfc"), &noise(4096, 9));
+    let mut library = Library::open_in_memory().unwrap();
+    fx.scan(&mut library);
+    let plan = fx.plan(&library);
+    let sys = Refuse {
+        inner: fast(),
+        link: None,
+        remove_dir: Some(denied),
+    };
+    let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+    assert!(report.left.is_empty(), "{report:?}");
+    assert!(!report.moved.is_empty(), "{report:?}");
+    assert!(fx.roms.join("sub").is_dir());
+    assert!(!fx.roms.join("sub/Hero2.sfc").exists());
+    assert!(
+        report.errors.iter().any(|(p, _)| p.ends_with("sub")),
+        "{report:?}"
+    );
+}

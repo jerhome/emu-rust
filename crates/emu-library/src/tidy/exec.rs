@@ -658,7 +658,8 @@ impl<'a> Exec<'a> {
     }
 
     /// Two names of one file, proven by the file system (FV1a I3: `same-file`, Unix and Windows, any size): only
-    /// then may the destination go. Two equal copies are not enough. Unix also wants two links on the destination,
+    /// then may the destination go. Two equal copies are not enough. It also wants two links on the destination (Unix
+    /// and Windows),
     /// read again just before (RV1 I1: one name seen twice is never removed), and the two canonical paths must
     /// differ.
     fn identical(&self, source: &Path, place: &Path, size: u64) -> Identity {
@@ -836,10 +837,10 @@ impl<'a> Exec<'a> {
             Refusal::OtherVolume => Step::Left(TidyBlock::OtherVolume),
             Refusal::NoHardLinks => Step::Left(TidyBlock::NoHardLinks),
             Refusal::NotWritable => Step::Left(TidyBlock::NotWritable {
-                dir: self.rel_of(target.parent().unwrap_or(target)),
+                dir: without_part(self.rel_of(target.parent().unwrap_or(target))),
             }),
             Refusal::Exists => Step::Left(TidyBlock::Conflict {
-                existing: self.rel_of(target),
+                existing: without_part(self.rel_of(target)),
             }),
             Refusal::Other => Step::Io(io_at(target, e)),
         }
@@ -980,6 +981,10 @@ impl<'a> Exec<'a> {
                 match self.sys.remove_dir(&path) {
                     Ok(()) => removed += 1,
                     Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                    // The files are moved: a folder that cannot be removed is left, the unit stays done.
+                    Err(e) if is_denied(&e) => {
+                        self.signal(d, "dossier vidé laissé en place (suppression refusée)");
+                    }
                     Err(e) => return Err(Step::Io(io_at(&path, e))),
                 }
             }
@@ -1514,6 +1519,22 @@ const UNJOURNALABLE: &str = "chemin impossible à écrire dans le journal : unit
 const JOURNAL_FULL: &str =
     "journal de rangement plein : unité laissée en place, relancez le rangement";
 
+/// `rel` with every `<D>.emu-rust-part` component shown as `<D>`: the user never sees the assembly folder.
+fn without_part(rel: PathBuf) -> PathBuf {
+    rel.components()
+        .map(|c| {
+            let name = c.as_os_str();
+            match name
+                .to_str()
+                .and_then(|n| n.strip_suffix(super::plan::PART_SUFFIX))
+            {
+                Some(stem) if !stem.is_empty() => std::ffi::OsString::from(stem),
+                _ => name.to_os_string(),
+            }
+        })
+        .collect()
+}
+
 /// Why a step of a block failed.
 enum Step {
     /// The journal could not be written: the run stops.
@@ -1526,8 +1547,12 @@ enum Step {
 /// constants, no dependency (design v7.1 §3.4.2). macOS has the Unix values.
 #[cfg(unix)]
 mod codes {
-    /// `link` refused: no hard links on this file system (`EPERM`).
-    pub const NO_LINKS: &[i32] = &[1];
+    /// `link` refused: no hard links on this file system (`EPERM`; `ENOTSUP` 45 on macOS, `EOPNOTSUPP` 95 on
+    /// Linux, e.g. CIFS or FAT).
+    #[cfg(target_os = "macos")]
+    pub const NO_LINKS: &[i32] = &[1, 45];
+    #[cfg(not(target_os = "macos"))]
+    pub const NO_LINKS: &[i32] = &[1, 95];
     /// `EPERM`, `EACCES`, `EROFS`.
     pub const DENIED: &[i32] = &[1, 13, 30];
     /// `EXDEV`.
@@ -1564,7 +1589,7 @@ fn refusal(e: &io::Error, link: bool) -> Refusal {
     let has = |set: &[i32]| raw.is_some_and(|r| set.contains(&r));
     if has(codes::OTHER_DEVICE) || e.kind() == K::CrossesDevices {
         Refusal::OtherVolume
-    } else if link && (has(codes::NO_LINKS) || (raw.is_none() && e.kind() == K::Unsupported)) {
+    } else if link && (has(codes::NO_LINKS) || e.kind() == K::Unsupported) {
         Refusal::NoHardLinks
     } else if is_denied(e) {
         Refusal::NotWritable
