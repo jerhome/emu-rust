@@ -76,6 +76,22 @@ impl LibraryUi {
         self.tidy.busy()
     }
 
+    /// Window closed during « Ranger » or its undo (rv-fu2b m11): a run stops after the game being moved, an undo
+    /// is let finish (stopping it would make it final); both within a bound, the journal covers the rest at the
+    /// next start. The window is already gone: only the process lingers.
+    pub(crate) fn finish_tidy_before_exit(&mut self) {
+        const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+        if let Stage::Running { task, undo, .. } = &mut self.tidy.stage {
+            if !*undo {
+                task.cancel();
+            }
+            if !task.wait_end(EXIT_WAIT) {
+                tracing::warn!("{}", text::EXIT_UNFINISHED);
+            }
+            self.tidy.stage = Stage::Idle;
+        }
+    }
+
     /// « Ranger » / « Annuler le dernier rangement »: same refusals as the analysis, then the worker.
     fn start_run(&mut self, job: Job, ctx: &egui::Context) {
         self.tidy.confirm_undo = None;
@@ -551,7 +567,7 @@ fn report(
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::ERRORS_TITLE).strong());
                     for (p, m) in &r.errors {
-                        ui.colored_label(ERROR, text::error_line(&shown(p), m));
+                        ui.colored_label(ERROR, exec::error_entry(out, p, m));
                     }
                 }
             }

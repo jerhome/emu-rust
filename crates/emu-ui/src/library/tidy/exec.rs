@@ -64,6 +64,9 @@ pub(crate) trait TidySteps {
     fn relocate(&mut self, moves: &AbsoluteMoves) -> Result<Vec<(PathBuf, String)>, String>;
     fn mark(&mut self, journal: &Path) -> Result<(), LibraryError>;
     fn last(&mut self) -> Result<Option<TidyJournalInfo>, LibraryError>;
+    /// `--save-dir` replaces the usual saves folder: the identity step is left for a later start (rv-fu2b m8),
+    /// otherwise it would update the registries of the wrong folder and mark the journal done.
+    fn identities_deferred(&self) -> bool;
 }
 
 /// French text of a tidy error (TidyBusy, unreadable journal, other root; anything else as is).
@@ -135,6 +138,10 @@ fn identities<S: TidySteps>(
     moves: &AbsoluteMoves,
     out: &mut Outcome,
 ) {
+    if steps.identities_deferred() {
+        defer_note(out);
+        return;
+    }
     match steps.relocate(moves) {
         Ok(skipped) => {
             out.skipped.extend(skipped);
@@ -146,21 +153,46 @@ fn identities<S: TidySteps>(
     }
 }
 
+fn defer_note(out: &mut Outcome) {
+    if !out.messages.iter().any(|m| m == text::IDENTITIES_DEFERRED) {
+        out.messages.push(text::IDENTITIES_DEFERRED.to_owned());
+    }
+}
+
+/// What `recover_tidy` closed. It does not say (rv-fu2b m2, need sent to library-assets): the newest journal is
+/// read back, and trusted only when it is the one of the report; otherwise a wording that fits both cases.
+fn recovered_text<S: TidySteps>(steps: &mut S, report: &TidyReport) -> &'static str {
+    match steps.last() {
+        Ok(Some(info)) if report.journal.as_deref() == Some(info.path.as_path()) => {
+            if info.undone {
+                text::UNDO_INTERRUPTED_FINAL
+            } else {
+                text::RUN_INTERRUPTED_RECOVERED
+            }
+        }
+        _ => text::INTERRUPTED_RECOVERED,
+    }
+}
+
 /// `recover_tidy`, then the identity step of every pending journal. Errors are reported, never fatal.
 pub(crate) fn finish_pending<S: TidySteps>(steps: &mut S, out: &mut Outcome) {
     match steps.recover() {
         Ok(Some(report)) => {
-            let undone = steps.last().ok().flatten().is_some_and(|i| i.undone);
-            out.messages.push(if undone {
-                text::UNDO_INTERRUPTED_FINAL.to_owned()
-            } else {
-                text::RUN_INTERRUPTED_RECOVERED.to_owned()
-            });
+            out.messages.push(recovered_text(steps, &report).to_owned());
             if out.report.is_none() {
                 out.report = Some(report);
             }
         }
         Ok(None) => {}
+        // Another window holds the lock and does this work itself; at start-up, say it is only postponed.
+        Err(LibraryError::TidyBusy) => {
+            out.messages.push(if out.kind == RunKind::Recovery {
+                text::RECOVERY_BUSY.to_owned()
+            } else {
+                text::BUSY.to_owned()
+            });
+            return;
+        }
         Err(e) => out.messages.push(error_text(&e)),
     }
     match steps.pending() {
@@ -209,6 +241,7 @@ struct RealSteps<'a> {
     library: &'a mut Library,
     options: &'a TidyOptions,
     saves: &'a Path,
+    deferred: bool,
 }
 
 impl TidySteps for RealSteps<'_> {
@@ -229,6 +262,14 @@ impl TidySteps for RealSteps<'_> {
     fn last(&mut self) -> Result<Option<TidyJournalInfo>, LibraryError> {
         emu_library::last_tidy(self.options)
     }
+    fn identities_deferred(&self) -> bool {
+        self.deferred
+    }
+}
+
+/// The saves folder is not the usual one of the data folder (`--save-dir`).
+pub(crate) fn saves_overridden(dirs: &DataDirs) -> bool {
+    dirs.saves != DataDirs::under(&dirs.root).saves
 }
 
 /// What the worker runs.
@@ -285,6 +326,7 @@ pub(crate) fn run_job(
         library: &mut library,
         options: &options,
         saves: &dirs.saves,
+        deferred: saves_overridden(dirs),
     };
     let mut out = match result {
         Some(result) => after_run(kind, result, &mut steps),
@@ -310,6 +352,24 @@ pub(crate) fn shown_path(out: &Outcome, p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// One line of `TidyReport::errors`. A `LibraryError::Io` text starts with the absolute path it is about
+/// (`<path> : <cause>`): shown relative like the entry, or dropped when it is the entry itself.
+pub(crate) fn error_entry(out: &Outcome, p: &Path, message: &str) -> String {
+    let shown = shown_path(out, p);
+    let message = match message.split_once(" : ") {
+        Some((head, cause)) if Path::new(head).is_absolute() => {
+            let head = shown_path(out, Path::new(head));
+            if head == shown {
+                cause.to_owned()
+            } else {
+                format!("{} : {cause}", text::path(&head))
+            }
+        }
+        _ => message.to_owned(),
+    };
+    text::error_line(&shown, &message)
+}
+
 /// Nothing to recover when no tidying ever ran (no journal folder) or the roms folder is missing.
 pub(crate) fn recovery_needed(dirs: &DataDirs) -> bool {
     dirs.tidy_journals.is_dir() && roms_root(dirs).is_dir() && dirs.library_db.is_file()
@@ -327,7 +387,7 @@ pub(crate) fn report_lines(kind: RunKind, r: &TidyReport) -> ReportLines {
     match kind {
         RunKind::Undo => ReportLines {
             // `moved` is the net list of the whole journal, not what came back: not shown as a count.
-            headline: if r.left.is_empty() && !r.cancelled {
+            headline: if r.left.is_empty() && r.errors.is_empty() && !r.cancelled {
                 text::UNDO_ALL_BACK.to_owned()
             } else {
                 text::UNDO_SOME_LEFT.to_owned()
@@ -352,11 +412,7 @@ pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
                 .iter()
                 .map(|(p, b)| text::left(&shown_path(out, p), b)),
         );
-        lines.extend(
-            r.errors
-                .iter()
-                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
-        );
+        lines.extend(r.errors.iter().map(|(p, m)| error_entry(out, p, m)));
     }
     if !out.skipped.is_empty() {
         lines.push(text::SKIPPED_TITLE.to_owned());
@@ -392,7 +448,12 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         ],
         errors: vec![(
             root.join("Myst.iso"),
-            "accès refusé : le fichier est ouvert par un autre programme".to_owned(),
+            // The `LibraryError::Io` text of a sharing violation on a French Windows, as the library reports it.
+            format!(
+                "{} : Le processus ne peut pas accéder au fichier car ce fichier est utilisé par un autre \
+                 processus. (os error 32)",
+                root.join("Myst.iso").display()
+            ),
         )],
         dirs_created: 3,
         dirs_removed: 0,
@@ -441,6 +502,7 @@ mod tests {
         pending: Vec<(PathBuf, AbsoluteMoves)>,
         relocate_fails: bool,
         last: Option<TidyJournalInfo>,
+        deferred: bool,
     }
 
     impl TidySteps for Fake {
@@ -467,6 +529,9 @@ mod tests {
         fn last(&mut self) -> Result<Option<TidyJournalInfo>, LibraryError> {
             self.calls.push("last".into());
             Ok(self.last.clone())
+        }
+        fn identities_deferred(&self) -> bool {
+            self.deferred
         }
     }
 
@@ -521,6 +586,7 @@ mod tests {
         let mut f = Fake {
             recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
             pending: vec![(PathBuf::from("/j/journal-1.txt"), Vec::new())],
+            last: Some(info(false, true)),
             ..Fake::default()
         };
         let err = LibraryError::Journal {
@@ -561,6 +627,107 @@ mod tests {
         let mut out = Outcome::new(RunKind::Recovery);
         finish_pending(&mut f, &mut out);
         assert_eq!(out.messages, [text::UNDO_INTERRUPTED_FINAL]);
+    }
+
+    #[test]
+    fn recovery_wording_is_neutral_when_the_newest_journal_is_another() {
+        // `last_tidy` names another journal (or fails): the closed one may be a run or an undo.
+        let mut other = info(true, true);
+        other.path = PathBuf::from("/j/journal-2.txt");
+        for last in [Some(other), None] {
+            let mut f = Fake {
+                recover: Some(Ok(Some(report(Some("/j/journal-1.txt"))))),
+                last,
+                ..Fake::default()
+            };
+            let mut out = Outcome::new(RunKind::Recovery);
+            finish_pending(&mut f, &mut out);
+            assert_eq!(out.messages, [text::INTERRUPTED_RECOVERED]);
+        }
+    }
+
+    #[test]
+    fn busy_at_start_up_postpones_the_recovery() {
+        let mut f = Fake {
+            recover: Some(Err(LibraryError::TidyBusy)),
+            pending: vec![(PathBuf::from("/j/journal-1.txt"), Vec::new())],
+            ..Fake::default()
+        };
+        let mut out = Outcome::new(RunKind::Recovery);
+        finish_pending(&mut f, &mut out);
+        assert_eq!(f.calls, ["recover"]);
+        assert_eq!(out.messages, [text::RECOVERY_BUSY]);
+    }
+
+    #[test]
+    fn save_dir_override_defers_the_identity_step() {
+        let mut f = Fake {
+            pending: vec![
+                (PathBuf::from("/j/journal-1.txt"), Vec::new()),
+                (PathBuf::from("/j/journal-2.txt"), Vec::new()),
+            ],
+            deferred: true,
+            ..Fake::default()
+        };
+        let mut out = Outcome::new(RunKind::Recovery);
+        finish_pending(&mut f, &mut out);
+        assert_eq!(f.calls, ["recover", "pending"]);
+        assert_eq!(out.messages, [text::IDENTITIES_DEFERRED]);
+        let mut f = Fake {
+            deferred: true,
+            ..Fake::default()
+        };
+        let out = after_run(RunKind::Tidy, Ok(report(Some("/j/journal-1.txt"))), &mut f);
+        assert_eq!(f.calls, ["last"]);
+        assert_eq!(out.messages, [text::IDENTITIES_DEFERRED]);
+    }
+
+    #[test]
+    fn saves_override_is_detected_against_the_data_folder() {
+        let mut dirs = DataDirs::under(Path::new("/data"));
+        assert!(!saves_overridden(&dirs));
+        dirs.saves = PathBuf::from("/elsewhere/saves");
+        assert!(saves_overridden(&dirs));
+    }
+
+    #[test]
+    fn error_entries_drop_the_absolute_path_of_the_io_text() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(PathBuf::from("/home/u/data/roms"));
+        let entry = Path::new("/home/u/data/roms/Myst.iso");
+        let line = error_entry(
+            &out,
+            entry,
+            "/home/u/data/roms/Myst.iso : fichier utilisé (os error 32)",
+        );
+        assert!(line.starts_with("roms/Myst.iso : fichier utilisé (os error 32)"));
+        assert!(line.contains(text::SHARING_HINT));
+        assert!(!line.contains("/home/u"));
+        let line = error_entry(
+            &out,
+            entry,
+            "/home/u/data/roms/Myst.bin : accès refusé (os error 13)",
+        );
+        assert_eq!(
+            line,
+            "roms/Myst.iso : roms/Myst.bin : accès refusé (os error 13)"
+        );
+        let line = error_entry(&out, entry, "aucun système choisi : laissé en place");
+        assert_eq!(
+            line,
+            "roms/Myst.iso : aucun système choisi : laissé en place"
+        );
+    }
+
+    #[test]
+    fn demo_report_shows_a_text_the_library_produces() {
+        let dirs = DataDirs::under(Path::new("/data"));
+        let out = demo_outcome(&dirs);
+        let r = out.report.as_ref().unwrap();
+        let (p, m) = &r.errors[0];
+        let line = error_entry(&out, p, m);
+        assert!(line.contains(text::SHARING_HINT));
+        assert!(!line.contains("/data"));
     }
 
     #[test]
@@ -669,6 +836,14 @@ mod tests {
         let undo = report_lines(RunKind::Undo, &r);
         assert_eq!(undo.cancelled, Some(text::UNDO_CANCELLED));
         assert_eq!(undo.headline, text::UNDO_SOME_LEFT);
+        r.cancelled = false;
+        r.errors
+            .push((PathBuf::from("/r/b.sfc"), "accès refusé".into()));
+        assert_eq!(
+            report_lines(RunKind::Undo, &r).headline,
+            text::UNDO_SOME_LEFT
+        );
+        r.cancelled = true;
         let tidy = report_lines(RunKind::Tidy, &r);
         assert_eq!(tidy.cancelled, Some(text::CANCELLED));
         assert!(tidy.headline.contains("Fichiers déplacés : 1"));
@@ -677,8 +852,8 @@ mod tests {
     #[test]
     fn undo_confirmation_recalls_date_and_files() {
         let t = text::undo_confirm(4, 1_763_840_000);
-        assert!(t.contains("2025-11-22"));
-        assert!(t.contains("UTC"));
+        // Local time: the day may shift with the zone, not the month (2025-11-22 19:33 UTC).
+        assert!(t.contains("11/2025 à "));
         assert!(t.contains("4 fichier(s)"));
         assert_eq!(text::apply(3), "Ranger 3 jeu(x)");
         assert_eq!(text::CLOSE_WITHOUT_TIDY, "Fermer sans ranger");
@@ -701,5 +876,8 @@ mod tests {
             journal: PathBuf::from("/data/rangement/journal-6.txt"),
         });
         assert!(t.contains("autre dossier des ROMs"));
+        // Removing it would lose the record of where the files went.
+        assert!(!t.contains("supprimez"));
+        assert!(t.contains("Lancez d'abord emu-rust sur l'autre dossier"));
     }
 }

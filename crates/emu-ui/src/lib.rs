@@ -82,7 +82,9 @@ pub const CREDIT: &str = "dev by claude@jerhome";
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
 /// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
 /// `Library::pending_tidy_identities`. Called when the library opens and before a direct launch (`run`); errors
-/// are logged (« Journal » panel), never fatal. Runs on the calling thread: call it before the window exists.
+/// are logged (« Journal » panel), never fatal. Runs on the calling thread, before the window exists, on purpose:
+/// the library and a direct launch must see the final paths (rename / hard link on one volume: quick). Not called
+/// for a capture (`--dump-window`). With `--save-dir`, the identity step waits for a start without it.
 pub fn finish_pending_identities(dirs: &DataDirs) {
     use crate::library::tidy::exec;
     if !exec::recovery_needed(dirs) {

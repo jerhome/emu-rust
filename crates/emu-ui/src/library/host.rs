@@ -116,6 +116,7 @@ impl Host {
         }
         self.egui = None;
         self.window = None;
+        self.library.finish_tidy_before_exit();
     }
 
     fn capturing(&self) -> bool {

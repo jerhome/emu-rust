@@ -233,8 +233,9 @@ pub fn journal_unreadable(p: &Path, message: &str) -> String {
 pub fn other_root(journal: &Path) -> String {
     format!(
         "Le journal {} concerne un autre dossier des ROMs : il n'est ni rejoué ni annulable ici, et il bloque \
-         le rangement de ce dossier. Si l'autre dossier n'existe plus ou n'est plus utilisé, retirez ce \
-         journal (déplacez-le ailleurs ou supprimez-le).",
+         le rangement de ce dossier. Lancez d'abord emu-rust sur l'autre dossier des ROMs pour qu'il termine \
+         ce rangement ; si cet autre dossier n'existe plus, déplacez ce journal hors du dossier des journaux \
+         (gardez-le : il permet de retrouver où sont allés les fichiers).",
         path(journal)
     )
 }
@@ -252,6 +253,18 @@ pub const UNDO_INTERRUPTED_FINAL: &str = "L'annulation précédente a été inte
 pub const RUN_INTERRUPTED_RECOVERED: &str = "Le rangement précédent a été interrompu : le jeu en cours de \
                                              déplacement a été remis à sa place, les autres restent rangés.";
 
+/// `recover_tidy` closed a journal but `last_tidy` could not say whether it was a run or an undo.
+pub const INTERRUPTED_RECOVERED: &str = "Un rangement ou une annulation précédente avait été interrompu : la \
+                                         reprise est faite. Les jeux déjà traités restent où ils sont ; \
+                                         consultez le dossier des ROMs si besoin.";
+/// Start-up recovery while another window holds the tidying lock.
+pub const RECOVERY_BUSY: &str = "Reprise du rangement interrompu reportée : une autre fenêtre d'emu-rust range \
+                                 déjà les ROMs. Elle sera faite au prochain démarrage.";
+/// `--save-dir` points elsewhere: the identity registries of the usual saves folder are not touched.
+pub const IDENTITIES_DEFERRED: &str = "Sauvegardes non mises à jour pour les jeux rangés : un autre dossier de \
+                                       sauvegardes est utilisé (--save-dir). Ce sera fait au prochain démarrage \
+                                       sans --save-dir.";
+
 pub const APPLY_UPDATING: &str = "« Ranger » sera disponible une fois l'aperçu à jour.";
 pub const UNDO: &str = "Annuler le dernier rangement…";
 pub const UNDO_CONFIRM_YES: &str = "Oui, annuler ce rangement";
@@ -261,35 +274,27 @@ pub fn undo_confirm(moved: u64, unix: i64) -> String {
     format!(
         "Annuler le rangement du {} ({moved} fichier(s) déplacé(s)) ? Les jeux reviennent à leur place \
          d'origine. Une seule annulation est possible, et elle ne peut pas être arrêtée en cours de route.",
-        chrono_free_date(unix)
+        local_date(unix)
     )
 }
 pub const NEW_ANALYSIS: &str = "Nouvelle analyse";
 pub const STOP_RUN: &str = "Arrêter après le jeu en cours";
 
 pub fn last_tidy(moved: u64, unix: i64) -> String {
-    let date = chrono_free_date(unix);
+    let date = local_date(unix);
     format!("Dernier rangement : {date}, {moved} fichier(s) déplacé(s).")
 }
 
-/// `AAAA-MM-JJ HH:MM` UTC without a date crate (civil-from-days).
-fn chrono_free_date(unix: i64) -> String {
-    let days = unix.div_euclid(86_400);
-    let secs = unix.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
-        secs / 3600,
-        secs % 3600 / 60
-    )
+/// `JJ/MM/AAAA à HH:MM`, local time (the journal stores Unix seconds); UTC when the local offset is unknown.
+fn local_date(unix: i64) -> String {
+    use chrono::{Local, TimeZone, Utc};
+    match Local.timestamp_opt(unix, 0).single() {
+        Some(t) => t.format("%d/%m/%Y à %H:%M").to_string(),
+        None => Utc.timestamp_opt(unix, 0).single().map_or_else(
+            || unix.to_string(),
+            |t| t.format("%d/%m/%Y à %H:%M UTC").to_string(),
+        ),
+    }
 }
 
 pub fn running(kind_undo: bool, done: u64, total: u64) -> String {
@@ -312,6 +317,8 @@ pub const UNDO_SOME_LEFT: &str = "Annulation terminée, sauf pour les jeux ci-de
                                   (déplacez-les à la main si besoin).";
 pub const UNDO_LEFT_TITLE: &str = "Restés rangés :";
 pub const AFTER_ERROR: &str = "Les jeux déjà traités restent rangés.";
+pub const EXIT_UNFINISHED: &str =
+    "Fenêtre fermée pendant le rangement : il sera terminé au prochain démarrage.";
 pub const RUN_INTERRUPTED: &str = "Tâche interrompue : relancez emu-rust pour terminer la reprise.";
 
 pub fn moved(files: usize, dirs_created: u64, dirs_removed: u64) -> String {
@@ -329,5 +336,23 @@ pub fn left(p: &Path, b: &TidyBlock) -> String {
 }
 
 pub fn error_line(p: &Path, message: &str) -> String {
-    format!("{} : {}", path(p), clean(message))
+    match io_hint(message) {
+        Some(hint) => format!("{} : {} — {hint}", path(p), clean(message)),
+        None => format!("{} : {}", path(p), clean(message)),
+    }
 }
+
+/// Windows sharing / lock violation (`ERROR_SHARING_VIOLATION` 32, `ERROR_LOCK_VIOLATION` 33), recognized in the
+/// `io::Error` text the library reports (`… (os error 32)`): its system wording does not say what to do. Those
+/// codes cannot come out of a rename or a hard link on Unix (EPIPE, EDOM), so the check is not `cfg`-gated.
+fn io_hint(message: &str) -> Option<&'static str> {
+    let code = message
+        .trim_end()
+        .strip_suffix(')')?
+        .rsplit_once("(os error ")?
+        .1;
+    matches!(code, "32" | "33").then_some(SHARING_HINT)
+}
+
+pub const SHARING_HINT: &str = "fichier ouvert par un autre programme : fermez-le, puis relancez le rangement \
+                                (le jeu est resté à sa place)";

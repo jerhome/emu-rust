@@ -432,8 +432,8 @@ pub(super) enum Stage {
     },
     Preview(Box<Preview>),
     Failed(String),
-    /// `apply_tidy` / `undo_tidy` then the identity step, in a worker. Not left before the end (the window may
-    /// close: the journal makes the next start finish it).
+    /// `apply_tidy` / `undo_tidy` then the identity step, in a worker. Not left before the end; a window closed
+    /// meanwhile waits for it at exit (bounded), the journal makes the next start finish the rest.
     Running {
         task: exec::RunTask,
         progress: Option<emu_library::TidyProgress>,

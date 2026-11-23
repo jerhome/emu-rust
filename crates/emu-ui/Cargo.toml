@@ -36,6 +36,8 @@ opener = { version = "0.9", default-features = false }
 # 7.1 (ADR 0023 §2, §3): window icon decoded from packaging/icon/png/, and the log capture layer (`log.rs`).
 png = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Local time of the tidying journals (MIT OR Apache-2.0); `clock` only: reads the zone through the OS, no `unsafe` here.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
