@@ -61,3 +61,31 @@ format des DAT, sort d'une base corrompue, pile HTTP/TLS exacte, décodage d'ima
 ## Amendement 2026-11-19 (revue L1)
 
 Schéma final : `game.path` UNIQUE, `file_size` vs `size`, `pinned` (`SCHEMA_VERSION = 2`) ; zip > 1 Gio refusé ; `gbc` accepte `.gb`. Détails dans `docs/design/v1.0-bibliotheque.md`.
+
+## Amendement 2026-11-23 (7.0.2 : sources de jaquettes, essai utilisateur)
+
+Constat : `thumbnails.libretro.com` répond 404 pour toutes les jaquettes (index vide) ; les 404 étaient enregistrés
+`Missing` pendant 30 jours sans trace. Le dépôt GitHub `libretro-thumbnails` est le miroir complet. Complète le §5.
+
+1. **Sources libretro, dans l'ordre** : (a) miroir GitHub
+   `https://raw.githubusercontent.com/libretro-thumbnails/<base libretro, espaces -> _>/master/Named_Boxarts/<nom>.png`
+   en **premier** (répond 200 directement) ; (b) `https://thumbnails.libretro.com/<base>/Named_Boxarts/<nom>.png` en
+   **secours** (404/erreur sur (a)). Hôtes autorisés pour les jaquettes : ces deux seuls hôtes, HTTPS seul.
+   **Redirections toujours désactivées** (`Policy::none()` conservé) ; un 301/302/307/308 est un résultat
+   **inconclusif** (jamais « absente »). Même pile HTTP, même validation d'image (8 Mio, PNG/JPEG, limites de décodage).
+2. **Politesse envers raw.githubusercontent.com** (pas de jeton) : concurrence ≤ 2 requêtes simultanées sur cet hôte,
+   User-Agent générique `emu-rust/<version>` sans donnée personnelle ; un 403/429 (ou `Retry-After`) arrête la source
+   pour la session (résultat inconclusif, pas d'insistance). Les jaquettes sont des images de couverture : autorisées
+   par l'ADR 0005 (aucune ROM, aucun BIOS).
+3. **« Missing » seulement sur absence crédible** : une source dont les réponses sont des 404 sans **aucun** succès
+   après N = 8 requêtes consécutives (jeux de systèmes ou noms différents) est jugée « en panne » pour la session :
+   les résultats 404 de cette source deviennent **inconclusifs** (erreur `SourceBroken`, rien n'est écrit en base) et
+   les requêtes suivantes sautent la source. Un seul succès remet le compteur à zéro. Seul un 404 d'une source jugée
+   saine est enregistré `Missing`.
+4. **Réinitialisation unique** : sans migration de schéma (`SCHEMA_VERSION` inchangé). Un champ de configuration
+   `[library] covers_missing_reset: u32` (défaut 0) ; au démarrage, si < 2, `Library::clear_missing_covers()` (existe
+   déjà) puis écriture de 2. Un futur changement de sources incrémente la constante.
+5. **Visibilité minimale** : échec par jeu journalisé en `warn!` (jeu, source, statut HTTP ; l'URL libretro est
+   publique, jamais d'URL ScreenScraper/IGDB) ; statut global « Jaquettes : X trouvées, Y introuvables[, source
+   injoignable] » dans la bibliothèque. Reportés (7.1+) : texte par jeu, bouton « réessayer », recherche floue pour
+   les noms TOSEC/redump.
