@@ -1932,6 +1932,7 @@ fn denied() -> std::io::Error {
 /// FV1c 1: « not supported » (`ENOTSUP`, `EOPNOTSUPP`, with a raw code) means no hard links, not a write error.
 #[test]
 fn an_unsupported_link_is_no_hard_links() {
+    #[cfg(unix)]
     let unsupported = |raw| std::io::Error::from_raw_os_error(raw);
     #[cfg(target_os = "macos")]
     let raw = 45;

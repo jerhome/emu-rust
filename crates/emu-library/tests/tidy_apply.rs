@@ -5,7 +5,7 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::*;
@@ -537,6 +537,7 @@ fn the_journal_names_the_canonical_root_and_a_link_root_gives_canonical_paths() 
 #[cfg(unix)]
 mod rights {
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use super::*;
 
@@ -651,6 +652,8 @@ mod windows_rights {
         assert!(!fx.roms.join("snes/Alpha.sfc").exists());
         assert!(fs::metadata(&source).unwrap().permissions().readonly());
         let mut perms = fs::metadata(&source).unwrap().permissions();
+        // Windows only: clears the read-only attribute; the Unix world-writable warning does not apply.
+        #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         fs::set_permissions(&source, perms).unwrap();
     }
