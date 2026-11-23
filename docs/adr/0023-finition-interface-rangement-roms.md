@@ -308,7 +308,7 @@ n'a encore été écrit chez un utilisateur.
      laissée, motif dédié `TidyBlock::ReadOnlyFile`, déjà montré dans l'aperçu ; (b) si malgré tout le retrait
      d'un **second nom prouvé** (même fichier physique, §4.8 FV1a 1, ou lien que le bloc vient de poser)
      échoue sur « accès refusé », ce n'est **pas fatal** : les deux noms restent, le cas est rendu dans
-     `TidyReport::extra_names` (« retirez l'attribut puis supprimez X à la main »), la base pointe sur le nom
+     `TidyReport::extra_names` (« retirez l'attribut puis retirez ce nom (X) à la main »), la base pointe sur le nom
      gardé et le journal peut être clos ; (c) emu-rust **ne modifie jamais** l'attribut ni les droits ;
      (d) tests sous `cfg(windows)` exécutés par la CI Windows.
   2. **Écriture refusée** (droits du dossier, volume protégé en écriture, Unix comme Windows) : un lien, une
