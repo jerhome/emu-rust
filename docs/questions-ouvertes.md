@@ -358,3 +358,11 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 11. **Vulkan.** a) **9.4, tests automatiques, essai par le camarade** ; b) plus tôt ; c) abandonné.
 12. **Ordre des versions.** a) **7.1 → 7.2 → 8.0 → 9.0** ; b) 9.0 avant la 8.0.
 13. **À relever sur le portable Windows** (pas de défaut) : processeur, mémoire, version du pilote Intel (`dxdiag`).
+
+## Réponses utilisateur du 2026-11-23
+
+- **Annulation partielle d'un rangement** : on ne peut pas la relancer en 7.1 (défaut de l'architecte confirmé).
+  Pouvoir réessayer une annulation partielle reste **à noter de côté** pour une version ultérieure.
+- **BIOS PS1** : reconnaître **autant de révisions que possible** (toutes régions : SCPH-1000/1001/1002/3000/3500/
+  5500/5501/5502/5552/7000/7001/7002/7502/9000/9001/9002/100/101/102, PSone…), par hash, sans aucun
+  téléchargement. Tâche secondaire 7.1 (library-assets).
