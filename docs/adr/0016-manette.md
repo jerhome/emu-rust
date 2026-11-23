@@ -3,7 +3,8 @@
 Statut : accepté (2026-11-20) avec les défauts recommandés de `docs/design/phase6-manette.md` §6. **Version de
 livraison : 2.1** (décision de l'utilisateur du 2026-11-21 : T2 à T7 juste après la 2.0 ; T0 et T1 sont faits).
 **Amendée le 2026-11-21** (section « Amendement 2026-11-21 » en fin de document) : champ `analog = true` de
-`cores.toml`, raccourcis manette du mode ordinateur, colonne GBA du mapping. Précise ADR 0003 (« backend SDL3
+`cores.toml`, raccourcis manette du mode ordinateur, colonne GBA du mapping. **Amendement 2026-11-23 (7.2, accepté)** : manettes non
+reconnues ou mal mappées, apprentissage par GUID (remplace le point 5 « ignorée avec un `warn!` »). Précise ADR 0003 (« backend SDL3
 candidat, à confirmer par une ADR dédiée »). Conception détaillée et découpage : `docs/design/phase6-manette.md`.
 
 ## Contexte
@@ -228,3 +229,33 @@ deadzone = 0.15
 Comportement réel de gilrs-core 0.6.8 sur DS4 (WGI Windows, IOKit macOS 12) : seul l'essai sur matériel tranche ;
 la base SDL_GameControllerDB embarquée contient bien les GUID DS4 (v1/v2, USB/BT) par plateforme : à contrôler par un
 test lisant `gilrs::MappingSource` sur un GUID DS4 construit à la main côté `qa-systems`.
+
+## Amendement 2026-11-23 — manettes non reconnues (7.2, statut : accepté le 2026-11-23, défauts validés par l'utilisateur)
+
+Conception et découpage : `docs/design/v7.2-manette-snes.md`. Demande de l'utilisateur : pads USB génériques type
+SNES (DragonRise 0079:0011 et similaires), souvent absents de la base SDL embarquée **ou présents mais mal mappés**
+(une puce, plusieurs câblages, une seule ligne par GUID), croix rapportée en axes, en hat ou en boutons.
+
+1. **Remplace la dernière phrase du point 5** : une manette `MappingSource::None` n'est plus ignorée. Elle est lue
+   en **mode brut** (entrées natives opaques `RawInput::Button(code)` / `RawInput::Axis(code)`, codes gilrs
+   `Code::into_u32`) ; le mode brut s'applique aussi à tout modèle (GUID) qui a un mapping appris, qui **prime sur la
+   base SDL**. Toujours pas de devinette d'indices : sans mapping appris, le pad ne va jamais au core et ne prend
+   pas de port ; l'utilisateur est averti une fois par connexion.
+2. **Apprentissage dans l'UI** (Réglages → Manettes) : une invite par touche, touche passable, forme choisie
+   (SNES, NES, Mega Drive 3 / 6 boutons) qui ne change que les invites ; résultat positionnel (`PadButton`) donc
+   `PadMap` par `PadStyle`, ports, raccourcis et menus inchangés. Axes et hat deviennent des boutons (seuil 0,5,
+   relâchement sous 0,4). Sticks analogiques non appris (hors 7.2).
+3. **Persistance** dans `[input.gamepad.devices."<guid>"]` : `name`, `layout`, `hotkey_button`, table `map`
+   (`<bouton positionnel> = "b12" | "+a3" | "-a3"`) ; champs facultatifs, rétrocompatible, 0600. Codes valables pour
+   une plateforme (le GUID diffère d'ailleurs d'une plateforme à l'autre).
+4. **Bouton de raccourcis par manette** : `hotkey_button` du périphérique, sinon **Select** pour un pad appris sans
+   bouton `Mode`, sinon la valeur globale ; la DS4 garde PS.
+5. **Format SDL_GameControllerDB écarté** : gilrs expose des `Code` natifs et non les indices SDL ; produire une
+   ligne SDL reproduirait sa numérotation interne et dépendrait de `Gilrs::set_mapping`. Notre couche reste
+   indépendante du backend (le repli SDL3 du point 2 la conserve) et testable sans matériel.
+6. Graphe de crates inchangé ; `emu-runtime` inchangé ; code dans `emu-ui/src/gamepad/` ; aucun `unsafe`, aucun
+   réseau ; journal : nom et GUID en `info`, codes bruts en `debug` seulement.
+
+**Non vérifié** (sources gilrs absentes du registre local, aucun téléchargement) : présence de 0079:0011, 0810:e501,
+081f:e401, 12bd:d015 dans la base embarquée par plateforme ; forme exacte des événements d'un pad non mappé et du hat
+sous macOS / Windows. À contrôler par `qa-systems` (tâche Q1) et à l'essai ; la décision ne dépend pas du résultat.
