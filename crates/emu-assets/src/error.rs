@@ -32,6 +32,10 @@ pub enum AssetError {
     /// `CoverChain`: no source could be asked (none configured, or all refused their credentials).
     #[error("aucune source de jaquettes disponible")]
     NoSource,
+    /// A cover source answered only 404 (no success) many times in a row: judged down for the session. The
+    /// result is inconclusive (nothing must be recorded as « absent »); no URL.
+    #[error("source de jaquettes en panne")]
+    SourceBroken,
     #[error("{path} : {source}")]
     Io {
         path: PathBuf,

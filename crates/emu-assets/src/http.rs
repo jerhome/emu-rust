@@ -112,6 +112,8 @@ impl fmt::Debug for Request<'_> {
 pub struct HttpClient {
     inner: reqwest::blocking::Client,
     config: Arc<HttpConfig>,
+    /// `false` (see [`Self::without_redirects`]): a 3xx is returned as is.
+    follow_redirects: bool,
 }
 
 impl HttpClient {
@@ -140,7 +142,17 @@ impl HttpClient {
         Ok(Self {
             inner,
             config: Arc::new(config),
+            follow_redirects: true,
         })
+    }
+
+    /// Same pool and configuration, but redirections are never followed: the 3xx response is handed back
+    /// (covers, ADR 0014: a redirect proves nothing about the resource).
+    pub fn without_redirects(&self) -> Self {
+        Self {
+            follow_redirects: false,
+            ..self.clone()
+        }
     }
 
     pub fn config(&self) -> &HttpConfig {
@@ -326,7 +338,10 @@ impl HttpClient {
                 .send()
                 .map_err(|e| network_error(e, Some(&current)))?;
             let status = response.status();
-            if !status.is_redirection() || status == reqwest::StatusCode::NOT_MODIFIED {
+            if !self.follow_redirects
+                || !status.is_redirection()
+                || status == reqwest::StatusCode::NOT_MODIFIED
+            {
                 return Ok(response);
             }
             let Some(location) = response.headers().get(LOCATION) else {

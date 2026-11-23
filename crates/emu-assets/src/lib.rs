@@ -15,7 +15,7 @@ pub mod jobs;
 mod secret;
 
 pub use crate::covers::{
-    CoverCache, CoverChain, CoverFound, CoverQuery, CoverSource, CoverSourceKind,
+    CoverCache, CoverChain, CoverFound, CoverQuery, CoverSource, CoverSourceKind, CoverStats,
     DEFAULT_COVER_CACHE_BYTES, IgdbCredentials, IgdbSource, LibretroThumbnails,
     ScreenScraperCredentials, ScreenScraperSource, thumbnail_file_name,
 };

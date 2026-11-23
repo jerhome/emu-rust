@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use zeroize::{Zeroize, Zeroizing};
@@ -80,6 +80,8 @@ pub struct CoverFound {
 pub trait CoverSource: Send {
     fn kind(&self) -> CoverSourceKind;
     fn fetch(&mut self, query: &CoverQuery) -> Result<Option<CoverFound>, AssetError>;
+    /// Forgets the session state (« Rechercher à nouveau »); called by [`CoverChain::reset`].
+    fn reset(&mut self) {}
 }
 
 /// libretro-thumbnails file name: `&*/:`<>?\|"` replaced by `_` (libretro rule), plus `.png`.
@@ -139,29 +141,232 @@ fn with_slash(base: &str) -> String {
 // ---------------------------------------------------------------------------------------------------------------
 // libretro-thumbnails
 
-/// `https://thumbnails.libretro.com/<system>/Named_Boxarts/<name>.png`, no account.
-pub struct LibretroThumbnails {
-    client: HttpClient,
-    base_url: String,
+/// Consecutive 404 without any success after which a mirror is judged broken for the session (ADR 0014, 7.0.2).
+const BROKEN_AFTER_404: u32 = 8;
+/// Simultaneous requests allowed on `raw.githubusercontent.com` (all `LibretroThumbnails` of the process).
+const RAW_MAX_CONCURRENT: u32 = 2;
+
+struct RawGate {
+    busy: Mutex<u32>,
+    freed: Condvar,
 }
 
-impl LibretroThumbnails {
-    pub const BASE_URL: &'static str = "https://thumbnails.libretro.com/";
+static RAW_GATE: RawGate = RawGate {
+    busy: Mutex::new(0),
+    freed: Condvar::new(),
+};
 
-    pub fn new(client: HttpClient, base_url: &str) -> Self {
+struct RawPermit;
+
+impl RawPermit {
+    fn acquire() -> Self {
+        let mut busy = RAW_GATE.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        while *busy >= RAW_MAX_CONCURRENT {
+            busy = RAW_GATE
+                .freed
+                .wait(busy)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *busy += 1;
+        Self
+    }
+}
+
+impl Drop for RawPermit {
+    fn drop(&mut self) {
+        let mut busy = RAW_GATE.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        *busy -= 1;
+        RAW_GATE.freed.notify_one();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MirrorState {
+    Active,
+    /// 403/429: no insistence for the session.
+    Stopped,
+    /// `BROKEN_AFTER_404` consecutive 404, no success.
+    Broken,
+}
+
+enum Attempt {
+    Found(CoverFound),
+    /// 404 from a healthy mirror (or unusable image content).
+    Absent,
+    Inconclusive(AssetError),
+    Stopped,
+    Broken,
+}
+
+/// The only hosts allowed for covers (HTTPS only); loopback HTTP stays possible for tests, the client refusing it
+/// unless configured so.
+fn mirror_base_allowed(base: &str) -> bool {
+    let Ok(url) = Url::parse(base) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => matches!(
+            url.host_str(),
+            Some("raw.githubusercontent.com" | "thumbnails.libretro.com")
+        ),
+        "http" => url.host_str() == Some("127.0.0.1"),
+        _ => false,
+    }
+}
+
+struct Mirror {
+    /// `None`: base refused (host not allowed); the mirror is never asked.
+    base: Option<String>,
+    raw: bool,
+    misses: u32,
+    state: MirrorState,
+}
+
+impl Mirror {
+    fn new(base: &str, raw: bool) -> Self {
         Self {
-            client,
-            base_url: with_slash(base_url),
+            base: mirror_base_allowed(base).then(|| with_slash(base)),
+            raw,
+            misses: 0,
+            state: MirrorState::Active,
         }
     }
 
+    fn url(&self, base: &str, query: &CoverQuery) -> String {
+        let name = thumbnail_file_name(&query.title);
+        let file = utf8_percent_encode(&name, PATH_SEGMENT);
+        if self.raw {
+            // Repository name = libretro database with spaces turned into underscores.
+            let repo = query.database.replace(' ', "_");
+            format!(
+                "{base}{}/master/Named_Boxarts/{file}",
+                utf8_percent_encode(&repo, PATH_SEGMENT)
+            )
+        } else {
+            format!(
+                "{base}{}/Named_Boxarts/{file}",
+                utf8_percent_encode(&query.database, PATH_SEGMENT)
+            )
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        if self.raw {
+            "libretro (miroir GitHub)"
+        } else {
+            "libretro (thumbnails.libretro.com)"
+        }
+    }
+
+    fn attempt(&mut self, client: &HttpClient, query: &CoverQuery) -> Attempt {
+        let Some(base) = self.base.clone() else {
+            return Attempt::Inconclusive(AssetError::UrlRefused);
+        };
+        match self.state {
+            MirrorState::Broken => return Attempt::Broken,
+            MirrorState::Stopped => return Attempt::Stopped,
+            MirrorState::Active => {}
+        }
+        let url = self.url(&base, query);
+        let _permit = self.raw.then(RawPermit::acquire);
+        let response = match client.send(&Request {
+            method: Method::Get,
+            url: &url,
+            headers: Vec::new(),
+            body: None,
+            max_bytes: MAX_COVER_BYTES,
+        }) {
+            Ok(r) => r,
+            Err(e) => return Attempt::Inconclusive(e),
+        };
+        match response.status {
+            200 => {
+                self.misses = 0;
+                match crate::image::validate_cover(&response.body) {
+                    Ok(format) => Attempt::Found(CoverFound {
+                        source: CoverSourceKind::LibretroThumbnails,
+                        format,
+                        bytes: response.body,
+                    }),
+                    // The chain counts unusable content as "not found" for the source.
+                    Err(e) => Attempt::Inconclusive(e),
+                }
+            }
+            404 | 410 => {
+                self.misses += 1;
+                if self.misses >= BROKEN_AFTER_404 {
+                    tracing::warn!(
+                        "jaquettes : {} : {} réponses 404 sans succès, source jugée en panne pour la session",
+                        self.name(),
+                        self.misses
+                    );
+                    self.state = MirrorState::Broken;
+                    Attempt::Broken
+                } else {
+                    Attempt::Absent
+                }
+            }
+            403 | 429 => {
+                tracing::warn!(
+                    "jaquettes : {} : HTTP {}, source arrêtée pour la session",
+                    self.name(),
+                    response.status
+                );
+                self.state = MirrorState::Stopped;
+                Attempt::Stopped
+            }
+            // 3xx included: redirections are never followed, so they prove nothing.
+            status => Attempt::Inconclusive(AssetError::Http { status }),
+        }
+    }
+}
+
+/// libretro-thumbnails: the GitHub mirror
+/// (`https://raw.githubusercontent.com/libretro-thumbnails/<system with _>/master/Named_Boxarts/<name>.png`)
+/// first, `https://thumbnails.libretro.com/<system>/Named_Boxarts/<name>.png` as a fallback. No account.
+///
+/// Per mirror: 404 is "absent" only while it is healthy; [`BROKEN_AFTER_404`] consecutive 404 without a success
+/// make it "broken" for the session (`AssetError::SourceBroken`, nothing conclusive); 403/429 stop it; 3xx is
+/// inconclusive; at most 2 simultaneous requests on the GitHub host.
+pub struct LibretroThumbnails {
+    client: HttpClient,
+    mirrors: [Mirror; 2],
+}
+
+impl LibretroThumbnails {
+    /// Fallback host (`thumbnails.libretro.com`).
+    pub const BASE_URL: &'static str = "https://thumbnails.libretro.com/";
+    /// Mirror asked first.
+    pub const RAW_BASE_URL: &'static str = "https://raw.githubusercontent.com/libretro-thumbnails/";
+
+    /// Production mirrors, with `base_url` as the fallback host.
+    pub fn new(client: HttpClient, base_url: &str) -> Self {
+        Self::with_bases(client, Self::RAW_BASE_URL, base_url)
+    }
+
+    pub fn with_bases(client: HttpClient, raw_base_url: &str, fallback_base_url: &str) -> Self {
+        Self {
+            client: client.without_redirects(),
+            mirrors: [
+                Mirror::new(raw_base_url, true),
+                Mirror::new(fallback_base_url, false),
+            ],
+        }
+    }
+
+    /// Fallback URL (thumbnails.libretro.com layout).
     pub fn url(&self, query: &CoverQuery) -> String {
-        format!(
-            "{}{}/Named_Boxarts/{}",
-            self.base_url,
-            utf8_percent_encode(&query.database, PATH_SEGMENT),
-            utf8_percent_encode(&thumbnail_file_name(&query.title), PATH_SEGMENT)
-        )
+        self.mirror_url(1, query)
+    }
+
+    /// GitHub mirror URL.
+    pub fn raw_url(&self, query: &CoverQuery) -> String {
+        self.mirror_url(0, query)
+    }
+
+    fn mirror_url(&self, index: usize, query: &CoverQuery) -> String {
+        let mirror = &self.mirrors[index];
+        mirror.url(mirror.base.as_deref().unwrap_or_default(), query)
     }
 }
 
@@ -174,7 +379,38 @@ impl CoverSource for LibretroThumbnails {
         if query.database.is_empty() || query.title.trim().is_empty() {
             return Ok(None);
         }
-        fetch_image(&self.client, &self.url(query), Vec::new(), self.kind())
+        let (mut absent, mut broken, mut stopped) = (false, false, false);
+        let mut inconclusive: Option<AssetError> = None;
+        for mirror in &mut self.mirrors {
+            match mirror.attempt(&self.client, query) {
+                Attempt::Found(found) => return Ok(Some(found)),
+                Attempt::Absent => absent = true,
+                Attempt::Broken => broken = true,
+                Attempt::Stopped => stopped = true,
+                Attempt::Inconclusive(AssetError::Cancelled) => return Err(AssetError::Cancelled),
+                Attempt::Inconclusive(e) => {
+                    inconclusive.get_or_insert(e);
+                }
+            }
+        }
+        if let Some(e) = inconclusive {
+            Err(e)
+        } else if absent {
+            Ok(None)
+        } else if broken {
+            Err(AssetError::SourceBroken)
+        } else if stopped {
+            Err(AssetError::Quota { retry_after: None })
+        } else {
+            Err(AssetError::UrlRefused)
+        }
+    }
+
+    fn reset(&mut self) {
+        for mirror in &mut self.mirrors {
+            mirror.misses = 0;
+            mirror.state = MirrorState::Active;
+        }
     }
 }
 
@@ -694,6 +930,21 @@ enum Off {
     Quota,
     /// Credentials refused or URL refused: the source is out until the user changes the configuration.
     Refused,
+    /// `AssetError::SourceBroken`: only a `reset` brings it back.
+    Broken,
+}
+
+/// Session counters of a [`CoverChain`] (one count per `fetch` outcome).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoverStats {
+    /// Covers downloaded.
+    pub found: u32,
+    /// Conclusive « absent » answers (recorded `Missing` by the caller).
+    pub missing: u32,
+    /// Inconclusive failures (network, quota, HTTP, cancelled excluded).
+    pub errors: u32,
+    /// A source was judged broken during the session (`AssetError::SourceBroken`); cleared by `reset`.
+    pub source_broken: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,11 +968,13 @@ struct Slot {
 /// every pass; a source whose credentials were refused does not prevent a conclusive `Ok(None)`.
 pub struct CoverChain {
     slots: Vec<Slot>,
+    stats: CoverStats,
 }
 
 impl CoverChain {
     pub fn new(sources: Vec<Box<dyn CoverSource>>) -> Self {
         Self {
+            stats: CoverStats::default(),
             slots: sources
                 .into_iter()
                 .map(|source| Slot {
@@ -757,7 +1010,34 @@ impl CoverChain {
         self.fetch_bounded(query, Some(Instant::now() + budget), cancel)
     }
 
+    /// Session counters (found, missing, errors, broken source).
+    pub fn stats(&self) -> CoverStats {
+        self.stats
+    }
+
+    /// Zeroes the counters (the sources keep their state: see `reset`).
+    pub fn reset_stats(&mut self) {
+        self.stats = CoverStats::default();
+    }
+
     fn fetch_bounded(
+        &mut self,
+        query: &CoverQuery,
+        deadline: Option<Instant>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Option<CoverFound>, AssetError> {
+        let result = self.fetch_inner(query, deadline, cancel);
+        match &result {
+            Ok(Some(_)) => self.stats.found += 1,
+            Ok(None) => self.stats.missing += 1,
+            Err(AssetError::Cancelled) => {}
+            Err(AssetError::SourceBroken) => self.stats.source_broken = true,
+            Err(_) => self.stats.errors += 1,
+        }
+        result
+    }
+
+    fn fetch_inner(
         &mut self,
         query: &CoverQuery,
         deadline: Option<Instant>,
@@ -779,6 +1059,10 @@ impl CoverChain {
                 SlotState::Off(Off::Refused) => continue,
                 SlotState::Off(Off::Network) => {
                     inconclusive.get_or_insert(AssetError::Network("hors ligne".into()));
+                    continue;
+                }
+                SlotState::Off(Off::Broken) => {
+                    inconclusive = Some(AssetError::SourceBroken);
                     continue;
                 }
                 SlotState::Off(Off::Quota) => {
@@ -811,6 +1095,11 @@ impl CoverChain {
                     tracing::warn!("jaquettes : source {name} désactivée : {e}");
                     slot.state = SlotState::Off(Off::Refused);
                 }
+                Err(AssetError::SourceBroken) => {
+                    tracing::warn!("jaquettes : source {name} en panne, sautée pour la session");
+                    slot.state = SlotState::Off(Off::Broken);
+                    inconclusive = Some(AssetError::SourceBroken);
+                }
                 Err(AssetError::Quota { retry_after }) => {
                     match retry_after {
                         Some(delay) => {
@@ -839,6 +1128,11 @@ impl CoverChain {
                         );
                         slot.state = SlotState::Off(Off::Network);
                     }
+                    inconclusive = Some(e);
+                }
+                // Redirections are never followed: they prove nothing about the cover.
+                Err(e @ AssetError::Http { status: 300..=399 }) => {
+                    tracing::warn!("jaquettes : {name} : {e} (redirection ignorée)");
                     inconclusive = Some(e);
                 }
                 Err(e) => {
@@ -876,7 +1170,9 @@ impl CoverChain {
         for slot in &mut self.slots {
             slot.state = SlotState::Active;
             slot.network_errors = 0;
+            slot.source.reset();
         }
+        self.stats.source_broken = false;
     }
 }
 

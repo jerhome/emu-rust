@@ -13,12 +13,32 @@ fn thumbnail_names_follow_libretro_rules() {
 #[test]
 fn libretro_url_is_encoded() {
     let client = HttpClient::new(crate::http::HttpConfig::default()).unwrap();
-    let source = LibretroThumbnails::new(client, "https://t.test");
-    let url = source.url(&query("Bob's Game: #1 (USA)"));
+    let source = LibretroThumbnails::new(client, "https://thumbnails.libretro.com");
+    let q = query("Bob's Game: #1 (USA)");
     assert_eq!(
-        url,
-        "https://t.test/Nintendo%20-%20Game%20Boy/Named_Boxarts/Bob%27s%20Game_%20%231%20%28USA%29.png"
+        source.url(&q),
+        "https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy/Named_Boxarts/Bob%27s%20Game_%20%231%20%28USA%29.png"
     );
+    assert_eq!(
+        source.raw_url(&q),
+        "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Game_Boy/master/Named_Boxarts/Bob%27s%20Game_%20%231%20%28USA%29.png"
+    );
+}
+
+#[test]
+fn libretro_refuses_other_hosts() {
+    let client = HttpClient::new(crate::http::HttpConfig::default()).unwrap();
+    for base in [
+        "https://evil.test/",
+        "http://raw.githubusercontent.com/",
+        "ftp://thumbnails.libretro.com/",
+    ] {
+        let mut source = LibretroThumbnails::with_bases(client.clone(), base, base);
+        assert!(matches!(
+            source.fetch(&query("x")),
+            Err(AssetError::UrlRefused)
+        ));
+    }
 }
 
 #[test]
