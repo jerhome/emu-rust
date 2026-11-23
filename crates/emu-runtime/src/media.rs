@@ -312,6 +312,11 @@ fn prepare_media_inner(
                 "multi_disc = disk_control needs direct media and no playlist".into(),
             ));
         }
+        if set.images.iter().any(|p| is_playlist(p)) {
+            return Err(RuntimeError::InvalidMediaSet(
+                "multi_disc = disk_control does not take a .m3u playlist".into(),
+            ));
+        }
         if launch.is_none() && set.images.len() > 1 {
             return prepare_disk_control(set, rules, exts, limits);
         }
@@ -2261,6 +2266,22 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, RuntimeError::InvalidMediaSet(_)));
+    }
+
+    #[test]
+    fn disk_control_refuses_m3u_among_images() {
+        let f = Fixture::new();
+        let m3u = f.file("Game.m3u", b"Game.cue\n");
+        for images in [vec![m3u.clone()], vec![f.file("Game.cue", b"a"), m3u]] {
+            let err = prepare_media(
+                &set("Game", images),
+                &disk_control_rules(MediaPolicy::Direct),
+                &cue_exts(),
+                &f.saves(),
+            )
+            .unwrap_err();
+            assert!(matches!(err, RuntimeError::InvalidMediaSet(_)));
+        }
     }
 
     fn sha(paths: &[PathBuf]) -> Vec<u32> {

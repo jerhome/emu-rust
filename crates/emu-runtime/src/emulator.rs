@@ -202,7 +202,15 @@ fn append_launch_disks(core: &mut Core, images: &[PathBuf]) -> Result<(), Runtim
         return Ok(());
     }
     let mut disks = core.disk_control().ok_or(RuntimeError::NoDiskControl)?;
-    for (num, path) in (1u32..).zip(&images[1..]) {
+    let initial = disks.num_images();
+    if initial != 1 {
+        return Err(RuntimeError::InvalidMediaSet(format!(
+            "the core reports {initial} disk slot(s) after loading, expected 1"
+        )));
+    }
+    for path in &images[1..] {
+        // Read the count before each add, so the slot filled is the one just appended.
+        let num = disks.num_images();
         disks.add_image()?;
         if let Err(e) = disks.replace_image(num, Some(path)) {
             if let Err(e2) = disks.replace_image(num, None) {
@@ -381,7 +389,11 @@ impl Emulator {
         }
         .map_err(RuntimeError::from)
         .and_then(|av_info| {
-            if let Some(media) = prepared.as_ref().filter(|_| disk_control_launch) {
+            // Only when the content really is image 0: a generated or user playlist already lists every disk.
+            if let Some(media) = prepared
+                .as_ref()
+                .filter(|m| disk_control_launch && m.images.first() == Some(&m.content))
+            {
                 append_launch_disks(&mut core, &media.images)?;
             }
             Ok((av_info, restore_sram(&mut core, &sram_path)?))
