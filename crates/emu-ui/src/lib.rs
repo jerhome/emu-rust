@@ -8,6 +8,7 @@ mod config_computer;
 mod config_gamepad;
 mod config_library;
 mod content;
+mod copyable;
 mod cores_ui;
 mod dos_launch;
 mod egui_layer;

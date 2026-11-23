@@ -166,7 +166,7 @@ impl LibraryUi {
                     }
                 }
                 Stage::Failed(e) => {
-                    ui.colored_label(WARNING, e.as_str());
+                    crate::copyable::message(ui, WARNING, e);
                     if ui.button(text::RETRY).clicked() {
                         actions.push(Action::Retry);
                     }
@@ -512,7 +512,7 @@ fn undo_section(
 
 fn last_tidy_lines(ui: &mut Ui, last: &exec::LastTidy) {
     if let Some(e) = &last.error {
-        ui.colored_label(WARNING, e.as_str());
+        crate::copyable::message(ui, WARNING, e);
     }
     if let Some(info) = last.info.as_ref().filter(|i| i.can_undo()) {
         weak(ui, text::last_tidy(info.moved, info.created_unix));
@@ -544,7 +544,7 @@ fn report(
     undo_section(ui, &out.last, confirm, actions);
     last_tidy_lines(ui, &out.last);
     for m in &out.messages {
-        ui.colored_label(WARNING, m.as_str());
+        crate::copyable::message(ui, WARNING, m);
     }
     let shown = |p: &std::path::Path| exec::shown_path(out, p);
     ScrollArea::vertical()
@@ -573,9 +573,21 @@ fn report(
                 if !r.errors.is_empty() {
                     ui.add_space(6.0);
                     ui.label(RichText::new(text::ERRORS_TITLE).strong());
-                    for (p, m) in &r.errors {
-                        ui.colored_label(ERROR, exec::error_entry(out, p, m));
+                    let entries: Vec<String> = r
+                        .errors
+                        .iter()
+                        .map(|(p, m)| exec::error_entry(out, p, m))
+                        .collect();
+                    for entry in &entries {
+                        ui.add(
+                            egui::Label::new(RichText::new(entry).color(ERROR)).selectable(true),
+                        );
                     }
+                    crate::copyable::copy_button_labelled(
+                        ui,
+                        crate::ui::text::COPY_REPORT,
+                        &crate::copyable::joined(&entries),
+                    );
                 }
             }
             if !out.skipped.is_empty() {

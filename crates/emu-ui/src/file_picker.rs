@@ -346,7 +346,7 @@ impl FileBrowser {
             submit |= ui.button(text::BROWSER_GO).clicked();
         });
         if let Some(e) = self.error() {
-            ui.colored_label(egui::Color32::from_rgb(255, 110, 110), e);
+            crate::copyable::message(ui, egui::Color32::from_rgb(255, 110, 110), e);
         }
         if !self.filter.is_empty() {
             ui.label(

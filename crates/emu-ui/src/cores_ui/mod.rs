@@ -711,7 +711,7 @@ impl CoresUi {
             }
         }
         if let Some(e) = &self.refresh_error {
-            ui.colored_label(ERROR, e);
+            crate::copyable::message(ui, ERROR, e);
         }
     }
 
@@ -1005,7 +1005,7 @@ impl CoresUi {
             }
             self.enhancement_lines(ui, &row.id);
             if let Some(e) = self.errors.get(&row.id) {
-                ui.colored_label(ERROR, e);
+                crate::copyable::message(ui, ERROR, e);
             }
             let op = self.ops.get(&row.id).map(|o| o.kind);
             if op.is_none()

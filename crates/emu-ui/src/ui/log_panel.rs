@@ -86,6 +86,11 @@ impl LogPanel {
         self.records.iter().filter(|r| self.filter.admits(r.level))
     }
 
+    /// Plain text of every visible record, as shown (full messages).
+    pub(crate) fn visible_text(&self) -> String {
+        crate::copyable::joined(self.visible().map(row_text))
+    }
+
     /// Draws the panel in `ui`; `Close` when « Retour » was used or Escape pressed.
     /// `escape`: the panel closes itself on Escape (the in-game overlay routes that key through `Overlay::back`).
     pub(crate) fn show(&mut self, ui: &mut Ui, escape: bool) -> Option<LogEvent> {
@@ -119,6 +124,10 @@ impl LogPanel {
                 && let Some(dir) = dir
             {
                 self.folder = Some(spawn_open_folder(dir));
+            }
+            let all = self.visible_text();
+            if !all.is_empty() {
+                crate::copyable::copy_button_labelled(ui, text::LOG_COPY_ALL, &all);
             }
         });
         if let Some(note) = &self.folder_note {
@@ -168,6 +177,19 @@ impl LogPanel {
     }
 }
 
+fn row_text(r: &LogRecord) -> String {
+    let origin = match r.origin {
+        LogOrigin::App => "",
+        LogOrigin::Core => concat!(" [", "core", "]"),
+    };
+    format!(
+        "{} {}{origin} {}",
+        format_time(r.unix_ms),
+        r.level.label(),
+        r.message
+    )
+}
+
 fn row(r: &LogRecord) -> RichText {
     let color = match r.level {
         LogLevel::Error => Color32::from_rgb(255, 120, 120),
@@ -175,19 +197,10 @@ fn row(r: &LogRecord) -> RichText {
         LogLevel::Info => Color32::from_gray(210),
         LogLevel::Debug => Color32::from_gray(140),
     };
-    let origin = match r.origin {
-        LogOrigin::App => "",
-        LogOrigin::Core => concat!(" [", "core", "]"),
-    };
-    RichText::new(format!(
-        "{} {}{origin} {}",
-        format_time(r.unix_ms),
-        r.level.label(),
-        r.message
-    ))
-    // Normal size: the small style was hard to read (FU1 feedback).
-    .monospace()
-    .color(color)
+    RichText::new(row_text(r))
+        // Normal size: the small style was hard to read (FU1 feedback).
+        .monospace()
+        .color(color)
 }
 
 #[cfg(test)]
@@ -201,6 +214,31 @@ mod tests {
         assert_eq!(admitted(LogFilter::Errors), [true, false, false, false]);
         assert_eq!(admitted(LogFilter::Warnings), [true, true, false, false]);
         assert_eq!(admitted(LogFilter::All), [true; 4]);
+    }
+
+    #[test]
+    fn copied_log_is_the_full_visible_text() {
+        let mut panel = LogPanel::default();
+        panel.records.push(LogRecord {
+            seq: 1,
+            unix_ms: 0,
+            level: LogLevel::Error,
+            origin: LogOrigin::Core,
+            target: "t".into(),
+            message: "unable to open file".into(),
+        });
+        panel.records.push(LogRecord {
+            seq: 2,
+            unix_ms: 0,
+            level: LogLevel::Info,
+            origin: LogOrigin::App,
+            target: "t".into(),
+            message: "hello".into(),
+        });
+        panel.filter = LogFilter::Errors;
+        let text = panel.visible_text();
+        assert!(text.contains("unable to open file") && text.contains("[core]"));
+        assert!(!text.contains("hello"));
     }
 
     #[test]

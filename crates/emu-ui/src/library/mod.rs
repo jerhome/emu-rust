@@ -1268,7 +1268,7 @@ impl LibraryUi {
 
     fn status_line(&self, ui: &mut Ui) {
         if let Some(b) = &self.db_banner {
-            ui.colored_label(WARNING, b);
+            crate::copyable::message(ui, WARNING, b);
         }
         if let Some(p) = &self.dat_progress {
             ui.label(text::dat_downloading(&p.system, p.done, p.total));
@@ -1292,7 +1292,7 @@ impl LibraryUi {
                 Level::Warn => WARNING,
                 Level::Error => ERROR,
             };
-            ui.colored_label(color, msg);
+            crate::copyable::message(ui, color, msg);
         }
     }
 

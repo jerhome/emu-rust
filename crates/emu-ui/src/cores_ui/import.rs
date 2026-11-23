@@ -260,7 +260,7 @@ impl ImportUi {
                     action = review_ui(ui, identified, forcing, filter, choice, focus, escape);
                 }
                 State::Failed(e) => {
-                    ui.colored_label(ERROR, text::import_failed(e));
+                    crate::copyable::message(ui, ERROR, &text::import_failed(e));
                     let ok = ui.button(text::OK);
                     if focus {
                         ok.request_focus();
