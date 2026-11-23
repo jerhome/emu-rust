@@ -376,4 +376,9 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 6. a) Pont d'abord (choix laissé à l'architecte, recommandation retenue).
 7. a) Bouton « Mesurer 60 s » + rapport à coller.
 8. a) macOS Intel : cores/réglages absents affichés grisés.
-Restent : 5 (déjà « pas d'urgence » le 2026-11-22), 9 (Saturn en 9.3 validé ; DS ?), 10, 11 (déjà « encore moins »), 12, 13.
+5. a) DirectX 11 après la mesure OpenGL sur l'Iris Xe (avant la 9.1 si OpenGL est mauvais).
+9. Nintendo DS : étude à part, pas d'urgence (Saturn reste avec la PSP).
+10. GameCube / Wii, 3DS, PS2 : hors 9.x, plus tard.
+11. Vulkan : en dernier palier ; **l'utilisateur l'essaiera lui-même d'abord** (sur l'Iris Xe, même si ce n'est pas idéal), puis le camarade.
+12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
+Reste : 13 (relevé dxdiag).
