@@ -2,9 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-use emu_assets::cores::{CoreId, CoreMediaPolicy, CorePreferences, M3uLaunchPref, SaveScopePref};
+use emu_assets::cores::{
+    CoreId, CoreMediaPolicy, CorePreferences, M3uLaunchPref, MultiDiscPref, SaveScopePref,
+};
 use emu_runtime::{
-    ContentSpec, GameIdentity, M3uLaunch, MediaPolicy, MediaRules, MediaSet, SaveScope,
+    ContentSpec, GameIdentity, M3uLaunch, MediaPolicy, MediaRules, MediaSet, MultiDisc, SaveScope,
 };
 
 /// What to boot.
@@ -217,6 +219,7 @@ pub fn plan_disc_launch(
     let mut rules = MediaRules::new(MediaPolicy::Direct);
     rules.media_direct = prefs.media_direct(core);
     rules.m3u_launch = m3u_launch(prefs, core);
+    rules.multi_disc = multi_disc(prefs, core);
     Ok(ContentSpec::Media {
         set: MediaSet {
             name: media_set_name(&game.media),
@@ -238,6 +241,14 @@ fn foreign_disc(game: &emu_library::Game) -> Option<LaunchRefusal> {
     };
     let info = emu_library::disc_info(first).ok().flatten()?;
     (info.format.system_id() != game.system).then_some(LaunchRefusal::ForeignDisc)
+}
+
+/// `cores.toml` `multi_disc` of a core as the runtime takes it.
+pub(crate) fn multi_disc(prefs: &CorePreferences, id: &CoreId) -> MultiDisc {
+    match prefs.multi_disc(id) {
+        MultiDiscPref::Playlist => MultiDisc::Playlist,
+        MultiDiscPref::DiskControl => MultiDisc::DiskControl,
+    }
 }
 
 /// `cores.toml` `m3u_launch` of a core as the runtime takes it (`None` without the key).
@@ -755,6 +766,32 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn plan_disc_launch_multi_disc_by_core() {
+        let prefs = CorePreferences::builtin();
+        let game = disc_game(
+            "/g/A (Disc 1).chd",
+            &["/g/A (Disc 1).chd", "/g/A (Disc 2).chd"],
+            None,
+        );
+        let md = |core: &str| {
+            let id = CoreId::new(core).unwrap();
+            match plan_disc_launch(&game, &id, &prefs).unwrap() {
+                ContentSpec::Media { rules, .. } => rules.multi_disc,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(md("genesis_plus_gx"), MultiDisc::DiskControl);
+        assert_eq!(md("picodrive"), MultiDisc::DiskControl);
+        assert_eq!(md("pcsx_rearmed"), MultiDisc::Playlist);
+        let id = CoreId::new("picodrive").unwrap();
+        let one = disc_game("/g/A.chd", &["/g/A.chd"], None);
+        assert_eq!(
+            plan_disc_launch(&one, &id, &prefs),
+            Ok(ContentSpec::File(PathBuf::from("/g/A.chd")))
+        );
     }
 
     /// 7.0: a disc whose header names another system than the game's is refused (a Sega CD disc filed under
