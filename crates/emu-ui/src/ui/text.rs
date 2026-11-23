@@ -932,6 +932,7 @@ pub const LOG_EMPTY: &str = "Aucun message pour ce filtre.";
 pub const LOG_FILE_IN_USE: &str =
     "fichier journal utilisé par une autre instance : cette session n'est pas enregistrée";
 pub const LOG_HINT: &str = "PgUp / PgDn : défiler · Échap : retour";
+pub const RECENT_MESSAGES: &str = "Derniers messages";
 pub const COPY: &str = "Copier";
 pub const COPIED: &str = "Copié";
 pub const LOG_COPY_ALL: &str = "Copier le journal";

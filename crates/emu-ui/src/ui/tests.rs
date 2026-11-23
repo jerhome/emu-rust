@@ -164,6 +164,26 @@ fn back_navigation() {
 }
 
 #[test]
+fn osd_history_is_bounded_recent_first_and_copyable() {
+    let now = Instant::now();
+    let mut osd = Osd::default();
+    for i in 0..12 {
+        osd.info(format!("msg {i}"), now);
+    }
+    let texts: Vec<_> = osd.history().map(|e| e.text.clone()).collect();
+    assert_eq!(texts.len(), 10);
+    assert_eq!(texts[0], "msg 11");
+    assert_eq!(texts[9], "msg 2");
+    let copied = osd.history_text();
+    assert_eq!(copied.lines().count(), 10);
+    assert!(copied.lines().next().unwrap().ends_with(" msg 11"));
+    // Expired toasts stay in the history.
+    osd.prune(now + Duration::from_secs(60));
+    assert!(osd.is_empty());
+    assert_eq!(osd.history().count(), 10);
+}
+
+#[test]
 fn osd_expiry_and_cap() {
     let now = Instant::now();
     let mut osd = Osd::default();
