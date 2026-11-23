@@ -22,10 +22,11 @@ use super::journal::{
 use super::relocate;
 use super::sys::Sys;
 use super::{
-    AbsoluteMoves, TidyBlock, TidyOptions, TidyPlan, TidyProgress, TidyReport, TidyStatus,
+    AbsoluteMoves, TidyBlock, TidyExtraName, TidyOptions, TidyPlan, TidyProgress, TidyReport,
+    TidySection, TidyStatus,
 };
-use crate::LibraryError;
 use crate::scan::mtime_of;
+use crate::{LibraryError, TidyRefusal};
 
 /// Journals kept by the purge (only those whose last line is `I` are ever removed beyond them).
 pub(super) const KEPT_JOURNALS: usize = 20;
@@ -37,11 +38,16 @@ fn io_at(path: &Path, source: io::Error) -> LibraryError {
     }
 }
 
-fn journal_error(path: &Path, message: &str) -> LibraryError {
-    LibraryError::Journal {
-        path: path.to_path_buf(),
-        message: message.to_owned(),
+fn refused(journal: &Path, reason: TidyRefusal) -> LibraryError {
+    LibraryError::TidyRefused {
+        journal: journal.to_path_buf(),
+        reason,
     }
+}
+
+/// A journal that could not be written or finished: an I/O error, never an « unreadable journal » (RV3 6).
+fn write_error(path: &Path, message: &str) -> LibraryError {
+    io_at(path, io::Error::other(message.to_owned()))
 }
 
 /// Takes the OS lock of `journal_dir/lock` (released by the system if the process dies).
@@ -149,10 +155,48 @@ fn same_state(meta: &fs::Metadata, size: u64, mtime: i64) -> bool {
     meta.len() == size && (mtime_of(meta) - mtime).abs() <= MTIME_TOLERANCE_SECS
 }
 
+/// Number of names of the file at `path` (Unix: `st_nlink`; Windows: the handle's link count). `None`: unknown
+/// (handle impossible to open), so nothing is proven.
 #[cfg(unix)]
-fn links_of(meta: &fs::Metadata) -> u64 {
+fn links_of(_path: &Path, meta: &fs::Metadata) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
-    meta.nlink()
+    Some(meta.nlink())
+}
+
+#[cfg(windows)]
+fn links_of(path: &Path, _meta: &fs::Metadata) -> Option<u64> {
+    let handle = winapi_util::Handle::from_path_any(path).ok()?;
+    Some(
+        winapi_util::file::information(&handle)
+            .ok()?
+            .number_of_links(),
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn links_of(_path: &Path, _meta: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// First of `rels` (relative to `root`) carrying the Windows « read-only » attribute: the removal of such a name
+/// is refused although linking it is allowed (ADR 0023 §4.8, RV3 1). The attribute is never changed. Unix: the
+/// removal depends on the folder's rights, which the write classification handles.
+#[cfg(windows)]
+pub(super) fn first_read_only<'a>(
+    root: &Path,
+    rels: impl IntoIterator<Item = &'a Path>,
+) -> Option<PathBuf> {
+    rels.into_iter()
+        .find(|rel| fs::symlink_metadata(root.join(rel)).is_ok_and(|m| m.permissions().readonly()))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(not(windows))]
+pub(super) fn first_read_only<'a>(
+    _root: &Path,
+    _rels: impl IntoIterator<Item = &'a Path>,
+) -> Option<PathBuf> {
+    None
 }
 
 /// `(files, size, newest mtime)` of the regular files below `rel` (not following links); `None` when it holds a
@@ -554,15 +598,20 @@ impl<'a> Exec<'a> {
                 self.sys.hard_link(&from, &to).map_err(|e| io_at(&to, e))?;
                 // The name given back durable before the other one goes (FV1a I2).
                 self.sync_parent(source)?;
-                self.sys.remove_file(&from).map_err(|e| io_at(&from, e))?;
-                self.sync_parent(place)
+                if self.remove_second_name(&from, &to)? {
+                    self.sync_parent(place)?;
+                }
+                Ok(())
             }
             Probe::File(_) => {
                 match self.identical(source, place, size) {
                     Identity::Same => {
-                        let path = root.join(place);
-                        self.sys.remove_file(&path).map_err(|e| io_at(&path, e))?;
-                        self.sync_parent(place)?;
+                        // The kept name durable before the other one goes (RV3 5).
+                        self.sync_parent(source)?;
+                        let (path, keep) = (root.join(place), root.join(source));
+                        if self.remove_second_name(&path, &keep)? {
+                            self.sync_parent(place)?;
+                        }
                     }
                     Identity::Different => self.signal(
                         place,
@@ -587,6 +636,27 @@ impl<'a> Exec<'a> {
         }
     }
 
+    /// Removes `remove`, a name proven to be a second one of the file also named `keep`. `Ok(false)`: access refused
+    /// (read-only attribute, rights) while the two names are still proven the same file: not an error, the name
+    /// goes to `TidyReport::extra_names` for the user (RV3 3). Any other failure is returned.
+    fn remove_second_name(&mut self, remove: &Path, keep: &Path) -> Result<bool, LibraryError> {
+        match self.sys.remove_file(remove) {
+            Ok(()) => Ok(true),
+            Err(e)
+                if is_denied(&e)
+                    && distinct_names(remove, keep)
+                    && same_file::is_same_file(remove, keep).unwrap_or(false) =>
+            {
+                self.report.extra_names.push(TidyExtraName {
+                    remove: remove.to_path_buf(),
+                    keep: keep.to_path_buf(),
+                });
+                Ok(false)
+            }
+            Err(e) => Err(io_at(remove, e)),
+        }
+    }
+
     /// Two names of one file, proven by the file system (FV1a I3: `same-file`, Unix and Windows, any size): only
     /// then may the destination go. Two equal copies are not enough. Unix also wants two links on the destination,
     /// read again just before (RV1 I1: one name seen twice is never removed), and the two canonical paths must
@@ -600,12 +670,24 @@ impl<'a> Exec<'a> {
         if same_place(source, place) || src_meta.len() != size || again.len() != size {
             return Identity::Different;
         }
-        #[cfg(unix)]
-        if links_of(&again) < 2 {
-            return Identity::Different;
+        match links_of(&dst, &again) {
+            Some(n) if n >= 2 => {}
+            Some(_) => return Identity::Different,
+            None => return Identity::Unproven,
         }
         if !distinct_names(&src, &dst) {
             return Identity::Different;
+        }
+        // ReFS: the 64-bit file index `same-file` compares is not guaranteed unique there (RV3 5), so Windows also
+        // wants both dates exactly equal on the two names.
+        #[cfg(windows)]
+        {
+            let dates = |m: &fs::Metadata| Some((m.created().ok()?, m.modified().ok()?));
+            match (dates(&src_meta), dates(&again)) {
+                (Some(a), Some(b)) if a == b => {}
+                (Some(_), Some(_)) => return Identity::Different,
+                _ => return Identity::Unproven,
+            }
         }
         match same_file::is_same_file(&src, &dst) {
             Ok(true) => Identity::Same,
@@ -695,7 +777,7 @@ impl<'a> Exec<'a> {
                 match step {
                     Step::Journal(e) => Err(Fatal(e)),
                     Step::Left(b) => Ok(Outcome::Left(b)),
-                    Step::Io(e) => Ok(Outcome::Failed(e.to_string())),
+                    Step::Io(e) => Ok(Outcome::Failed(self.message_of(e))),
                 }
             }
         }
@@ -733,9 +815,44 @@ impl<'a> Exec<'a> {
         let path = self.abs(on_disk);
         self.sys
             .create_dir(&path)
-            .map_err(|e| Step::Io(io_at(&path, e)))?;
+            .map_err(|e| self.write_step(&path, e, false))?;
         created.insert(on_disk.parent().map(Path::to_path_buf).unwrap_or_default());
         Ok(true)
+    }
+
+    /// `path` relative to the roms root (`.` for the root itself).
+    fn rel_of(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.root) {
+            Ok(rel) if rel.as_os_str().is_empty() => PathBuf::from("."),
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => path.to_path_buf(),
+        }
+    }
+
+    /// A refused write of `target` (absolute), before any source is removed: the unit is left, or the error kept
+    /// (RV3 2: « no hard links » is not « write refused »).
+    fn write_step(&self, target: &Path, e: io::Error, link: bool) -> Step {
+        match refusal(&e, link) {
+            Refusal::OtherVolume => Step::Left(TidyBlock::OtherVolume),
+            Refusal::NoHardLinks => Step::Left(TidyBlock::NoHardLinks),
+            Refusal::NotWritable => Step::Left(TidyBlock::NotWritable {
+                dir: self.rel_of(target.parent().unwrap_or(target)),
+            }),
+            Refusal::Exists => Step::Left(TidyBlock::Conflict {
+                existing: self.rel_of(target),
+            }),
+            Refusal::Other => Step::Io(io_at(target, e)),
+        }
+    }
+
+    /// Why the removal of `rel`, a proven second name, was refused.
+    fn refused_removal(&self, rel: &Path) -> TidyBlock {
+        match first_read_only(&self.root, [rel]) {
+            Some(path) => TidyBlock::ReadOnlyFile { path },
+            None => TidyBlock::NotWritable {
+                dir: self.rel_of(&self.abs(rel.parent().unwrap_or(Path::new("")))),
+            },
+        }
     }
 
     fn sync_dirs(&self, dirs: BTreeSet<PathBuf>) -> Result<(), Step> {
@@ -775,7 +892,7 @@ impl<'a> Exec<'a> {
             let path = root.join(p);
             self.sys
                 .create_dir(&path)
-                .map_err(|e| Step::Io(io_at(&path, e)))?;
+                .map_err(|e| self.write_step(&path, e, false))?;
             made_in.insert(parent(p));
             for d in &inside {
                 created += u64::from(self.create_dir(
@@ -795,7 +912,7 @@ impl<'a> Exec<'a> {
             let (from, to) = (root.join(&f.from), root.join(spec.link_place(&f.to)));
             self.sys
                 .hard_link(&from, &to)
-                .map_err(|e| link_error(&to, e))?;
+                .map_err(|e| self.write_step(&to, e, true))?;
             self.write(writer, block, Op::MoveDone(f.n))?;
         }
         if let Some(w) = &spec.whole {
@@ -805,7 +922,7 @@ impl<'a> Exec<'a> {
             let (from, to) = (root.join(&w.from), root.join(&w.to));
             self.sys
                 .rename(&from, &to)
-                .map_err(|e| rename_error(&to, e))?;
+                .map_err(|e| self.write_step(&to, e, false))?;
             self.write(writer, block, Op::WholeDone)?;
         }
         // Destinations durable before any source goes.
@@ -823,7 +940,7 @@ impl<'a> Exec<'a> {
             let (from, to) = (root.join(p), root.join(d));
             self.sys
                 .rename(&from, &to)
-                .map_err(|e| Step::Io(io_at(&to, e)))?;
+                .map_err(|e| self.write_step(&to, e, false))?;
             self.sync_dirs(BTreeSet::from([parent(d)]))?;
         }
         for f in &spec.files {
@@ -834,9 +951,22 @@ impl<'a> Exec<'a> {
                     io::Error::other("origine et destination désignent le même nom"),
                 )));
             }
-            self.sys
-                .remove_file(&path)
-                .map_err(|e| Step::Io(io_at(&path, e)))?;
+            // Proven the same file before the source goes (RV3 6): a link that is not one is never a reason to remove.
+            if !matches!(same_file::is_same_file(&path, root.join(&f.to)), Ok(true)) {
+                return Err(Step::Io(io_at(
+                    &path,
+                    io::Error::other("origine et destination ne désignent pas le même fichier"),
+                )));
+            }
+            if let Err(e) = self.sys.remove_file(&path) {
+                // Refused removal of a proven name: the unit is undone (its link is the extra name if that fails
+                // too), nothing is lost (RV3 3).
+                return Err(if is_denied(&e) {
+                    Step::Left(self.refused_removal(&f.from))
+                } else {
+                    Step::Io(io_at(&path, e))
+                });
+            }
         }
         let mut source_dirs: BTreeSet<PathBuf> =
             spec.files.iter().map(|f| parent(&f.from)).collect();
@@ -863,6 +993,17 @@ impl<'a> Exec<'a> {
             .map_err(|e| Step::Io(io_at(&root, e)))?;
         self.write(writer, block, Op::Commit(spec.unit))?;
         Ok(Outcome::Committed { created, removed })
+    }
+
+    /// French message of an I/O error without the absolute path (the report already carries it as the key).
+    fn message_of(&self, e: LibraryError) -> String {
+        match e {
+            LibraryError::Io { path, source } => match path.strip_prefix(&self.root) {
+                Ok(rel) if !rel.as_os_str().is_empty() => format!("{} : {source}", rel.display()),
+                _ => source.to_string(),
+            },
+            other => other.to_string(),
+        }
     }
 
     fn record(&mut self, first: &Path, outcome: Outcome) {
@@ -947,6 +1088,10 @@ impl<'a> Exec<'a> {
                 assembly: None,
                 emptied: emptied(&mut std::iter::once(w.from.as_path())),
             });
+        }
+        // Windows: a source with the read-only attribute cannot be removed after its link (RV3 1).
+        if let Some(path) = first_read_only(root, unit.moves.iter().map(|m| m.from.as_path())) {
+            return Err(TidyBlock::ReadOnlyFile { path });
         }
         let mut files = Vec::new();
         for (n, m) in unit.moves.iter().enumerate() {
@@ -1104,7 +1249,7 @@ impl<'a> Exec<'a> {
 
     /// Fills `journal` and `moved` (net list of the journal as written).
     fn finish(&mut self, path: &Path) -> Result<(), LibraryError> {
-        let journal = journal::read(path)?.ok_or_else(|| journal_error(path, "journal vide"))?;
+        let journal = journal::read(path)?.ok_or_else(|| write_error(path, "journal vide"))?;
         self.report.journal = Some(path.to_path_buf());
         self.report.moved = self.absolute(journal.net_moves());
         Ok(())
@@ -1132,9 +1277,12 @@ impl<'a> Exec<'a> {
                         Probe::File(m) => m,
                         _ => return Err(TidyBlock::ChangedSincePlan),
                     };
-                    #[cfg(unix)]
-                    if links_of(&meta) != 1 {
+                    // One name only (an unreadable count proves nothing): never undo a file with another link.
+                    if links_of(&root.join(to), &meta) != Some(1) {
                         return Err(TidyBlock::ChangedSincePlan);
+                    }
+                    if let Some(path) = first_read_only(root, [to.as_path()]) {
+                        return Err(TidyBlock::ReadOnlyFile { path });
                     }
                     if !same_state(&meta, *size, *mtime) {
                         return Err(TidyBlock::ChangedSincePlan);
@@ -1228,12 +1376,12 @@ impl<'a> Exec<'a> {
             .rev()
             .find(|(_, c)| !matches!(c, Content::Empty))
         else {
-            return Err(journal_error(path, "aucun rangement à annuler"));
+            return Err(refused(path, TidyRefusal::NothingToUndo));
         };
         let journal = match content {
             Content::Journal(j) => j,
             Content::Unreadable(e) => return Err(e),
-            Content::Empty => return Err(journal_error(path, "journal vide")),
+            Content::Empty => return Err(refused(path, TidyRefusal::UnknownJournal)),
         };
         if journal.root != self.root {
             return Err(LibraryError::TidyRootMismatch {
@@ -1241,14 +1389,11 @@ impl<'a> Exec<'a> {
             });
         }
         if !same_file_path(&newest.path, path) {
-            return Err(journal_error(
-                path,
-                "seul le dernier rangement peut être annulé",
-            ));
+            return Err(refused(path, TidyRefusal::NotLatest));
         }
         preflight(self.options.journal_dir())?;
         if !matches!(journal.state, State::Ended | State::EndedMarked) {
-            return Err(journal_error(path, "ce rangement ne peut pas être annulé"));
+            return Err(refused(path, TidyRefusal::AlreadyUndone));
         }
         let mut writer = JournalWriter::append_to(self.sys, &newest.path)?;
         let units: Vec<&Block> = journal
@@ -1319,7 +1464,7 @@ impl<'a> Exec<'a> {
                     Err(e) => return Err(io_at(&listed.path, e)),
                 },
                 Content::Unreadable(e) => {
-                    unreadable.get_or_insert(e);
+                    unreadable.get_or_insert((listed.path.clone(), e));
                 }
                 Content::Journal(j) if j.state.in_progress() => {
                     if j.root != self.root {
@@ -1331,13 +1476,14 @@ impl<'a> Exec<'a> {
                     for block in j.current_section().iter().rev().filter(|b| !b.committed) {
                         self.rollback(block)?;
                     }
-                    let close = if j.state == State::Undoing {
-                        Op::Undone
+                    let (close, section) = if j.state == State::Undoing {
+                        (Op::Undone, TidySection::Undo)
                     } else {
-                        Op::End
+                        (Op::End, TidySection::Tidy)
                     };
                     JournalWriter::append_to(self.sys, &listed.path)?.append(self.sys, &[close])?;
                     self.finish(&listed.path)?;
+                    self.report.closed.push((listed.path.clone(), section));
                     moved.extend(std::mem::take(&mut self.report.moved));
                     recovered = true;
                 }
@@ -1345,13 +1491,21 @@ impl<'a> Exec<'a> {
             }
         }
         self.report.moved = moved;
-        if let Some(e) = unreadable {
+        // What this call closed is reported even when another journal stays refused (RV3 7): those go to the
+        // report's errors; without any closed journal the refusal is the result, as before.
+        let refusals = unreadable.into_iter().chain(
+            mismatch.map(|journal| (journal.clone(), LibraryError::TidyRootMismatch { journal })),
+        );
+        if recovered {
+            for (path, e) in refusals {
+                self.report.errors.push((path, e.to_string()));
+            }
+            return Ok(Some(self.report));
+        }
+        if let Some((_, e)) = refusals.into_iter().next() {
             return Err(e);
         }
-        if let Some(journal) = mismatch {
-            return Err(LibraryError::TidyRootMismatch { journal });
-        }
-        Ok(recovered.then_some(self.report))
+        Ok(None)
     }
 }
 
@@ -1368,33 +1522,68 @@ enum Step {
     Io(LibraryError),
 }
 
-/// Hard link failure: another volume or no hard links (`EPERM` on Linux, `ERROR_INVALID_FUNCTION` on FAT under
-/// Windows) leave the unit blocked; anything else is an error.
-fn link_error(path: &Path, e: io::Error) -> Step {
-    #[cfg(windows)]
-    const ERROR_INVALID_FUNCTION: i32 = 1;
-    #[cfg(windows)]
-    if e.raw_os_error() == Some(ERROR_INVALID_FUNCTION) {
-        return Step::Left(TidyBlock::NoHardLinks);
-    }
-    match e.kind() {
-        io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied => {
-            Step::Left(TidyBlock::NoHardLinks)
-        }
-        _ => rename_error(path, e),
+/// Error codes of the OS, by `raw_os_error()` (Rust folds `EPERM` and `EACCES` into `PermissionDenied`); local
+/// constants, no dependency (design v7.1 §3.4.2). macOS has the Unix values.
+#[cfg(unix)]
+mod codes {
+    /// `link` refused: no hard links on this file system (`EPERM`).
+    pub const NO_LINKS: &[i32] = &[1];
+    /// `EPERM`, `EACCES`, `EROFS`.
+    pub const DENIED: &[i32] = &[1, 13, 30];
+    /// `EXDEV`.
+    pub const OTHER_DEVICE: &[i32] = &[18];
+    /// `EEXIST`.
+    pub const EXISTS: &[i32] = &[17];
+}
+
+#[cfg(not(unix))]
+mod codes {
+    /// `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`.
+    pub const NO_LINKS: &[i32] = &[1, 50];
+    /// `ERROR_ACCESS_DENIED`, `ERROR_WRITE_PROTECT`.
+    pub const DENIED: &[i32] = &[5, 19];
+    /// `ERROR_NOT_SAME_DEVICE`.
+    pub const OTHER_DEVICE: &[i32] = &[17];
+    /// `ERROR_FILE_EXISTS`, `ERROR_ALREADY_EXISTS`.
+    pub const EXISTS: &[i32] = &[80, 183];
+}
+
+/// What a refused write meant (design v7.1 §3.4.2, table of point 2).
+#[derive(Debug, PartialEq, Eq)]
+enum Refusal {
+    OtherVolume,
+    NoHardLinks,
+    NotWritable,
+    Exists,
+    Other,
+}
+
+fn refusal(e: &io::Error, link: bool) -> Refusal {
+    use io::ErrorKind as K;
+    let raw = e.raw_os_error();
+    let has = |set: &[i32]| raw.is_some_and(|r| set.contains(&r));
+    if has(codes::OTHER_DEVICE) || e.kind() == K::CrossesDevices {
+        Refusal::OtherVolume
+    } else if link && (has(codes::NO_LINKS) || (raw.is_none() && e.kind() == K::Unsupported)) {
+        Refusal::NoHardLinks
+    } else if is_denied(e) {
+        Refusal::NotWritable
+    } else if has(codes::EXISTS) || matches!(e.kind(), K::AlreadyExists | K::DirectoryNotEmpty) {
+        Refusal::Exists
+    } else {
+        Refusal::Other
     }
 }
 
-/// Rename failure (FV1a m2): a refused right is an error, not a lack of hard links.
-fn rename_error(path: &Path, e: io::Error) -> Step {
-    match e.kind() {
-        io::ErrorKind::CrossesDevices => Step::Left(TidyBlock::OtherVolume),
-        io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty => {
-            Step::Left(TidyBlock::Conflict {
-                existing: path.to_path_buf(),
-            })
-        }
-        _ => Step::Io(io_at(path, e)),
+/// « Access refused » (`EACCES`, `EPERM`, `EROFS`, `ERROR_ACCESS_DENIED`, `ERROR_WRITE_PROTECT`): the removal of
+/// a name, or a write, the user's rights or attributes forbid.
+fn is_denied(e: &io::Error) -> bool {
+    match e.raw_os_error() {
+        Some(raw) => codes::DENIED.contains(&raw),
+        None => matches!(
+            e.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+        ),
     }
 }
 
@@ -1425,10 +1614,7 @@ fn preflight(dir: &Path) -> Result<(), LibraryError> {
         match content {
             Content::Unreadable(e) => return Err(e),
             Content::Journal(j) if j.state.in_progress() => {
-                return Err(journal_error(
-                    &listed.path,
-                    "un rangement interrompu doit d'abord être repris",
-                ));
+                return Err(refused(&listed.path, TidyRefusal::Interrupted));
             }
             _ => {}
         }
@@ -1458,9 +1644,9 @@ pub(super) fn mark(sys: &dyn Sys, options: &TidyOptions, path: &Path) -> Result<
     // Only a journal of this folder (the purge below works there).
     let listed = journal::list(options.journal_dir())?;
     if !listed.iter().any(|l| same_file_path(&l.path, path)) {
-        return Err(journal_error(path, "journal inconnu"));
+        return Err(refused(path, TidyRefusal::UnknownJournal));
     }
-    let journal = journal::read(path)?.ok_or_else(|| journal_error(path, "journal vide"))?;
+    let journal = journal::read(path)?.ok_or_else(|| refused(path, TidyRefusal::UnknownJournal))?;
     if journal.root != options.roms_root() {
         return Err(LibraryError::TidyRootMismatch {
             journal: path.to_path_buf(),
@@ -1470,7 +1656,7 @@ pub(super) fn mark(sys: &dyn Sys, options: &TidyOptions, path: &Path) -> Result<
         State::EndedMarked | State::UndoneMarked => return Ok(()),
         State::Ended | State::Undone => {}
         State::Running | State::Undoing => {
-            return Err(journal_error(path, "rangement non terminé"));
+            return Err(refused(path, TidyRefusal::NotClosed));
         }
     }
     JournalWriter::append_to(sys, path)?.append(sys, &[Op::Identities])?;

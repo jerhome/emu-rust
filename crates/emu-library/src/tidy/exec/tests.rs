@@ -644,7 +644,10 @@ fn undo_brings_everything_back_with_the_same_rows() {
     // Only once.
     assert!(matches!(
         undo_with(&fast(), &mut library, &options, &journal),
-        Err(LibraryError::Journal { .. })
+        Err(LibraryError::TidyRefused {
+            reason: TidyRefusal::AlreadyUndone,
+            ..
+        })
     ));
     assert!(!last_tidy_can_undo(&options));
 }
@@ -722,7 +725,10 @@ fn undo_only_the_newest_journal_of_this_root() {
     .unwrap();
     assert!(matches!(
         undo_with(&fast(), &mut library, &options, &first),
-        Err(LibraryError::Journal { .. })
+        Err(LibraryError::TidyRefused {
+            reason: TidyRefusal::NotLatest,
+            ..
+        })
     ));
     // A newer unreadable one blocks too (never skipped).
     fs::write(&newer, b"emu-rust tidy 1\nR /x\nZ\n").unwrap();
@@ -939,7 +945,10 @@ fn the_purge_keeps_twenty_and_never_an_unfinished_journal() {
     // `mark` refuses an unfinished journal.
     assert!(matches!(
         library.mark_tidy_identities(&options, &fx.journals.join("journal-2.txt")),
-        Err(LibraryError::Journal { .. })
+        Err(LibraryError::TidyRefused {
+            reason: TidyRefusal::NotClosed,
+            ..
+        })
     ));
 }
 
@@ -1251,7 +1260,7 @@ impl Recorder {
 
     /// Every name removed after a link was made from it: the folder of the new name synced in between, and the
     /// folder of the removed name synced before the next journal line.
-    fn check(&self, context: &str) {
+    fn check(&self, context: &str) -> usize {
         let events = self.events.borrow();
         let mut checked = 0;
         for (i, (kind, removed, _)) in events.iter().enumerate() {
@@ -1268,7 +1277,7 @@ impl Recorder {
             assert!(
                 events[j..i]
                     .iter()
-                    .any(|(k, dir, _)| *k == "sync_dir" && linked.starts_with(dir)),
+                    .any(|(k, dir, _)| *k == "sync_dir" && Some(dir.as_path()) == linked.parent()),
                 "{context}: {removed:?} removed before {linked:?} was durable"
             );
             let next_write = events[i..]
@@ -1288,6 +1297,7 @@ impl Recorder {
             checked > 0 || context.starts_with("recovery"),
             "{context}: nothing checked"
         );
+        checked
     }
 }
 
@@ -1353,12 +1363,513 @@ fn durability_order_of_the_run_the_undo_and_the_recovery() {
         let (fx, mut library, plan, _) = setup();
         apply_with(sys, &mut library, &fx.options(), &plan).unwrap();
     });
+    let mut checked = 0;
     for at in (0..total).step_by(2) {
         let (fx, mut library, plan, _) = setup();
         let options = fx.options();
         let _ = apply_with(&Faulty::new(at, Mode::Crash), &mut library, &options, &plan);
         let recovery = Recorder::default();
         recover_with(&recovery, &mut library, &options).unwrap();
-        recovery.check(&format!("recovery after a crash at {at}"));
+        checked += recovery.check(&format!("recovery after a crash at {at}"));
     }
+    // RV3 5: the recoveries together did check removals (a vacuous loop would prove nothing).
+    assert!(checked > 0, "no removal of the recoveries was checked");
+}
+
+/// RV3 5: the `Same` branch of the recovery (both names exist, one file): the folder of the name kept is synced
+/// before the other name goes, and the removed name's folder after.
+#[cfg(unix)]
+#[test]
+fn the_same_file_branch_syncs_the_kept_name_before_removing_the_other() {
+    let fx = Fx::new();
+    let data = noise(4096, 1);
+    write(&fx.roms.join("a.sfc"), &data);
+    write(&fx.roms.join("snes/a.sfc"), &data);
+    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
+    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    let options = fx.options();
+    let root = options.roms_root().to_path_buf();
+    fs::create_dir_all(&fx.journals).unwrap();
+    let mut w = JournalWriter::create(&RealSys, &fx.journals, &root, 5).unwrap();
+    w.append(
+        &RealSys,
+        &[
+            Op::Begin(0),
+            Op::Move {
+                n: 0,
+                size: 4096,
+                mtime: 0,
+                from: rel("a.sfc"),
+                to: rel("snes/a.sfc"),
+            },
+        ],
+    )
+    .unwrap();
+    let mut library = Library::open_in_memory().unwrap();
+    let recorder = Recorder::default();
+    recover_with(&recorder, &mut library, &options)
+        .unwrap()
+        .unwrap();
+    {
+        let events = recorder.events.borrow();
+        let removed = events
+            .iter()
+            .position(|(k, p, _)| *k == "remove_file" && p.ends_with("snes/a.sfc"))
+            .expect("second name removed");
+        assert!(
+            events[..removed]
+                .iter()
+                .any(|(k, dir, _)| *k == "sync_dir" && dir == &root),
+            "the folder of the kept name not synced before the removal: {events:?}"
+        );
+        assert!(
+            events[removed..]
+                .iter()
+                .any(|(k, dir, _)| *k == "sync_dir" && dir == &root.join("snes")),
+            "the folder of the removed name not synced after"
+        );
+    }
+    assert_eq!(fs::read(fx.roms.join("a.sfc")).unwrap(), data);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// FB1d (RV3): refused writes and removals, read-only files, closed journals, error table
+
+/// Real calls (without `fsync`), except the removals and links the test refuses.
+struct Refusing {
+    inner: Faulty,
+    /// `remove_file` of these (absolute) paths fails with `remove_error`.
+    deny_remove: Vec<PathBuf>,
+    remove_error: fn() -> std::io::Error,
+    /// Every `hard_link` fails with this error.
+    link_error: Option<fn() -> std::io::Error>,
+    /// `hard_link` makes an independent copy instead (a « link » that is not one).
+    copy_instead: bool,
+}
+
+impl Refusing {
+    fn new() -> Self {
+        Refusing {
+            inner: fast(),
+            deny_remove: Vec::new(),
+            remove_error: || std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            link_error: None,
+            copy_instead: false,
+        }
+    }
+
+    fn denying(fx: &Fx, names: &[&str]) -> Self {
+        let root = fx.options().roms_root().to_path_buf();
+        Refusing {
+            deny_remove: names.iter().map(|n| root.join(rel(n))).collect(),
+            ..Self::new()
+        }
+    }
+}
+
+impl Sys for Refusing {
+    fn create_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_dir(path)
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if let Some(error) = self.link_error {
+            return Err(error());
+        }
+        if self.copy_instead {
+            return fs::copy(from, to).map(|_| ());
+        }
+        self.inner.hard_link(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        if self.deny_remove.contains(&path.to_path_buf()) {
+            return Err((self.remove_error)());
+        }
+        self.inner.remove_file(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.sync_dir(path)
+    }
+
+    fn write_synced(&self, file: &mut fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write_synced(file, bytes)
+    }
+
+    fn truncate_synced(&self, file: &fs::File, len: u64) -> std::io::Result<()> {
+        self.inner.truncate_synced(file, len)
+    }
+
+    fn checkpoint(&self) -> std::io::Result<()> {
+        self.inner.checkpoint()
+    }
+}
+
+/// One unit `Hero.sfc` (to `snes/`), a library that knows nothing.
+fn one_unit() -> (Fx, Library, TidyPlan, Vec<u8>) {
+    let fx = Fx::new();
+    let data = noise(4096, 1);
+    write(&fx.roms.join("Hero.sfc"), &data);
+    let library = Library::open_in_memory().unwrap();
+    let plan = fx.plan(&library);
+    (fx, library, plan, data)
+}
+
+/// RV3 3: the source cannot be removed after the link, and neither can the link (one file, one attribute): the unit
+/// is left, the journal closed, both names stay, nothing is lost and the run goes on.
+#[test]
+fn a_refused_removal_leaves_two_names_listed_and_closes_the_journal() {
+    let (fx, mut library, plan, data) = one_unit();
+    let options = fx.options();
+    let sys = Refusing::denying(&fx, &["Hero.sfc", "snes/Hero.sfc"]);
+    let report = apply_with(&sys, &mut library, &options, &plan).unwrap();
+    assert_eq!(report.left.len(), 1, "{report:?}");
+    assert!(
+        matches!(report.left[0].1, TidyBlock::NotWritable { ref dir } if dir == Path::new(".")),
+        "{:?}",
+        report.left
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let root = options.roms_root();
+    assert_eq!(
+        report.extra_names,
+        vec![TidyExtraName {
+            remove: root.join("snes/Hero.sfc"),
+            keep: root.join("Hero.sfc"),
+        }]
+    );
+    assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
+    assert_eq!(fs::read(fx.roms.join("snes/Hero.sfc")).unwrap(), data);
+    assert_eq!(
+        fx.only_journal().state,
+        State::Ended,
+        "the journal is closed"
+    );
+    assert!(
+        recover_with(&fast(), &mut library, &options)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A refused removal of the source only: the link is removed again, no extra name.
+#[test]
+fn a_refused_source_removal_undoes_the_unit_without_extra_name() {
+    let (fx, mut library, plan, data) = one_unit();
+    let sys = Refusing::denying(&fx, &["Hero.sfc"]);
+    let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+    assert!(matches!(report.left[0].1, TidyBlock::NotWritable { .. }));
+    assert!(report.extra_names.is_empty());
+    assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
+    assert!(!fx.roms.join("snes/Hero.sfc").exists());
+    assert!(
+        !fx.roms.join("snes").exists(),
+        "folder created by the block removed"
+    );
+}
+
+/// Any other error of the removal stays an error of the unit (never an extra name).
+#[test]
+fn another_removal_error_is_not_an_extra_name() {
+    let (fx, mut library, plan, _) = one_unit();
+    let mut sys = Refusing::denying(&fx, &["Hero.sfc"]);
+    sys.remove_error = || std::io::Error::other("disque");
+    let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+    assert!(report.left.is_empty() && report.extra_names.is_empty());
+    assert_eq!(report.errors.len(), 1, "{report:?}");
+    let message = &report.errors[0].1;
+    assert!(
+        !message.contains(fx.roms.to_str().unwrap()),
+        "absolute path in the message: {message}"
+    );
+}
+
+/// The undo: tidied name cannot go after the link back, nor can the link: undone unit, extra name = the link made
+/// at the origin, the journal closed (`U`).
+#[test]
+fn a_refused_removal_in_the_undo_lists_the_extra_name() {
+    let (fx, mut library, plan, data) = one_unit();
+    let options = fx.options();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
+    let journal = fx.journals()[0].clone();
+    let sys = Refusing::denying(&fx, &["Hero.sfc", "snes/Hero.sfc"]);
+    let report = undo_with(&sys, &mut library, &options, &journal).unwrap();
+    let root = options.roms_root();
+    assert_eq!(
+        report.extra_names,
+        vec![TidyExtraName {
+            remove: root.join("Hero.sfc"),
+            keep: root.join("snes/Hero.sfc"),
+        }]
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(fs::read(fx.roms.join("snes/Hero.sfc")).unwrap(), data);
+    assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
+    assert_eq!(fx.only_journal().state, State::Undone);
+}
+
+/// RV3 6: after the link, the source is only removed when both names are proven one file.
+#[cfg(unix)]
+#[test]
+fn a_link_that_is_not_one_never_removes_the_source() {
+    let (fx, mut library, plan, data) = one_unit();
+    let mut sys = Refusing::new();
+    sys.copy_instead = true;
+    let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|(_, m)| m.contains("ne désignent pas le même fichier")),
+        "{report:?}"
+    );
+    assert!(report.moved.is_empty());
+    assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
+}
+
+/// RV3 2 (Unix): `EACCES` on the link is « write refused », `EPERM` is « no hard links ».
+#[cfg(unix)]
+#[test]
+fn a_refused_link_is_told_apart_from_a_file_system_without_links() {
+    for (code, expected_writable) in [(13, true), (30, true), (1, false)] {
+        let (fx, mut library, plan, data) = one_unit();
+        let mut sys = Refusing::new();
+        sys.link_error = Some(match code {
+            13 => || std::io::Error::from_raw_os_error(13),
+            30 => || std::io::Error::from_raw_os_error(30),
+            _ => || std::io::Error::from_raw_os_error(1),
+        });
+        let report = apply_with(&sys, &mut library, &fx.options(), &plan).unwrap();
+        let block = &report.left[0].1;
+        if expected_writable {
+            assert!(
+                matches!(block, TidyBlock::NotWritable { dir } if dir == Path::new("snes")),
+                "{code}: {block:?}"
+            );
+        } else {
+            assert_eq!(block, &TidyBlock::NoHardLinks, "{code}");
+        }
+        assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
+    }
+}
+
+/// RV3 2: the table of codes.
+#[test]
+fn error_codes_are_classified_as_the_table_says() {
+    let code = |raw: i32, link: bool| refusal(&std::io::Error::from_raw_os_error(raw), link);
+    #[cfg(unix)]
+    {
+        assert_eq!(code(18, true), Refusal::OtherVolume);
+        assert_eq!(code(1, true), Refusal::NoHardLinks);
+        assert_eq!(code(1, false), Refusal::NotWritable);
+        assert_eq!(code(13, true), Refusal::NotWritable);
+        assert_eq!(code(30, false), Refusal::NotWritable);
+        assert_eq!(code(17, false), Refusal::Exists);
+        assert_eq!(code(5, false), Refusal::Other, "EIO");
+    }
+    #[cfg(windows)]
+    {
+        assert_eq!(code(17, true), Refusal::OtherVolume);
+        assert_eq!(code(1, true), Refusal::NoHardLinks);
+        assert_eq!(code(50, true), Refusal::NoHardLinks);
+        assert_eq!(code(5, true), Refusal::NotWritable);
+        assert_eq!(code(19, false), Refusal::NotWritable);
+        assert_eq!(code(183, false), Refusal::Exists);
+        assert_eq!(code(80, false), Refusal::Exists);
+        assert_eq!(code(32, false), Refusal::Other, "sharing violation");
+    }
+    assert!(is_denied(&std::io::Error::from(
+        std::io::ErrorKind::PermissionDenied
+    )));
+    assert!(!is_denied(&std::io::Error::other("x")));
+}
+
+/// RV3 7: the recovery lists what it closed, with the interrupted section.
+#[test]
+fn recovery_lists_the_journals_it_closed() {
+    let (fx, mut library, plan, _) = one_unit();
+    let options = fx.options();
+    let total = calls_of(|sys| {
+        let (fx, mut library, plan, _) = one_unit();
+        apply_with(sys, &mut library, &fx.options(), &plan).unwrap();
+    });
+    assert!(
+        apply_with(
+            &Faulty::new(total / 2, Mode::Crash),
+            &mut library,
+            &options,
+            &plan
+        )
+        .is_err()
+    );
+    let path = fx.journals()[0].clone();
+    let report = recover_with(&fast(), &mut library, &options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.closed, vec![(path, TidySection::Tidy)]);
+    // An interrupted undo.
+    let (fx, mut library, plan, _) = one_unit();
+    let options = fx.options();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
+    let journal = fx.journals()[0].clone();
+    let undo_calls = calls_of(|sys| {
+        let (fx, mut library, plan, _) = one_unit();
+        let options = fx.options();
+        apply_with(&fast(), &mut library, &options, &plan).unwrap();
+        undo_with(sys, &mut library, &options, &fx.journals()[0]).unwrap();
+    });
+    assert!(
+        undo_with(
+            &Faulty::new(undo_calls / 2, Mode::Crash),
+            &mut library,
+            &options,
+            &journal
+        )
+        .is_err()
+    );
+    let report = recover_with(&fast(), &mut library, &options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.closed, vec![(journal, TidySection::Undo)]);
+}
+
+/// RV3 7: a refused journal next to a closed one goes to the errors, the closed one is still reported.
+#[test]
+fn recovery_reports_what_it_closed_beside_a_refused_journal() {
+    let (fx, mut library, plan, _) = one_unit();
+    let options = fx.options();
+    let total = calls_of(|sys| {
+        let (fx, mut library, plan, _) = one_unit();
+        apply_with(sys, &mut library, &fx.options(), &plan).unwrap();
+    });
+    assert!(
+        apply_with(
+            &Faulty::new(total / 2, Mode::Crash),
+            &mut library,
+            &options,
+            &plan
+        )
+        .is_err()
+    );
+    let closed = fx.journals()[0].clone();
+    let garbage = fx.journals.join("journal-99999999999.txt");
+    fs::write(&garbage, b"garbage").unwrap();
+    let report = recover_with(&fast(), &mut library, &options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.closed, vec![(closed, TidySection::Tidy)]);
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].0, garbage);
+    // Alone, it stays an error.
+    assert!(matches!(
+        recover_with(&fast(), &mut library, &options),
+        Err(LibraryError::Journal { .. })
+    ));
+}
+
+/// RV3 6: unreadable and refused journals are told apart; a write failure is an I/O error.
+#[test]
+fn a_write_failure_is_an_io_error_not_a_journal_error() {
+    let (fx, mut library, plan, _) = one_unit();
+    let options = fx.options();
+    // The first write fails: the header of the journal.
+    let result = apply_with(&Faulty::new(1, Mode::Once), &mut library, &options, &plan);
+    assert!(matches!(result, Err(LibraryError::Io { .. })), "{result:?}");
+    assert!(matches!(
+        library.undo_tidy(
+            &options,
+            &fx.journals.join("none.txt"),
+            &AtomicBool::new(false),
+            &mut |_| {}
+        ),
+        Err(LibraryError::TidyRefused {
+            reason: TidyRefusal::NothingToUndo,
+            ..
+        })
+    ));
+}
+
+/// RV3 1 (Windows): a read-only source is shown in the preview, left at the run and never changed.
+#[cfg(windows)]
+#[test]
+#[allow(clippy::permissions_set_readonly_false)]
+fn a_read_only_source_is_blocked_in_the_preview_and_left_at_the_run() {
+    let (fx, mut library, plan, data) = one_unit();
+    let path = fx.roms.join("Hero.sfc");
+    let set = |readonly: bool| {
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(readonly);
+        fs::set_permissions(&path, permissions).unwrap();
+    };
+    set(true);
+    let blocked = fx.plan(&library);
+    assert_eq!(
+        blocked.units[0].status,
+        crate::TidyStatus::Blocked(TidyBlock::ReadOnlyFile {
+            path: PathBuf::from("Hero.sfc")
+        })
+    );
+    // The plan made before the attribute was set is checked again just before the block.
+    let report = apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
+    assert_eq!(
+        report.left[0].1,
+        TidyBlock::ReadOnlyFile {
+            path: PathBuf::from("Hero.sfc")
+        }
+    );
+    assert!(
+        fs::metadata(&path).unwrap().permissions().readonly(),
+        "attribute unchanged"
+    );
+    assert_eq!(fs::read(&path).unwrap(), data);
+    assert!(fx.journals().is_empty() || fx.only_journal().forward.iter().all(|b| !b.committed));
+    set(false);
+}
+
+/// RV3 1 (Windows): the undo leaves a unit whose tidied name is read-only.
+#[cfg(windows)]
+#[test]
+#[allow(clippy::permissions_set_readonly_false)]
+fn a_read_only_tidied_name_is_left_by_the_undo() {
+    let (fx, mut library, plan, _) = one_unit();
+    let options = fx.options();
+    apply_with(&fast(), &mut library, &options, &plan).unwrap();
+    let path = fx.roms.join("snes/Hero.sfc");
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions.clone()).unwrap();
+    let report = undo_with(&fast(), &mut library, &options, &fx.journals()[0]).unwrap();
+    assert_eq!(
+        report.left[0].1,
+        TidyBlock::ReadOnlyFile {
+            path: PathBuf::from("snes").join("Hero.sfc")
+        }
+    );
+    assert!(fs::metadata(&path).unwrap().permissions().readonly());
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions).unwrap();
+}
+
+/// RV3 4 (Windows): the link count comes from the handle; one name is 1, two names are 2.
+#[cfg(windows)]
+#[test]
+fn windows_counts_the_links_of_a_file() {
+    let fx = Fx::new();
+    write(&fx.roms.join("a.sfc"), &noise(64, 1));
+    let a = fx.roms.join("a.sfc");
+    let meta = fs::symlink_metadata(&a).unwrap();
+    assert_eq!(links_of(&a, &meta), Some(1));
+    let b = fx.roms.join("b.sfc");
+    fs::hard_link(&a, &b).unwrap();
+    assert_eq!(links_of(&a, &meta), Some(2));
+    assert_eq!(links_of(&fx.roms.join("none.sfc"), &meta), None);
 }

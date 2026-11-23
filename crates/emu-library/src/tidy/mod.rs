@@ -402,9 +402,10 @@ impl Library {
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.
-    /// Under the OS lock (`TidyBusy`); refused (`Journal`) while a journal is in progress or unreadable (run
-    /// [`Library::recover_tidy`] first). A unit changed since the plan, or whose destination got taken, is left
-    /// (`TidyReport::left`, paths absolute). The journal is created by the first unit started (`journal = None`
+    /// Under the OS lock (`TidyBusy`); refused (`TidyRefused(Interrupted)`) while a journal is in progress, `Journal` when one is unreadable
+    /// (run [`Library::recover_tidy`] first). A unit changed since the plan, or whose destination got taken, is left
+    /// (`TidyReport::left`, paths absolute). A removal refused after the link (read-only attribute, rights) undoes the
+    /// unit (`left`) and, if its own link cannot go either, lists the second name in `TidyReport::extra_names`. The journal is created by the first unit started (`journal = None`
     /// when none was). `moved` is the net list of the journal. `Err` after a failed journal write or a failed
     /// undo of a block: the journal stays in progress and the report of the run is lost (FV1a m7); the caller then
     /// runs [`Library::recover_tidy`] and [`Library::pending_tidy_identities`] to learn what moved.
@@ -437,8 +438,9 @@ impl Library {
     }
 
     /// Rolls back every started, uncommitted unit of an interrupted run or undo of this root and closes its
-    /// journal (`E` / `U`); removes empty journals. `None`: nothing was in progress. Then `Err(Journal)` if an
-    /// unreadable journal remains, `Err(TidyRootMismatch)` if one of another root is in progress. An I/O error
+    /// journal (`E` / `U`, listed in `TidyReport::closed`); removes empty journals. `None`: nothing was in progress.
+    /// When nothing was closed, `Err(Journal)` if an unreadable journal remains, `Err(TidyRootMismatch)` if one of
+    /// another root is in progress; when something was closed those two go to `TidyReport::errors`. An I/O error
     /// while undoing a block stops without closing (the next call starts over). An interrupted undo becomes final:
     /// the units it had not brought back stay tidied (`TidyJournalInfo::undone`).
     pub fn recover_tidy(
@@ -458,8 +460,8 @@ impl Library {
     }
 
     /// Appends the « identities done » marker; called by the UI after `emu_runtime::relocate_identities` succeeded
-    /// on the net list of this journal. `Ok` without writing when already marked; `Journal` when the journal is
-    /// in progress, empty or not one of `journal_dir`; `TidyRootMismatch` for another root. Then purges: beyond
+    /// on the net list of this journal. `Ok` without writing when already marked; `TidyRefused` (`NotClosed`,
+    /// `UnknownJournal`) when the journal is in progress, empty or not one of `journal_dir`; `TidyRootMismatch` for another root. Then purges: beyond
     /// the 20 newest journals, only readable ones whose last line is `I` are removed.
     pub fn mark_tidy_identities(
         &mut self,

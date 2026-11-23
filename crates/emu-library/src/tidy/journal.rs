@@ -183,6 +183,14 @@ fn journal_error(path: &Path, message: impl Into<String>) -> LibraryError {
     }
 }
 
+/// A journal that could not be written: an I/O error, not an unreadable journal (RV3 6).
+fn write_error(path: &Path, message: &str) -> LibraryError {
+    LibraryError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::other(message.to_owned()),
+    }
+}
+
 fn kept(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"-._~()[]!,+&'".contains(&b)
 }
@@ -972,7 +980,7 @@ impl JournalWriter {
         unix: i64,
     ) -> Result<Self, LibraryError> {
         let header =
-            header(root).ok_or_else(|| journal_error(root, "racine non absolue ou non UTF-8"))?;
+            header(root).ok_or_else(|| write_error(root, "racine non absolue ou non UTF-8"))?;
         for k in 0..1000 {
             let path = dir.join(file_name(unix, k));
             match OpenOptions::new()
@@ -999,7 +1007,7 @@ impl JournalWriter {
                 Err(source) => return Err(LibraryError::Io { path, source }),
             }
         }
-        Err(journal_error(dir, "trop de journaux pour la même seconde"))
+        Err(write_error(dir, "trop de journaux pour la même seconde"))
     }
 
     /// Opens an existing journal to append to it: first cuts it back to its last `\n` and syncs (I1), so a torn
@@ -1046,7 +1054,7 @@ impl JournalWriter {
         for op in ops {
             text.push_str(
                 &encode(op)
-                    .ok_or_else(|| journal_error(&self.path, "chemin impossible à journaliser"))?,
+                    .ok_or_else(|| write_error(&self.path, "chemin impossible à journaliser"))?,
             );
         }
         self.write(sys, &text)
@@ -1054,7 +1062,7 @@ impl JournalWriter {
 
     fn write(&mut self, sys: &dyn Sys, text: &str) -> Result<(), LibraryError> {
         if self.poisoned {
-            return Err(journal_error(&self.path, "écriture du journal interrompue"));
+            return Err(write_error(&self.path, "écriture du journal interrompue"));
         }
         if let Err(source) = sys.write_synced(&mut self.file, text.as_bytes()) {
             // A failed write may have left a torn line: this writer never writes again; the next one cuts the

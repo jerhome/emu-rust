@@ -1592,6 +1592,14 @@ fn check(
     if meta.other_volume {
         return Some(TidyBlock::OtherVolume);
     }
+    // Windows: the run would fail at the removal of a read-only source (RV3 1); shown here, nothing is changed.
+    // A whole folder moves by one rename, which the attribute of its files does not hinder.
+    if unit.whole_dir.is_none()
+        && let Some(path) =
+            super::exec::first_read_only(root, unit.moves.iter().map(|m| m.from.as_path()))
+    {
+        return Some(TidyBlock::ReadOnlyFile { path });
+    }
     match fs::symlink_metadata(root.join(system)) {
         Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
             return Some(TidyBlock::DestinationNotPlainDir {
