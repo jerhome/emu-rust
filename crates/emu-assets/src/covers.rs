@@ -4,6 +4,7 @@
 //! Credentials never reach a log line or an error: ScreenScraper puts them in query strings (its media URLs too),
 //! so no URL built or received here is ever logged; `AssetError` carries no URL by construction.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -141,8 +142,12 @@ fn with_slash(base: &str) -> String {
 // ---------------------------------------------------------------------------------------------------------------
 // libretro-thumbnails
 
-/// Consecutive 404 without any success after which a mirror is judged broken for the session (ADR 0014, 7.0.2).
+/// Consecutive 404 of identified games without any success after which a mirror is judged broken for the session
+/// (ADR 0014, 7.0.2), provided they span at least [`BROKEN_MIN_SYSTEMS`] systems.
 const BROKEN_AFTER_404: u32 = 8;
+/// Distinct systems the consecutive identified 404 must cover; unidentified games (TOSEC names of computers) answer
+/// 404 legitimately and never count.
+const BROKEN_MIN_SYSTEMS: usize = 3;
 /// Simultaneous requests allowed on `raw.githubusercontent.com` (all `LibretroThumbnails` of the process).
 const RAW_MAX_CONCURRENT: u32 = 2;
 
@@ -185,7 +190,7 @@ enum MirrorState {
     Active,
     /// 403/429: no insistence for the session.
     Stopped,
-    /// `BROKEN_AFTER_404` consecutive 404, no success.
+    /// `BROKEN_AFTER_404` consecutive 404 of identified games over `BROKEN_MIN_SYSTEMS` systems, no success.
     Broken,
 }
 
@@ -218,7 +223,10 @@ struct Mirror {
     /// `None`: base refused (host not allowed); the mirror is never asked.
     base: Option<String>,
     raw: bool,
+    /// Consecutive 404 of identified games since the last success.
     misses: u32,
+    /// Databases of those 404.
+    miss_systems: HashSet<String>,
     state: MirrorState,
 }
 
@@ -228,8 +236,14 @@ impl Mirror {
             base: mirror_base_allowed(base).then(|| with_slash(base)),
             raw,
             misses: 0,
+            miss_systems: HashSet::new(),
             state: MirrorState::Active,
         }
+    }
+
+    fn reset_misses(&mut self) {
+        self.misses = 0;
+        self.miss_systems.clear();
     }
 
     fn url(&self, base: &str, query: &CoverQuery) -> String {
@@ -281,7 +295,7 @@ impl Mirror {
         };
         match response.status {
             200 => {
-                self.misses = 0;
+                self.reset_misses();
                 match crate::image::validate_cover(&response.body) {
                     Ok(format) => Attempt::Found(CoverFound {
                         source: CoverSourceKind::LibretroThumbnails,
@@ -293,8 +307,12 @@ impl Mirror {
                 }
             }
             404 | 410 => {
-                self.misses += 1;
-                if self.misses >= BROKEN_AFTER_404 {
+                if query.identified {
+                    self.misses += 1;
+                    self.miss_systems.insert(query.database.clone());
+                }
+                if self.misses >= BROKEN_AFTER_404 && self.miss_systems.len() >= BROKEN_MIN_SYSTEMS
+                {
                     tracing::warn!(
                         "jaquettes : {} : {} réponses 404 sans succès, source jugée en panne pour la session",
                         self.name(),
@@ -325,8 +343,8 @@ impl Mirror {
 /// (`https://raw.githubusercontent.com/libretro-thumbnails/<system with _>/master/Named_Boxarts/<name>.png`)
 /// first, `https://thumbnails.libretro.com/<system>/Named_Boxarts/<name>.png` as a fallback. No account.
 ///
-/// Per mirror: 404 is "absent" only while it is healthy; [`BROKEN_AFTER_404`] consecutive 404 without a success
-/// make it "broken" for the session (`AssetError::SourceBroken`, nothing conclusive); 403/429 stop it; 3xx is
+/// Per mirror: 404 is "absent" only while it is healthy; [`BROKEN_AFTER_404`] consecutive 404 of identified games
+/// over at least [`BROKEN_MIN_SYSTEMS`] systems, without a success, make it "broken" for the session (`AssetError::SourceBroken`, nothing conclusive); 403/429 stop it; 3xx is
 /// inconclusive; at most 2 simultaneous requests on the GitHub host.
 pub struct LibretroThumbnails {
     client: HttpClient,
@@ -408,7 +426,7 @@ impl CoverSource for LibretroThumbnails {
 
     fn reset(&mut self) {
         for mirror in &mut self.mirrors {
-            mirror.misses = 0;
+            mirror.reset_misses();
             mirror.state = MirrorState::Active;
         }
     }

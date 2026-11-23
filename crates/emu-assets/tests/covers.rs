@@ -211,6 +211,29 @@ fn titled(n: u32) -> CoverQuery {
     query(&format!("Game {n}"))
 }
 
+/// Identified game of one of 3 systems, by `n % 3`.
+fn titled_in_systems(n: u32) -> CoverQuery {
+    let mut q = titled(n);
+    q.database = [
+        "Sega - Mega Drive - Genesis",
+        "Nintendo - Game Boy",
+        "Sega - Master System - Mark III",
+    ][(n % 3) as usize]
+        .into();
+    q
+}
+
+fn titled_single_system(n: u32) -> CoverQuery {
+    titled(n)
+}
+
+fn unidentified(n: u32) -> CoverQuery {
+    let mut q = titled(n);
+    q.identified = false;
+    q.database = "Atari - ST".into();
+    q
+}
+
 #[test]
 fn libretro_raw_first_and_exact_url() {
     let s = Server::start();
@@ -314,7 +337,7 @@ fn libretro_all_404_is_source_broken_not_missing() {
     let mut chain = CoverChain::new(vec![Box::new(mirrors(&s))]);
     let mut results = Vec::new();
     for n in 0..12 {
-        results.push(chain.fetch(&titled(n)));
+        results.push(chain.fetch(&titled_in_systems(n)));
     }
     // Under the threshold a 404 is a plain absence; from the 8th on nothing is conclusive.
     assert!(results[..7].iter().all(|r| matches!(r, Ok(None))));
@@ -334,6 +357,30 @@ fn libretro_all_404_is_source_broken_not_missing() {
     chain.reset();
     assert!(!chain.stats().source_broken);
     assert!(matches!(chain.fetch(&titled(99)), Ok(None)));
+}
+
+#[test]
+fn libretro_unidentified_404_never_count_towards_broken() {
+    let s = Server::start();
+    s.mount(
+        Mock::given(path(format!("{RAW_SNES}/Good.png").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png())),
+    );
+    let mut chain = CoverChain::new(vec![Box::new(mirrors(&s))]);
+    for n in 0..20 {
+        assert!(matches!(chain.fetch(&unidentified(n)), Ok(None)));
+    }
+    assert!(matches!(chain.fetch(&query("Good")), Ok(Some(_))));
+    assert!(!chain.stats().source_broken);
+}
+
+#[test]
+fn libretro_404_of_a_single_system_is_not_a_breakdown() {
+    let s = Server::start();
+    let mut source = mirrors(&s);
+    for n in 0..12 {
+        assert_eq!(source.fetch(&titled_single_system(n)).unwrap(), None);
+    }
 }
 
 #[test]

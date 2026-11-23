@@ -78,7 +78,8 @@ Constat : `thumbnails.libretro.com` répond 404 pour toutes les jaquettes (index
    pour la session (résultat inconclusif, pas d'insistance). Les jaquettes sont des images de couverture : autorisées
    par l'ADR 0005 (aucune ROM, aucun BIOS).
 3. **« Missing » seulement sur absence crédible** : une source dont les réponses sont des 404 sans **aucun** succès
-   après N = 8 requêtes consécutives (jeux de systèmes ou noms différents) est jugée « en panne » pour la session :
+   après N = 8 requêtes consécutives **de jeux identifiés** (titre issu d'un DAT) couvrant **au moins 3 systèmes
+   différents** ; les 404 de jeux non identifiés (noms TOSEC d'ordinateurs) restent de simples absences, non comptées est jugée « en panne » pour la session :
    les résultats 404 de cette source deviennent **inconclusifs** (erreur `SourceBroken`, rien n'est écrit en base) et
    les requêtes suivantes sautent la source. Un seul succès remet le compteur à zéro. Seul un 404 d'une source jugée
    saine est enregistré `Missing`.
