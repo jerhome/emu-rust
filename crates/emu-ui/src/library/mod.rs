@@ -13,7 +13,7 @@ mod settings;
 pub(crate) mod text;
 mod worker;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,7 @@ pub(crate) use self::host::run;
 use self::worker::{DatDownloadTask, DatProgress, DatTask, Notify, ScanTask};
 use crate::GameContent;
 use crate::config::{Config, DataDirs};
+use crate::config_library::COVERS_MISSING_RESET;
 use crate::cores_ui::{self, CoresEvent, CoresUi, LaunchCheck};
 use crate::launch_firmware::{
     FirmwareDecision, GameFacts, LaunchFirmware, check_launch_firmware, decide_launch,
@@ -280,6 +281,22 @@ fn now_unix() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// Forgets the `Missing` cover records once per purge generation (records written while a source was
+/// answering 404 for everything). The new generation is saved only after the purge succeeded.
+pub(crate) fn purge_missing_covers_once(db: &mut Library, config: &mut Config, path: &Path) {
+    if config.library.covers_missing_reset >= COVERS_MISSING_RESET {
+        return;
+    }
+    if let Err(e) = db.clear_missing_covers() {
+        tracing::warn!("jaquettes : purge des absences impossible : {e}");
+        return;
+    }
+    config.library.covers_missing_reset = COVERS_MISSING_RESET;
+    if let Err(e) = config.save(path) {
+        tracing::warn!("réglages non enregistrés après la purge des jaquettes : {e}");
+    }
+}
+
 fn notify(ctx: &egui::Context) -> Notify {
     let ctx = ctx.clone();
     Arc::new(move || ctx.request_repaint())
@@ -297,6 +314,13 @@ impl LibraryUi {
                 (None, Some(text::db_error(&e.to_string())))
             }
         };
+        let mut config = config;
+        let mut db = db;
+        if let Some(db) = db.as_mut()
+            && !capture
+        {
+            purge_missing_covers_once(db, &mut config, &dirs.config_file);
+        }
         let cores = CoresUi::open(&dirs, &config);
         let scan_on_open = !capture && config.library.scan_on_start && db.is_some();
         let mut ui = Self {

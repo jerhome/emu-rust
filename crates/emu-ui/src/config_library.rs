@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use emu_assets::Secret;
 use serde::{Deserialize, Serialize};
 
+/// Current purge generation: a config below it (a missing field reads 0) is purged once at start.
+pub const COVERS_MISSING_RESET: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LibraryConfig {
@@ -13,6 +16,9 @@ pub struct LibraryConfig {
     pub roots: Vec<PathBuf>,
     /// Incremental scan when the library screen opens.
     pub scan_on_start: bool,
+    /// One-shot purge generation of the `Missing` cover records (2: records written by sources that
+    /// answered 404 for everything are forgotten).
+    pub covers_missing_reset: u32,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -22,6 +28,7 @@ impl Default for LibraryConfig {
         Self {
             roots: Vec::new(),
             scan_on_start: true,
+            covers_missing_reset: 0,
             extra: toml::Table::new(),
         }
     }

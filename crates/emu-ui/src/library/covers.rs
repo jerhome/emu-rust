@@ -231,6 +231,11 @@ pub(crate) struct WorkerStatus {
     pub no_source: bool,
     /// Covers left to download.
     pub queued: usize,
+    /// Session counters of the chain (found / conclusively missing).
+    pub found: u32,
+    pub missing: u32,
+    /// A source was judged broken: its answers are not trusted.
+    pub source_broken: bool,
 }
 
 pub(crate) struct Worker {
@@ -246,6 +251,9 @@ pub(crate) struct Worker {
     no_source: bool,
     /// Inconclusive this session (error): not asked again until a reset.
     tried: HashSet<GameId>,
+    /// Games recorded `Missing` since the last reset: undone if a source turns out to be broken
+    /// (its first 404s looked like genuine absences).
+    session_missing: Vec<GameId>,
     tx: Sender<Reply>,
     notify: Notify,
     cancel: SharedCancel,
@@ -274,6 +282,7 @@ impl Worker {
             paused: false,
             no_source: false,
             tried: HashSet::new(),
+            session_missing: Vec::new(),
             tx,
             notify,
             cancel,
@@ -329,6 +338,7 @@ impl Worker {
                 }
                 if let Some(chain) = &mut self.chain {
                     chain.reset();
+                    chain.reset_stats();
                 }
                 self.reset_session();
             }
@@ -339,6 +349,25 @@ impl Worker {
         self.paused = false;
         self.no_source = false;
         self.tried.clear();
+        self.session_missing.clear();
+        self.refresh_back();
+    }
+
+    /// A broken source invalidates the "absent" answers given earlier this session: forget them so the
+    /// games are asked again. `emu-library` only offers a global purge; it is used only when this session
+    /// recorded some `Missing`.
+    fn undo_session_missing(&mut self) {
+        if self.session_missing.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            "jaquettes : source injoignable, {} absence(s) de cette session annulée(s)",
+            self.session_missing.len()
+        );
+        self.session_missing.clear();
+        if let Err(e) = self.db.clear_missing_covers() {
+            tracing::warn!("jaquettes : {e}");
+        }
         self.refresh_back();
     }
 
@@ -421,7 +450,12 @@ impl Worker {
         let query = cover_query(game)?;
         let token = self.cancel.lock().map(|t| t.clone()).unwrap_or_default();
         let chain = self.chain.as_mut()?;
-        match chain.fetch_with_deadline(&query, COVER_BUDGET, Some(&token)) {
+        let result = chain.fetch_with_deadline(&query, COVER_BUDGET, Some(&token));
+        let broken = chain.stats().source_broken;
+        if broken {
+            self.undo_session_missing();
+        }
+        match result {
             Ok(Some(found)) => {
                 let key = cover_key(game);
                 match self.cache.store(&game.system, &key, &found) {
@@ -438,25 +472,36 @@ impl Worker {
                 }
                 Some(found.bytes)
             }
+            // With a broken source "not found" proves nothing: record nothing.
+            Ok(None) if broken => {
+                self.tried.insert(game.id);
+                None
+            }
             Ok(None) => {
                 let state = CoverState::Missing {
                     checked_unix: super::now_unix(),
                 };
-                if let Err(e) = self.db.set_cover(game.id, CoverKind::Boxart, &state) {
-                    tracing::warn!("jaquette : {e}");
+                match self.db.set_cover(game.id, CoverKind::Boxart, &state) {
+                    Ok(()) => self.session_missing.push(game.id),
+                    Err(e) => tracing::warn!("jaquette : {e}"),
                 }
                 None
             }
             // Closing or downloads switched off: nothing to record, nothing to suspend.
             Err(AssetError::Cancelled) => None,
             Err(e) => {
-                // `AssetError` never carries a URL nor a credential.
-                tracing::debug!("jaquette indisponible pour l'instant : {e}");
+                // `AssetError` never carries a URL nor a credential. Never a `Missing` here
+                // (`SourceBroken`, 3xx, quota, network: inconclusive).
+                tracing::warn!(
+                    "jaquette « {} » ({}) non obtenue : {e}",
+                    game.title,
+                    game.system
+                );
                 self.tried.insert(game.id);
                 if matches!(e, AssetError::NoSource) {
                     self.paused = true;
                     self.no_source = true;
-                } else if chain.offline() {
+                } else if self.chain.as_ref().is_some_and(CoverChain::offline) {
                     self.paused = true;
                 }
                 None
@@ -492,7 +537,15 @@ impl Worker {
     pub(crate) fn status(&self) -> WorkerStatus {
         let offline =
             self.paused && !self.no_source && self.chain.as_ref().is_some_and(CoverChain::offline);
+        let stats = self
+            .chain
+            .as_ref()
+            .map(CoverChain::stats)
+            .unwrap_or_default();
         WorkerStatus {
+            found: stats.found,
+            missing: stats.missing,
+            source_broken: stats.source_broken,
             offline,
             no_source: self.settings.download
                 && (self.no_source || self.settings.usable_sources().is_empty()),
@@ -815,6 +868,12 @@ impl CoverProvider for Covers {
             Some(text::COVERS_NO_SOURCE.to_owned())
         } else if self.status.queued > 0 {
             Some(text::covers_queued(self.status.queued))
+        } else if self.status.found + self.status.missing > 0 || self.status.source_broken {
+            Some(text::covers_summary(
+                self.status.found,
+                self.status.missing,
+                self.status.source_broken,
+            ))
         } else {
             None
         }

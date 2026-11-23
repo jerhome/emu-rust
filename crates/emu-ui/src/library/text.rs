@@ -248,6 +248,15 @@ pub fn covers_queued(n: usize) -> String {
     format!("Jaquettes : {n} à télécharger…")
 }
 
+pub fn covers_summary(found: u32, missing: u32, source_broken: bool) -> String {
+    let broken = if source_broken {
+        ", source injoignable"
+    } else {
+        ""
+    };
+    format!("Jaquettes : {found} trouvées, {missing} introuvables{broken}")
+}
+
 pub fn dat_downloading(system: &str, done: usize, total: usize) -> String {
     format!("Base de jeux : {} ({}/{total})…", clean(system), done + 1)
 }
