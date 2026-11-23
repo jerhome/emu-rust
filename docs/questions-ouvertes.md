@@ -392,3 +392,10 @@ emu-rust qui charge elle-même `capsimg.dll` (sans l'exécuter au-delà du charg
 (`GetLastError`, ex. 126 module introuvable, 193 mauvaise architecture) et la liste des DLL importées (table d'import
 PE) absentes ; à intégrer à l'import guidé de capsimg (validation PE 64 bits + 14 exports `CAPS*`). Rapport :
 `.claude/ipf-capsimg.md` (dépôt A, local).
+
+## Essais de changement de média à faire plus tard (demande utilisateur du 2026-11-23, non bloquant)
+
+L'utilisateur confirmera plus tard, sans bloquer aucune validation ni release :
+- changement de CD en cours de partie : Night Trap (Mega CD 32X, picodrive, disque 2), et plus largement Mega CD / PS1 / 3DO ;
+- **tous** les changements de disquettes (Atari ST, Amiga, CPC, C64, DOS) et de **cassettes** (CPC, C64…) par le menu en jeu.
+À intégrer à un futur guide d'essai (liste par système, jeu d'essai, étapes, quoi rapporter).
