@@ -24,6 +24,11 @@ zip = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Link count of a file under Windows (`file::information(..).number_of_links()`), ADR 0023 §4.8 RV3: safe API, no
+# `unsafe` here. Unlicense/MIT, already in the lock file through same-file.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1.11"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

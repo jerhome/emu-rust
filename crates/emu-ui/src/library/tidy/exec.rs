@@ -458,6 +458,7 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         dirs_created: 3,
         dirs_removed: 0,
         cancelled: false,
+        ..TidyReport::default()
     });
     out.skipped.push((
         dirs.saves.join("snes9x/.emu-rust-games"),

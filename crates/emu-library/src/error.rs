@@ -33,7 +33,46 @@ pub enum LibraryError {
     /// `TidyPlan::choose_system`: unknown unit, unit without a choice, or a system it does not list.
     #[error("rangement : « {system} » n'est pas un choix possible pour l'élément {unit}")]
     TidyChoice { unit: u32, system: String },
-    /// Unreadable, malformed or too large tidy journal (French message, never its raw content).
+    /// Unreadable tidy journal: not a regular file, too large, or outside the grammar (French message, never its
+    /// raw content). Only this case blocks until the user moves the file away (ADR 0023 §4.8, RV3). A failure to
+    /// write a journal is an `Io` error.
     #[error("{path} : journal de rangement illisible : {message}")]
     Journal { path: PathBuf, message: String },
+    /// A readable journal whose state refuses the action (ADR 0023 §4.8, RV3). Nothing was touched.
+    #[error("{journal} : {reason}")]
+    TidyRefused {
+        journal: PathBuf,
+        reason: TidyRefusal,
+    },
+}
+
+/// Why a readable tidy journal refuses an action ([`LibraryError::TidyRefused`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TidyRefusal {
+    /// `apply_tidy`, `undo_tidy`: an interrupted run must first be recovered (`recover_tidy`).
+    Interrupted,
+    /// `undo_tidy`: no tidy run to undo.
+    NothingToUndo,
+    /// `undo_tidy`: only the newest journal can be undone.
+    NotLatest,
+    /// `undo_tidy`: the newest journal is already undone.
+    AlreadyUndone,
+    /// `mark_tidy_identities`: the journal is not closed (`E` or `U` missing).
+    NotClosed,
+    /// `mark_tidy_identities`: not a journal of this folder, or an empty one.
+    UnknownJournal,
+}
+
+impl std::fmt::Display for TidyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Interrupted => "un rangement interrompu doit d'abord être repris",
+            Self::NothingToUndo => "aucun rangement à annuler",
+            Self::NotLatest => "seul le dernier rangement peut être annulé",
+            Self::AlreadyUndone => "ce rangement est déjà annulé",
+            Self::NotClosed => "rangement non terminé",
+            Self::UnknownJournal => "journal de rangement inconnu",
+        })
+    }
 }

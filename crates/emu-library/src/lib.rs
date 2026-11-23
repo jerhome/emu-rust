@@ -23,7 +23,7 @@ pub use crate::disc::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references, disc_info,
     disc_serial, probe_bin, region_from_name,
 };
-pub use crate::error::LibraryError;
+pub use crate::error::{LibraryError, TidyRefusal};
 pub use crate::filter::{GameFilter, SortOrder, filter_games, normalize_title};
 pub use crate::hash::{Hashes, MAX_HASH_SIZE, RomHashes, hash_reader};
 pub use crate::media::{MAX_MEDIA_IMAGES, MediaGroup, group_media};
@@ -33,6 +33,7 @@ pub use crate::systems::{
     systems_for_extension,
 };
 pub use crate::tidy::{
-    AbsoluteMoves, MAX_IGNORED_PATHS, TidyBlock, TidyJournalInfo, TidyMove, TidyOptions, TidyPlan,
-    TidyProgress, TidyReason, TidyReport, TidyStatus, TidyUnit, create_system_folders, last_tidy,
+    AbsoluteMoves, MAX_IGNORED_PATHS, TidyBlock, TidyExtraName, TidyJournalInfo, TidyMove,
+    TidyOptions, TidyPlan, TidyProgress, TidyReason, TidyReport, TidySection, TidyStatus, TidyUnit,
+    create_system_folders, last_tidy,
 };

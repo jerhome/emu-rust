@@ -183,6 +183,15 @@ pub fn block(b: &TidyBlock) -> String {
             clean(name)
         ),
         TidyBlock::ChangedSincePlan => "modifié depuis l'aperçu".to_owned(),
+        TidyBlock::ReadOnlyFile { path: p } => format!(
+            "fichier en lecture seule : roms/{} (retirez l'attribut « Lecture seule » dans ses propriétés, puis \
+             relancez)",
+            path(p)
+        ),
+        TidyBlock::NotWritable { dir } => format!(
+            "écriture refusée dans roms/{} (droits du dossier ou disque protégé en écriture)",
+            path(dir)
+        ),
     }
 }
 

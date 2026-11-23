@@ -155,6 +155,13 @@ pub enum TidyBlock {
     FolderNamedLikeSystem { name: String },
     /// A file of the unit changed (path, size or mtime) between the preview and the run.
     ChangedSincePlan,
+    /// Windows: a file the run would remove (a source on the way in, a tidied name on the way back) has the
+    /// read-only attribute. Path relative to the roms root. The attribute is never changed by emu-rust (ADR 0023
+    /// §4.8, RV3).
+    ReadOnlyFile { path: PathBuf },
+    /// A folder (or the whole volume) where emu-rust may not write: access denied, write-protected volume. Path
+    /// relative to the roms root.
+    NotWritable { dir: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +303,28 @@ pub struct TidyReport {
     pub dirs_created: u64,
     pub dirs_removed: u64,
     pub cancelled: bool,
+    /// [`Library::recover_tidy`] only: journals this call closed, with the section that had been interrupted
+    /// (`Undo`: the interrupted undo is now final, its units stay tidied).
+    pub closed: Vec<(PathBuf, TidySection)>,
+    /// Two names of one file left behind because the extra one could not be removed (read-only attribute, access
+    /// denied). Not an error of the run: the journal is closed; the user removes `remove` by hand.
+    pub extra_names: Vec<TidyExtraName>,
+}
+
+/// Section of a journal (design v7.1 §3.4.1): the tidy run, or its undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TidySection {
+    Tidy,
+    Undo,
+}
+
+/// Two names of one file, proven by the file system (absolute paths under the canonical roms root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TidyExtraName {
+    /// Name to remove by hand once its read-only attribute (or the access right) is lifted.
+    pub remove: PathBuf,
+    /// Name that stays: the one the library and the journal point to.
+    pub keep: PathBuf,
 }
 
 /// One tidy journal (`<journal_dir>/journal-<unix>.txt`, design v7.1 §3.4.1).

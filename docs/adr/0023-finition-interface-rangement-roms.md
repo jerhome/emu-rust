@@ -3,7 +3,8 @@
 Statut : **accepté** (2026-11-21, architecte ; proposé le même jour, amendé après la revue indépendante — reprise
 par unité, marqueur d'identités, groupes multi-CD, console à deux exécutables, copie entre volumes retirée ;
 **amendé le 2026-11-22 après la revue FV0** du journal : §4.3 `.bin` sans en-tête, §4.8 ; **précisé le même jour
-après la revue RV1** : §4.8, « Précisions RV1 »). Choix
+après la revue RV1** : §4.8, « Précisions RV1 » ; **amendé le 2026-11-23 après la revue RV3** : §4.8,
+« Décisions après la revue RV3 » — lecture seule, écriture refusée, ReFS, borne de 512 Mio retirée). Choix
 de l'utilisateur faits : icône **B** (croix et boutons), avertissement BIOS **une fois par (core, fichier)** ; les
 autres défauts sont appliqués et consignés (`docs/questions-ouvertes.md`, lignes 7.1). Périmètre :
 `docs/specs/v7.1-v8.0-utilisateur.md` §7.1 (fait autorité ; point 5 = BIOS / firmware d'origine fourni par
@@ -215,8 +216,8 @@ direct par la ligne de commande.
 **Reprise** (au démarrage, avant le scan ; refusée si la racine canonique du journal n'est pas la racine courante),
 **une seule règle, par unité** : une unité commencée et non validée (`B` sans `C`) est **défaite en entier** —
 chaque fichier présent à la destination et absent à la source revient à la source ; **source et destination
-présentes et identiques** (même fichier physique, ou même taille et même CRC32 : arrêt entre le lien et le
-retrait) ⇒ la destination est retirée, la source reste ; présentes et différentes ⇒ rien n'est touché, signalé ;
+présentes et identiques** (même fichier physique prouvé par le système de fichiers : arrêt entre le lien et le
+retrait ; deux copies égales ne suffisent pas, §4.8) ⇒ la destination est retirée, la source reste ; présentes et différentes ⇒ rien n'est touché, signalé ;
 un dossier `.emu-rust-part` est retiré après ce contrôle fichier par fichier ; la base est remise sur les chemins
 sources (réécriture inverse, idempotente). Une unité validée (`C`) n'est jamais retouchée. Puis `E` est posée et
 l'étape 5 rejouée.
@@ -276,9 +277,9 @@ n'a encore été écrit chez un utilisateur.
   5. Chaque ligne du journal est synchronisée (`m`, `w`, `C`, `E`, `U`, `I` compris) ; le dossier source l'est
      après le retrait, avant `C`. Une annulation interrompue devient **définitive** (l'unité est remise rangée,
      `U` posé) et le rapport de reprise le dit. Un journal plus récent d'une autre racine bloque l'annulation.
-- **Limites assumées.** Sous Windows, un fichier plus gros que la borne de hachage, coupé entre le lien et le
-  retrait de sa source, ne peut pas être prouvé identique : il reste en double à la destination, signalé, jamais
-  retiré d'office. Sur FAT / exFAT (unités `W` seulement, les autres y sont bloquées), un changement d'heure
+- **Limites assumées.** ~~Sous Windows, un fichier plus gros que la borne de hachage, coupé entre le lien et le
+  retrait de sa source, ne peut pas être prouvé identique : il reste en double à la destination.~~ (Caduc depuis
+  FV1a 1 et RV3 3 : l'identité physique ne dépend plus de la taille.) Sur FAT / exFAT (unités `W` seulement, les autres y sont bloquées), un changement d'heure
   peut décaler les dates d'une heure : l'unité n'est alors pas annulée (elle reste rangée, signalée). Deux
   instances qui posent `I` et annulent en même temps ne sont pas départagées au-delà du verrou de chaque appel
   (limite « seconde instance » ci-dessous).
@@ -297,6 +298,46 @@ n'a encore été écrit chez un utilisateur.
      en cours jusqu'à la fermeture du fichier, puis reprise. L'UI doit l'expliquer.
   5. **Sur `Fatal`**, le `TidyReport` partiel est perdu : l'UI enchaîne `recover_tidy` puis
      `pending_tidy_identities`.
+- **Décisions après la revue RV3** (2026-11-23 ; rapport `.claude/rv3-7.1.md` ; détail et interfaces : design
+  §3.4.2). **À livrer avant tout tag 7.1.**
+  1. **Fichier en lecture seule (Windows).** L'attribut « lecture seule » n'empêche pas le lien physique mais
+     interdit le retrait du nom : sans parade, l'aller crée le lien, échoue au retrait de la source, échoue
+     aussi à défaire (même fichier, même attribut) et chaque reprise repart en `Fatal` — rangement bloqué
+     pour toujours, sans perte. Décision : (a) avant tout lien, sous `cfg(windows)`, tout fichier que le bloc
+     retirera (sources `M` à l'aller, noms rangés `M` à l'annulation) est contrôlé ; attribut posé ⇒ unité
+     laissée, motif dédié `TidyBlock::ReadOnlyFile`, déjà montré dans l'aperçu ; (b) si malgré tout le retrait
+     d'un **second nom prouvé** (même fichier physique, §4.8 FV1a 1, ou lien que le bloc vient de poser)
+     échoue sur « accès refusé », ce n'est **pas fatal** : les deux noms restent, le cas est rendu dans
+     `TidyReport::extra_names` (« retirez l'attribut puis supprimez X à la main »), la base pointe sur le nom
+     gardé et le journal peut être clos ; (c) emu-rust **ne modifie jamais** l'attribut ni les droits ;
+     (d) tests sous `cfg(windows)` exécutés par la CI Windows.
+  2. **Écriture refusée** (droits du dossier, volume protégé en écriture, Unix comme Windows) : un lien, une
+     création de dossier ou un `rename` refusé **avant** tout retrait de source laisse l'unité, motif
+     `TidyBlock::NotWritable { dir }`, au lieu de `NoHardLinks` ou d'une erreur. Les codes sont distingués
+     (design §3.4.2) : « pas de liens physiques » ≠ « écriture refusée ».
+  3. **Borne de 512 Mio retirée** de toute branche destructrice : retirer un exemplaire exige l'identité
+     physique (FV1a 1), quelle que soit la taille ; deux copies égales (taille + CRC32) ne suffisent jamais.
+     `max_file_size` ne sert plus, dans le rangement, qu'à l'aperçu (doublon ou conflit), sans rien retirer.
+  4. **Liens comptés sous Windows aussi.** La règle `nlink ≥ 2` (RV1 1) et le refus d'annuler un fichier à
+     plusieurs liens valent sous Windows : `winapi_util::file::information(..).number_of_links()` (API sûre,
+     `winapi-util` 0.1.11 devient dépendance directe d'`emu-library` sous `cfg(windows)`, déjà au verrou,
+     Unlicense/MIT ; aucun `unsafe` dans `emu-library`). Handle impossible à ouvrir ⇒ identité non prouvée,
+     rien retiré.
+  5. **ReFS.** (a) ReFS sans liens physiques (versions anciennes) : le lien est refusé ⇒ `NoHardLinks`, rien
+     n'a bougé ; (b) sur ReFS, l'index de fichier 64 bits qu'utilise `same-file` n'est pas garanti unique (les
+     identifiants ReFS font 128 bits) : sous Windows, la preuve d'identité exige en plus des tailles et des
+     dates de création et de modification **exactement** égales sur les deux noms, `nlink ≥ 2` et deux chemins
+     canoniques distincts. Le faux positif résiduel (deux fichiers différents de même index, même taille, mêmes
+     dates, chacun à plusieurs liens, aux deux noms d'une ligne du journal) est une **limite assumée**.
+  6. **Aller : identité vérifiée avant le retrait de la source.** Après le lien et avant de retirer la source,
+     `same_file::is_same_file(source, destination)` doit répondre « oui », sinon erreur d'E/S de l'unité (défaite
+     par la règle de reprise). Branche « même fichier » de la reprise : le dossier de la source est synchronisé
+     **avant** le retrait de la destination.
+  7. **Erreurs distinguées** (interfaces : design §3.4.2). `LibraryError::Journal` = journal **illisible**
+     seulement (le seul cas où l'UI conseille de déplacer le fichier) ; un journal lisible dont l'état refuse
+     l'action = `LibraryError::TidyRefused { journal, reason }` ; un échec d'écriture du journal =
+     `LibraryError::Io`. `recover_tidy` dit ce qu'il a clos (`TidyReport::closed`, avec la section
+     interrompue) et ne perd plus son rapport quand un autre journal reste bloquant.
 
 ### 5. Cores améliorés par un fichier d'origine
 
@@ -331,7 +372,8 @@ n'a encore été écrit chez un utilisateur.
   indivisible, annulation, reprise) sont le contrat ; `reviewer` relit le **format du journal avant** que
   l'exécution soit écrite, puis `emu-library/src/tidy/` comme du code sensible.
 - Limites assumées : pas de rangement vers un autre volume ni sur un système de fichiers sans liens physiques
-  (unité bloquée, à ranger à la main — à revoir si l'essai le demande) ; `roms/<id>` lié ou monté ailleurs :
+  (unité bloquée, à ranger à la main — à revoir si l'essai le demande) ; fichier en lecture seule ou dossier
+  non inscriptible : unité laissée, jamais d'attribut ni de droit modifié (§4.8 RV3) ; `roms/<id>` lié ou monté ailleurs :
   bloqué ; une **seconde instance** d'emu-rust en train de jouer n'est pas exclue (le verrou n'exclut qu'un autre
   rangement) : ne pas ranger pendant qu'une autre fenêtre joue ; un état sauvegardé d'un core qui mémorise le
   chemin absolu du média (cores en `media_direct`) peut demander de réinsérer le disque après rangement — à
