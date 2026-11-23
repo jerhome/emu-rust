@@ -45,6 +45,8 @@ pub(crate) struct Checks {
     pub required: BTreeMap<CoreId, FirmwareCheck>,
     /// Original files that improve each installed core (7.1, ADR 0023 §5).
     pub enhancements: BTreeMap<CoreId, Vec<crate::firmware_hints::CoreEnhancement>>,
+    /// PlayStation BIOS files present, by name: region recognised and alias status (ADR 0021 amendment).
+    pub ps1: BTreeMap<String, crate::ps1_bios::Ps1Seen>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

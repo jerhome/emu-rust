@@ -502,6 +502,7 @@ impl CoresUi {
             &self.prefs,
             &self.system_dir,
         );
+        checks.ps1 = crate::ps1_bios::scan(&self.system_dir);
         self.snapshot = Some(Snapshot {
             installed,
             infos,
@@ -726,10 +727,19 @@ impl CoresUi {
         files: &[String],
     ) {
         let wanted = check.wanted.as_deref().unwrap_or_default();
+        let seen = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.checks.ps1.get(wanted))
+            .cloned();
         ui.horizontal_wrapped(|ui| {
             let importable = match &check.state {
                 FirmwareState::Ok | FirmwareState::Free { .. } | FirmwareState::Unverified => {
-                    ui.label(RichText::new(text::required_ok(wanted)).small().weak());
+                    ui.label(
+                        RichText::new(text::required_ok(wanted, seen.as_ref()))
+                            .small()
+                            .weak(),
+                    );
                     false
                 }
                 FirmwareState::Builtin { label } => {
@@ -1169,7 +1179,14 @@ impl CoresUi {
                     .small()
                     .weak(),
                 );
-                ui.colored_label(color, text::firmware_state(&f.state));
+                let seen = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.checks.ps1.get(&f.spec.path));
+                ui.colored_label(
+                    color,
+                    text::firmware_detail_state(&f.spec.path, &f.state, seen),
+                );
                 if !matches!(f.state, FirmwareState::Ok)
                     && ui.small_button(text::IMPORT_ONE).clicked()
                 {

@@ -197,6 +197,9 @@ pub fn import_bios(
                     item.verified,
                     outcome.backup.as_deref(),
                 ));
+                report
+                    .lines
+                    .extend(outcome.aliases.iter().map(crate::ps1_bios::alias_line));
             }
             Err(e) => {
                 report.failed += 1;

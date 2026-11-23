@@ -615,9 +615,14 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
                 core_fallback_warning(label, wanted, others)
             )
         }),
-        D::WrongHash { wanted, .. } => Some(format!(
-            "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
-        )),
+        D::WrongHash { wanted, md5 } => {
+            Some(match crate::ps1_bios::wrong_region_text(wanted, md5) {
+                Some(region) => format!("{wanted} : {region}. Le jeu peut ne pas démarrer."),
+                None => format!(
+                    "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
+                ),
+            })
+        }
         D::Missing { wanted } => Some(format!(
             "BIOS absent : {wanted}. Le jeu peut ne pas démarrer."
         )),

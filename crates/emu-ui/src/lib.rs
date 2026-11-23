@@ -25,6 +25,7 @@ mod library;
 pub mod log;
 mod pad_mode;
 mod platform;
+mod ps1_bios;
 mod shutdown;
 mod ui;
 
