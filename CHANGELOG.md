@@ -2,6 +2,16 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.0.1] - 2026-11-23
+
+### Corrigé
+
+- **Mega CD à plusieurs disques** (ex. Night Trap en deux `.chd`) : `genesis_plus_gx` refusait le jeu (« could not
+  load … from M3U file list ») et `picodrive` répondait « invalid CD image ». La liste `.m3u` générée contenait des
+  chemins absolus que ces deux cores préfixent toujours par le dossier de la liste. Pour eux, le disque 1 est
+  désormais chargé directement et les disques suivants sont ajoutés par l'interface de changement de disque
+  (`multi_disc = "disk_control"` dans `cores.toml`) ; aucune liste n'est plus générée. PlayStation inchangée.
+
 ## [7.0.0] - 2026-11-22
 
 Version stable de la 7.0 : contenu de la 7.0.0-rc.1, **validé par l'utilisateur sous Windows** : PlayStation (GTA avec
