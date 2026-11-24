@@ -1341,3 +1341,100 @@ fn footer_shows_version_and_credit() {
     assert_eq!(text::footer_for("1.2.3"), "v1.2.3 · dev by claude@jerhome");
     assert!(text::footer().starts_with(&format!("v{}", env!("CARGO_PKG_VERSION"))));
 }
+
+// ---- 7.2: unrecognized pad, learning, config, core ----------------------------------------------------------
+
+#[test]
+fn unrecognized_pad_is_noticed_learned_saved_and_played() {
+    use crate::gamepad::{
+        GamepadInput, GamepadSettings, PadEvent, PadEventKind, PadId, PadLayout, PadMap,
+        RawInput as Raw, ScriptedPadSource,
+    };
+    use crate::keyboard::PadStyle;
+    use emu_runtime::{InputBackend, InputFrame, JoypadButton as J};
+
+    const ID: PadId = PadId(7);
+    const GUID: &str = "03000000790000001100000000000000";
+    let ev = |kind| PadEvent { id: ID, kind };
+    let press = |code: u32| {
+        vec![
+            ev(PadEventKind::Raw {
+                input: Raw::Button(code),
+                value: 1.0,
+            }),
+            ev(PadEventKind::Raw {
+                input: Raw::Button(code),
+                value: 0.0,
+            }),
+        ]
+    };
+    let steps = PadLayout::Snes.steps().len() as u32;
+    let mut source = ScriptedPadSource::new();
+    source.push_batch(vec![ev(PadEventKind::Connected {
+        name: "USB Gamepad".into(),
+        guid: GUID.into(),
+        raw: true,
+        guessed: false,
+    })]);
+    source.push_batch(Vec::new());
+    for code in 0..steps {
+        source.push_batch(press(code));
+    }
+    // Played after saving: D-pad up (b0) and A (East, b5) held.
+    source.push_batch(vec![
+        ev(PadEventKind::Raw {
+            input: Raw::Button(0),
+            value: 1.0,
+        }),
+        ev(PadEventKind::Raw {
+            input: Raw::Button(5),
+            value: 1.0,
+        }),
+    ]);
+    let mut pad = GamepadInput::new(
+        source,
+        PadMap::default_for(PadStyle::Snes),
+        GamepadSettings::default(),
+    );
+    pad.set_ui_capture(true);
+    let mut infos = Vec::new();
+
+    let mut h = harness(false);
+    h.frame(Vec::new());
+    pad.pump();
+    assert!(host::sync_pad_learning(&mut h.ui, &mut pad, &mut infos));
+    assert_eq!(h.ui.pad_notice().map(|p| p.id), Some(ID), "notice shown");
+    h.frame(Vec::new());
+    // « Configurer » of the notice; the rest is driven with the keyboard (Enter on the focused button).
+    assert!(h.ui.open_pad_learning(ID));
+    assert_eq!(h.ui.page, Page::Settings);
+    assert!(h.ui.pad_notice().is_none(), "one notice per connection");
+    h.frame(Vec::new());
+    h.key(Key::Enter);
+    pad.pump();
+    host::sync_pad_learning(&mut h.ui, &mut pad, &mut infos);
+    assert_eq!(pad.raw_capture(), Some(ID));
+    for _ in 0..steps {
+        pad.pump();
+        host::sync_pad_learning(&mut h.ui, &mut pad, &mut infos);
+        h.frame(Vec::new());
+    }
+    h.frame(Vec::new());
+    h.key(Key::Enter);
+    assert!(host::sync_pad_learning(&mut h.ui, &mut pad, &mut infos));
+    assert_eq!(pad.raw_capture(), None, "capture ends with the screen");
+
+    let saved = crate::Config::load(&h.ui.dirs.config_file).unwrap();
+    let device = &saved.input.gamepad.devices[GUID];
+    assert_eq!(device.layout.as_deref(), Some("snes"));
+    assert_eq!(device.map["dpad_up"], "b0");
+    assert_eq!(device.map["east"], "b5");
+    assert_eq!(device.map.len(), steps as usize);
+
+    pad.set_ui_capture(false);
+    let mut frame = InputFrame::default();
+    pad.poll(0, &mut frame);
+    assert!(frame.pads[0].is_pressed(J::Up));
+    assert!(frame.pads[0].is_pressed(J::A));
+    assert!(!frame.pads[0].is_pressed(J::B));
+}

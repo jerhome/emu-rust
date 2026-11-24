@@ -164,6 +164,8 @@ impl LibraryUi {
         self.settings.ctx = Some(ctx.clone());
         let escape = self.dialog.is_none() && ui.input(|i| i.key_pressed(Key::Escape));
         egui::Panel::bottom("settings-status").show(ui, |ui| {
+            let enabled = self.dialog.is_none();
+            self.pad_notice_line(ui, enabled);
             self.status_line(ui);
             weak(ui, text::SETTINGS_HINT);
         });

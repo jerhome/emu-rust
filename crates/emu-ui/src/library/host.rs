@@ -13,10 +13,11 @@ use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
+use super::pad_settings::LearnPad;
 use super::{LaunchRequest, Level, LibraryEvent, LibraryUi, Page, text};
 use crate::app::{App, Restart, open_gamepad, pad_poll_interval};
 use crate::egui_layer::EguiLayer;
-use crate::gamepad::{GamepadSettings, NavKey, PadBackend};
+use crate::gamepad::{GamepadInput, GamepadSettings, GamepadSource, NavKey, PadBackend, PadInfo};
 use crate::{LaunchOptions, LibraryOptions, LibraryScreen, UiError};
 
 const WINDOW: (u32, u32) = (1280, 720);
@@ -42,8 +43,9 @@ struct Host {
     gamepad_allowed: bool,
     gamepad_opened: bool,
     gamepad: Option<PadBackend>,
-    /// Last pad list given to the settings page (a change redraws).
+    /// Last pad lists given to the settings page (a change redraws).
     last_pads: Vec<(usize, String)>,
+    last_infos: Vec<PadInfo>,
     screen: Option<LibraryScreen>,
     dump_window: Option<std::path::PathBuf>,
     proxy: Arc<Mutex<EventLoopProxy<Wake>>>,
@@ -77,6 +79,7 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         gamepad_opened: false,
         gamepad: None,
         last_pads: Vec::new(),
+        last_infos: Vec::new(),
         screen: options.screen,
         dump_window: options.dump_window,
         proxy,
@@ -233,6 +236,7 @@ impl Host {
             self.library.pad_learned(button);
             redraw = true;
         }
+        redraw |= sync_pad_learning(&mut self.library, pad, &mut self.last_infos);
         if let Some(egui) = &mut self.egui {
             for key in nav {
                 egui.inject_key(match key {
@@ -263,6 +267,7 @@ impl Host {
         self.window = back.window;
         self.egui = back.egui;
         self.gamepad = back.gamepad;
+        self.library.pad_unrecognized(back.unrecognized_pads);
         if let (Some(egui), Some(w)) = (&mut self.egui, &self.window) {
             egui.assume_focused(w.window());
         }
@@ -490,6 +495,48 @@ impl ApplicationHandler<Wake> for Host {
 }
 
 /// Opens only on a real attempt: a disabled pad is retried once it is enabled.
+/// Learning of unrecognized pads (7.2), after `pump`: raw inputs of the pad being learned go to the screen,
+/// the pad list and the « non reconnue » notices are refreshed, a saved or forgotten map is applied to the
+/// backend and written at once, and the capture follows the screen for the next pump. `true`: redraw.
+pub(super) fn sync_pad_learning<S: GamepadSource>(
+    library: &mut LibraryUi,
+    pad: &mut GamepadInput<S>,
+    last_infos: &mut Vec<PadInfo>,
+) -> bool {
+    let mut redraw = false;
+    for (input, value) in pad.take_raw() {
+        library.pad_raw_input(input, value);
+        redraw = true;
+    }
+    let infos = pad.pads();
+    library.set_learnable_pads(
+        infos
+            .iter()
+            .map(|p| LearnPad {
+                id: p.id,
+                guid: p.guid.clone(),
+                name: p.name.clone(),
+            })
+            .collect(),
+    );
+    if infos != *last_infos {
+        *last_infos = infos;
+        redraw = true;
+    }
+    let unrecognized = pad.take_unrecognized();
+    if !unrecognized.is_empty() {
+        library.pad_unrecognized(unrecognized);
+        redraw = true;
+    }
+    if library.take_learned_changed() {
+        pad.set_learned_maps(library.learned_maps());
+        library.save_pad_config();
+        redraw = true;
+    }
+    pad.set_raw_capture(library.pad_learn_target());
+    redraw
+}
+
 fn should_open_gamepad(allowed: bool, enabled: bool, opened: bool) -> bool {
     allowed && enabled && !opened
 }

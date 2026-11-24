@@ -78,7 +78,7 @@ pub enum GamepadNotice {
 
 /// Reported once per connection by `take_unrecognized`: model neither in the database nor learned. A raw pad
 /// holds no port until it is learned; a pad named by a guess (macOS) already plays. The UI offers « Configurer ».
-/// Kept out of `GamepadNotice` so the app's exhaustive match is only touched by the task wiring the screen (G4).
+/// Kept out of `GamepadNotice`: the library, not the game, offers the learning screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnrecognizedPad {
     pub id: PadId,

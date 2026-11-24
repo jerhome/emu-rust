@@ -1,9 +1,6 @@
 //! Settings › Manette: attached pads, deadzone, trigger threshold, hotkey button, and « press a button » remap
-//! per system. The pad backend lives in the host loop; this page only sees a status snapshot and exchanges
-//! two facts with it (`pad_wants_learning`, `pad_learned`).
-
-// Host-facing methods are called by app.rs once G4b wires them; remove then.
-#![allow(dead_code)]
+//! per system, and the learning of an unrecognized pad (7.2). The pad backend lives in the host loop
+//! (`library/host.rs`); this page only sees snapshots and exchanges facts with it through the `pad_*` methods.
 
 use egui::{ComboBox, RichText, Slider, Ui};
 use emu_runtime::JoypadButton;
@@ -13,7 +10,7 @@ use super::{Level, LibraryUi, text, weak};
 use crate::config_gamepad::{GamepadConfig, HotkeyButton};
 use crate::gamepad::{
     LearnProgress, LearnSession, LearnedMap, PadButton, PadId, PadLayout, PadMap, RawInput,
-    set_binding,
+    UnrecognizedPad, learned_maps, set_binding,
 };
 use crate::keyboard::PadStyle;
 use crate::pad_mode::PadMode;
@@ -50,6 +47,11 @@ pub(super) struct PadUi {
     learn: Option<LearnScreen>,
     /// A learned map was saved or forgotten: the host reloads `learned_maps`.
     learned_changed: bool,
+    /// « Manette non reconnue » notices not yet acted upon, oldest first (one per connection).
+    unrecognized: Vec<LearnPad>,
+    /// Stage of the learning screen drawn last (0 choose, 1 running, 2 review): a new stage moves the keyboard
+    /// focus to its main button, so the whole screen is usable without the mouse.
+    shown_stage: Option<u8>,
 }
 
 /// A pad offered by the « Configurer » list; filled by the host from `GamepadInput::pads()`.
@@ -194,16 +196,6 @@ pub(super) fn forget_learned(config: &mut GamepadConfig, guid: &str) -> bool {
     had
 }
 
-/// Learned maps of the config, by GUID (for `GamepadInput::set_learned_maps`). Entries without a map are skipped.
-pub(crate) fn learned_maps(config: &GamepadConfig) -> BTreeMap<String, LearnedMap> {
-    config
-        .devices
-        .iter()
-        .filter(|(_, d)| !d.map.is_empty())
-        .map(|(guid, d)| (guid.clone(), LearnedMap::from_config(&d.map)))
-        .collect()
-}
-
 /// Cores whose `pad_devices` offer a DualShock mode (PlayStation), catalog order.
 pub(super) fn dualshock_cores(prefs: &emu_assets::cores::CorePreferences) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -308,9 +300,14 @@ impl LibraryUi {
         std::mem::take(&mut self.pad.settings_changed)
     }
 
-    /// Host -> page: pads that can be configured, refreshed with `set_pad_status`.
+    /// Host -> page: pads that can be configured, refreshed with `set_pad_status`. A notice or a learning
+    /// session of a pad that is no longer there is dropped.
     pub(crate) fn set_learnable_pads(&mut self, pads: Vec<LearnPad>) {
         self.pad.learnable = pads;
+        let learnable = &self.pad.learnable;
+        self.pad
+            .unrecognized
+            .retain(|u| learnable.iter().any(|p| p.id == u.id));
         let gone = self
             .pad
             .learn
@@ -320,6 +317,62 @@ impl LibraryUi {
             self.pad.learn = None;
             self.set_status(text::LEARN_DISCONNECTED.to_owned(), Level::Warn);
         }
+    }
+
+    /// Host -> page: unrecognized pads just plugged in (`GamepadInput::take_unrecognized`).
+    pub(crate) fn pad_unrecognized(&mut self, pads: Vec<UnrecognizedPad>) {
+        for p in pads {
+            tracing::info!("manette non reconnue : {} ({})", p.name, p.guid);
+            if !self.pad.unrecognized.iter().any(|u| u.id == p.id) {
+                self.pad.unrecognized.push(LearnPad {
+                    id: p.id,
+                    guid: p.guid,
+                    name: p.name,
+                });
+            }
+        }
+    }
+
+    /// Opens Réglages on the learning screen of `id` (« Configurer » of a notice). `false`: pad gone.
+    pub(crate) fn open_pad_learning(&mut self, id: PadId) -> bool {
+        self.pad.unrecognized.retain(|u| u.id != id);
+        let Some(pad) = self.pad.learnable.iter().find(|p| p.id == id).cloned() else {
+            return false;
+        };
+        if self.page != super::Page::Settings {
+            self.set_page(super::Page::Settings);
+        }
+        self.settings.focus_first = false;
+        self.pad.learning = None;
+        self.pad.learn = Some(LearnScreen::new(&pad));
+        self.pad.shown_stage = None;
+        true
+    }
+
+    /// The oldest pending « Manette non reconnue » notice, if any.
+    pub(crate) fn pad_notice(&self) -> Option<&LearnPad> {
+        self.pad.unrecognized.first()
+    }
+
+    /// Notice line of the status bars (home and settings): « Manette non reconnue : <nom> », « Configurer »,
+    /// « Ignorer ». Plain buttons: reachable with Tab and with the pad's navigation.
+    pub(super) fn pad_notice_line(&mut self, ui: &mut Ui, enabled: bool) {
+        let Some(pad) = self.pad_notice().cloned() else {
+            return;
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(super::WARNING, text::pad_unrecognized(&pad.name));
+            let enabled = enabled && self.pad.learn.is_none();
+            if ui
+                .add_enabled(enabled, egui::Button::new(text::LEARN_CONFIGURE))
+                .clicked()
+            {
+                self.open_pad_learning(pad.id);
+            }
+            if ui.button(text::PAD_NOTICE_DISMISS).clicked() {
+                self.pad.unrecognized.retain(|u| u.id != pad.id);
+            }
+        });
     }
 
     /// The pad whose raw inputs the host must route to `pad_raw_input` (`set_raw_capture`); `None`: no session.
@@ -344,6 +397,12 @@ impl LibraryUi {
         learned_maps(&self.config.input.gamepad)
     }
 
+    /// Writes the config now (a learned map was saved or forgotten), with any other pending setting.
+    pub(crate) fn save_pad_config(&mut self) {
+        self.settings.dirty = false;
+        self.save_config();
+    }
+
     /// Escape while waiting for a button cancels the remap or the learning instead of leaving the page.
     pub(super) fn cancel_pad_learning(&mut self) -> bool {
         let learn = self.pad.learn.take().is_some();
@@ -356,6 +415,7 @@ impl LibraryUi {
             return;
         };
         if let Some((pad, layout, map)) = screen.finish() {
+            self.pad.unrecognized.retain(|u| u.id != pad.id);
             store_learned(&mut self.config.input.gamepad, &pad, layout, &map);
             self.settings.dirty = true;
             self.pad.learned_changed = true;
@@ -367,6 +427,7 @@ impl LibraryUi {
     fn learn_section(&mut self, ui: &mut Ui) {
         ui.label(RichText::new(text::LEARN_TITLE).strong());
         if self.pad.learn.is_none() {
+            self.pad.shown_stage = None;
             weak(ui, text::LEARN_NOTE);
             let pads = self.pad.learnable.clone();
             for pad in pads {
@@ -399,6 +460,19 @@ impl LibraryUi {
         let mut save = false;
         let mut cancel = false;
         if let Some(l) = &mut self.pad.learn {
+            let stage = match l.session() {
+                None => 0,
+                Some(_) if l.is_review() => 2,
+                Some(_) => 1,
+            };
+            let refocus = self.pad.shown_stage != Some(stage);
+            self.pad.shown_stage = Some(stage);
+            let focus = |r: &egui::Response| {
+                if refocus {
+                    r.request_focus();
+                    r.scroll_to_me(Some(egui::Align::Center));
+                }
+            };
             ui.label(text::learn_title_for(&l.pad.name));
             match l.session() {
                 None => {
@@ -418,7 +492,9 @@ impl LibraryUi {
                         }
                     });
                     ui.horizontal(|ui| {
-                        if ui.button(text::LEARN_START).clicked() {
+                        let start = ui.button(text::LEARN_START);
+                        focus(&start);
+                        if start.clicked() {
                             l.begin();
                         }
                         cancel = ui.button(text::LEARN_CANCEL).clicked();
@@ -452,18 +528,28 @@ impl LibraryUi {
                     .session()
                     .is_none_or(|s| s.recorded().iter().all(Option::is_none));
                 ui.horizontal(|ui| {
-                    if !review && ui.button(text::LEARN_SKIP).clicked() {
-                        l.skip();
+                    if !review {
+                        let skip = ui.button(text::LEARN_SKIP);
+                        focus(&skip);
+                        if skip.clicked() {
+                            l.skip();
+                        }
                     }
-                    if ui.button(text::LEARN_BACK).clicked() {
+                    let back = ui.button(text::LEARN_BACK);
+                    if review && empty {
+                        focus(&back);
+                    }
+                    if back.clicked() {
                         l.back();
                     }
                     cancel = ui.button(text::LEARN_CANCEL).clicked();
                     if review {
-                        if ui
-                            .add_enabled(!empty, egui::Button::new(text::LEARN_SAVE))
-                            .clicked()
-                        {
+                        let save_button =
+                            ui.add_enabled(!empty, egui::Button::new(text::LEARN_SAVE));
+                        if !empty {
+                            focus(&save_button);
+                        }
+                        if save_button.clicked() {
                             save = true;
                         }
                         if empty {

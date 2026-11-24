@@ -166,6 +166,7 @@ impl LibraryUi {
                     }
                 });
             }
+            self.pad_notice_line(ui, !dialog_open);
             self.status_line(ui);
             if !self.unclassified.is_empty() && ui.small_button(text::UNCLASSIFIED_SHOW).clicked() {
                 let list = self.unclassified.clone();

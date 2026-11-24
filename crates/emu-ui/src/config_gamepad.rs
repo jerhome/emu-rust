@@ -122,7 +122,7 @@ autre = 3
     #[test]
     fn learned_fields_round_trip() {
         let text = "[devices.abc]\nname = \"USB Gamepad\"\nlayout = \"snes\"\nhotkey_button = \"select\"\n\
-                    [devices.abc.map]\ndpup = \"-a1\"\nsouth = \"b2\"\n";
+                    [devices.abc.map]\ndpad_up = \"-a1\"\nsouth = \"b2\"\n";
         let c: GamepadConfig = toml::from_str(text).unwrap();
         let d = &c.devices["abc"];
         assert_eq!(d.hotkey_button, Some(HotkeyButton::Select));

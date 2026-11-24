@@ -595,7 +595,6 @@ pub const LEARN_SAVE: &str = "Enregistrer";
 pub const LEARN_DONE: &str = "Terminé. Vérifiez la liste, puis enregistrez.";
 pub const LEARN_NOT_SET: &str = "non défini";
 pub const LEARN_EMPTY: &str = "Aucun bouton appris : rien à enregistrer.";
-#[allow(dead_code)]
 pub const LEARN_DISCONNECTED: &str = "Manette débranchée : configuration annulée.";
 pub const LEARN_SAVED: &str = "Manette enregistrée.";
 pub const LEARN_FORGOTTEN: &str = "Configuration de la manette oubliée.";
@@ -618,9 +617,14 @@ pub fn learn_progress(done: usize, total: usize) -> String {
     format!("Étape {} sur {total}", (done + 1).min(total))
 }
 
-#[allow(dead_code)]
 pub fn learn_used(label: &str) -> String {
     format!("Cette entrée est déjà utilisée pour « {label} ». Choisissez-en une autre.")
+}
+
+pub const PAD_NOTICE_DISMISS: &str = "Ignorer";
+
+pub fn pad_unrecognized(name: &str) -> String {
+    format!("Manette non reconnue : {}", clean(name))
 }
 
 pub fn learn_title_for(name: &str) -> String {

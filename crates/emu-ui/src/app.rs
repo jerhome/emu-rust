@@ -37,7 +37,7 @@ use crate::content::{content_spec, direct_rules, with_launch};
 use crate::egui_layer::EguiLayer;
 use crate::game_identity::{ResolvedGame, resolve_game_with, state_load_needs_confirmation};
 use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options_with};
-use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap};
+use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap, UnrecognizedPad};
 use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
 use crate::launch_firmware::{GameFacts, firmware_setup_for};
@@ -68,6 +68,8 @@ pub(crate) struct Detached {
     pub restart: Option<Restart>,
     /// The pad backend, kept by the library for the next game (gilrs is opened once per session).
     pub gamepad: Option<PadBackend>,
+    /// Unrecognized pads plugged in during the game: the library offers « Configurer » for them.
+    pub unrecognized_pads: Vec<UnrecognizedPad>,
 }
 
 /// Why a hosted game ends to be started again by the library.
@@ -202,6 +204,8 @@ pub(crate) struct App {
     gamepad: Option<PadBackend>,
     /// PS + R2 held on the previous poll (fast-forward is a held action).
     pad_fast_forward: bool,
+    /// Unrecognized pads plugged in during the game (toast shown), handed back to the library by `detach`.
+    unrecognized_pads: Vec<UnrecognizedPad>,
     /// The active keymap binds Ctrl/Alt/Super to a button: Ctrl/Alt shortcuts are disabled.
     modifier_bound: bool,
     /// Ctrl held (tracked from `ModifiersChanged`); enables the F-key-free shortcuts.
@@ -783,6 +787,7 @@ impl App {
             keyboard: KeyboardInput::new(keymap),
             gamepad: None,
             pad_fast_forward: false,
+            unrecognized_pads: Vec::new(),
             ctrl: false,
             alt: false,
             options,
@@ -891,6 +896,7 @@ impl App {
             error: self.error.take(),
             restart: self.restart.take(),
             gamepad: self.gamepad.take(),
+            unrecognized_pads: std::mem::take(&mut self.unrecognized_pads),
         }
     }
 
@@ -1951,11 +1957,23 @@ impl App {
         pad.set_ui_capture(menu_open || vkbd_open);
         pad.pump();
         let notices = pad.take_notices();
+        let unrecognized = pad.take_unrecognized();
         let hotkeys = pad.take_hotkeys();
         let nav = pad.take_nav();
         let fast_forward = pad.fast_forward_held();
         let pause_on_disconnect = pad.settings().pause_on_disconnect;
         let now = Instant::now();
+        // A toast only: learning needs the library's settings, which offer « Configurer » once the game ends.
+        for pad in unrecognized {
+            self.overlay.osd.push(
+                text::gamepad_unrecognized(&pad.name),
+                OsdLevel::Info,
+                Duration::from_secs(6),
+                now,
+            );
+            self.unrecognized_pads.push(pad);
+            self.request_redraw();
+        }
         for notice in notices {
             match notice {
                 GamepadNotice::Connected { name, port } => {

@@ -27,6 +27,8 @@ pub use source::{
     ScriptedPadSource,
 };
 
+use std::collections::BTreeMap;
+
 use crate::config_gamepad::GamepadConfig;
 
 /// The pad backend the app owns: real source behind a box, so tests and a future SDL3 source plug in alike.
@@ -43,7 +45,21 @@ pub(crate) fn open_backend(
         tracing::info!("manette désactivée");
         return Ok(None);
     }
-    open_platform(config)
+    let mut pad = open_platform(config)?;
+    if let Some(pad) = &mut pad {
+        pad.set_learned_maps(learned_maps(config));
+    }
+    Ok(pad)
+}
+
+/// Learned maps of the config, by GUID (for `GamepadInput::set_learned_maps`). Entries without a map are skipped.
+pub(crate) fn learned_maps(config: &GamepadConfig) -> BTreeMap<String, LearnedMap> {
+    config
+        .devices
+        .iter()
+        .filter(|(_, d)| !d.map.is_empty())
+        .map(|(guid, d)| (guid.clone(), LearnedMap::from_config(&d.map)))
+        .collect()
 }
 
 #[cfg(feature = "gamepad")]

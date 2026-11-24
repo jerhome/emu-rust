@@ -490,6 +490,13 @@ pub const GAME_OPTIONS_LOCKED: &str =
 pub const GAMEPAD_UNAVAILABLE: &str = "Manettes indisponibles sur ce système : clavier seul.";
 pub const GAMEPAD_PAUSED: &str = "Manette déconnectée : jeu en pause.";
 
+pub fn gamepad_unrecognized(name: &str) -> String {
+    format!(
+        "Manette non reconnue : {}. À configurer après la partie : Réglages → Manette → Configurer.",
+        sanitize_core_text(name)
+    )
+}
+
 /// `port` is 0-based.
 pub fn gamepad_connected(name: &str, port: usize) -> String {
     format!(
