@@ -2,9 +2,10 @@
 //! The grid is one focusable widget: arrows / Page / Home / End move the selection, Enter plays, F toggles the
 //! favorite. Tab leaves it for the bar; `/` or Ctrl+F jumps to the search field, Échap clears the search.
 
+use crate::theme;
 use egui::{
-    Align2, Color32, CornerRadius, EventFilter, FontId, Id, Key, Modifiers, Rect, ScrollArea,
-    Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2, pos2, vec2,
+    Align2, Color32, CornerRadius, EventFilter, FontId, Id, Key, Modifiers, Rect, RichText,
+    ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2, pos2, vec2,
 };
 use emu_library::{SortOrder, systems};
 
@@ -15,18 +16,7 @@ const CARD_W: f32 = 168.0;
 const COVER_H: f32 = 210.0;
 const TITLE_H: f32 = 44.0;
 const CARD_H: f32 = COVER_H + TITLE_H;
-const GAP: f32 = 12.0;
-const FOCUS: Color32 = crate::theme::ACCENT;
-
-/// Deterministic, muted colour per system for placeholder cards.
-fn system_color(id: &str) -> Color32 {
-    let h = id
-        .bytes()
-        .fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b)));
-    let [r, g, b, _] = h.to_le_bytes();
-    Color32::from_rgb(40 + r % 50, 40 + g % 50, 50 + b % 60)
-}
-
+const GAP: f32 = theme::SP_M;
 impl LibraryUi {
     pub(super) fn home(&mut self, ui: &mut Ui) {
         let dialog_open = self.dialog.is_some()
@@ -118,30 +108,14 @@ impl LibraryUi {
                 if ui.button(text::CORES).clicked() {
                     self.set_page(Page::Cores);
                 }
+                if ui.button(crate::help::text::BUTTON).clicked() {
+                    self.open_help(None);
+                }
                 if ui.button(text::SETTINGS).clicked() {
                     self.set_page(Page::Settings);
                 }
                 if ui.button(text::QUIT).clicked() {
                     self.events.push(LibraryEvent::Quit);
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                let all = text::system_count(text::ALL_SYSTEMS, self.games.len());
-                if ui
-                    .selectable_label(self.filter.system.is_none(), all)
-                    .clicked()
-                {
-                    self.filter.system = None;
-                    refilter = true;
-                }
-                for (id, n) in grid::system_counts(&self.games, systems()) {
-                    let name = emu_library::system(&id).map_or(id.as_str(), |s| &s.name);
-                    let label = text::system_count(name, n);
-                    let on = self.filter.system.as_deref() == Some(id.as_str());
-                    if ui.selectable_label(on, label).clicked() {
-                        self.filter.system = if on { None } else { Some(id.clone()) };
-                        refilter = true;
-                    }
                 }
             });
             ui.add_space(2.0);
@@ -216,20 +190,129 @@ impl LibraryUi {
             self.refilter(keep);
         }
 
+        egui::Panel::left("library-systems")
+            .exact_size(180.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::PANEL)
+                    .inner_margin(theme::SP_S),
+            )
+            .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .id_salt("library-systems-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = theme::SP_XS;
+                        let all = self.games.len();
+                        if system_entry(
+                            ui,
+                            self.filter.system.is_none(),
+                            text::ALL_SYSTEMS,
+                            all,
+                            None,
+                        )
+                        .clicked()
+                        {
+                            self.filter.system = None;
+                            refilter = true;
+                        }
+                        for (id, n) in grid::system_counts(&self.games, systems()) {
+                            let name = emu_library::system(&id).map_or(id.as_str(), |s| &s.name);
+                            let on = self.filter.system.as_deref() == Some(id.as_str());
+                            if system_entry(ui, on, name, n, Some(theme::system_color(&id)))
+                                .clicked()
+                            {
+                                self.filter.system = if on { None } else { Some(id.clone()) };
+                                refilter = true;
+                            }
+                        }
+                    });
+            });
+
         egui::CentralPanel::default().show(ui, |ui| self.grid(ui, dialog_open));
+    }
+
+    /// Nothing to show: one short sentence + the action that fixes it, as buttons (keyboard reachable).
+    fn empty_state(&mut self, ui: &mut Ui) {
+        let filtered = !self.filter.search.is_empty() || self.filter.system.is_some();
+        let (title, hint) = if self.games.is_empty() {
+            if self.scan.is_some() {
+                (text::EMPTY_LIBRARY, String::new())
+            } else if self.config.library.roots.is_empty() {
+                (
+                    text::EMPTY_LIBRARY,
+                    text::empty_hint(&self.dirs.root.join("roms")),
+                )
+            } else {
+                (text::EMPTY_NO_FILES, text::EMPTY_NO_FILES_HINT.to_owned())
+            }
+        } else if filtered {
+            (text::NO_MATCH, text::NO_MATCH_HINT.to_owned())
+        } else if self.view == View::Favorites {
+            (text::EMPTY_FAVORITES, text::EMPTY_FAVORITES_HINT.to_owned())
+        } else {
+            (text::EMPTY_RECENT, text::EMPTY_RECENT_HINT.to_owned())
+        };
+        let no_games = self.games.is_empty();
+        let scanning = self.scan.is_some();
+        let (mut clear, mut settings, mut scan, mut cores) = (false, false, false, false);
+        ui.add_space(theme::SP_L * 2.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(theme::FONT_SECTION)
+                    .color(theme::TEXT),
+            );
+            if scanning && no_games {
+                ui.label(RichText::new(text::scan_running(0, 0)).color(theme::TEXT_WEAK));
+            } else {
+                ui.label(RichText::new(hint).color(theme::TEXT_WEAK));
+                if no_games {
+                    ui.label(RichText::new(text::EMPTY_CORES_HINT).color(theme::TEXT_WEAK));
+                }
+            }
+            ui.add_space(theme::SP_M);
+            ui.horizontal(|ui| {
+                // Centre the button row without a fixed width.
+                ui.add_space((ui.available_width() / 2.0 - 160.0).max(0.0));
+                if no_games {
+                    if self.config.library.roots.is_empty() {
+                        settings = ui.button(text::EMPTY_ADD_FOLDER).clicked();
+                    }
+                    let label = if self.config.library.roots.is_empty() {
+                        text::EMPTY_SCAN
+                    } else {
+                        text::EMPTY_RESCAN
+                    };
+                    scan = ui
+                        .add_enabled(!scanning, egui::Button::new(label))
+                        .clicked();
+                    cores = ui.button(text::EMPTY_CORES_BUTTON).clicked();
+                } else if filtered {
+                    clear = ui.button(text::NO_MATCH_CLEAR).clicked();
+                }
+            });
+        });
+        if clear {
+            self.filter.search.clear();
+            self.filter.system = None;
+            self.refilter(None);
+        }
+        if settings {
+            self.set_page(Page::Settings);
+        }
+        if scan {
+            self.start_scan(ui.ctx());
+        }
+        if cores {
+            self.set_page(Page::Cores);
+        }
     }
 
     fn grid(&mut self, ui: &mut Ui, dialog_open: bool) {
         if self.visible.is_empty() {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                if self.games.is_empty() {
-                    ui.heading(text::EMPTY_LIBRARY);
-                    ui.label(text::empty_hint(&self.dirs.root.join("roms")));
-                } else {
-                    ui.heading(text::NO_MATCH);
-                }
-            });
+            self.empty_state(ui);
             return;
         }
         let width = ui.available_width();
@@ -375,6 +458,73 @@ impl LibraryUi {
     }
 }
 
+/// One row of the systems column: name left, count right; focusable, so reachable with Tab.
+fn system_entry(
+    ui: &mut Ui,
+    selected: bool,
+    name: &str,
+    count: usize,
+    color: Option<Color32>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::FONT_BODY + 2.0 * theme::SP_S),
+        Sense::click(),
+    );
+    let painter = ui.painter_at(rect.expand(theme::FOCUS_WIDTH));
+    let radius = CornerRadius::same(theme::RADIUS);
+    if selected {
+        painter.rect_filled(rect, radius, theme::ACCENT_DIM);
+    } else if resp.hovered() {
+        painter.rect_filled(rect, radius, theme::CARD_HOVER);
+    }
+    if resp.has_focus() {
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(theme::FOCUS_WIDTH, theme::ACCENT),
+            StrokeKind::Inside,
+        );
+    }
+    let mid = rect.left_center() + vec2(theme::SP_S + 4.0, 0.0);
+    if let Some(color) = color {
+        theme::badge(&painter, mid, 4.0, color);
+    }
+    let fg = if selected {
+        Color32::WHITE
+    } else {
+        theme::TEXT
+    };
+    let count_galley = painter.layout_no_wrap(
+        count.to_string(),
+        FontId::proportional(theme::FONT_SMALL),
+        theme::TEXT_WEAK,
+    );
+    let count_w = count_galley.size().x;
+    let name_x = rect.left() + theme::SP_S + 14.0;
+    let mut job = egui::text::LayoutJob::simple(
+        name.to_owned(),
+        FontId::proportional(theme::FONT_BODY),
+        fg,
+        (rect.right() - theme::SP_S - count_w - theme::SP_XS - name_x).max(10.0),
+    );
+    job.wrap.max_rows = 1;
+    let name_galley = painter.layout_job(job);
+    painter.galley(
+        pos2(name_x, mid.y - name_galley.size().y / 2.0),
+        name_galley,
+        fg,
+    );
+    painter.galley(
+        pos2(
+            rect.right() - theme::SP_S - count_w,
+            mid.y - count_galley.size().y / 2.0,
+        ),
+        count_galley,
+        theme::TEXT_WEAK,
+    );
+    resp
+}
+
 fn paint_card(
     ui: &Ui,
     rect: Rect,
@@ -383,12 +533,13 @@ fn paint_card(
     selected: bool,
     focused: bool,
 ) {
-    let painter = ui.painter_at(rect.expand(4.0));
+    let painter = ui.painter_at(rect.expand(theme::FOCUS_WIDTH + 2.0));
     let cover = Rect::from_min_size(rect.min, vec2(rect.width(), COVER_H));
-    let radius = CornerRadius::same(6);
+    let radius = CornerRadius::same(theme::RADIUS);
+    let hovered = ui.rect_contains_pointer(rect);
+    painter.rect_filled(rect, radius, theme::card_fill(selected || hovered));
     match texture {
         Some(t) => {
-            painter.rect_filled(cover, radius, Color32::from_gray(24));
             painter.image(
                 t.id(),
                 fit_rect(cover, t.size_vec2()),
@@ -397,17 +548,30 @@ fn paint_card(
             );
         }
         None => {
-            painter.rect_filled(cover, radius, system_color(&game.system));
+            let galley = painter.layout_no_wrap(
+                theme::initials(&game.title),
+                FontId::proportional(36.0),
+                theme::TEXT_WEAK,
+            );
+            painter.galley(
+                cover.center() - galley.size() / 2.0,
+                galley,
+                theme::TEXT_WEAK,
+            );
             let system =
                 emu_library::system(&game.system).map_or(game.system.as_str(), |s| &s.name);
-            let galley = painter.layout(
+            let badge = pos2(cover.left() + theme::SP_M, cover.bottom() - theme::SP_M);
+            theme::badge(&painter, badge, 5.0, theme::system_color(&game.system));
+            let label = painter.layout_no_wrap(
                 system.to_owned(),
-                FontId::proportional(15.0),
-                Color32::from_white_alpha(200),
-                cover.width() - 16.0,
+                FontId::proportional(theme::FONT_SMALL),
+                theme::TEXT_WEAK,
             );
-            let pos = cover.center() - galley.size() / 2.0;
-            painter.galley(pos, galley, Color32::WHITE);
+            painter.galley(
+                pos2(badge.x + 10.0, badge.y - label.size().y / 2.0),
+                label,
+                theme::TEXT_WEAK,
+            );
         }
     }
     if game.favorite {
@@ -416,30 +580,36 @@ fn paint_card(
             Align2::RIGHT_TOP,
             text::FAVORITE_MARK,
             FontId::proportional(18.0),
-            Color32::from_rgb(255, 210, 80),
+            theme::WARN,
         );
     }
     let mut job = egui::text::LayoutJob::simple(
         text::game_title(&game.title),
         FontId::proportional(13.0),
-        ui.visuals().text_color(),
-        rect.width(),
+        theme::TEXT,
+        rect.width() - 2.0 * theme::SP_XS,
     );
     job.wrap.max_rows = 2;
     job.halign = egui::Align::Center;
     let galley = painter.layout_job(job);
     painter.galley(
-        pos2(rect.center().x, cover.bottom() + 4.0),
+        pos2(rect.center().x, cover.bottom() + theme::SP_XS),
         galley,
-        Color32::WHITE,
+        theme::TEXT,
     );
     if selected {
-        let stroke = if focused {
-            Stroke::new(3.0, FOCUS)
+        // Same accent whether or not the grid has focus; an unfocused grid gets the dimmer shade.
+        let color = if focused {
+            theme::ACCENT
         } else {
-            Stroke::new(2.0, Color32::from_gray(150))
+            theme::ACCENT_DIM
         };
-        painter.rect_stroke(rect.expand(2.0), radius, stroke, StrokeKind::Outside);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(theme::FOCUS_WIDTH, color),
+            StrokeKind::Outside,
+        );
     }
 }
 

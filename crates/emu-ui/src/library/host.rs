@@ -63,10 +63,13 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         .build()
         .map_err(|e| UiError::EventLoop(e.to_string()))?;
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
+    let first_run = super::wizard::should_start(&options.config);
     let mut library = LibraryUi::open(options.dirs, options.config, options.screen.is_some());
     match options.screen {
         Some(LibraryScreen::Settings) => library.set_page(Page::Settings),
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
+        Some(LibraryScreen::Wizard) => library.open_wizard(),
+        None if options.wizard || first_run => library.open_wizard(),
         _ => {}
     }
     let mut host = Host {
@@ -175,7 +178,7 @@ impl Host {
             Err(e) => {
                 tracing::warn!("lancement impossible : {e}");
                 // The core's own explanation when it gave one (design v6.0 §2.1), else the error itself.
-                let msg = text::game_failed(&request.title, &crate::ui::text::launch_error(&e));
+                let msg = text::launch_failed(&request.title, &crate::ui::text::launch_error(&e));
                 self.library.game_over(None, Some(msg));
                 self.request_redraw();
             }
@@ -509,16 +512,16 @@ pub(super) fn sync_pad_learning<S: GamepadSource>(
         redraw = true;
     }
     let infos = pad.pads();
-    library.set_learnable_pads(
-        infos
-            .iter()
-            .map(|p| LearnPad {
-                id: p.id,
-                guid: p.guid.clone(),
-                name: p.name.clone(),
-            })
-            .collect(),
-    );
+    let learnable: Vec<LearnPad> = infos
+        .iter()
+        .map(|p| LearnPad {
+            id: p.id,
+            guid: p.guid.clone(),
+            name: p.name.clone(),
+        })
+        .collect();
+    library.set_wizard_pads(&learnable);
+    library.set_learnable_pads(learnable);
     if infos != *last_infos {
         *last_infos = infos;
         redraw = true;

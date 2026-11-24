@@ -91,7 +91,33 @@ pub(super) fn secret_label(s: &Secret) -> &'static str {
     }
 }
 
+/// Manual anchors targeted by the « ? » buttons (checked against the manual by a test).
+pub(super) mod help_anchor {
+    pub const ROMS: &str = "le-dossier-des-roms";
+    pub const SETTINGS: &str = "reglages";
+    pub const IN_GAME: &str = "en-jeu";
+    pub const PADS: &str = "manettes";
+    #[cfg(test)]
+    pub const ALL: [&str; 4] = [ROMS, SETTINGS, IN_GAME, PADS];
+}
+
 impl LibraryUi {
+    /// Section title followed by a small « ? » button that opens the matching manual section.
+    pub(super) fn section_title(&mut self, ui: &mut Ui, title: &str, anchor: &str) {
+        let mut help = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(title).strong());
+            help = ui
+                .add(Button::new(RichText::new(text::HELP_MARK).small()).small())
+                .on_hover_text(text::HELP_HINT)
+                .clicked();
+        });
+        if help {
+            self.leave_settings();
+            self.open_help(Some(anchor));
+        }
+    }
+
     pub(super) fn secret_mut(&mut self, field: SecretField) -> &mut Secret {
         let creds = &mut self.config.credentials;
         match field {
@@ -231,7 +257,7 @@ impl LibraryUi {
     }
 
     fn roots_section(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.label(RichText::new(text::ROOTS).strong());
+        self.section_title(ui, text::ROOTS, help_anchor::ROMS);
         let fixed = self.dirs.root.join("roms");
         ui.horizontal(|ui| {
             ui.label(RichText::new(fixed.display().to_string()).monospace());
@@ -302,7 +328,7 @@ impl LibraryUi {
     }
 
     fn dat_section(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.label(RichText::new(text::DAT_TITLE).strong());
+        self.section_title(ui, text::DAT_TITLE, help_anchor::SETTINGS);
         if !self.settings.dat_rows.is_empty() {
             egui::Grid::new("dat-info").num_columns(2).show(ui, |ui| {
                 for (name, info) in &self.settings.dat_rows {
@@ -375,7 +401,7 @@ impl LibraryUi {
     }
 
     fn covers_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(text::COVERS_TITLE).strong());
+        self.section_title(ui, text::COVERS_TITLE, help_anchor::SETTINGS);
         if ui
             .checkbox(&mut self.config.covers.download, text::COVERS_DOWNLOAD)
             .changed()
@@ -425,18 +451,21 @@ impl LibraryUi {
 
     /// Computers (design v5.0 §4): initial input mode of a game without a remembered one, automatic fast loading.
     fn app_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(text::APP_TITLE).strong());
+        self.section_title(ui, text::APP_TITLE, help_anchor::SETTINGS);
         if ui
             .checkbox(&mut self.config.app.show_terminal, text::SHOW_TERMINAL)
             .changed()
         {
             self.settings.dirty = true;
         }
+        if ui.button(super::wizard::RELAUNCH).clicked() {
+            self.open_wizard();
+        }
     }
 
     fn computers_section(&mut self, ui: &mut Ui) {
         use crate::config_computer::KeyboardModeSetting as Mode;
-        ui.label(RichText::new(text::COMPUTERS_TITLE).strong());
+        self.section_title(ui, text::COMPUTERS_TITLE, help_anchor::IN_GAME);
         ui.horizontal_wrapped(|ui| {
             ui.label(text::DEFAULT_INPUT_MODE);
             for (mode, label) in [
@@ -465,7 +494,7 @@ impl LibraryUi {
     }
 
     fn credentials_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(text::CREDENTIALS_TITLE).strong());
+        self.section_title(ui, text::CREDENTIALS_TITLE, help_anchor::SETTINGS);
         weak(ui, text::CREDENTIALS_NOTE);
         let mut dirty = false;
         {
@@ -618,4 +647,19 @@ fn journal_section(ui: &mut Ui) {
                     }
                 });
         });
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help_anchor;
+
+    #[test]
+    fn help_anchors_exist_in_the_manual() {
+        for a in help_anchor::ALL {
+            assert!(
+                crate::help::manual().find(a).is_some(),
+                "ancre absente : {a}"
+            );
+        }
+    }
 }

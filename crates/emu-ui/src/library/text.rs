@@ -65,10 +65,30 @@ pub const HOME_HINT: &str = "Flèches : choisir un jeu · Entrée : jouer · F :
                              Tab : barre du haut · Échap : effacer la recherche";
 
 pub const EMPTY_LIBRARY: &str = "Aucun jeu dans la bibliothèque.";
+pub const EMPTY_ADD_FOLDER: &str = "Ouvrir les réglages des dossiers";
+pub const EMPTY_SCAN: &str = "Scanner maintenant";
+pub const EMPTY_NO_FILES: &str = "Aucun jeu trouvé dans les dossiers scannés.";
+pub const EMPTY_NO_FILES_HINT: &str = "Formats reconnus : .zip, .7z, .sfc, .smc, .nes, .gb, .gbc, .gba, .md, \
+                                       .sms, .gg, .n64, .iso, .cue, .chd, .adf, .d64… Vérifiez le dossier, \
+                                       puis rescannez.";
+pub const EMPTY_RESCAN: &str = "Rescanner";
 pub const NO_MATCH: &str = "Aucun jeu ne correspond aux filtres.";
+pub const NO_MATCH_HINT: &str = "Essayez d'autres mots ou retirez le filtre.";
+pub const NO_MATCH_CLEAR: &str = "Effacer le filtre";
+pub const EMPTY_FAVORITES: &str = "Aucun favori pour l'instant.";
+pub const EMPTY_FAVORITES_HINT: &str =
+    "Sélectionnez un jeu dans « Tous » et appuyez sur F pour l'ajouter.";
+pub const EMPTY_RECENT: &str = "Aucun jeu lancé récemment.";
+pub const EMPTY_RECENT_HINT: &str = "Lancez un jeu : il apparaîtra ici.";
+pub const EMPTY_CORES_HINT: &str =
+    "Il faut aussi un core par système : installez-les depuis l'écran Cores.";
+pub const EMPTY_CORES_BUTTON: &str = "Ouvrir l'écran Cores";
+pub const LAUNCH_FIX: &str =
+    "Vérifiez que le fichier existe et que le core est installé (écran Cores), puis réessayez.";
 pub const NO_DAT: &str = "Aucune base de jeux (DAT) importée : les jeux portent le nom de leur fichier. \
                           Réglages › Mettre à jour la base (DAT).";
-pub const DB_UNAVAILABLE: &str = "Bibliothèque indisponible : les jeux ne peuvent pas être listés.";
+pub const DB_UNAVAILABLE: &str = "Bibliothèque indisponible : les jeux ne peuvent pas être listés. \
+                                  Relancez l'application ; si cela persiste, consultez le Journal (Réglages).";
 pub const COVERS_DISABLED: &str =
     "Jaquettes : téléchargement désactivé (seules les jaquettes déjà en cache s'affichent).";
 pub const COVERS_ENABLE: &str = "Activer le téléchargement des jaquettes";
@@ -145,10 +165,6 @@ pub const CORES_LINK: &str = "Gestion des cores…";
 pub const SETTINGS_HINT: &str =
     "Tab / flèches : naviguer · Entrée ou Espace : valider · Échap : retour";
 
-pub fn system_count(name: &str, n: usize) -> String {
-    format!("{name} ({n})")
-}
-
 pub fn source_name(kind: &str) -> &str {
     match kind {
         "libretro" => "libretro-thumbnails",
@@ -194,7 +210,9 @@ pub fn scan_done(r: &ScanReport) -> String {
 }
 
 pub fn scan_failed(e: &str) -> String {
-    format!("Scan impossible : {e}")
+    format!(
+        "Scan impossible : {e}. Vérifiez que le dossier existe et est lisible (Réglages › Dossiers de ROMs), puis rescannez."
+    )
 }
 
 pub fn recovered(quarantined: &Path) -> String {
@@ -216,7 +234,9 @@ pub fn dat_imported(system: &str, n: u64) -> String {
 
 pub fn dat_failed(e: &str) -> String {
     let e = clean(e);
-    format!("Import du DAT impossible : {e}")
+    format!(
+        "Import du DAT impossible : {e}. Vérifiez le fichier ou votre connexion, puis réessayez (Réglages › Bases d'identification)."
+    )
 }
 
 pub fn dat_unknown_system(name: &str) -> String {
@@ -258,6 +278,11 @@ pub fn tampered(core: &str) -> String {
 
 pub fn game_failed(game: &str, e: &str) -> String {
     format!("« {} » : {}", clean(game), clean(e))
+}
+
+/// A launch that failed for a reason the user can act on: what happened + what to do.
+pub fn launch_failed(game: &str, e: &str) -> String {
+    format!("{} {LAUNCH_FIX}", game_failed(game, e))
 }
 
 pub fn root_duplicate(path: &str) -> String {
@@ -709,3 +734,41 @@ pub const SHOW_TERMINAL: &str = "Afficher le terminal (après redémarrage)";
 pub const JOURNAL_TITLE: &str = "Journal";
 pub const JOURNAL_EMPTY: &str = "Aucun message pour l'instant.";
 pub const JOURNAL_COPY: &str = "Copier";
+
+pub const HELP_MARK: &str = "?";
+pub const HELP_HINT: &str = "Ouvrir l'aide de cette section";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_states_say_what_to_do() {
+        for hint in [
+            EMPTY_NO_FILES_HINT,
+            NO_MATCH_HINT,
+            EMPTY_FAVORITES_HINT,
+            EMPTY_RECENT_HINT,
+            EMPTY_CORES_HINT,
+        ] {
+            assert!(!hint.is_empty());
+        }
+        assert!(empty_hint(Path::new("/x/roms")).contains("scan"));
+        assert!(EMPTY_FAVORITES_HINT.contains('F'));
+        assert!(EMPTY_NO_FILES_HINT.contains("rescann"));
+        assert!(NO_MATCH_CLEAR.contains("filtre"));
+    }
+
+    #[test]
+    fn error_messages_carry_an_action() {
+        let acts = ["Vérifiez", "Relancez", "réessayez", "rescannez"];
+        for msg in [
+            scan_failed("x"),
+            dat_failed("x"),
+            launch_failed("Jeu", "x"),
+            DB_UNAVAILABLE.to_owned(),
+        ] {
+            assert!(acts.iter().any(|a| msg.contains(a)), "{msg}");
+        }
+    }
+}

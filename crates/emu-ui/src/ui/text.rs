@@ -14,6 +14,7 @@ pub const SLOT: &str = "Emplacement";
 pub const SAVE_STATE: &str = "Sauvegarder l'état";
 pub const LOAD_STATE: &str = "Charger l'état";
 pub const SLOT_EMPTY: &str = "vide";
+pub const HELP: &str = "Aide";
 pub const KEYS: &str = "Configuration des touches";
 pub const CORE_OPTIONS: &str = "Options du core";
 pub const QUIT: &str = "Quitter";

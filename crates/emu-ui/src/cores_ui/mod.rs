@@ -137,6 +137,19 @@ enum RowAction {
     CancelInstall(CoreId),
 }
 
+/// See [`CoresUi::install_state`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstallState {
+    /// Nothing running (installed or not: ask the manager).
+    Idle,
+    /// Waiting for the catalog.
+    Queued,
+    /// Downloading: `(done, total)` bytes once known.
+    Running(Option<(u64, Option<u64>)>),
+    /// The last attempt failed; message ready to show.
+    Failed(String),
+}
+
 pub(crate) struct CoresUi {
     manager: Option<Arc<CoreManager>>,
     init_error: Option<String>,
@@ -263,6 +276,25 @@ impl CoresUi {
 
     pub(crate) fn manager(&self) -> Option<&Arc<CoreManager>> {
         self.manager.as_ref()
+    }
+
+    /// Where an install of `id` stands, for screens other than this one (first-run wizard).
+    pub(crate) fn install_state(&self, id: &CoreId) -> InstallState {
+        if let Some(run) = self.installs.get(id) {
+            return InstallState::Running(run.progress.map(|p| (p.done, p.total)));
+        }
+        if self.queued.contains(id) {
+            return InstallState::Queued;
+        }
+        match self.errors.get(id) {
+            Some(e) => InstallState::Failed(e.clone()),
+            None => InstallState::Idle,
+        }
+    }
+
+    /// Last failed catalog refresh (no network, server down): queued installs were dropped.
+    pub(crate) fn refresh_error(&self) -> Option<&str> {
+        self.refresh_error.as_deref()
     }
 
     /// Installs `id` now, or as soon as the catalog is known (checked first when there is none).

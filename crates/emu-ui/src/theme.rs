@@ -7,12 +7,9 @@ use egui::{Color32, Context, CornerRadius, FontId, Stroke, TextStyle};
 #[allow(dead_code)]
 pub(crate) const BG: Color32 = Color32::from_rgb(0x14, 0x17, 0x1d);
 pub(crate) const PANEL: Color32 = Color32::from_rgb(0x1b, 0x1f, 0x27);
-#[allow(dead_code)]
 pub(crate) const CARD: Color32 = Color32::from_rgb(0x23, 0x28, 0x34);
-#[allow(dead_code)]
 pub(crate) const CARD_HOVER: Color32 = Color32::from_rgb(0x2b, 0x31, 0x40);
 pub(crate) const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe9, 0xef);
-#[allow(dead_code)]
 pub(crate) const TEXT_WEAK: Color32 = Color32::from_rgb(0x9a, 0xa2, 0xb3);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x4a, 0xa3, 0xff);
 pub(crate) const ACCENT_DIM: Color32 = Color32::from_rgb(0x28, 0x50, 0x7f);
@@ -30,11 +27,8 @@ pub(crate) const FONT_TITLE: f32 = 22.0;
 #[allow(dead_code)]
 pub(crate) const FONT_SECTION: f32 = 18.0;
 
-#[allow(dead_code)]
 pub(crate) const SP_XS: f32 = 4.0;
-#[allow(dead_code)]
 pub(crate) const SP_S: f32 = 8.0;
-#[allow(dead_code)]
 pub(crate) const SP_M: f32 = 12.0;
 #[allow(dead_code)]
 pub(crate) const SP_L: f32 = 20.0;
@@ -94,6 +88,73 @@ pub(crate) fn apply(ctx: &Context) {
     });
 }
 
+/// Fill of a game card: `CARD`, brighter when hovered or selected.
+pub(crate) fn card_fill(highlight: bool) -> Color32 {
+    if highlight { CARD_HOVER } else { CARD }
+}
+
+/// Stable, readable colour per system (hash -> hue), used for the placeholder badge.
+pub(crate) fn system_color(id: &str) -> Color32 {
+    let h = id
+        .bytes()
+        .fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b)));
+    #[allow(clippy::cast_precision_loss)] // < 360
+    let hue = (h % 360) as f32 / 360.0;
+    let (r, g, b) = hsv(hue, 0.55, 0.85);
+    Color32::from_rgb(r, g, b)
+}
+
+fn hsv(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let f = |n: f32| {
+        let k = (n + h * 6.0) % 6.0;
+        v - v * s * k.min(4.0 - k).clamp(0.0, 1.0)
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=255
+    let q = |x: f32| (x * 255.0).round() as u8;
+    (q(f(5.0)), q(f(3.0)), q(f(1.0)))
+}
+
+/// Round badge (system colour) at `center`.
+pub(crate) fn badge(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: Color32) {
+    painter.circle_filled(center, radius, color);
+}
+
+const ARTICLES: &[&str] = &[
+    "the", "a", "an", "le", "la", "les", "l", "un", "une", "der", "die", "das", "el", "los", "las",
+    "il",
+];
+
+/// Up to two letters for a cover placeholder: skips `(...)`/`[...]` tags and leading articles.
+pub(crate) fn initials(title: &str) -> String {
+    let mut plain = String::new();
+    let mut depth = 0u32;
+    for c in title.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let mut words: Vec<&str> = plain
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() > 1 && ARTICLES.contains(&words[0].to_lowercase().as_str()) {
+        words.remove(0);
+    }
+    let out: String = match words.as_slice() {
+        [] => String::new(),
+        [one] => one.chars().take(2).collect(),
+        [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
+    };
+    if out.is_empty() {
+        "?".to_owned()
+    } else {
+        out.to_uppercase()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +192,25 @@ mod tests {
     #[test]
     fn apply_does_not_panic() {
         apply(&Context::default());
+    }
+
+    #[test]
+    fn initials_cases() {
+        assert_eq!(initials("The Legend of Zelda (USA)"), "LO");
+        assert_eq!(initials("Super Mario World"), "SM");
+        assert_eq!(initials("Tetris"), "TE");
+        assert_eq!(initials("L'Aigle d'Or"), "AD");
+        assert_eq!(initials("1942 (Europe) [!]"), "19");
+        assert_eq!(initials("Out Run 2"), "OR");
+        assert_eq!(initials(""), "?");
+        assert_eq!(initials("(Demo)"), "?");
+        assert_eq!(initials("The"), "TH");
+    }
+
+    #[test]
+    fn system_color_is_stable_and_varied() {
+        assert_eq!(system_color("snes"), system_color("snes"));
+        assert_ne!(system_color("snes"), system_color("megadrive"));
+        assert!(contrast(system_color("snes"), CARD) >= 3.0);
     }
 }

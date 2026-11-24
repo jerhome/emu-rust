@@ -154,6 +154,9 @@ pub(super) fn show(
         if button(ui, text::CORE_OPTIONS, true, &mut false) {
             actions.push(UiAction::Open(Screen::CoreOptions));
         }
+        if button(ui, text::HELP, true, &mut false) {
+            actions.push(UiAction::Open(Screen::Help));
+        }
         ui.separator();
         let quit = if data.hosted {
             text::BACK_TO_LIBRARY

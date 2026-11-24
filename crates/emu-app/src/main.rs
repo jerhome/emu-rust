@@ -205,6 +205,7 @@ fn main() -> ExitCode {
                     gamepad: l.gamepad,
                     screen: l.screen,
                     dump_window: l.dump_window,
+                    wizard: l.wizard,
                 }))
             }
             Err(e) => fail(&e),

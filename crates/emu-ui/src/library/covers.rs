@@ -35,7 +35,7 @@ use crate::config_library::{CoversConfig, CredentialsConfig};
 /// Longest side of a decoded cover (cards are 168 × 210 logical points; room for HiDPI).
 pub(crate) const COVER_SIDE: u32 = 320;
 /// Textures kept on the GPU (~400 KiB each at most).
-pub(crate) const MAX_TEXTURES: usize = 256;
+pub(crate) const MAX_TEXTURES: usize = 128;
 /// Total budget for one cover (whole chain, `CoverChain::fetch_with_deadline`).
 pub(crate) const COVER_BUDGET: Duration = Duration::from_secs(30);
 /// Per HTTP request: a request in flight is not interrupted, so the worst case for one cover is
@@ -635,6 +635,9 @@ pub(crate) struct Covers {
     tx: Sender<Command>,
     rx: Receiver<Reply>,
     slots: HashMap<GameId, Slot>,
+    /// Game file each slot was filled for: SQLite reuses the ids of removed games after a rescan, so a slot whose
+    /// owner changed must be dropped (user test 2026-11-24: Fahrenheit's cover shown on Night Trap).
+    owners: HashMap<GameId, std::path::PathBuf>,
     frame: u64,
     textures: usize,
     sent_visible: Vec<GameId>,
@@ -708,6 +711,7 @@ impl Covers {
                 tx: cmd_tx,
                 rx: reply_rx,
                 slots: HashMap::new(),
+                owners: HashMap::new(),
                 frame: 0,
                 textures: 0,
                 sent_visible: Vec::new(),
@@ -811,6 +815,19 @@ impl CoverProvider for Covers {
 
     fn texture(&mut self, ctx: &egui::Context, game: &Game) -> Option<TextureHandle> {
         let frame = self.frame;
+        match self.owners.get(&game.id) {
+            Some(owner) if *owner == game.path => {}
+            Some(_) => {
+                if let Some(Slot::Texture { .. }) = self.slots.remove(&game.id) {
+                    self.textures -= 1;
+                }
+                self.owners.insert(game.id, game.path.clone());
+                return None; // requested again by the next `visible`
+            }
+            None => {
+                self.owners.insert(game.id, game.path.clone());
+            }
+        }
         let slot = self.slots.get_mut(&game.id)?;
         match slot {
             Slot::Texture { handle, used } => {

@@ -12,6 +12,7 @@ mod host;
 mod pad_settings;
 mod settings;
 pub(crate) mod text;
+mod wizard;
 mod worker;
 
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ pub(crate) enum Page {
     Home,
     Settings,
     Cores,
+    Help,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -222,6 +224,9 @@ pub(crate) struct LibraryUi {
     /// `--screen` capture: no scan, no network, nothing written.
     capture: bool,
     page: Page,
+    /// Page to return to when the manual closes.
+    help_back: Page,
+    help: crate::help::HelpState,
     db: Option<Library>,
     /// Persistent banner: base recovered or unavailable.
     db_banner: Option<String>,
@@ -276,6 +281,8 @@ pub(crate) struct LibraryUi {
     dos_cache: dos::DosCache,
     /// « Fichier d'origine » banner of the selected game (`firmware_banner`).
     advice: Option<(GameId, Option<firmware_banner::Banner>)>,
+    /// First-run wizard, drawn instead of the home grid while `Some`.
+    wizard: Option<wizard::Wizard>,
 }
 
 fn now_unix() -> i64 {
@@ -331,6 +338,8 @@ impl LibraryUi {
             config,
             capture,
             page: Page::Home,
+            help_back: Page::Home,
+            help: crate::help::HelpState::default(),
             db,
             db_banner,
             games: Vec::new(),
@@ -371,6 +380,7 @@ impl LibraryUi {
             programs: None,
             dos_cache: dos::DosCache::default(),
             advice: None,
+            wizard: None,
         };
         ui.reload_games();
         ui
@@ -393,6 +403,36 @@ impl LibraryUi {
         }
         if page == Page::Home {
             self.focus = Some(Focus::Grid);
+        }
+    }
+
+    /// Opens the manual at the section named by `section` (anchor or number; `None`: start).
+    pub(crate) fn open_help(&mut self, section: Option<&str>) {
+        if self.page != Page::Help {
+            self.help_back = self.page;
+        }
+        self.help.open(section);
+        self.set_page(Page::Help);
+    }
+
+    fn close_help(&mut self) {
+        let back = if self.help_back == Page::Help {
+            Page::Home
+        } else {
+            self.help_back
+        };
+        self.set_page(back);
+    }
+
+    /// F1, `?` and Ctrl+H, unless a field or a dialog has the keyboard.
+    fn help_shortcuts(&mut self, ui: &Ui) {
+        let busy = self.dialog.is_some()
+            || self.cores.import.is_active()
+            || self.snapshot_busy()
+            || self.programs_open()
+            || ui.ctx().text_edit_focused();
+        if self.page != Page::Help && !busy && crate::help::open_requested(ui) {
+            self.open_help(None);
         }
     }
 
@@ -1127,7 +1167,14 @@ impl LibraryUi {
         self.relaunch_after_install();
         self.bios_completed();
         self.poll_folder();
+        self.help_shortcuts(ui);
         match self.page {
+            Page::Help => {
+                if crate::help::show(ui, crate::help::manual(), &mut self.help) {
+                    self.close_help();
+                }
+            }
+            Page::Home if self.wizard.is_some() => self.wizard_page(ui),
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
             Page::Cores => {
@@ -1221,7 +1268,7 @@ impl LibraryUi {
                         cores_ui::release(m);
                     }
                     let msg = done.error.unwrap_or_default();
-                    self.open_dialog(Dialog::Message(text::game_failed(&request.title, &msg)));
+                    self.open_dialog(Dialog::Message(text::launch_failed(&request.title, &msg)));
                 }
             }
         }

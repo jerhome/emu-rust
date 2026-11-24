@@ -16,6 +16,7 @@ mod file_picker;
 mod game_identity;
 mod game_options;
 mod gamepad;
+mod help;
 mod hotkeys;
 mod keyboard;
 mod launch_firmware;
@@ -38,7 +39,7 @@ pub use crate::config::{
     AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
-pub use crate::config_app::AppConfig;
+pub use crate::config_app::{AppConfig, UiConfig};
 pub use crate::config_computer::{
     ComputerConfig, KeyboardModeChoice, KeyboardModeSetting, emutos_variant_or_system,
     variant_for_locale,
@@ -87,6 +88,8 @@ pub enum Screen {
     Disks,
     /// Keyboard and mouse settings of a computer game.
     Computer,
+    /// Built-in manual, opened from the menu.
+    Help,
     /// Not a menu screen: the virtual keyboard over the running game (`--screen vkbd` captures).
     VirtualKeyboard,
 }
@@ -173,6 +176,8 @@ pub enum LibraryScreen {
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,
+    /// First-run wizard, first step (`--screen wizard`).
+    Wizard,
 }
 
 /// Library mode (no `--core/--rom`, e.g. a double-click): the window opens on the game library; a launched game
@@ -188,6 +193,8 @@ pub struct LibraryOptions {
     /// Capture mode: open this screen, render a few egui frames, write `dump_window`, quit. No scan, no network.
     pub screen: Option<LibraryScreen>,
     pub dump_window: Option<PathBuf>,
+    /// `--wizard`: open the first-run wizard even when it was done (design v7.3 §4).
+    pub wizard: bool,
 }
 
 /// Runs the library until the window is closed. Must be called on the main thread.

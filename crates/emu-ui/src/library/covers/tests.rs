@@ -294,6 +294,7 @@ fn ui_side() -> (Covers, Sender<Reply>, Receiver<Command>) {
         tx: cmd_tx,
         rx: reply_rx,
         slots: HashMap::new(),
+        owners: HashMap::new(),
         frame: 0,
         textures: 0,
         sent_visible: Vec::new(),

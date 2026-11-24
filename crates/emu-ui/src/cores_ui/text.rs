@@ -13,7 +13,7 @@ pub const NO_MANAGER: &str = "Gestionnaire de cores indisponible";
 pub const OFFICIAL_SOURCE: &str =
     "Source : buildbot officiel de libretro (https://buildbot.libretro.com)";
 pub const NEVER_CHECKED: &str = "Catalogue jamais vérifié : aucune mise à jour connue.";
-pub const NOTHING_TO_SHOW: &str = "Aucun core à afficher.";
+pub const NOTHING_TO_SHOW: &str = "Aucun core à afficher. Effacez la recherche, ou appuyez sur Actualiser pour recharger le catalogue.";
 pub const NO_CATALOG_HINT: &str = "Catalogue vide : « Vérifier les mises à jour » le télécharge.";
 
 pub const SCOPE_RELEASE: &str = "Systèmes pris en charge";

@@ -14,8 +14,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20                [--launch <commande|programme>] [--no-auto-fast-load]\n\
                          \x20                [--pad-device digital|dualshock]\n\
                          \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
-                         \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad]\n\
-                         \x20                [--screen library|library-settings|cores|library-launch]\n\
+                         \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad] [--wizard]\n\
+                         \x20                [--screen library|library-settings|cores|library-launch|wizard]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -41,6 +41,7 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          chargement accéléré demandé par le core.\n\
                          PlayStation : --pad-device choisit le pad (numérique ou DualShock analogique) pour cette\n\
                          session, sans le mémoriser.\n\
+                         --wizard : rouvre l'assistant de premier lancement.\n\
                          --no-gamepad : manettes ignorées (clavier seul). Manette PS4 : PS + Options = menu,\n\
                          PS + R1 / L1 = sauver / charger l'état, PS + R2 maintenu = avance rapide ;\n\
                          ordinateurs : PS + R3 = clavier virtuel, PS + L3 = disquette suivante.\n\
@@ -109,6 +110,8 @@ pub struct LibraryCli {
     pub gamepad: bool,
     pub screen: Option<LibraryScreen>,
     pub dump_window: Option<PathBuf>,
+    /// `--wizard`: open the first-run wizard even when it was done.
+    pub wizard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +189,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     let mut launch: Option<String> = None;
     let mut auto_fast_load = true;
     let mut pad_device: Option<String> = None;
+    let mut wizard = false;
     let mut actions: Vec<CoresAction> = Vec::new();
 
     let mut it = args.into_iter().peekable();
@@ -260,6 +264,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             "--no-audio" => audio = false,
             "--no-gamepad" => gamepad = false,
             "--no-auto-fast-load" => auto_fast_load = false,
+            "--wizard" => wizard = true,
             "--pad-device" => {
                 let t = text(&mut it)?;
                 if t != "digital" && t != "dualshock" {
@@ -286,10 +291,11 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "library-settings" => ScreenArg::Library(LibraryScreen::Settings),
                     "cores" => ScreenArg::Library(LibraryScreen::Cores),
                     "library-launch" => ScreenArg::Library(LibraryScreen::Launch),
+                    "wizard" => ScreenArg::Library(LibraryScreen::Wizard),
                     _ => {
                         return Err(
                             "--screen attend menu, keys, options, disks, computer, vkbd, library, \
-                                    library-settings, library-launch ou cores"
+                                    library-settings, library-launch, wizard ou cores"
                                 .into(),
                         );
                     }
@@ -390,6 +396,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             (launch.is_some(), "--launch"),
             (!auto_fast_load, "--no-auto-fast-load"),
             (pad_device.is_some(), "--pad-device"),
+            (wizard, "--wizard"),
         ]
         .into_iter()
         .filter_map(|(set, name)| set.then_some(name))
@@ -431,6 +438,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
             gamepad,
             screen,
             dump_window,
+            wizard,
         })));
     }
 
@@ -447,6 +455,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
     };
     if launch.is_some() && rom.is_none() {
         return Err("--launch demande --rom".into());
+    }
+    if wizard {
+        return Err("--wizard s'utilise sans --core ni --rom".into());
     }
     Ok(Command::Run(Box::new(Cli {
         core: core.ok_or("--core est obligatoire")?,
@@ -759,6 +770,17 @@ mod tests {
         };
         assert_eq!(l.data_dir, Some(PathBuf::from("d")));
         assert_eq!(l.screen, None);
+        assert!(!l.wizard);
+        let Command::Library(l) = p(&["--wizard"]).unwrap() else {
+            panic!()
+        };
+        assert!(l.wizard);
+        let Command::Library(l) = p(&["--screen", "wizard"]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(l.screen, Some(LibraryScreen::Wizard));
+        assert!(p(&["--core", "c", "--rom", "r", "--wizard"]).is_err());
+        assert!(p(&["--list-cores", "--wizard"]).is_err());
         let Command::Library(l) = p(&["--screen", "cores"]).unwrap() else {
             panic!()
         };

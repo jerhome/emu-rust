@@ -411,6 +411,7 @@ pub struct Overlay {
     /// Launch text being edited on the options screen (design v5.0 §4).
     launch_edit: Option<String>,
     pub osd: Osd,
+    help: crate::help::HelpState,
     /// Set by the app each frame: the virtual keyboard covers the bottom, the toasts move to the top.
     pub vkbd_open: bool,
     pub show_stats: bool,
@@ -434,6 +435,7 @@ impl Default for Overlay {
             confirm_load: None,
             launch_edit: None,
             osd: Osd::default(),
+            help: crate::help::HelpState::default(),
             vkbd_open: false,
             show_stats: false,
         }
@@ -450,6 +452,10 @@ impl Overlay {
     }
 
     pub fn open(&mut self, screen: Screen) {
+        if screen == Screen::Help && self.screen != Some(Screen::Help) {
+            // In-game: the useful sections first (keys, then saves).
+            self.help.open(Some("clavier"));
+        }
         self.screen = Some(screen);
         self.focus_first = true;
         self.capture = None;
@@ -526,7 +532,13 @@ impl Overlay {
                 self.clean = None;
                 self.focus_first = true;
             }
-            Some(Screen::Keys | Screen::CoreOptions | Screen::Disks | Screen::Computer) => {
+            Some(
+                Screen::Keys
+                | Screen::CoreOptions
+                | Screen::Disks
+                | Screen::Computer
+                | Screen::Help,
+            ) => {
                 self.open(Screen::Menu);
             }
             Some(Screen::Menu | Screen::VirtualKeyboard) | None => self.close(),
@@ -570,6 +582,21 @@ pub fn show(ctx: &Context, overlay: &mut Overlay, data: &UiData<'_>) -> Vec<UiAc
             Screen::CoreOptions => options::show(ctx, overlay, data, &mut actions),
             Screen::Disks => disks::show(ctx, overlay, data, &mut actions),
             Screen::Computer => computer::show(ctx, overlay, data, &mut actions),
+            Screen::Help => {
+                let rect = ctx.content_rect();
+                let closed = egui::Area::new(Id::unique("in-game-help"))
+                    .order(Order::Foreground)
+                    .fixed_pos(rect.min)
+                    .show(ctx, |ui| {
+                        ui.set_min_size(rect.size());
+                        ui.set_max_size(rect.size());
+                        crate::help::show(ui, crate::help::manual(), &mut overlay.help)
+                    })
+                    .inner;
+                if closed {
+                    overlay.open(Screen::Menu);
+                }
+            }
             Screen::VirtualKeyboard => {}
         }
     }

@@ -14,6 +14,7 @@ use crate::gamepad::{
 };
 use crate::keyboard::PadStyle;
 use crate::pad_mode::PadMode;
+use crate::theme;
 
 /// Systems of the remap page: label, core id (profile key base), pad style.
 const SYSTEMS: [(&str, &str, PadStyle); 6] = [
@@ -435,7 +436,11 @@ impl LibraryUi {
 
     /// « Configurer une manette »: list of pads, then the step-by-step screen.
     fn learn_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(text::LEARN_TITLE).strong());
+        ui.label(
+            RichText::new(text::LEARN_TITLE)
+                .size(theme::FONT_SECTION)
+                .color(theme::TEXT),
+        );
         if self.pad.learn.is_none() {
             self.pad.shown_stage = None;
             weak(ui, text::LEARN_NOTE);
@@ -483,91 +488,120 @@ impl LibraryUi {
                     r.scroll_to_me(Some(egui::Align::Center));
                 }
             };
-            ui.label(text::learn_title_for(&l.pad.name));
-            match l.session() {
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.label(text::LEARN_SHAPE);
-                        for layout in [
-                            PadLayout::Snes,
-                            PadLayout::Nes,
-                            PadLayout::MegaDrive3,
-                            PadLayout::MegaDrive6,
-                        ] {
-                            ui.selectable_value(
-                                &mut l.layout,
-                                layout,
-                                text::learn_layout_label(layout),
+            // The learning flow sits on a card so it reads as one focused task.
+            let card = egui::Frame::new()
+                .fill(theme::CARD)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(theme::SP_M);
+            card.show(ui, |ui| {
+                ui.label(
+                    RichText::new(text::learn_title_for(&l.pad.name))
+                        .size(theme::FONT_BODY)
+                        .color(theme::TEXT_WEAK),
+                );
+                match l.session() {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.label(text::LEARN_SHAPE);
+                            for layout in [
+                                PadLayout::Snes,
+                                PadLayout::Nes,
+                                PadLayout::MegaDrive3,
+                                PadLayout::MegaDrive6,
+                            ] {
+                                ui.selectable_value(
+                                    &mut l.layout,
+                                    layout,
+                                    text::learn_layout_label(layout),
+                                );
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            let start = ui.button(text::LEARN_START);
+                            focus(&start);
+                            if start.clicked() {
+                                l.begin();
+                            }
+                            cancel = ui.button(text::LEARN_CANCEL).clicked();
+                        });
+                    }
+                    Some(session) => {
+                        let steps = l.layout.steps();
+                        let pos = l.position();
+                        if let Some(step) = session.current() {
+                            ui.label(
+                                RichText::new(text::learn_prompt(step.label))
+                                    .size(theme::FONT_TITLE)
+                                    .color(theme::ACCENT),
                             );
+                            ui.add(
+                                egui::ProgressBar::new(pos as f32 / steps.len().max(1) as f32)
+                                    .fill(theme::ACCENT)
+                                    .desired_height(theme::SP_S),
+                            );
+                            weak(ui, text::learn_progress(pos, steps.len()));
+                        } else {
+                            ui.label(text::LEARN_DONE);
                         }
-                    });
+                        if let Some(n) = &l.notice {
+                            ui.colored_label(theme::WARN, n);
+                        }
+                        let review = session.current().is_none();
+                        for (i, (step, rec)) in steps.iter().zip(session.recorded()).enumerate() {
+                            if i < pos || review {
+                                let shown = rec.map_or_else(
+                                    || text::LEARN_NOT_SET.to_owned(),
+                                    |r| r.to_token(),
+                                );
+                                let color = if rec.is_some() {
+                                    theme::OK
+                                } else {
+                                    theme::TEXT_WEAK
+                                };
+                                ui.label(
+                                    RichText::new(format!("{} : {shown}", step.label)).color(color),
+                                );
+                            }
+                        }
+                    }
+                }
+                if l.session().is_some() {
+                    let review = l.is_review();
+                    let empty = l
+                        .session()
+                        .is_none_or(|s| s.recorded().iter().all(Option::is_none));
                     ui.horizontal(|ui| {
-                        let start = ui.button(text::LEARN_START);
-                        focus(&start);
-                        if start.clicked() {
-                            l.begin();
+                        if !review {
+                            let skip = ui.button(text::LEARN_SKIP);
+                            focus(&skip);
+                            if skip.clicked() {
+                                l.skip();
+                            }
+                        }
+                        let back = ui.button(text::LEARN_BACK);
+                        if review && empty {
+                            focus(&back);
+                        }
+                        if back.clicked() {
+                            l.back();
                         }
                         cancel = ui.button(text::LEARN_CANCEL).clicked();
+                        if review {
+                            let save_button =
+                                ui.add_enabled(!empty, egui::Button::new(text::LEARN_SAVE));
+                            if !empty {
+                                focus(&save_button);
+                            }
+                            if save_button.clicked() {
+                                save = true;
+                            }
+                            if empty {
+                                weak(ui, text::LEARN_EMPTY);
+                            }
+                        }
                     });
                 }
-                Some(session) => {
-                    let steps = l.layout.steps();
-                    let pos = l.position();
-                    if let Some(step) = session.current() {
-                        ui.label(RichText::new(text::learn_prompt(step.label)).heading());
-                        weak(ui, text::learn_progress(pos, steps.len()));
-                    } else {
-                        ui.label(text::LEARN_DONE);
-                    }
-                    if let Some(n) = &l.notice {
-                        ui.colored_label(ui.visuals().warn_fg_color, n);
-                    }
-                    let review = session.current().is_none();
-                    for (i, (step, rec)) in steps.iter().zip(session.recorded()).enumerate() {
-                        if i < pos || review {
-                            let shown = rec
-                                .map_or_else(|| text::LEARN_NOT_SET.to_owned(), |r| r.to_token());
-                            ui.label(format!("{} : {shown}", step.label));
-                        }
-                    }
-                }
-            }
-            if l.session().is_some() {
-                let review = l.is_review();
-                let empty = l
-                    .session()
-                    .is_none_or(|s| s.recorded().iter().all(Option::is_none));
-                ui.horizontal(|ui| {
-                    if !review {
-                        let skip = ui.button(text::LEARN_SKIP);
-                        focus(&skip);
-                        if skip.clicked() {
-                            l.skip();
-                        }
-                    }
-                    let back = ui.button(text::LEARN_BACK);
-                    if review && empty {
-                        focus(&back);
-                    }
-                    if back.clicked() {
-                        l.back();
-                    }
-                    cancel = ui.button(text::LEARN_CANCEL).clicked();
-                    if review {
-                        let save_button =
-                            ui.add_enabled(!empty, egui::Button::new(text::LEARN_SAVE));
-                        if !empty {
-                            focus(&save_button);
-                        }
-                        if save_button.clicked() {
-                            save = true;
-                        }
-                        if empty {
-                            weak(ui, text::LEARN_EMPTY);
-                        }
-                    }
-                });
-            }
+            });
         }
         if cancel {
             self.pad.learn = None;
@@ -577,7 +611,7 @@ impl LibraryUi {
     }
 
     pub(super) fn gamepad_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(text::PAD_TITLE).strong());
+        self.section_title(ui, text::PAD_TITLE, super::settings::help_anchor::PADS);
         let mut changed = false;
         let g = &mut self.config.input.gamepad;
         changed |= ui.checkbox(&mut g.enabled, text::PAD_ENABLED).changed();

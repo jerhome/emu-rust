@@ -1504,7 +1504,7 @@ impl App {
             }
             Screen::CoreOptions => self.refresh_options(),
             Screen::Disks => self.refresh_disks(),
-            Screen::Keys | Screen::Computer | Screen::VirtualKeyboard => {}
+            Screen::Keys | Screen::Computer | Screen::Help | Screen::VirtualKeyboard => {}
         }
         self.overlay.open(screen);
         self.apply_speed();

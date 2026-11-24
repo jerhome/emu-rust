@@ -73,6 +73,22 @@ pub(crate) fn pick_file_in_background(
     rx
 }
 
+/// Native "choose folder" dialog on a worker thread, same contract as [`pick_file_in_background`].
+pub(crate) fn pick_folder_in_background(title: &str) -> Receiver<Option<PathBuf>> {
+    let (tx, rx) = mpsc::channel();
+    let dialog = dialog(title, &[]);
+    let tx2 = tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("folder-dialog".into())
+        .spawn(move || {
+            let _ = tx.send(dialog.pick_folder());
+        });
+    if spawned.is_err() {
+        let _ = tx2.send(None);
+    }
+    rx
+}
+
 fn dialog(title: &str, filters: &[(&str, &[&str])]) -> rfd::FileDialog {
     let mut d = rfd::FileDialog::new().set_title(title);
     for (name, extensions) in filters {

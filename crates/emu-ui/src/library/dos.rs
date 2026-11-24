@@ -76,7 +76,7 @@ impl LibraryUi {
         let spec = match dos::spec_for_content(&request.content, &prefs, &request.core) {
             Ok(spec) => spec,
             Err(e) => {
-                self.abort_launch(text::game_failed(&request.title, &e));
+                self.abort_launch(text::launch_failed(&request.title, &e));
                 return None;
             }
         };
@@ -123,7 +123,7 @@ impl LibraryUi {
                 None
             }
             Err(e) => {
-                self.abort_launch(text::game_failed(&request.title, &e));
+                self.abort_launch(text::launch_failed(&request.title, &e));
                 None
             }
         }
@@ -173,7 +173,7 @@ impl LibraryUi {
                     self.set_status(text::DOS_SNAPSHOT_CANCELLED.to_owned(), super::Level::Info);
                     self.focus = Some(Focus::Grid);
                 }
-                Err(e) => self.abort_launch(text::game_failed(
+                Err(e) => self.abort_launch(text::launch_failed(
                     &task.request.title,
                     &crate::ui::text::dos_snapshot_failed(&e),
                 )),
@@ -435,7 +435,11 @@ impl LibraryUi {
 
     pub(super) fn dos_cache_section(&mut self, ui: &mut egui::Ui) {
         self.poll_dos_cache();
-        ui.label(RichText::new(text::DOS_CACHE_SECTION).strong());
+        self.section_title(
+            ui,
+            text::DOS_CACHE_SECTION,
+            super::settings::help_anchor::SETTINGS,
+        );
         let size = self.dos_cache.size;
         let label = text::dos_cache_button(size);
         if ui

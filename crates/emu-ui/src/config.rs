@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
 use crate::computer::host::DEFAULT_HOST_KEY;
-use crate::config_app::AppConfig;
+use crate::config_app::{AppConfig, UiConfig};
 use crate::config_computer::ComputerConfig;
 use crate::config_gamepad::GamepadConfig;
 use crate::config_library::{CoresConfig, CoversConfig, CredentialsConfig, LibraryConfig};
@@ -285,6 +285,9 @@ pub struct Config {
     /// `[computer]` (ADR 0015): mouse, capture, keyboard mode, EmuTOS variant. Not written while default.
     #[serde(skip_serializing_if = "ComputerConfig::is_default")]
     pub computer: ComputerConfig,
+    /// `[ui]` (first-run wizard). Not written while default.
+    #[serde(skip_serializing_if = "UiConfig::is_default")]
+    pub ui: UiConfig,
     /// `core_id` → option key → value.
     pub core_options: BTreeMap<String, BTreeMap<String, String>>,
     /// Unknown top-level keys and tables, written back unchanged.
