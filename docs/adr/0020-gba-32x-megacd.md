@@ -254,3 +254,10 @@ autre lecteur que `%TEMP%`.
 Non vérifiable avec un vrai jeu ici (aucun BIOS Mega CD libre) : test sur core factice + essai utilisateur (Night
 Trap Mega CD, genesis_plus_gx). Le CD 32X (7.2, picodrive, ADR 0024) hérite de la clé. Détail et découpage :
 design 6.0 §12.
+
+## Amendement du 2026-11-24 — CD 32X (7.4) : à prouver avant de coder
+
+Le texte « picodrive lance le CD 32X » est une **hypothèse non vérifiée** : à ma connaissance picodrive émule le
+Mega CD **ou** la 32X, pas la combinaison Sega CD + 32X. La 7.4 commence donc par un essai-sonde (design 7.4 §3) ;
+le code de reconnaissance n'est écrit que si picodrive démarre le disque. Sinon : la 7.4 se réduit à documenter
+que les éditions 32X se lancent en mode Mega CD seul (genesis_plus_gx) si le disque le permet. Détail : `docs/design/v7.4-sega-cd-32x.md`.
