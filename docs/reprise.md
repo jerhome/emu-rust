@@ -44,7 +44,7 @@ Mis à jour à chaque fin de session.
    16:10, performances à ~4 Mpx (SNES et Night Trap 32X plein écran), déplacement de fenêtre entre écrans.
 9. Ensuite : 7.6 interface en anglais ; 8.0 systèmes libretro non testés ; idée non planifiée après 8.0 : édition web
    (WASM, 8/16 bits) ou son dans le mode noVNC (voir la roadmap).
-   Idée 8.x : core libretro « jgenesis » (32X, PC Engine) ; `reviewer` : GO sous conditions, 32X bloquant (BIOS Sega
+   8.1 : core libretro « jgenesis » au choix (fork jerhome) (32X, PC Engine) ; `reviewer` : GO sous conditions, 32X bloquant (BIOS Sega
    embarqués dans `s32x-core`) ; portage existant RobLoach/libretro-jgenesis — détails dans la roadmap.
 
 ## Budget
