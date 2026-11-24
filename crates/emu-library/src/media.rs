@@ -276,6 +276,18 @@ mod tests {
     }
 
     #[test]
+    fn redump_32x_discs_group_into_one_game() {
+        let files = vec![
+            p("d/Night Trap (USA) (Disc 2) (Sega CD 32X) (RE-1).cue"),
+            p("d/Night Trap (USA) (Disc 1) (Sega CD 32X) (RE-1).cue"),
+        ];
+        let (groups, singles) = group_media(&files);
+        assert!(singles.is_empty());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+    }
+
+    #[test]
     fn tosec_names_group_in_disk_order() {
         let files = vec![
             p("d/Game (1990)(Pub)(Disk 2 of 3).st"),

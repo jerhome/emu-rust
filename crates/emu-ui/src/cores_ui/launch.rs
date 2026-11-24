@@ -115,10 +115,19 @@ pub(crate) fn choose_game_core(
     if !needs.needs_32x {
         return choose_core(system, extension, installed, infos, prefs);
     }
-    let capable = prefs.for_system(SYSTEM_32X);
+    // The user's `[cores.preferred] 32x` may name a core without 32X: only the built-in list (or a core unknown
+    // to the whole built-in table, i.e. user-declared) counts as capable. User order is kept among those.
+    let builtin = CorePreferences::builtin();
+    let builtin_32x = builtin.for_system(SYSTEM_32X);
+    let known = |id: &CoreId| builtin.systems().any(|(_, cores)| cores.contains(id));
+    let capable: Vec<&CoreId> = prefs
+        .for_system(SYSTEM_32X)
+        .iter()
+        .filter(|id| builtin_32x.contains(id) || !known(id))
+        .collect();
     let mut order: Vec<CoreId> = Vec::new();
     match needs.explicit {
-        Some(id) if capable.contains(id) => order.push(id.clone()),
+        Some(id) if capable.contains(&id) => order.push(id.clone()),
         Some(id) => tracing::warn!("{}", text::not_32x_capable(id.as_str())),
         None => {}
     }
