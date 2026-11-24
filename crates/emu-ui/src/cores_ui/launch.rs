@@ -3,11 +3,12 @@
 //! Nothing here downloads anything: a missing core is reported as `NeedsInstall` and the screen decides. BIOS
 //! files are only checked, never fetched.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use emu_assets::cores::{
-    CoreChoice, CoreError, CoreId, CoreManager, CorePreferences, FirmwareState, FirmwareStatus,
-    choose_core,
+    CoreChoice, CoreError, CoreId, CoreInfo, CoreManager, CorePreferences, FirmwareState,
+    FirmwareStatus, choose_core,
 };
 
 use super::text;
@@ -85,15 +86,73 @@ pub(crate) fn prepare_launch(manager: &CoreManager, id: &CoreId) -> LaunchCheck 
     }
 }
 
+/// Libretro database whose core list (`cores.toml`) names the cores able to emulate the 32X.
+pub(crate) const SYSTEM_32X: &str = "Sega - 32X";
+/// Fallback when `cores.toml` lists no 32X core.
+const CORE_32X: &str = "picodrive";
+
+/// What the core choice needs to know about a game beyond its system and extension.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct GameNeeds<'a> {
+    /// Mega CD + 32X disc (`Game::needs_32x`): only a core of [`SYSTEM_32X`] runs it (genesis_plus_gx does not
+    /// emulate the 32X).
+    pub needs_32x: bool,
+    /// `[cores.preferred]` of the game's system as written by the user (not the built-in order).
+    pub explicit: Option<&'a CoreId>,
+}
+
+/// `choose_core` plus the per-game constraints: a 32X disc gets a 32X-capable core, the user's explicit choice
+/// first when it is capable; an incapable explicit choice is overridden with a warning in the log. Other games
+/// (Mega CD included) are chosen exactly as before.
+pub(crate) fn choose_game_core(
+    system: Option<&str>,
+    extension: Option<&str>,
+    installed: &[CoreId],
+    infos: &BTreeMap<CoreId, CoreInfo>,
+    prefs: &CorePreferences,
+    needs: GameNeeds<'_>,
+) -> CoreChoice {
+    if !needs.needs_32x {
+        return choose_core(system, extension, installed, infos, prefs);
+    }
+    let capable = prefs.for_system(SYSTEM_32X);
+    let mut order: Vec<CoreId> = Vec::new();
+    match needs.explicit {
+        Some(id) if capable.contains(id) => order.push(id.clone()),
+        Some(id) => tracing::warn!("{}", text::not_32x_capable(id.as_str())),
+        None => {}
+    }
+    for id in capable {
+        if !order.contains(id) {
+            order.push(id.clone());
+        }
+    }
+    if order.is_empty() {
+        order.extend(CoreId::new(CORE_32X));
+    }
+    match order.iter().find(|id| installed.contains(id)) {
+        Some(id) => CoreChoice::Installed(id.clone()),
+        None => CoreChoice::Install(order[0].clone()),
+    }
+}
+
 /// Picks the core for a game (`system` = libretro database name, `extension` without dot) then prepares it.
 pub(crate) fn plan_launch(
     manager: &CoreManager,
     prefs: &CorePreferences,
     system: Option<&str>,
     extension: Option<&str>,
+    needs: GameNeeds<'_>,
 ) -> LaunchCheck {
     let installed: Vec<CoreId> = manager.installed().into_iter().map(|c| c.id).collect();
-    match choose_core(system, extension, &installed, &manager.infos(), prefs) {
+    match choose_game_core(
+        system,
+        extension,
+        &installed,
+        &manager.infos(),
+        prefs,
+        needs,
+    ) {
         CoreChoice::Installed(id) => prepare_launch(manager, &id),
         CoreChoice::Install(id) => LaunchCheck::NeedsInstall(id),
         CoreChoice::Unknown => LaunchCheck::NoCore,

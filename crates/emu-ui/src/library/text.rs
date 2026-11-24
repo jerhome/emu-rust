@@ -61,6 +61,8 @@ pub const CORES: &str = "Cores";
 pub const SETTINGS: &str = "Réglages";
 pub const QUIT: &str = "Quitter";
 pub const FAVORITE_MARK: &str = "★";
+pub const BADGE_32X: &str = "32X";
+pub const NOTE_32X: &str = "CD Mega CD 32X : lancé avec le core picodrive (BIOS Mega CD requis, BIOS 32X intégrés au core).";
 pub const HOME_HINT: &str = "Flèches : choisir un jeu · Entrée : jouer · F : favori · / : rechercher · \
                              Tab : barre du haut · Échap : effacer la recherche";
 
@@ -261,6 +263,15 @@ pub fn install_question(core: &str, game: &str) -> String {
     let (core, game) = (clean(core), clean(game));
     format!(
         "Aucun core installé ne lance « {game} ». Installer le core recommandé « {core} » ? \
+         L'écran Cores affiche la progression ; relancez le jeu ensuite."
+    )
+}
+
+pub fn install_question_32x(core: &str, game: &str) -> String {
+    let (core, game) = (clean(core), clean(game));
+    format!(
+        "« {game} » est un CD Mega CD 32X : seul le core « {core} » émule la 32X \
+         (genesis_plus_gx ne lance que le Mega CD). Installer « {core} » ? \
          L'écran Cores affiche la progression ; relancez le jeu ensuite."
     )
 }

@@ -29,7 +29,7 @@ pub(crate) use self::capture::run_capture;
 pub(crate) use self::import::ImportUi;
 #[cfg(test)]
 use self::launch::prepare_launch;
-pub(crate) use self::launch::{LaunchCheck, plan_launch, release};
+pub(crate) use self::launch::{GameNeeds, LaunchCheck, choose_game_core, plan_launch, release};
 use self::rows::{Checks, CoreRow, CoreState, RowFilter, Scope, recommended_missing, rows};
 use crate::Config;
 use crate::config::DataDirs;

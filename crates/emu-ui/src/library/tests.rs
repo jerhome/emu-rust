@@ -33,6 +33,7 @@ fn game(id: i64, system: &str, path: &str, entry: Option<&str>) -> Game {
         media: Vec::new(),
         is_dir: false,
         region: None,
+        needs_32x: false,
     }
 }
 
@@ -1540,4 +1541,14 @@ fn cover_status_counts_games_not_searches() {
     assert_eq!(w.status().missing, 0);
     drain(&mut w);
     assert_eq!((w.status().found, w.status().missing), (0, n));
+}
+
+#[test]
+fn badge_32x_only_on_32x_discs() {
+    let mut g = game(1, "megacd", "/roms/megacd/Night Trap.cue", None);
+    assert!(grid::badges(&g).is_empty());
+    g.needs_32x = true;
+    assert_eq!(grid::badges(&g), vec![text::BADGE_32X]);
+    let q = text::install_question_32x("PicoDrive", "Night Trap");
+    assert!(q.contains("32X") && q.contains("PicoDrive"));
 }

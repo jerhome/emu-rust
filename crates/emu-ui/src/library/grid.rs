@@ -72,6 +72,15 @@ pub(crate) fn system_counts(games: &[Game], catalog: &[SystemInfo]) -> Vec<(Stri
         .collect()
 }
 
+/// Short badges of a game, shown on its card and in the status bar of the selected game.
+pub(crate) fn badges(game: &Game) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if game.needs_32x {
+        out.push(super::text::BADGE_32X);
+    }
+    out
+}
+
 /// Extension used to choose the core: the zip entry's for an archive, else the file's (lower case, no dot).
 pub(crate) fn launch_extension(game: &Game) -> Option<String> {
     // A folder game's name may contain a dot (`Doom v1.9`): it has no extension.

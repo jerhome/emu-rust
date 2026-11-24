@@ -96,6 +96,8 @@ enum Dialog {
         core: CoreId,
         game: String,
         game_id: GameId,
+        /// Mega CD + 32X disc: the message says why this core and no other.
+        needs_32x: bool,
     },
     Firmware {
         request: LaunchRequest,
@@ -714,6 +716,15 @@ impl LibraryUi {
         ));
     }
 
+    /// `[cores.preferred]` of a system as the user wrote it (`None`: built-in order).
+    fn explicit_core(&self, system_id: &str) -> Option<CoreId> {
+        self.config
+            .cores
+            .preferred
+            .get(system_id)
+            .and_then(|c| CoreId::new(c.trim()))
+    }
+
     fn launch(&mut self, args: LaunchArgs) {
         let Some(manager) = self.cores.manager().cloned() else {
             self.open_dialog(Dialog::Message(text::NO_MANAGER.to_owned()));
@@ -721,8 +732,19 @@ impl LibraryUi {
         };
         let prefs = cores_ui::preferences(&self.config.cores);
         let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
-        let check =
-            cores_ui::plan_launch(&manager, &prefs, database.as_deref(), args.ext.as_deref());
+        let needs_32x = args.disc.as_ref().is_some_and(|g| g.needs_32x);
+        let explicit = self.explicit_core(&args.system_id);
+        let needs = cores_ui::GameNeeds {
+            needs_32x,
+            explicit: explicit.as_ref(),
+        };
+        let check = cores_ui::plan_launch(
+            &manager,
+            &prefs,
+            database.as_deref(),
+            args.ext.as_deref(),
+            needs,
+        );
         // Disc systems (design v6.0 §2.1): the discs of the game for this core, a zip refused before anything.
         let core = match &check {
             LaunchCheck::Ready { id, .. }
@@ -779,6 +801,7 @@ impl LibraryUi {
                     core,
                     game: title.clone(),
                     game_id,
+                    needs_32x,
                 }),
                 // The desktop is not a library game: the core is installed from the cores screen.
                 None => self.open_dialog(Dialog::Message(text::desktop_needs_core(core.as_str()))),
@@ -1384,15 +1407,22 @@ impl LibraryUi {
         egui::Modal::new(egui::Id::unique("library-dialog")).show(ctx, |ui| {
             ui.set_max_width(520.0);
             let (title, body) = match dialog {
-                Dialog::Install { core, game, .. } => {
+                Dialog::Install {
+                    core,
+                    game,
+                    needs_32x,
+                    ..
+                } => {
                     let name = manager
                         .as_ref()
                         .and_then(|m| m.info(core))
                         .map_or_else(|| core.to_string(), |i| i.display_name);
-                    (
-                        text::LAUNCH_INSTALL_TITLE,
-                        text::install_question(&name, game),
-                    )
+                    let body = if *needs_32x {
+                        text::install_question_32x(&name, game)
+                    } else {
+                        text::install_question(&name, game)
+                    };
+                    (text::LAUNCH_INSTALL_TITLE, body)
                 }
                 Dialog::Firmware { request, missing } => (
                     text::LAUNCH_FIRMWARE_TITLE,

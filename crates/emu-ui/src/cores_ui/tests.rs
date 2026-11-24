@@ -100,17 +100,30 @@ fn plan_launch_picks_installed_proposes_or_gives_up() {
         &prefs,
         Some("Sega - Mega Drive - Genesis"),
         Some("md"),
+        GameNeeds::default(),
     );
     let LaunchCheck::NeedsInstall(core) = check else {
         panic!("{check:?}");
     };
     assert_eq!(core.as_str(), "genesis_plus_gx");
     // Unknown system and extension.
-    let check = plan_launch(manager, &prefs, Some("Nowhere"), Some("zzz"));
+    let check = plan_launch(
+        manager,
+        &prefs,
+        Some("Nowhere"),
+        Some("zzz"),
+        GameNeeds::default(),
+    );
     assert!(matches!(check, LaunchCheck::NoCore));
     assert!(check.blocking_message().unwrap().contains("Aucun core"));
     // Game Boy: gambatte is installed but altered → refused, never silently replaced by another core.
-    let check = plan_launch(manager, &prefs, Some("Nintendo - Game Boy"), Some("gb"));
+    let check = plan_launch(
+        manager,
+        &prefs,
+        Some("Nintendo - Game Boy"),
+        Some("gb"),
+        GameNeeds::default(),
+    );
     assert!(matches!(
         check,
         LaunchCheck::Failed(CoreError::Tampered { .. })
@@ -124,6 +137,82 @@ fn plan_launch_picks_installed_proposes_or_gives_up() {
             &prefs
         ),
         CoreChoice::Installed(id("gambatte"))
+    );
+}
+
+const MEGACD: &str = "Sega - Mega-CD - Sega CD";
+
+fn choose_megacd(installed: &[&str], prefs: &CorePreferences, needs: GameNeeds<'_>) -> CoreChoice {
+    let installed: Vec<CoreId> = installed.iter().map(|c| id(c)).collect();
+    choose_game_core(
+        Some(MEGACD),
+        Some("cue"),
+        &installed,
+        &BTreeMap::new(),
+        prefs,
+        needs,
+    )
+}
+
+#[test]
+fn disc_32x_gets_a_32x_core_other_megacd_games_unchanged() {
+    let prefs = preferences(&CoresConfig::default());
+    let cd32x = GameNeeds {
+        needs_32x: true,
+        explicit: None,
+    };
+    // picodrive missing: proposed for install even though genesis_plus_gx (Mega CD only) is there.
+    assert_eq!(
+        choose_megacd(&["genesis_plus_gx"], &prefs, cd32x),
+        CoreChoice::Install(id("picodrive"))
+    );
+    assert_eq!(
+        choose_megacd(&["genesis_plus_gx", "picodrive"], &prefs, cd32x),
+        CoreChoice::Installed(id("picodrive"))
+    );
+    // An ordinary Mega CD game keeps the built-in order.
+    assert_eq!(
+        choose_megacd(
+            &["genesis_plus_gx", "picodrive"],
+            &prefs,
+            GameNeeds::default()
+        ),
+        CoreChoice::Installed(id("genesis_plus_gx"))
+    );
+}
+
+#[test]
+fn disc_32x_honours_only_a_32x_capable_user_choice() {
+    // The user prefers genesis_plus_gx for the Mega CD: overridden (warning in the log) for a 32X disc only.
+    let gpgx = id("genesis_plus_gx");
+    let mut config = CoresConfig::default();
+    config.preferred.insert("megacd".into(), gpgx.to_string());
+    let prefs = preferences(&config);
+    let needs = GameNeeds {
+        needs_32x: true,
+        explicit: Some(&gpgx),
+    };
+    assert_eq!(
+        choose_megacd(&["genesis_plus_gx", "picodrive"], &prefs, needs),
+        CoreChoice::Installed(id("picodrive"))
+    );
+    // A capable explicit choice wins over the built-in 32X order.
+    let handmade = id("handmade");
+    let mut config = CoresConfig::default();
+    config.preferred.insert("megacd".into(), "handmade".into());
+    config.preferred.insert("32x".into(), "handmade".into());
+    let prefs = preferences(&config);
+    let needs = GameNeeds {
+        needs_32x: true,
+        explicit: Some(&handmade),
+    };
+    assert_eq!(
+        choose_megacd(&["handmade", "picodrive"], &prefs, needs),
+        CoreChoice::Installed(handmade.clone())
+    );
+    assert_eq!(
+        choose_megacd(&["picodrive"], &prefs, needs),
+        CoreChoice::Installed(id("picodrive"))
     );
 }
 

@@ -374,3 +374,10 @@ pub fn bios_offer(name: &str, license: &str, game: &str) -> String {
 pub fn builtin_notice(notice: &str) -> String {
     format!("Licence : {notice}")
 }
+
+/// Log line: the user's preferred core of the Mega CD cannot run a 32X disc.
+pub fn not_32x_capable(core: &str) -> String {
+    format!(
+        "CD 32X : le core préféré « {core} » n'émule pas la 32X, picodrive est utilisé à sa place"
+    )
+}
