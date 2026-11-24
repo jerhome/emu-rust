@@ -2,6 +2,56 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.3.0] - non publiée (tag à valider)
+
+Contient aussi les versions 7.1 et 7.2 (voir ci-dessous).
+
+### Ajouté
+
+- **Thème sombre** unique, accent bleu de l'icône (`#4aa3ff`), couleurs, typographie et espacements cohérents,
+  contrastes vérifiés ; rien de lourd pour les petites machines (pas de flou ni d'animation coûteuse).
+- **Bibliothèque en grille de jaquettes** : systèmes en colonne à gauche, jaquettes mises en valeur ; navigation au
+  clavier ou à la manette inchangée.
+- **Manuel intégré** à l'application : bouton « Aide » de la bibliothèque, touche F1, `?` ou Ctrl+H (pour les claviers
+  sans touche F), entrée « Aide » du menu en jeu, et petits « ? » d'aide à côté des réglages.
+- **Assistant de premier lancement** : dossier des ROMs avec premier scan, cores à installer, clavier ou manette.
+- **États vides utiles** (bibliothèque sans jeu, sans jaquette, etc.) et **messages d'erreur** qui disent quoi faire.
+- **Réinitialiser la jaquette d'un jeu** (touche R ou clic droit) et **toutes les jaquettes** (Réglages, avec
+  confirmation).
+
+### Corrigé
+
+- Une jaquette restait affichée sur un autre jeu qui reprenait le même identifiant après un nouveau scan.
+- Les compteurs de jaquettes sont désormais calculés par jeu : ils ne s'additionnent plus à chaque réinitialisation.
+
+## [7.2.0] - non publiée (tag à valider)
+
+### Ajouté
+
+- **Manettes USB simples de type SNES / Super Famicom** absentes de la base de manettes connue : l'application
+  les détecte et propose de les configurer (« Configurer » / « Ignorer »). Un écran d'apprentissage demande
+  d'appuyer sur chaque bouton ; la configuration est mémorisée pour cette manette. Sous macOS, l'application essaie
+  d'abord de deviner les boutons puis propose d'apprendre le reste (« Deviner + proposer »). Un message s'affiche
+  aussi en jeu. Essayé sur deux manettes Super Famicom USB (`081f:e401`).
+
+### Corrigé
+
+- Apprentissage : une croix directionnelle rapportée sur des axes, dont la première valeur est -1, n'était plus
+  prise pour une gâchette.
+- Identifiant de manette insensible à la casse ; configuration de manette invalide ignorée au lieu de bloquer.
+
+## [7.1.0] - non publiée (tag à valider)
+
+### Ajouté
+
+- **Pied de page** : version de l'application et « dev by claude@jerhome ».
+- **Icône d'application** identique sous Windows, macOS et Linux.
+- **Terminal caché par défaut** ; un réglage permet de le réafficher après redémarrage (sous macOS, l'application se
+  relance alors dans Terminal).
+- **Journal** consultable dans l'interface.
+- **Bandeau d'avertissement firmware** : indique quand un core est amélioré par un fichier d'origine fourni par
+  l'utilisateur (jamais téléchargé) et propose de l'importer.
+
 ## [7.0.2] - 2026-11-23
 
 ### Corrigé
