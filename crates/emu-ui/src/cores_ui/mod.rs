@@ -38,10 +38,10 @@ use crate::ui::text::sanitize_core_text;
 
 /// Core zips are large: the default 60 s of cover downloads is too short.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
-const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
-const ERROR: Color32 = Color32::from_rgb(255, 110, 110);
-const GOOD: Color32 = Color32::from_rgb(120, 220, 140);
-const INFO: Color32 = Color32::from_rgb(130, 190, 255);
+const WARNING: Color32 = crate::theme::WARN;
+const ERROR: Color32 = crate::theme::ERROR;
+const GOOD: Color32 = crate::theme::OK;
+const INFO: Color32 = crate::theme::ACCENT;
 
 /// Opens the core manager for `dirs` / `config` (no network). Shared with the CLI.
 pub fn open_core_manager(dirs: &DataDirs, config: &Config) -> Result<Arc<CoreManager>, String> {

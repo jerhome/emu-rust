@@ -7,7 +7,7 @@ use emu_runtime::OrphanKind;
 
 use super::{CleanDialog, DisksView, Overlay, UiAction, UiData, nav, screen_window, text};
 
-const WARN: Color32 = Color32::from_rgb(255, 190, 80);
+const WARN: Color32 = crate::theme::WARN;
 
 const ROW_HEIGHT: f32 = 26.0;
 

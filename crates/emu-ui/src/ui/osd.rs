@@ -107,8 +107,8 @@ pub(super) fn show(ctx: &Context, osd: &Osd, now: Instant, top: bool) {
                 for item in osd.items.iter().filter(|i| i.until > now) {
                     let color = match item.level {
                         OsdLevel::Info => Color32::WHITE,
-                        OsdLevel::Warn => Color32::from_rgb(255, 210, 90),
-                        OsdLevel::Error => Color32::from_rgb(255, 110, 100),
+                        OsdLevel::Warn => crate::theme::WARN,
+                        OsdLevel::Error => crate::theme::ERROR,
                     };
                     ui.label(RichText::new(&item.text).color(color));
                 }

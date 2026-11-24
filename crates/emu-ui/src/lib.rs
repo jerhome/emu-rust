@@ -24,6 +24,7 @@ mod log_buffer;
 mod pad_mode;
 mod platform;
 mod shutdown;
+mod theme;
 mod ui;
 mod window_icon;
 

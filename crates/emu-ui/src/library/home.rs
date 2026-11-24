@@ -16,7 +16,7 @@ const COVER_H: f32 = 210.0;
 const TITLE_H: f32 = 44.0;
 const CARD_H: f32 = COVER_H + TITLE_H;
 const GAP: f32 = 12.0;
-const FOCUS: Color32 = Color32::from_rgb(150, 200, 255);
+const FOCUS: Color32 = crate::theme::ACCENT;
 
 /// Deterministic, muted colour per system for placeholder cards.
 fn system_color(id: &str) -> Color32 {

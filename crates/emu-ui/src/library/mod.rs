@@ -40,8 +40,8 @@ use crate::launch_firmware::{
 };
 use crate::platform::{FolderOutcome, FolderPlan, plan_open_folder, spawn_open_folder};
 
-const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
-const ERROR: Color32 = Color32::from_rgb(255, 110, 110);
+const WARNING: Color32 = crate::theme::WARN;
+const ERROR: Color32 = crate::theme::ERROR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {

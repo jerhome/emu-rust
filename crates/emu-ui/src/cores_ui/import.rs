@@ -19,8 +19,8 @@ use crate::file_picker::{
     BrowserOutcome, FileBrowser, PickerBackend, pick_file_in_background, picker_backend,
 };
 
-const WARNING: Color32 = Color32::from_rgb(255, 190, 80);
-const ERROR: Color32 = Color32::from_rgb(255, 110, 110);
+const WARNING: Color32 = crate::theme::WARN;
+const ERROR: Color32 = crate::theme::ERROR;
 /// Names listed at most in the « non vérifié » choice (the filter field narrows the list).
 const MAX_LISTED_NAMES: usize = 60;
 

@@ -553,18 +553,9 @@ impl Overlay {
     }
 }
 
-/// Dark theme with an unmistakable focus highlight (keyboard / pad navigation has no pointer to follow).
+/// Dark theme with an unmistakable focus highlight (see `theme`).
 pub fn apply_style(ctx: &Context) {
-    ctx.set_visuals(egui::Visuals::dark());
-    ctx.all_styles_mut(|style| {
-        // Screens appear at once (no fade): snappier with a pad, and `--screen` captures are deterministic.
-        style.animation_time = 0.0;
-        let focus = &mut style.visuals.widgets.active;
-        focus.bg_fill = Color32::from_rgb(40, 90, 160);
-        focus.weak_bg_fill = Color32::from_rgb(40, 90, 160);
-        focus.bg_stroke = egui::Stroke::new(2.0, Color32::from_rgb(150, 200, 255));
-        focus.fg_stroke = egui::Stroke::new(1.5, Color32::WHITE);
-    });
+    crate::theme::apply(ctx);
 }
 
 /// Runs one egui pass: open screen, OSD, stats.
@@ -655,7 +646,7 @@ fn locked_banner(
     if !data.config.is_locked() {
         return;
     }
-    ui.colored_label(Color32::from_rgb(255, 190, 80), text::CONFIG_LOCKED);
+    ui.colored_label(crate::theme::WARN, text::CONFIG_LOCKED);
     if overlay.confirm_unlock {
         ui.horizontal(|ui| {
             ui.label(text::UNLOCK_CONFIRM);

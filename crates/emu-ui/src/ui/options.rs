@@ -1,6 +1,6 @@
 //! Core options screen: v2 categories, values changed with Left / Right and applied immediately.
 
-use egui::{Button, Color32, Context, Grid, Key, RichText, ScrollArea, TextEdit};
+use egui::{Button, Context, Grid, Key, RichText, ScrollArea, TextEdit};
 use emu_runtime::M3uLaunch;
 
 use super::{
@@ -165,7 +165,7 @@ fn launch_editor(
     }
     let checked = validate_launch(launch.kind, buffer.trim());
     if let Err(e) = &checked {
-        ui.colored_label(Color32::from_rgb(255, 190, 80), e);
+        ui.colored_label(crate::theme::WARN, e);
     }
     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
     let save = ui.add_enabled(
