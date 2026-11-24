@@ -196,11 +196,19 @@ impl LearnedMap {
 
 /// Threshold to press and (lower) threshold to release an axis, so a noisy axis does not flutter.
 const PRESS: f32 = 0.5;
+
+fn is_dpad(button: PadButton) -> bool {
+    matches!(
+        button,
+        PadButton::DPadUp | PadButton::DPadDown | PadButton::DPadLeft | PadButton::DPadRight
+    )
+}
 const RELEASE: f32 = 0.4;
 
 /// Tracks axes whose rest position is -1 (analog triggers): their first reported value is <= -0.9.
 /// Such an axis is read as `(v + 1) / 2`, so it only ever goes "positive". A D-pad axis (rest 0) is untouched.
-/// Limit: a D-pad axis whose very first event is a full negative press would be mistaken for a trigger.
+/// Only allowed outside D-pad steps: many pads send nothing at rest, so a D-pad axis' first event is often a full
+/// press (left/up at -1) and must not be mistaken for a trigger (user test 2026-11-24, 081f:e401 on macOS).
 #[derive(Debug, Default)]
 struct AxisRest {
     seen: HashSet<u32>,
@@ -330,10 +338,13 @@ impl LearnSession {
         // Every direction the input can express: a button, or the positive / negative side of an axis.
         let (value, candidates) = match input {
             RawInput::Button(c) => (value, [RawBinding::Button(c), RawBinding::Button(c)]),
-            RawInput::Axis(c) => (
-                self.rest.normalize(c, value, true),
-                [RawBinding::AxisPos(c), RawBinding::AxisNeg(c)],
-            ),
+            RawInput::Axis(c) => {
+                let dpad = self.current().is_some_and(|step| is_dpad(step.button));
+                (
+                    self.rest.normalize(c, value, !dpad),
+                    [RawBinding::AxisPos(c), RawBinding::AxisNeg(c)],
+                )
+            }
         };
         let mut new_press = None;
         for binding in candidates {
@@ -729,5 +740,23 @@ mod tests {
         assert_eq!(s.feed(RawInput::Axis(6), -1.0), LearnProgress::Recorded);
         s.feed(RawInput::Axis(6), 0.0);
         assert_eq!(s.feed(RawInput::Axis(6), 1.0), LearnProgress::Recorded);
+    }
+
+    #[test]
+    fn dpad_axis_first_event_at_minus_one_is_not_a_trigger() {
+        // Real 081f:e401 on macOS: nothing at rest, first X event is a full left press (-0.991).
+        let mut s = LearnSession::new(PadLayout::Snes);
+        assert_eq!(s.feed(RawInput::Axis(49), 0.991), LearnProgress::Recorded); // up
+        s.feed(RawInput::Axis(49), 0.0);
+        assert_eq!(s.feed(RawInput::Axis(49), -1.0), LearnProgress::Recorded); // down
+        s.feed(RawInput::Axis(49), 0.0);
+        assert_eq!(s.feed(RawInput::Axis(48), -0.991), LearnProgress::Recorded); // left
+        s.feed(RawInput::Axis(48), 0.0);
+        assert_eq!(s.feed(RawInput::Axis(48), 1.0), LearnProgress::Recorded); // right
+        s.feed(RawInput::Axis(48), 0.0);
+        assert_eq!(s.feed(RawInput::Button(2), 1.0), LearnProgress::Recorded); // first face button
+        let r = s.recorded();
+        assert_eq!(r[2], Some(RawBinding::AxisNeg(48)), "left");
+        assert_eq!(r[3], Some(RawBinding::AxisPos(48)), "right");
     }
 }
