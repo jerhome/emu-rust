@@ -32,6 +32,9 @@ pub(super) struct State {
     pub(super) secret_buf: String,
     focus_secret: bool,
     pub(super) dirty: bool,
+    /// « Réinitialiser toutes les jaquettes » waits for an explicit confirmation.
+    pub(super) reset_all_confirm: bool,
+    focus_reset_no: bool,
     /// File system and database reads, refreshed when the page opens and after each action (not per frame).
     root_exists: Vec<bool>,
     /// `(system name, « n entrées, importé le … »)`, `None` = no DAT.
@@ -447,6 +450,51 @@ impl LibraryUi {
             self.covers.retry_missing();
             self.set_status(text::COVERS_RETRY_DONE.to_owned(), Level::Info);
         }
+        if self.settings.reset_all_confirm {
+            ui.label(text::COVERS_RESET_ALL_ASK);
+            ui.horizontal(|ui| {
+                // Safe default first: the cancel button takes the focus.
+                let no = ui.button(text::COVERS_RESET_ALL_NO);
+                if std::mem::take(&mut self.settings.focus_reset_no) {
+                    no.request_focus();
+                }
+                if no.clicked() {
+                    self.settings.reset_all_confirm = false;
+                }
+                if ui.button(text::COVERS_RESET_ALL_YES).clicked() {
+                    self.reset_all_covers(true);
+                }
+            });
+        } else if ui
+            .add_enabled(!self.capture, Button::new(text::COVERS_RESET_ALL))
+            .clicked()
+        {
+            self.reset_all_covers(false);
+        }
+    }
+
+    /// T8: the first call (`confirmed == false`) only asks; nothing is forgotten without the confirmation.
+    pub(super) fn reset_all_covers(&mut self, confirmed: bool) {
+        if !confirmed {
+            self.settings.reset_all_confirm = true;
+            self.settings.focus_reset_no = true;
+            return;
+        }
+        self.settings.reset_all_confirm = false;
+        self.covers.reset(None);
+        self.set_status(text::COVERS_RESET_ALL_DONE.to_owned(), Level::Info);
+    }
+
+    /// T8: explicit reset of the selected game's cover (no confirmation: one cover, found again by itself).
+    pub(super) fn reset_selected_cover(&mut self) {
+        if self.capture {
+            return;
+        }
+        let Some(id) = self.selected_game().map(|g| g.id) else {
+            return;
+        };
+        self.covers.reset(Some(id));
+        self.set_status(text::COVER_RESET_DONE.to_owned(), Level::Info);
     }
 
     /// Computers (design v5.0 §4): initial input mode of a game without a remembered one, automatic fast loading.

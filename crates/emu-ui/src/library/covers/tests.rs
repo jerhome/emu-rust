@@ -545,3 +545,45 @@ fn missing_purge_runs_once_from_generation_zero() {
     crate::library::purge_missing_covers_once(&mut db, &mut config, &path);
     assert!(db.cover(game.id, CoverKind::Boxart).unwrap().is_some());
 }
+
+#[test]
+fn reset_forgets_slot_and_worker_state_and_searches_again() {
+    let ctx = egui::Context::default();
+    let (mut covers, _tx, cmds) = ui_side();
+    covers.slots.insert(GameId(1), Slot::Absent);
+    covers.slots.insert(GameId(2), Slot::Absent);
+    covers.owners.insert(GameId(1), PathBuf::from("a"));
+    covers.reset(Some(GameId(1)));
+    assert!(!covers.slots.contains_key(&GameId(1)));
+    assert!(covers.slots.contains_key(&GameId(2)));
+    assert!(!covers.owners.contains_key(&GameId(1)));
+    assert!(
+        cmds.try_iter()
+            .any(|c| matches!(c, Command::Reset(Some(GameId(1)))))
+    );
+    covers.reset(None);
+    assert!(covers.slots.is_empty());
+    assert!(cmds.try_iter().any(|c| matches!(c, Command::Reset(None))));
+    covers.poll(&ctx);
+}
+
+#[test]
+fn worker_reset_removes_record_and_file_then_downloads_again() {
+    let mut rig = rig(true);
+    let game = rig.first_game();
+    rig.answer(Ok(Some(found())));
+    assert!(loaded(&rig.show(game.id), game.id));
+    let Some(CoverState::Cached { path, .. }) = rig.state(game.id) else {
+        panic!("cover not cached");
+    };
+    let file = rig.worker.cache.resolve(&path).unwrap();
+    assert!(file.is_file());
+    rig.worker.handle(Command::Reset(Some(game.id)));
+    assert!(!file.is_file());
+    assert_eq!(
+        rig.state(game.id),
+        Some(CoverState::Missing { checked_unix: 0 })
+    );
+    rig.answer(Ok(Some(found())));
+    assert!(loaded(&rig.show(game.id), game.id));
+}

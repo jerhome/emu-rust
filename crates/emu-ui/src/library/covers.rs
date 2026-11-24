@@ -61,6 +61,9 @@ pub(crate) trait CoverProvider {
     fn refresh(&mut self) {}
     /// « Rechercher à nouveau » : forget `Missing` records and suspended sources.
     fn retry_missing(&mut self) {}
+    /// T8: forget the cover of one game (`Some`) or of all games (`None`) — record, cached file, texture — then
+    /// search again with the configured sources. Only explicit user actions call this.
+    fn reset(&mut self, _game: Option<GameId>) {}
     /// Requests still waiting for the worker (captures wait for them).
     fn busy(&self) -> bool {
         false
@@ -214,6 +217,8 @@ pub(crate) enum Command {
     Configure(CoverSettings),
     Refresh,
     RetryMissing,
+    /// T8: explicit user reset of one game or of every game.
+    Reset(Option<GameId>),
 }
 
 pub(crate) enum Reply {
@@ -332,6 +337,7 @@ impl Worker {
                 self.reset_session();
             }
             Command::Refresh => self.refresh_back(),
+            Command::Reset(target) => self.reset_covers(target),
             Command::RetryMissing => {
                 if let Err(e) = self.db.clear_missing_covers() {
                     tracing::warn!("jaquettes : {e}");
@@ -343,6 +349,57 @@ impl Worker {
                 self.reset_session();
             }
         }
+    }
+
+    /// T8: `emu-library` has no delete: a `Missing { checked_unix: 0 }` record is "never checked" for
+    /// `games_needing_cover` and `needs_download`, which is equivalent to no record.
+    /// T8: replace by `Library::clear_cover(id, kind)` / `clear_all_covers()` once they exist.
+    fn reset_covers(&mut self, target: Option<GameId>) {
+        let ids: Vec<GameId> = match target {
+            Some(id) => vec![id],
+            None => self
+                .db
+                .games()
+                .map(|g| g.into_iter().map(|g| g.id).collect())
+                .unwrap_or_default(),
+        };
+        let mut files = Vec::new();
+        for id in ids {
+            if let Ok(Some(CoverRecord {
+                state: CoverState::Cached { path, .. },
+                ..
+            })) = self.db.cover(id, CoverKind::Boxart)
+            {
+                files.push(path);
+            }
+            let forgotten = CoverState::Missing { checked_unix: 0 };
+            if let Err(e) = self.db.set_cover(id, CoverKind::Boxart, &forgotten) {
+                tracing::warn!("jaquettes : {e}");
+            }
+        }
+        // A file still referenced by another game is kept.
+        let still_used: HashSet<PathBuf> = self
+            .db
+            .games()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|g| self.db.cover(g.id, CoverKind::Boxart).ok().flatten())
+            .filter_map(|r| match r.state {
+                CoverState::Cached { path, .. } => Some(path),
+                CoverState::Missing { .. } => None,
+            })
+            .collect();
+        for relative in files.into_iter().filter(|p| !still_used.contains(p)) {
+            if let Some(file) = self.cache.resolve(&relative)
+                && let Err(e) = std::fs::remove_file(&file)
+            {
+                tracing::warn!("jaquettes : suppression de {} : {e}", file.display());
+            }
+        }
+        if let Some(chain) = &mut self.chain {
+            chain.reset();
+        }
+        self.reset_session();
     }
 
     fn reset_session(&mut self) {
@@ -927,6 +984,26 @@ impl CoverProvider for Covers {
         self.slots.retain(|_, s| !matches!(s, Slot::Absent));
         self.sent_visible.clear();
         self.send(Command::RetryMissing);
+    }
+
+    fn reset(&mut self, game: Option<GameId>) {
+        match game {
+            Some(id) => {
+                self.slots.remove(&id);
+                self.owners.remove(&id);
+            }
+            None => {
+                self.slots.clear();
+                self.owners.clear();
+            }
+        }
+        self.textures = self
+            .slots
+            .values()
+            .filter(|s| matches!(s, Slot::Texture { .. }))
+            .count();
+        self.sent_visible.clear();
+        self.send(Command::Reset(game));
     }
 
     fn busy(&self) -> bool {

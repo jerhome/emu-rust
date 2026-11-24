@@ -347,7 +347,7 @@ impl LibraryUi {
         }
         if !dialog_open && (focused || nothing_focused) {
             let page = self.page_rows;
-            let (navs, enter, fav, programs) = ui.input(|i| {
+            let (navs, enter, fav, programs, reset) = ui.input(|i| {
                 let mut navs = Vec::new();
                 for (key, nav) in [
                     (Key::ArrowLeft, Nav::Left),
@@ -368,6 +368,7 @@ impl LibraryUi {
                     focused && (i.key_pressed(Key::Enter) || i.key_pressed(Key::Space)),
                     focused && i.key_pressed(Key::F) && i.modifiers.is_none(),
                     focused && i.key_pressed(Key::P) && i.modifiers.is_none(),
+                    focused && i.key_pressed(Key::R) && i.modifiers.is_none(),
                 )
             });
             if !navs.is_empty() && !focused {
@@ -387,6 +388,9 @@ impl LibraryUi {
             if programs {
                 self.open_programs();
             }
+            if reset {
+                self.reset_selected_cover();
+            }
         }
 
         let mut area = ScrollArea::vertical()
@@ -405,6 +409,7 @@ impl LibraryUi {
         }
         let mut clicked = None;
         let mut double = false;
+        let mut reset_pos = None;
         let mut on_screen = Vec::new();
         let out = area.show_rows(ui, CARD_H, rows, |ui, range| {
             for row in range {
@@ -429,6 +434,12 @@ impl LibraryUi {
                         clicked = Some(pos);
                         double = true;
                     }
+                    resp.context_menu(|ui| {
+                        if ui.button(text::COVER_RESET).clicked() {
+                            reset_pos = Some(pos);
+                            ui.close();
+                        }
+                    });
                     let texture = self.covers.texture(ui.ctx(), game);
                     paint_card(
                         ui,
@@ -448,6 +459,10 @@ impl LibraryUi {
             self.page_rows = ((self.grid_height / row_step).floor() as usize).max(1);
         }
         self.covers.visible(&on_screen);
+        if let Some(pos) = reset_pos {
+            self.selected = pos;
+            self.reset_selected_cover();
+        }
         if let Some(pos) = clicked {
             self.selected = pos;
             focus_resp.request_focus();

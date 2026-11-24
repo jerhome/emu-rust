@@ -1438,3 +1438,39 @@ fn unrecognized_pad_is_noticed_learned_saved_and_played() {
     assert!(frame.pads[0].is_pressed(J::A));
     assert!(!frame.pads[0].is_pressed(J::B));
 }
+
+struct ResetSpy(std::rc::Rc<std::cell::RefCell<Vec<Option<GameId>>>>);
+
+impl CoverProvider for ResetSpy {
+    fn poll(&mut self, _ctx: &egui::Context) {}
+    fn texture(&mut self, _ctx: &egui::Context, _game: &Game) -> Option<egui::TextureHandle> {
+        None
+    }
+    fn visible(&mut self, _games: &[GameId]) {}
+    fn status(&self) -> Option<String> {
+        None
+    }
+    fn reset(&mut self, game: Option<GameId>) {
+        self.0.borrow_mut().push(game);
+    }
+}
+
+#[test]
+fn reset_all_covers_needs_confirmation_and_single_reset_does_not() {
+    let mut h = harness(false);
+    h.frame(Vec::new());
+    let calls = Default::default();
+    h.ui.covers = Box::new(ResetSpy(std::rc::Rc::clone(&calls)));
+    h.ui.reset_all_covers(false);
+    assert!(h.ui.settings.reset_all_confirm);
+    assert!(
+        calls.borrow().is_empty(),
+        "nothing forgotten before confirming"
+    );
+    h.ui.reset_all_covers(true);
+    assert!(!h.ui.settings.reset_all_confirm);
+    assert_eq!(*calls.borrow(), vec![None]);
+    h.ui.reset_selected_cover();
+    assert_eq!(calls.borrow().len(), 2);
+    assert!(calls.borrow()[1].is_some());
+}

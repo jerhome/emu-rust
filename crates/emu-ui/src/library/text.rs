@@ -99,6 +99,15 @@ pub const COVERS_NO_SOURCE: &str =
 pub const COVERS_UNAVAILABLE: &str = "Jaquettes : indisponibles (file de téléchargement arrêtée).";
 pub const COVERS_RETRY: &str = "Rechercher à nouveau les jaquettes absentes";
 pub const COVERS_RETRY_DONE: &str = "Les jaquettes absentes vont être recherchées à nouveau.";
+pub const COVER_RESET: &str = "Réinitialiser la jaquette";
+pub const COVER_RESET_DONE: &str = "Jaquette réinitialisée : nouvelle recherche en cours.";
+pub const COVERS_RESET_ALL: &str = "Réinitialiser toutes les jaquettes";
+pub const COVERS_RESET_ALL_ASK: &str =
+    "Oublier toutes les jaquettes (fichiers en cache compris) et les rechercher à nouveau ?";
+pub const COVERS_RESET_ALL_YES: &str = "Oui, tout réinitialiser";
+pub const COVERS_RESET_ALL_NO: &str = "Annuler";
+pub const COVERS_RESET_ALL_DONE: &str =
+    "Toutes les jaquettes ont été réinitialisées : nouvelle recherche en cours.";
 pub const DAT_OFFER_TITLE: &str = "Base de jeux";
 pub const DAT_OFFER: &str = "Aucune base d'identification (DAT No-Intro) n'est installée : les jeux portent \
                              le nom de leur fichier et les jaquettes sont plus rarement trouvées. Télécharger les \
