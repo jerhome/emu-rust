@@ -424,4 +424,19 @@ mod tests {
         let many = "x.st\n".repeat(MAX_MEDIA_IMAGES + 1);
         assert!(parse_m3u(&many, dir).is_err());
     }
+
+    #[test]
+    fn sega_cd_and_32x_cd_editions_are_not_grouped() {
+        // Same box, different editions (7.4): the tags after the disc number differ, so two games.
+        let files: Vec<PathBuf> = [
+            "/r/megacd/Fahrenheit (USA) (Disc 1) (Key Disc) (Sega CD).cue",
+            "/r/megacd/Fahrenheit (USA) (Disc 2) (32X CD).cue",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        let (groups, singles) = group_media(&files);
+        assert!(groups.is_empty(), "{groups:?}");
+        assert_eq!(singles, files);
+    }
 }

@@ -421,6 +421,69 @@ fn probe_disc(path: &Path, want_serial: bool) -> Result<Option<Probe>, LibraryEr
     }))
 }
 
+/// Boot program of a Sega CD 32X disc (7.4), in its data track: the IP.BIN of such a disc is a plain Mega CD one
+/// (`SEGADISCSYSTEM`, no 32X marker). A bare `MARS` is not enough: Mega CD-only discs test for the 32X with it.
+const SEGA_CD_32X_MAGIC: &[u8] = b"32X Initial Program";
+/// Bytes of the data track searched for [`SEGA_CD_32X_MAGIC`] (found about 107 KB into a real MODE1/2352 track).
+pub const CD_32X_PROBE_LEN: usize = 512 * 1024;
+/// Sync pattern opening every raw 2352-byte sector.
+const RAW_SYNC: [u8; 12] = [
+    0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0,
+];
+
+/// User bytes of the first sectors of a track: a raw track (sync at 0, mode byte at 15) loses its per-sector
+/// headers and EDC/ECC, so a string spanning two sectors is still contiguous; a cooked one is returned as is.
+fn track_user_data(head: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let layout = match (head.get(..RAW_SYNC.len()), head.get(15)) {
+        (Some(sync), Some(1)) if sync == RAW_SYNC => MODE1_RAW,
+        (Some(sync), Some(2)) if sync == RAW_SYNC => MODE2_RAW,
+        _ => return std::borrow::Cow::Borrowed(head),
+    };
+    let mut out = Vec::with_capacity(head.len() / layout.sector * USER_DATA + USER_DATA);
+    for sector in head.chunks(layout.sector) {
+        let end = sector.len().min(layout.data + USER_DATA);
+        if let Some(data) = sector.get(layout.data..end) {
+            out.extend_from_slice(data);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Sega CD header and CD 32X boot program in the first bytes of a data track (`head`, at most
+/// [`CD_32X_PROBE_LEN`] bytes are looked at).
+pub(crate) fn has_cd_32x_signature(head: &[u8]) -> bool {
+    let head = &head[..head.len().min(CD_32X_PROBE_LEN)];
+    probe_head(head, TRACK_OFFSETS).is_some()
+        && track_user_data(head)
+            .windows(SEGA_CD_32X_MAGIC.len())
+            .any(|w| w == SEGA_CD_32X_MAGIC)
+}
+
+/// Sega CD 32X disc (7.4): a Sega CD header and the 32X boot program (`32X Initial Program`) in the first
+/// [`CD_32X_PROBE_LEN`] bytes of the data track of a `.cue` (its first file, kept in its folder), a `.iso`
+/// (2048-byte sectors) or a raw `.bin` track (MODE1/2352). `Ok(false)` for any other disc and, unread, for a
+/// `.chd` / `.pbp` (use [`name_needs_32x`] on its Redump name then). One bounded read, regular files only.
+pub fn disc_needs_32x(path: &Path) -> Result<bool, LibraryError> {
+    let Some((track, file)) = open_track(path)? else {
+        return Ok(false);
+    };
+    let mut head = Vec::with_capacity(CD_32X_PROBE_LEN);
+    file.take(CD_32X_PROBE_LEN as u64)
+        .read_to_end(&mut head)
+        .map_err(|e| io_error(&track.path, e))?;
+    Ok(has_cd_32x_signature(&head))
+}
+
+/// Redump tags of the Sega CD 32X discs (`Sega - Mega-CD - Sega CD` DAT lists them with the Mega CD ones).
+const CD_32X_TAGS: &[&str] = &["(mega-cd 32x)", "(sega cd 32x)", "(32x cd)"];
+
+/// A Redump game or file name tagged as a Sega CD 32X disc: `(Mega-CD 32X)`, `(Sega CD 32X)` or `(32X CD)`,
+/// case ignored. Fallback of [`disc_needs_32x`] (`.chd`, header unreadable).
+pub fn name_needs_32x(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    CD_32X_TAGS.iter().any(|tag| lower.contains(tag))
+}
+
 /// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track: Sega CD, 3DO, PlayStation.
 /// `Ok(None)`: not a known disc (or a `.chd` / `.pbp`, never read). Reads at most 64 KiB of the cue, the first
 /// `PSX_HEAD_LEN` bytes of the track and, for a PlayStation disc without licence region, a few sectors more.
@@ -817,6 +880,24 @@ pub(crate) fn serial_keys(field: &str) -> Vec<String> {
 /// Fake PlayStation / 3DO images for the unit tests of this crate (no commercial content).
 #[cfg(test)]
 pub(crate) mod fixtures {
+    /// User data (2048-byte sectors) of a fake Sega CD: IP.BIN header (`SEGADISCSYSTEM`, Mega Drive header at
+    /// 0x100, USA region), 60 sectors, and the CD 32X boot program text at `signature` (a user-data offset;
+    /// a real disc has it about 45 sectors in).
+    pub(crate) fn sega_cd_user(signature: Option<usize>) -> Vec<u8> {
+        let mut img = vec![0u8; 60 * 2048];
+        img[..16].copy_from_slice(b"SEGADISCSYSTEM  ");
+        img[0x100..0x110].copy_from_slice(b"SEGA GENESIS    ");
+        img[0x20B] = 0xFF;
+        // A Mega CD-only disc may test for the 32X: `MARS` alone must not count.
+        img[30 * 2048..30 * 2048 + 4].copy_from_slice(b"MARS");
+        if let Some(at) = signature {
+            let text: &[u8] =
+                b"32X Initial Program CD-ROM Version    Copyright SEGA ENTERPRISES,LTD. 1994";
+            img[at..at + text.len()].copy_from_slice(text);
+        }
+        img
+    }
+
     /// 2048-byte-sector image of a fake PlayStation disc: licence text at sector 4, `PLAYSTATION` descriptor at 16,
     /// root directory at 18 (`SYSTEM.CNF;1` at 19 when `cnf` is given).
     pub(crate) fn psx_iso(license: Option<&str>, cnf: Option<&[u8]>) -> Vec<u8> {
@@ -1562,5 +1643,95 @@ mod tests {
         );
         let p = write(tmp.path(), "real.pbp", &psx_iso(None, Some(CNF)));
         assert_eq!(disc_info(&p).unwrap(), None);
+    }
+    /// User-data offset of the signature in the real 32X disc (sector 45, byte 1198).
+    const SIG_AT: usize = 45 * 2048 + 1198;
+
+    #[test]
+    fn cd_32x_signature_in_iso_and_raw_tracks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cases = [
+            (Some(SIG_AT), true),
+            // Split across two sectors: the raw sector header and EDC/ECC sit in the middle.
+            (Some(46 * 2048 - 5), true),
+            (None, false),
+        ];
+        for (i, (sig, want)) in cases.into_iter().enumerate() {
+            let user = sega_cd_user(sig);
+            let iso = write(tmp.path(), &format!("d{i}.iso"), &user);
+            let bin = write(
+                tmp.path(),
+                &format!("d{i} (Track 1).bin"),
+                &to_raw(&user, 1),
+            );
+            let cue = write(
+                tmp.path(),
+                &format!("d{i}.cue"),
+                format!("FILE \"d{i} (Track 1).bin\" BINARY\n  TRACK 01 MODE1/2352\n").as_bytes(),
+            );
+            for path in [&iso, &bin, &cue] {
+                assert_eq!(disc_needs_32x(path).unwrap(), want, "{}", path.display());
+                // Still an ordinary Sega CD for the other probes.
+                assert_eq!(disc_info(path).unwrap().unwrap().format, DiscFormat::SegaCd);
+            }
+        }
+    }
+
+    #[test]
+    fn cd_32x_probe_is_bounded_and_needs_a_sega_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Signature past the probed bytes: not seen.
+        let mut far = sega_cd_user(None);
+        far.resize(CD_32X_PROBE_LEN + 4096, 0);
+        far[CD_32X_PROBE_LEN + 100..CD_32X_PROBE_LEN + 119].copy_from_slice(SEGA_CD_32X_MAGIC);
+        assert!(!disc_needs_32x(&write(tmp.path(), "far.iso", &far)).unwrap());
+        // Signature without a Sega CD header (any other data disc).
+        let mut other = vec![0u8; 60 * 2048];
+        other[SIG_AT..SIG_AT + 19].copy_from_slice(SEGA_CD_32X_MAGIC);
+        assert!(!disc_needs_32x(&write(tmp.path(), "other.iso", &other)).unwrap());
+        // Short, empty, `.chd` (never read, absent here), missing cue track.
+        assert!(!disc_needs_32x(&write(tmp.path(), "short.iso", b"SEGADISCSYSTEM")).unwrap());
+        assert!(!disc_needs_32x(&write(tmp.path(), "empty.iso", b"")).unwrap());
+        assert!(!disc_needs_32x(&tmp.path().join("x.chd")).unwrap());
+        let cue = write(tmp.path(), "gone.cue", b"FILE \"gone.bin\" BINARY\n");
+        assert!(!disc_needs_32x(&cue).unwrap());
+        // A truncated last raw sector is handled.
+        let raw = to_raw(&sega_cd_user(Some(SIG_AT)), 1);
+        assert!(has_cd_32x_signature(&raw[..46 * 2352 + 100]));
+        assert!(!has_cd_32x_signature(&raw[..45 * 2352 + 100]));
+    }
+
+    #[test]
+    fn cd_32x_redump_names() {
+        for name in [
+            "Fahrenheit (USA) (Disc 2) (32X CD)",
+            "Night Trap (USA) (Sega CD 32X)",
+            "Corpse Killer (Europe) (Mega-CD 32X)",
+            "fahrenheit (usa) (32x cd).chd",
+        ] {
+            assert!(name_needs_32x(name), "{name}");
+        }
+        for name in [
+            "Fahrenheit (USA) (Disc 1) (Key Disc) (Sega CD)",
+            "Fahrenheit (Europe)",
+            "Virtua Racing Deluxe (USA) (32X)",
+            "Mars 32X CD",
+        ] {
+            assert!(!name_needs_32x(name), "{name}");
+        }
+    }
+
+    /// Manual check on the user's real discs (read-only; not in CI): `EMU_CD32X_DISCS` lists `.cue` paths
+    /// separated by `;`, each followed by `=1` (32X) or `=0`.
+    #[test]
+    #[ignore]
+    fn cd_32x_real_discs() {
+        let list = std::env::var("EMU_CD32X_DISCS").expect("EMU_CD32X_DISCS");
+        for item in list.split(';').filter(|s| !s.is_empty()) {
+            let (path, want) = item.rsplit_once('=').unwrap();
+            let got = disc_needs_32x(Path::new(path)).unwrap();
+            eprintln!("{path}: needs_32x = {got}");
+            assert_eq!(got, want == "1", "{path}");
+        }
     }
 }

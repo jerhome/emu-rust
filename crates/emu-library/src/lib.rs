@@ -19,8 +19,8 @@ pub use crate::db::{
     OpenOutcome, SCHEMA_VERSION,
 };
 pub use crate::disc::{
-    BinKind, DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references, disc_info,
-    disc_serial, probe_bin, region_from_name,
+    BinKind, CD_32X_PROBE_LEN, DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references,
+    disc_info, disc_needs_32x, disc_serial, name_needs_32x, probe_bin, region_from_name,
 };
 pub use crate::error::LibraryError;
 pub use crate::filter::{GameFilter, SortOrder, filter_games, normalize_title};

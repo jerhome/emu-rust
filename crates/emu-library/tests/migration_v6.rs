@@ -112,12 +112,13 @@ fn a_v5_base_gains_the_region_without_loss_and_the_scan_fills_it() {
         lib.set_favorite(id, true).unwrap();
         lib.record_played(id, 1_800_000_000).unwrap();
     }
-    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(SCHEMA_VERSION, 7);
     // Back to the v5 layout, as a 5.0 build left it: the 2.0 games (missing root, kept) and the new ones.
     {
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "ALTER TABLE game DROP COLUMN region;
+            "ALTER TABLE game DROP COLUMN needs_32x;
+             ALTER TABLE game DROP COLUMN region;
              ALTER TABLE dat_entry DROP COLUMN serial;
              ALTER TABLE dat_entry DROP COLUMN region;",
         )
@@ -137,7 +138,7 @@ fn a_v5_base_gains_the_region_without_loss_and_the_scan_fills_it() {
     assert_eq!(outcome, OpenOutcome::Opened);
     assert!(lib.games().unwrap().iter().all(|g| g.region.is_none()));
     drop(lib);
-    assert_eq!(user_version(&db), 6);
+    assert_eq!(user_version(&db), 7);
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(
         rows(&db, "SELECT * FROM game_media ORDER BY game_id, idx"),
@@ -182,5 +183,5 @@ fn a_v5_base_gains_the_region_without_loss_and_the_scan_fills_it() {
     assert_eq!(rows(&db, GAME_SQL), games);
     let (_, again) = Library::open(&db).unwrap();
     assert_eq!(again, OpenOutcome::Opened);
-    assert_eq!(user_version(&db), 6);
+    assert_eq!(user_version(&db), 7);
 }

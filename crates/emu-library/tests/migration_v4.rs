@@ -76,9 +76,9 @@ fn a_real_2_0_base_migrates_to_the_current_schema_without_loss() {
 
     let (lib, outcome) = Library::open(&db).unwrap();
     assert_eq!(outcome, OpenOutcome::Opened);
-    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(SCHEMA_VERSION, 7);
     drop(lib);
-    assert_eq!(user_version(&db), 6);
+    assert_eq!(user_version(&db), 7);
     // Games (identification, favorites, history, pins), disks and covers are byte-identical rows.
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(rows(&db, MEDIA_SQL), media);
