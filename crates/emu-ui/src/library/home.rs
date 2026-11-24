@@ -607,9 +607,9 @@ fn paint_card(
             theme::WARN,
         );
     }
-    let mut left = cover.left_top() + Vec2::new(6.0, 6.0);
+    let mut left = cover.left_top() + Vec2::splat(theme::SP_XS + 2.0);
     for label in grid::badges(game) {
-        left.x += paint_badge(&painter, left, label) + 4.0;
+        left.x += paint_badge(&painter, left, label) + theme::SP_XS;
     }
     let mut job = egui::text::LayoutJob::simple(
         text::game_title(&game.title),
@@ -641,15 +641,21 @@ fn paint_card(
     }
 }
 
-const BADGE_BG: Color32 = Color32::from_rgb(30, 60, 110);
-
-/// Small framed label with its top-left corner at `at`; returns its width.
+/// Small framed label (theme tokens) with its top-left corner at `at`; returns its width.
 fn paint_badge(painter: &egui::Painter, at: egui::Pos2, label: &str) -> f32 {
-    let galley =
-        painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.0), Color32::WHITE);
-    let rect = Rect::from_min_size(at, galley.size() + vec2(10.0, 4.0));
-    painter.rect_filled(rect, CornerRadius::same(3), BADGE_BG);
-    painter.galley(at + vec2(5.0, 2.0), galley, Color32::WHITE);
+    let galley = painter.layout_no_wrap(
+        label.to_owned(),
+        FontId::proportional(theme::FONT_SMALL),
+        theme::TEXT,
+    );
+    let pad = vec2(theme::SP_XS + 1.0, 2.0);
+    let rect = Rect::from_min_size(at, galley.size() + 2.0 * pad);
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(theme::RADIUS / 2),
+        theme::ACCENT_DIM,
+    );
+    painter.galley(at + pad, galley, theme::TEXT);
     rect.width()
 }
 
@@ -658,8 +664,8 @@ fn badge(ui: &mut Ui, label: &str) {
     ui.label(
         egui::RichText::new(format!(" {label} "))
             .strong()
-            .color(Color32::WHITE)
-            .background_color(BADGE_BG),
+            .color(theme::TEXT)
+            .background_color(theme::ACCENT_DIM),
     );
 }
 
