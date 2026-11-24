@@ -147,8 +147,25 @@ impl LibraryUi {
             ui.add_space(2.0);
         });
 
+        let firmware = self.firmware_banner();
         egui::Panel::bottom("library-status").show(ui, |ui| {
             ui.add_space(2.0);
+            if let Some(banner) = firmware {
+                ui.horizontal_wrapped(|ui| {
+                    let color = if banner.required {
+                        super::ERROR
+                    } else {
+                        super::WARNING
+                    };
+                    ui.colored_label(color, &banner.text);
+                    if ui
+                        .add_enabled(!dialog_open, egui::Button::new(text::FIRMWARE_IMPORT))
+                        .clicked()
+                    {
+                        self.cores.import.start(Some(banner.wanted));
+                    }
+                });
+            }
             self.status_line(ui);
             if !self.unclassified.is_empty() && ui.small_button(text::UNCLASSIFIED_SHOW).clicked() {
                 let list = self.unclassified.clone();

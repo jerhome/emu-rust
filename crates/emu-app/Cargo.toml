@@ -9,12 +9,21 @@ publish = false
 name = "emu-rust"
 path = "src/main.rs"
 
+# Windows: same code with a console window (`--features console`). `required-features` keeps the default
+# build from producing a second GUI executable.
+[[bin]]
+name = "emu-rust-console"
+path = "src/main.rs"
+required-features = ["console"]
+
 [features]
 default = ["audio-cpal", "gamepad"]
 audio-cpal = ["emu-ui/audio-cpal"]
 # Real pads through gilrs (ADR 0016). Linux builds need libudev-dev (runtime: libudev1);
 # `--no-default-features --features audio-cpal` builds without it.
 gamepad = ["emu-ui/gamepad"]
+# Windows console subsystem (`emu-rust-console.exe`); no effect elsewhere.
+console = []
 
 [dependencies]
 # SIGINT / SIGTERM / SIGHUP (and console events on Windows) end the game cleanly: saves written.
@@ -23,6 +32,10 @@ directories = { workspace = true }
 emu-ui = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Embeds `assets/icon.ico` in the Windows executables (build.rs checks the target OS, cross-compilation included).
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

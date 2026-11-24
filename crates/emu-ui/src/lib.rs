@@ -4,6 +4,7 @@ mod app;
 mod bios_import;
 mod computer;
 mod config;
+mod config_app;
 mod config_computer;
 mod config_gamepad;
 mod config_library;
@@ -19,10 +20,12 @@ mod hotkeys;
 mod keyboard;
 mod launch_firmware;
 mod library;
+mod log_buffer;
 mod pad_mode;
 mod platform;
 mod shutdown;
 mod ui;
+mod window_icon;
 
 use std::path::PathBuf;
 
@@ -34,6 +37,7 @@ pub use crate::config::{
     AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
     MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
+pub use crate::config_app::AppConfig;
 pub use crate::config_computer::{
     ComputerConfig, KeyboardModeChoice, KeyboardModeSetting, emutos_variant_or_system,
     variant_for_locale,
@@ -61,9 +65,11 @@ pub use crate::gamepad::{
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
+pub use crate::log_buffer::{LOG_CAPACITY, LogBuffer, LogBufferLayer, LogLine};
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 pub use crate::ui::text::sanitize_core_line;
+pub use crate::window_icon::window_icon;
 /// The asset crate, re-exported so `emu-app` reaches the core manager through `emu-ui`.
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.

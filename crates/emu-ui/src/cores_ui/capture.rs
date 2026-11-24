@@ -105,7 +105,8 @@ impl ApplicationHandler for CaptureApp {
         }
         let attrs = WindowAttributes::default()
             .with_title("emu-rust — cores")
-            .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1));
+            .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1))
+            .with_window_icon(crate::window_icon());
         let window = match GlWindow::new(event_loop, attrs) {
             Ok(w) => w,
             Err(e) => {

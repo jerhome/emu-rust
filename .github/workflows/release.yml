@@ -222,13 +222,23 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
-      # Console subsystem on purpose (ADR 0012): CLI-driven, logs on stderr.
-      - name: Build
-        run: cargo build --release --locked -p emu-app --target x86_64-pc-windows-msvc
+      # Two executables: emu-rust.exe (GUI subsystem, no terminal) and emu-rust-console.exe (--features console,
+      # for the CLI and logs). The GUI one is copied aside because the second build reuses the same target dir.
+      - name: Build (GUI)
+        run: |
+          cargo build --release --locked -p emu-app --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force dist-bin | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/emu-rust.exe dist-bin/emu-rust.exe
 
+      - name: Build (console)
+        run: |
+          cargo build --release --locked -p emu-app --target x86_64-pc-windows-msvc --features console --bin emu-rust-console
+          Copy-Item target/x86_64-pc-windows-msvc/release/emu-rust-console.exe dist-bin/emu-rust-console.exe
+
+      # Only the console exe can print on stdout.
       - name: Smoke test
         run: |
-          $out = & target/x86_64-pc-windows-msvc/release/emu-rust.exe --version
+          $out = & dist-bin/emu-rust-console.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output $out
           if (-not ($out -match [regex]::Escape($env:VERSION))) { Write-Error "version mismatch"; exit 1 }
@@ -240,7 +250,7 @@ jobs:
           $stage = "dist/$name"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage, "dist/$name.zip"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/emu-rust.exe, packaging/README.txt, packaging/THIRD-PARTY-DATA.txt, LICENSE-MIT, LICENSE-APACHE -Destination $stage
+          Copy-Item dist-bin/emu-rust.exe, dist-bin/emu-rust-console.exe, packaging/README.txt, packaging/THIRD-PARTY-DATA.txt, LICENSE-MIT, LICENSE-APACHE -Destination $stage
           Compress-Archive -Path $stage -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $stage
           Expand-Archive -Path "dist/$name.zip" -DestinationPath "$env:RUNNER_TEMP/check"

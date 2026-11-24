@@ -71,6 +71,16 @@ Ordre type d'une fonctionnalité : `architecte` (interface + découpage) → age
 Un agent ne modifie jamais un crate hors de son périmètre : il décrit le besoin dans son résumé final.
 Les agents communiquent via des résumés courts : fichiers modifiés, API publique ajoutée, points ouverts.
 
+## Suivi pendant un développement
+
+Dès qu'un développement démarre (premier agent lancé ou première modification de code), la session principale crée
+**sans attendre qu'on le lui demande** un cron de session (`CronCreate`, toutes les 10 min, minutes hors :00/:30) qui
+exécute `scripts/status.sh` (+ `git status --short`) et affiche : tableau **Ressources** (CPU interprété, température /
+bridage thermique, mémoire dispo, disque libre, `target/`, processus cargo/rustc ; alerte si mémoire < 1 Go,
+disque > 95 %, CPU bridé ou ≥ 90 °C), tableau **Agents**
+(agent, tâche, ✅ / ⏳ / ❌), **Étape du plan** sur une ligne, **Prochaine action**. Vérifier d'abord avec `CronList`
+qu'il n'existe pas déjà (les crons meurent avec la session).
+
 ## Définition de « terminé »
 
 `fmt`, `clippy -D warnings` et `test` passent sur tout le workspace ; aucun test n'appelle un vrai service réseau

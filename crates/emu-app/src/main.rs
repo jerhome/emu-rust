@@ -1,21 +1,31 @@
 //! `emu-rust` binary: assembles CLI, data directories (ADR 0011) and `config.toml`, then runs the UI.
 
+// Windows: no console window for the default build; `emu-rust-console` (feature `console`) keeps one.
+#![cfg_attr(all(windows, not(feature = "console")), windows_subsystem = "windows")]
+
 mod cli;
+#[cfg(any(test, all(windows, not(feature = "console"))))]
+mod console;
 mod cores_cli;
 mod diagnostics;
+mod logging;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-const DEFAULT_LOG_FILTER: &str = "warn,emu_app=info,emu_ui=info,emu_runtime=info,emu_libretro=info";
+fn standard_root() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "emu-rust").map(|d| d.data_dir().to_path_buf())
+}
 
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+/// Data root of a command, before tracing is set up (log file, `[app] show_terminal`); `None` without one.
+fn early_root(command: &cli::Command) -> Option<PathBuf> {
+    let data_dir = match command {
+        cli::Command::Cores(c) => c.data_dir.clone(),
+        cli::Command::Library(l) => l.data_dir.clone(),
+        cli::Command::Run(c) => c.data_dir.clone(),
+        cli::Command::Help | cli::Command::Version => return None,
+    };
+    cli::resolve_root(data_dir, std::env::var_os("EMU_DATA_DIR"), standard_root()).ok()
 }
 
 /// Data directories (overrides applied, folders created) and `config.toml`.
@@ -24,9 +34,7 @@ fn prepare(
     system_dir: Option<std::path::PathBuf>,
     save_dir: Option<std::path::PathBuf>,
 ) -> Result<(emu_ui::DataDirs, emu_ui::Config), String> {
-    let standard =
-        directories::ProjectDirs::from("", "", "emu-rust").map(|d| d.data_dir().to_path_buf());
-    let root = cli::resolve_root(data_dir, std::env::var_os("EMU_DATA_DIR"), standard)?;
+    let root = cli::resolve_root(data_dir, std::env::var_os("EMU_DATA_DIR"), standard_root())?;
     tracing::info!("racine des données : {}", root.display());
     let mut dirs = emu_ui::DataDirs::under(&root);
     if let Some(d) = system_dir {
@@ -139,8 +147,26 @@ fn report(result: Result<(), emu_ui::UiError>) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    init_tracing();
-    match cli::parse(std::env::args_os().skip(1)) {
+    let parsed = cli::parse(std::env::args_os().skip(1));
+    let root = parsed.as_ref().ok().and_then(early_root);
+    // Read again by `prepare`; a broken file is reported there, once tracing is up.
+    let show_terminal = root.as_deref().is_some_and(|r| {
+        emu_ui::Config::load_or_default(&emu_ui::DataDirs::under(r).config_file)
+            .app
+            .show_terminal
+    });
+    #[cfg(all(windows, not(feature = "console")))]
+    let relaunch = console::relaunch_in_console(show_terminal);
+    #[cfg(all(windows, not(feature = "console")))]
+    if relaunch == Ok(true) {
+        return ExitCode::SUCCESS;
+    }
+    logging::init_tracing(root.as_deref(), show_terminal);
+    #[cfg(all(windows, not(feature = "console")))]
+    if let Err(e) = relaunch {
+        tracing::warn!("{e}");
+    }
+    match parsed {
         Ok(cli::Command::Help) => {
             println!("{}", cli::USAGE);
             ExitCode::SUCCESS

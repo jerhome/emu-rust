@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=emu-rust
+Comment=Libretro frontend
+Exec=emu-rust
+Icon=emu-rust
+Terminal=false
+Categories=Game;Emulator;

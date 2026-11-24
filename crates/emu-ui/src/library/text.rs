@@ -26,6 +26,27 @@ pub const SORT_TITLE: &str = "Tri : titre";
 pub const SORT_LAST_PLAYED: &str = "Tri : dernière partie";
 pub const CREDIT: &str = "dev by claude@jerhome";
 
+pub const FIRMWARE_IMPORT: &str = "Importer…";
+
+/// Banner of the selected game (design v7.1 point 5): `names` are the missing files (alternatives when several),
+/// `required`: the core cannot run the game without one of them.
+pub fn firmware_advice(names: &[String], required: bool) -> String {
+    let verb = if required {
+        "exige"
+    } else {
+        "fonctionne mieux avec"
+    };
+    let files = if names.len() > 1 {
+        format!("l'un de ces fichiers : {}", clean_list(names))
+    } else {
+        clean_list(names)
+    };
+    format!(
+        "Ce core {verb} un fichier d'origine que vous devez fournir vous-même ({files}). \
+         emu-rust ne le télécharge pas : copiez-le depuis votre propre matériel."
+    )
+}
+
 /// Footer line: the version comes from the workspace (shared by all crates).
 pub fn footer() -> String {
     footer_for(env!("CARGO_PKG_VERSION"))
@@ -627,3 +648,9 @@ pub fn dos_cache_button(size: Option<u64>) -> String {
 pub fn dos_cache_failed(e: &str) -> String {
     format!("Cache DOS non vidé : {e}")
 }
+
+pub const APP_TITLE: &str = "Application";
+pub const SHOW_TERMINAL: &str = "Afficher le terminal (après redémarrage)";
+pub const JOURNAL_TITLE: &str = "Journal";
+pub const JOURNAL_EMPTY: &str = "Aucun message pour l'instant.";
+pub const JOURNAL_COPY: &str = "Copier";

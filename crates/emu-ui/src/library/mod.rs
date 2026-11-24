@@ -4,6 +4,7 @@
 
 mod covers;
 mod dos;
+mod firmware_banner;
 pub(crate) mod firmware_gate;
 mod grid;
 mod home;
@@ -273,6 +274,8 @@ pub(crate) struct LibraryUi {
     /// « Lancer un autre programme… » of a DOS folder game.
     programs: Option<dos::ProgramsDialog>,
     dos_cache: dos::DosCache,
+    /// « Fichier d'origine » banner of the selected game (`firmware_banner`).
+    advice: Option<(GameId, Option<firmware_banner::Banner>)>,
 }
 
 fn now_unix() -> i64 {
@@ -367,6 +370,7 @@ impl LibraryUi {
             snapshot: None,
             programs: None,
             dos_cache: dos::DosCache::default(),
+            advice: None,
         };
         ui.reload_games();
         ui
@@ -382,6 +386,7 @@ impl LibraryUi {
 
     pub(crate) fn set_page(&mut self, page: Page) {
         self.page = page;
+        self.forget_firmware_banner();
         self.settings.focus_first = page == Page::Settings;
         if page == Page::Settings {
             self.refresh_settings_cache();
@@ -969,6 +974,7 @@ impl LibraryUi {
     fn import_closed(&mut self, installed: bool) {
         if installed {
             self.cores.mark_dirty();
+            self.forget_firmware_banner();
         }
         if !matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
             return;
@@ -1007,6 +1013,7 @@ impl LibraryUi {
                 .insert(info.id.clone(), core.to_string());
         }
         self.save_config();
+        self.forget_firmware_banner();
         self.cores
             .set_preferences(cores_ui::preferences(&self.config.cores));
     }
@@ -1060,6 +1067,7 @@ impl LibraryUi {
 
     /// Back from a game (or a failed load): core released, config taken back, error shown.
     pub(crate) fn game_over(&mut self, config: Option<Config>, error: Option<String>) {
+        self.forget_firmware_banner();
         if let Some(manager) = self.cores.manager() {
             cores_ui::release(manager);
         }
@@ -1194,6 +1202,7 @@ impl LibraryUi {
     fn bios_completed(&mut self) {
         for done in self.cores.bios.take_done() {
             self.cores.mark_dirty();
+            self.forget_firmware_banner();
             if done.ok && done.bios == "emutos" && !self.capture {
                 self.config.computer.emutos_variant = Some(done.variant.clone());
                 self.save_config();

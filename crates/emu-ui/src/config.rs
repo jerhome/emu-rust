@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
 use crate::computer::host::DEFAULT_HOST_KEY;
+use crate::config_app::AppConfig;
 use crate::config_computer::ComputerConfig;
 use crate::config_gamepad::GamepadConfig;
 use crate::config_library::{CoresConfig, CoversConfig, CredentialsConfig, LibraryConfig};
@@ -269,6 +270,9 @@ pub struct InputConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// `[app]`: not written while default.
+    #[serde(skip_serializing_if = "AppConfig::is_default")]
+    pub app: AppConfig,
     pub video: VideoConfig,
     pub audio: AudioSettings,
     pub speed: SpeedConfig,
