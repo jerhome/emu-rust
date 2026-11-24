@@ -17,6 +17,9 @@ lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
   OpenGL ≤ 4.1). Code spécifique OS via `#[cfg(...)]`.
   Mac de test de l'utilisateur, modeste : MacBook Pro 13" début 2015, i5 2,7 GHz 2 cœurs, 8 Go DDR3,
   Intel Iris 6100, macOS 12.7.6. Réglages par défaut légers ; ne pas exiger plus que cette machine.
+  PC Windows de test (bureau) : portable **Intel Iris Xe** (CPU basse consommation), **OpenGL 3.3** sous Windows,
+  Vulkan mal supporté (valider Vulkan par lavapipe en test) ; WSL2 + Docker (WSLg : OpenGL via Mesa d3d12).
+  Détails à compléter (modèle CPU, RAM, disque, version de Windows, ressources WSL2).
 - **Entrées** : clavier d'abord ; manette PS4 (DualShock 4) plus tard. Ne jamais coder en dur une hypothèse « clavier seulement ».
 - **Pas d'OpenSSL** : `rustls` partout.
 - **Secrets** (identifiants ScreenScraper, clés IGDB) : jamais en dur, jamais loggés, jamais commités ; fichier de config en `600`.
