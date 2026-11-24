@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "7.3.0"
+version = "7.4.0"
 license = "MIT OR Apache-2.0"
 
 # Shared versions; GL/windowing aligned with egui_glow 0.37 (ADR 0008).

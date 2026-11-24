@@ -2,6 +2,19 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.4.0] - non publiée (tag à valider)
+
+### Ajouté
+
+- **Sega CD 32X** : les CD Mega CD + 32X sont reconnus au scan (signature « 32X Initial Program » de la piste de
+  données, ou nom Redump) et lancés avec picodrive ; badge 32X dans la bibliothèque.
+- Installation de picodrive proposée si le core manque.
+
+### Corrigé
+
+- Les disques de Fahrenheit (Sega CD) et de Fahrenheit (32X CD) ne sont plus regroupés en un seul jeu ; ceux de
+  Night Trap (Disc 1 / Disc 2) le restent quand ils sont dans le même dossier.
+
 ## [7.3.0] - non publiée (tag à valider)
 
 Contient aussi les versions 7.1 et 7.2 (voir ci-dessous).
