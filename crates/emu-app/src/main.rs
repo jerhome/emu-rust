@@ -9,6 +9,8 @@ mod console;
 mod cores_cli;
 mod diagnostics;
 mod logging;
+#[cfg(any(test, target_os = "macos"))]
+mod terminal_macos;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -161,8 +163,19 @@ fn main() -> ExitCode {
     if relaunch == Ok(true) {
         return ExitCode::SUCCESS;
     }
+    // Only an argument-less launch (Finder, Dock) may move to Terminal.app: `open` cannot forward arguments.
+    #[cfg(target_os = "macos")]
+    let relaunch = if std::env::args_os().len() <= 1 {
+        terminal_macos::restart_in_terminal(show_terminal)
+    } else {
+        Ok(false)
+    };
+    #[cfg(target_os = "macos")]
+    if relaunch == Ok(true) {
+        return ExitCode::SUCCESS;
+    }
     logging::init_tracing(root.as_deref(), show_terminal);
-    #[cfg(all(windows, not(feature = "console")))]
+    #[cfg(any(target_os = "macos", all(windows, not(feature = "console"))))]
     if let Err(e) = relaunch {
         tracing::warn!("{e}");
     }
