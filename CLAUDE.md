@@ -2,7 +2,8 @@
 
 Frontend **libretro** écrit en Rust : il charge des cores libretro existants (`.so`/`.dylib`/`.dll`) et fournit
 image, son, entrées, bibliothèque de jeux, téléchargements (cores, BIOS libres, covers). Usage **personnel**.
-Feuille de route : `docs/roadmap.md`. Décisions d'architecture : `docs/adr/` (elles font autorité).
+Feuille de route : `docs/roadmap.md`. **En début de session, lire `docs/reprise.md`** (état et prochaines tâches ;
+la mémoire de Claude est locale à chaque machine) et le mettre à jour en fin de session. Décisions d'architecture : `docs/adr/` (elles font autorité).
 
 Conventions communes de mes projets Rust : `../agents-home/docs/rust/CONVENTIONS.md` (Home Repo `../agents-home`,
 lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
