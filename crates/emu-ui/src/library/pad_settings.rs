@@ -183,6 +183,16 @@ pub(super) fn store_learned(
 
 /// Removes what learning wrote; `true` when there was something to forget.
 pub(super) fn forget_learned(config: &mut GamepadConfig, guid: &str) -> bool {
+    // Learned maps are keyed by lowercase GUID; a hand-edited config may use another case.
+    let Some(key) = config
+        .devices
+        .keys()
+        .find(|k| k.eq_ignore_ascii_case(guid))
+        .cloned()
+    else {
+        return false;
+    };
+    let guid = key.as_str();
     let Some(d) = config.devices.get_mut(guid) else {
         return false;
     };
@@ -864,5 +874,25 @@ mod tests {
         store_learned(&mut c, &p, PadLayout::Snes, &LearnedMap::default());
         forget_learned(&mut c, &p.guid);
         assert_eq!(c.devices[&p.guid].port, Some(1));
+    }
+
+    #[test]
+    fn forget_ignores_guid_case_and_invalid_maps_are_not_loaded() {
+        let mut c = GamepadConfig::default();
+        let p = pad();
+        let upper = p.guid.to_ascii_uppercase();
+        let map = LearnedMap::from_config(&[("south".to_owned(), "b2".to_owned())].into());
+        store_learned(&mut c, &p, PadLayout::Snes, &map);
+        let d = c.devices.remove(&p.guid).unwrap();
+        c.devices.insert(upper.clone(), d);
+        assert!(forget_learned(&mut c, &p.guid.to_ascii_lowercase()));
+        assert!(!c.devices.contains_key(&upper));
+
+        let d = c.devices.entry(upper).or_default();
+        d.map.insert("south".to_owned(), "garbage".to_owned());
+        assert!(
+            crate::gamepad::learned_maps(&c).is_empty(),
+            "a map without valid binding is skipped"
+        );
     }
 }

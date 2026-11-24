@@ -52,13 +52,14 @@ pub(crate) fn open_backend(
     Ok(pad)
 }
 
-/// Learned maps of the config, by GUID (for `GamepadInput::set_learned_maps`). Entries without a map are skipped.
+/// Learned maps of the config, by lowercase GUID (for `GamepadInput::set_learned_maps`). Entries whose map has no
+/// valid binding are skipped: an empty map would switch the pad to raw mode and silence it.
 pub(crate) fn learned_maps(config: &GamepadConfig) -> BTreeMap<String, LearnedMap> {
     config
         .devices
         .iter()
-        .filter(|(_, d)| !d.map.is_empty())
-        .map(|(guid, d)| (guid.clone(), LearnedMap::from_config(&d.map)))
+        .map(|(guid, d)| (guid.to_ascii_lowercase(), LearnedMap::from_config(&d.map)))
+        .filter(|(_, m)| !m.bindings().is_empty())
         .collect()
 }
 
