@@ -26,6 +26,7 @@ fn connect_guid(id: PadId, guid: &str) -> PadEvent {
         PadEventKind::Connected {
             name: "Wireless Controller".into(),
             guid: guid.into(),
+            raw: false,
         },
     )
 }

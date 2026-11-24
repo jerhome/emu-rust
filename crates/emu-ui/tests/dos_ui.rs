@@ -234,6 +234,7 @@ fn pad_sticks_reach_an_analog_core() {
             kind: PadEventKind::Connected {
                 name: "Wireless Controller".into(),
                 guid: "030000004c050000c405000000000000".into(),
+                raw: false,
             },
         },
         axis(PadAxis::LeftX, 1.0),

@@ -19,12 +19,21 @@ pub enum PadAxis {
     R2,
 }
 
+/// Native input of a pad read without gilrs' names. Codes are opaque, stable for one model on one platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RawInput {
+    Button(u32),
+    Axis(u32),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PadEventKind {
     /// `guid` is the lowercase hex mapping GUID (same for identical models); only name and GUID may be logged.
+    /// `raw = true`: this pad's inputs arrive as `Raw` (unmapped model, or a learned map overrides the database).
     Connected {
         name: String,
         guid: String,
+        raw: bool,
     },
     Disconnected,
     Button {
@@ -33,6 +42,11 @@ pub enum PadEventKind {
     },
     Axis {
         axis: PadAxis,
+        value: f32,
+    },
+    /// Buttons: 0.0 / 1.0; axes and hats: [-1, 1].
+    Raw {
+        input: RawInput,
         value: f32,
     },
 }
@@ -53,15 +67,23 @@ pub enum GamepadError {
 
 /// Source of normalised events: real (`GilrsSource`) or scripted (tests). Never blocks, never panics.
 pub trait GamepadSource {
-    /// Appends the events received since the previous call. Pads whose model has no button mapping are
-    /// reported neither as `Connected` nor through any other event (logged with `warn!` by the source).
+    /// Appends the events received since the previous call. A pad without button mapping is announced as
+    /// `Connected { raw: true }` and then sends `Raw` events (7.2; it used to be ignored).
     /// A source also reports pads already plugged in at creation as `Connected` on its first call.
     fn poll_events(&mut self, out: &mut Vec<PadEvent>);
+
+    /// Models (GUIDs) to read raw even when the database maps them; a pad already plugged in is re-announced
+    /// (`Disconnected` then `Connected { raw }`). Default: ignored (scripted sources).
+    fn set_raw_guids(&mut self, _guids: &[String]) {}
 }
 
 impl<S: GamepadSource + ?Sized> GamepadSource for Box<S> {
     fn poll_events(&mut self, out: &mut Vec<PadEvent>) {
         (**self).poll_events(out);
+    }
+
+    fn set_raw_guids(&mut self, guids: &[String]) {
+        (**self).set_raw_guids(guids);
     }
 }
 

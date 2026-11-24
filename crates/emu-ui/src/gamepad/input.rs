@@ -387,7 +387,9 @@ impl<S: GamepadSource> GamepadInput<S> {
 
     fn handle(&mut self, event: PadEvent) {
         match event.kind {
-            PadEventKind::Connected { name, guid } => self.connect(event.id, name, &guid),
+            PadEventKind::Connected { name, guid, .. } => self.connect(event.id, name, &guid),
+            // A0: raw pads are never announced yet (the source still ignores unmapped models).
+            PadEventKind::Raw { .. } => todo!("G3"),
             PadEventKind::Disconnected => self.disconnect(event.id),
             PadEventKind::Button { button, pressed } => self.button(event.id, button, pressed),
             PadEventKind::Axis { axis, value } => self.axis(event.id, axis, value),
@@ -587,6 +589,7 @@ mod tests {
             kind: PadEventKind::Connected {
                 name: "DS4".into(),
                 guid: guid.into(),
+                raw: false,
             },
         }
     }

@@ -42,6 +42,7 @@ fn connect() -> PadEvent {
         kind: PadEventKind::Connected {
             name: "Wireless Controller".into(),
             guid: "030000004c050000c405000000000000".into(),
+            raw: false,
         },
     }
 }

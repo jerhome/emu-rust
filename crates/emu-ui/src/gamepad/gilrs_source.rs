@@ -130,7 +130,11 @@ impl Translator {
                     return;
                 }
                 tracing::info!("manette détectée : {name:?} ({guid})");
-                PadEventKind::Connected { name, guid }
+                PadEventKind::Connected {
+                    name,
+                    guid,
+                    raw: false,
+                }
             }
             Raw::Disconnected => {
                 self.ignored.remove(&id);
@@ -279,6 +283,7 @@ mod tests {
                 PadEventKind::Connected {
                     name: "Sony DualShock 4".into(),
                     guid: "030000004c050000c405000000000000".into(),
+                    raw: false,
                 },
                 PadEventKind::Button {
                     button: PadButton::South,
