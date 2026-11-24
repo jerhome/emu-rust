@@ -30,6 +30,7 @@
 ## Versions
 
 Convention : une version faite et fusionnée dans `main` commence sa cellule « Version » par `✅ vX.Y` ; `scripts/check-version-vs-roadmap.sh` (CI) compare la dernière à la version du workspace.
+
 | Version | Contenu | Processus |
 |---|---|---|
 | 0.1.0 (pré-release) | Phase 2 + 4 builds (Docker, Linux, macOS Intel 12.7.6 Monterey, Windows) ; Super Nintendo et Mega Drive. Publiée le 2026-11-20. **Clôturée sans essai** (décision du 2026-11-20 : seules les versions ≥ 1.0 sont essayées) | Pré-release conservée pour l'historique |
