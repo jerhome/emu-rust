@@ -30,10 +30,13 @@ pub enum RawInput {
 pub enum PadEventKind {
     /// `guid` is the lowercase hex mapping GUID (same for identical models); only name and GUID may be logged.
     /// `raw = true`: this pad's inputs arrive as `Raw` (unmapped model, or a learned map overrides the database).
+    /// `guessed = true` (only with `raw = false`): the model is not in the database and the names are the backend's
+    /// guess (macOS); the pad is usable at once and the UI offers to learn it.
     Connected {
         name: String,
         guid: String,
         raw: bool,
+        guessed: bool,
     },
     Disconnected,
     Button {
@@ -68,7 +71,8 @@ pub enum GamepadError {
 /// Source of normalised events: real (`GilrsSource`) or scripted (tests). Never blocks, never panics.
 pub trait GamepadSource {
     /// Appends the events received since the previous call. A pad without button mapping is announced as
-    /// `Connected { raw: true }` and then sends `Raw` events (7.2; it used to be ignored).
+    /// `Connected { raw: true }` and then sends `Raw` events (7.2; it used to be ignored); a pad named by a guess
+    /// as `Connected { guessed: true }`.
     /// A source also reports pads already plugged in at creation as `Connected` on its first call.
     fn poll_events(&mut self, out: &mut Vec<PadEvent>);
 

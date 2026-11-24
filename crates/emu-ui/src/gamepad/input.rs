@@ -1,12 +1,13 @@
-//! Pad state -> `InputFrame`: ports, hotplug, deadzone, hotkeys.
+//! Pad state -> `InputFrame`: ports, hotplug, deadzone, hotkeys, learned maps of raw pads (7.2).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use emu_runtime::{AnalogStick, InputBackend, InputFrame, JoypadButton, MAX_PORTS};
 
+use super::learned::{LearnedMap, RawTranslator};
 use super::mapping::{PadButton, PadMap};
-use super::source::{GamepadSource, PadAxis, PadEvent, PadEventKind, PadId};
+use super::source::{GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, RawInput};
 use crate::config_gamepad::{GamepadConfig, GamepadDeviceConfig, HotkeyButton};
 use crate::hotkeys::HotkeyAction;
 
@@ -19,6 +20,8 @@ const TRIGGER_HYSTERESIS: f32 = 0.1;
 /// Held direction in a menu: first repeat after `REPEAT_DELAY`, then one every `REPEAT_INTERVAL`.
 pub const REPEAT_DELAY: Duration = Duration::from_millis(400);
 pub const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
+/// Raw inputs kept for the learning screen between two `take_raw` calls (a forgotten capture cannot grow forever).
+const RAW_CAPTURE_MAX: usize = 256;
 
 /// Runtime settings extracted from `GamepadConfig` for one launch.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +76,75 @@ pub enum GamepadNotice {
     Disconnected { port: usize },
 }
 
+/// Reported once per connection by `take_unrecognized`: model neither in the database nor learned. A raw pad
+/// holds no port until it is learned; a pad named by a guess (macOS) already plays. The UI offers « Configurer ».
+/// Kept out of `GamepadNotice` so the app's exhaustive match is only touched by the task wiring the screen (G4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnrecognizedPad {
+    pub id: PadId,
+    pub name: String,
+    pub guid: String,
+}
+
+/// How a connected pad's buttons are known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadStatus {
+    /// Database or platform driver.
+    Mapped,
+    /// A learned map (`set_learned_maps`) translates its raw inputs.
+    Learned,
+    /// Neither: raw without a port, or (macOS) playing with guessed names.
+    Unrecognized,
+}
+
+/// A connected pad, attached to a port or not, for the settings screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PadInfo {
+    pub id: PadId,
+    pub name: String,
+    /// Lowercase hex GUID, key of `[input.gamepad.devices]` and of the learned maps.
+    pub guid: String,
+    pub port: Option<usize>,
+    pub status: PadStatus,
+}
+
+/// Every announced pad, attached or not.
+#[derive(Debug)]
+struct KnownPad {
+    name: String,
+    guid: String,
+    /// Inputs arrive as `PadEventKind::Raw`.
+    raw: bool,
+    /// Named by the database or the driver (not a guess, not raw by nature).
+    database: bool,
+}
+
+/// What a re-announced pad (source switching it raw / named) keeps from before its `Disconnected`.
+#[derive(Debug, Clone, Copy)]
+struct Silent {
+    port: Option<usize>,
+    database: bool,
+}
+
+/// Hotkey button of one pad, `None` = the global setting: the device's own setting, else Select for a learned
+/// pad without a Mode button (SNES-like pads have no PS button).
+fn pad_modifier(
+    device: Option<&GamepadDeviceConfig>,
+    learned: Option<&LearnedMap>,
+) -> Option<PadButton> {
+    device
+        .and_then(|d| d.hotkey_button)
+        .map(|h| match h {
+            HotkeyButton::Mode => PadButton::Mode,
+            HotkeyButton::Select => PadButton::Select,
+        })
+        .or_else(|| {
+            learned
+                .filter(|m| !m.has(PadButton::Mode))
+                .map(|_| PadButton::Select)
+        })
+}
+
 /// Menu / virtual keyboard navigation from the pad (`GamepadInput::set_ui_capture`): the app turns these into
 /// egui arrow / Enter presses and « back ».
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,9 +192,29 @@ struct Pad {
     stick_dirs: [bool; 4],
     trigger_l2: bool,
     trigger_r2: bool,
+    /// Learned raw pad: turns its `Raw` events into buttons.
+    translator: Option<RawTranslator>,
+    /// Own hotkey button; `None` = the global setting.
+    modifier: Option<PadButton>,
+    /// Another button was pressed since the modifier went down: the modifier no longer reaches the core.
+    combo: bool,
 }
 
 impl Pad {
+    /// Everything released (capture started or ended, learned map replaced).
+    fn release_all(&mut self) {
+        self.held.clear();
+        self.stick = (0.0, 0.0);
+        self.right = (0.0, 0.0);
+        self.stick_dirs = [false; 4];
+        self.trigger_l2 = false;
+        self.trigger_r2 = false;
+        self.combo = false;
+        if self.translator.is_some() {
+            self.translator = Some(RawTranslator::default());
+        }
+    }
+
     fn is_down(&self, button: PadButton) -> bool {
         self.held.contains(&button)
             || match button {
@@ -175,13 +267,30 @@ fn stronger(a: (i16, i16), b: (i16, i16)) -> (i16, i16) {
 /// Gamepad `InputBackend`. Port assignment: first connected pad = port 0, second = port 1, others ignored; a freed
 /// port is reused. While the hotkey button is held, other buttons become hotkeys instead of reaching the core
 /// (the hotkey button itself still follows the map when pressed alone, e.g. Share as modifier = Select).
+/// A raw pad (7.2) takes a port only once its model has a learned map.
 pub struct GamepadInput<S: GamepadSource> {
     source: S,
     map: PadMap,
     settings: GamepadSettings,
+    /// Attached pads (with a port).
     pads: Vec<Pad>,
+    /// Every announced pad, attached or not.
+    known: BTreeMap<PadId, KnownPad>,
+    /// Learned maps by lowercase GUID.
+    learned_maps: BTreeMap<String, LearnedMap>,
+    /// GUIDs last sent to `source.set_raw_guids`.
+    raw_guids: BTreeSet<String>,
+    /// Pads whose mode `sync_raw_guids` changed: the source re-announces them during the next pump.
+    reannounce_next: HashSet<PadId>,
+    /// Same, for the pump in progress: their `Disconnected` / `Connected` are silent (no notice, port kept).
+    reannounce: HashSet<PadId>,
+    silent: HashMap<PadId, Silent>,
+    /// Learning screen: this pad's raw inputs go to `take_raw` only.
+    raw_capture: Option<PadId>,
+    raw_taken: Vec<(RawInput, f32)>,
     hotkeys: Vec<HotkeyAction>,
     notices: Vec<GamepadNotice>,
+    unrecognized: Vec<UnrecognizedPad>,
     nav: Vec<NavKey>,
     /// Direction pressed since the last `pump_at`: starts the auto-repeat.
     fresh_dir: Option<NavKey>,
@@ -204,8 +313,17 @@ impl<S: GamepadSource> GamepadInput<S> {
             map,
             settings,
             pads: Vec::new(),
+            known: BTreeMap::new(),
+            learned_maps: BTreeMap::new(),
+            raw_guids: BTreeSet::new(),
+            reannounce_next: HashSet::new(),
+            reannounce: HashSet::new(),
+            silent: HashMap::new(),
+            raw_capture: None,
+            raw_taken: Vec::new(),
             hotkeys: Vec::new(),
             notices: Vec::new(),
+            unrecognized: Vec::new(),
             nav: Vec::new(),
             fresh_dir: None,
             repeat: None,
@@ -223,9 +341,127 @@ impl<S: GamepadSource> GamepadInput<S> {
         self.analog = analog;
     }
 
-    /// New settings (configuration edited between two games). Attached pads keep their port and deadzone.
+    /// New settings (configuration edited between two games). Attached pads keep their port and deadzone; their
+    /// hotkey button follows the new device settings.
     pub fn set_settings(&mut self, settings: GamepadSettings) {
         self.settings = settings;
+        for pad in &mut self.pads {
+            let Some(known) = self.known.get(&pad.id) else {
+                continue;
+            };
+            let learned = known
+                .raw
+                .then(|| self.learned_maps.get(&known.guid))
+                .flatten();
+            pad.modifier = pad_modifier(self.settings.devices.get(&known.guid), learned);
+        }
+    }
+
+    /// Learned maps by GUID (from `[input.gamepad.devices."<guid>".map]`). These models are read raw (the map
+    /// replaces the database); a raw pad already plugged in is attached, detached or reset at once, a named one
+    /// is re-announced by the source during the next pump (silently: no notice, port kept).
+    pub fn set_learned_maps(&mut self, maps: BTreeMap<String, LearnedMap>) {
+        self.learned_maps = maps
+            .into_iter()
+            .map(|(guid, map)| (guid.to_ascii_lowercase(), map))
+            .collect();
+        let raw_pads: Vec<(PadId, bool)> = self
+            .known
+            .iter()
+            .filter(|(_, k)| k.raw)
+            .map(|(id, k)| (*id, self.learned_maps.contains_key(&k.guid)))
+            .collect();
+        for (id, learned) in raw_pads {
+            let attached = self.pads.iter().position(|p| p.id == id);
+            match (learned, attached) {
+                (true, None) => self.attach(id, true, None),
+                (false, Some(_)) => {
+                    self.detach(id);
+                }
+                (true, Some(idx)) => {
+                    let Some(known) = self.known.get(&id) else {
+                        continue;
+                    };
+                    let pad = &mut self.pads[idx];
+                    pad.translator = Some(RawTranslator::default());
+                    pad.release_all();
+                    pad.modifier = pad_modifier(
+                        self.settings.devices.get(&known.guid),
+                        self.learned_maps.get(&known.guid),
+                    );
+                }
+                (false, None) => {}
+            }
+        }
+        self.sync_raw_guids();
+    }
+
+    /// Connected pads, attached or not, sorted by id (settings screen).
+    pub fn pads(&self) -> Vec<PadInfo> {
+        self.known
+            .iter()
+            .map(|(id, k)| PadInfo {
+                id: *id,
+                name: k.name.clone(),
+                guid: k.guid.clone(),
+                port: self.pads.iter().find(|p| p.id == *id).map(|p| p.port),
+                status: if self.learned_maps.contains_key(&k.guid) {
+                    PadStatus::Learned
+                } else if k.database {
+                    PadStatus::Mapped
+                } else {
+                    PadStatus::Unrecognized
+                },
+            })
+            .collect()
+    }
+
+    /// Learning screen: `pad` is read raw (a named model is re-announced raw during the next pump), its raw
+    /// inputs go to `take_raw` only (no game, hotkey, navigation) and its native codes are logged at `debug`.
+    /// One pad at a time; `None` ends the capture. Unplugging the pad ends it too (`raw_capture` becomes `None`).
+    pub fn set_raw_capture(&mut self, pad: Option<PadId>) {
+        if pad == self.raw_capture {
+            return;
+        }
+        for id in [self.raw_capture, pad].into_iter().flatten() {
+            if let Some(p) = self.pads.iter_mut().find(|p| p.id == id) {
+                p.release_all();
+            }
+        }
+        self.raw_capture = pad;
+        self.raw_taken.clear();
+        self.source.set_raw_logging(pad);
+        self.sync_raw_guids();
+    }
+
+    /// Pad whose raw inputs are captured, if any.
+    pub fn raw_capture(&self) -> Option<PadId> {
+        self.raw_capture
+    }
+
+    /// Raw inputs of the captured pad since the last call, in order (buttons 0.0 / 1.0, axes in [-1, 1]).
+    pub fn take_raw(&mut self) -> Vec<(RawInput, f32)> {
+        std::mem::take(&mut self.raw_taken)
+    }
+
+    /// Sends the learned models (and the captured pad's model) to the source; pads whose mode changes are
+    /// expected to be re-announced during the next pump.
+    fn sync_raw_guids(&mut self) {
+        let mut wanted: BTreeSet<String> = self.learned_maps.keys().cloned().collect();
+        if let Some(k) = self.raw_capture.and_then(|id| self.known.get(&id)) {
+            wanted.insert(k.guid.clone());
+        }
+        if wanted == self.raw_guids {
+            return;
+        }
+        for (id, k) in &self.known {
+            if wanted.contains(&k.guid) != self.raw_guids.contains(&k.guid) {
+                self.reannounce_next.insert(*id);
+            }
+        }
+        let list: Vec<String> = wanted.iter().cloned().collect();
+        self.source.set_raw_guids(&list);
+        self.raw_guids = wanted;
     }
 
     pub fn settings(&self) -> &GamepadSettings {
@@ -240,6 +476,8 @@ impl<S: GamepadSource> GamepadInput<S> {
 
     /// `pump` with an explicit clock (auto-repeat of held directions while a menu has the focus).
     pub fn pump_at(&mut self, now: Instant) {
+        self.reannounce = std::mem::take(&mut self.reannounce_next);
+        self.silent.clear();
         let mut events = std::mem::take(&mut self.scratch);
         events.clear();
         self.source.poll_events(&mut events);
@@ -345,6 +583,11 @@ impl<S: GamepadSource> GamepadInput<S> {
         std::mem::take(&mut self.notices)
     }
 
+    /// Unrecognized pads plugged in since the last call (one entry per connection, not per re-announcement).
+    pub fn take_unrecognized(&mut self) -> Vec<UnrecognizedPad> {
+        std::mem::take(&mut self.unrecognized)
+    }
+
     /// Ports currently attached, `(port, pad id)`, for the settings screen.
     pub fn attached(&self) -> Vec<(usize, PadId)> {
         let mut v: Vec<_> = self.pads.iter().map(|p| (p.port, p.id)).collect();
@@ -359,18 +602,22 @@ impl<S: GamepadSource> GamepadInput<S> {
         }
     }
 
-    fn modifier_held(&self, pad: &Pad) -> bool {
-        pad.held.contains(&self.modifier_button())
+    fn modifier_of(&self, pad: &Pad) -> PadButton {
+        pad.modifier.unwrap_or_else(|| self.modifier_button())
     }
 
-    fn hotkey_for(&self, button: PadButton) -> Option<HotkeyAction> {
+    fn modifier_held(&self, pad: &Pad) -> bool {
+        pad.held.contains(&self.modifier_of(pad))
+    }
+
+    fn hotkey_for(modifier: PadButton, button: PadButton) -> Option<HotkeyAction> {
         use HotkeyAction as H;
         use PadButton as P;
         match button {
             P::Start => Some(H::Menu),
-            P::Select if self.modifier_button() != P::Select => Some(H::TogglePause),
+            P::Select if modifier != P::Select => Some(H::TogglePause),
             // With Share as the modifier, PS takes over the pause action.
-            P::Mode if self.modifier_button() == P::Select => Some(H::TogglePause),
+            P::Mode if modifier == P::Select => Some(H::TogglePause),
             P::R1 => Some(H::SaveState),
             P::L1 => Some(H::LoadState),
             P::DPadRight => Some(H::NextSlot),
@@ -386,37 +633,86 @@ impl<S: GamepadSource> GamepadInput<S> {
     }
 
     fn handle(&mut self, event: PadEvent) {
+        let captured = self.raw_capture == Some(event.id);
         match event.kind {
-            PadEventKind::Connected { name, guid, .. } => self.connect(event.id, name, &guid),
-            // A0: raw pads are never announced yet (the source still ignores unmapped models).
-            PadEventKind::Raw { .. } => todo!("G3"),
+            PadEventKind::Connected {
+                name,
+                guid,
+                raw,
+                guessed,
+            } => self.connect(event.id, name, &guid, raw, guessed),
             PadEventKind::Disconnected => self.disconnect(event.id),
+            PadEventKind::Raw { input, value } => self.raw(event.id, input, value),
+            // The pad being learned drives nothing until its re-announcement as raw arrives.
+            PadEventKind::Button { .. } | PadEventKind::Axis { .. } if captured => {}
             PadEventKind::Button { button, pressed } => self.button(event.id, button, pressed),
             PadEventKind::Axis { axis, value } => self.axis(event.id, axis, value),
         }
     }
 
-    fn connect(&mut self, id: PadId, name: String, guid: &str) {
+    fn connect(&mut self, id: PadId, name: String, guid: &str, raw: bool, guessed: bool) {
+        if let Some(k) = self.known.get(&id) {
+            // Repeated announcement: a pad left without a port (all taken) may get one now.
+            if !k.raw || self.learned_maps.contains_key(&k.guid) {
+                self.attach(id, true, None);
+            }
+            return;
+        }
+        let guid = guid.to_ascii_lowercase();
+        let silent = self.silent.remove(&id);
+        let database = if raw {
+            silent.is_some_and(|s| s.database)
+        } else {
+            !guessed
+        };
+        let learned = raw && self.learned_maps.contains_key(&guid);
+        self.known.insert(
+            id,
+            KnownPad {
+                name: name.clone(),
+                guid: guid.clone(),
+                raw,
+                database,
+            },
+        );
+        if !raw || learned {
+            self.attach(id, silent.is_none(), silent.and_then(|s| s.port));
+        }
+        if silent.is_none() && !learned && !database {
+            self.unrecognized.push(UnrecognizedPad { id, name, guid });
+        }
+    }
+
+    /// Gives a port to a known pad: `prefer` (its port before a re-announcement), else the device's forced
+    /// port, else the first free one. More pads than ports: ignored.
+    fn attach(&mut self, id: PadId, notify: bool, prefer: Option<usize>) {
         if self.pads.iter().any(|p| p.id == id) {
             return;
         }
-        let device = self.settings.devices.get(&guid.to_ascii_lowercase());
-        let forced = device
-            .and_then(|d| d.port)
-            .filter(|p| *p < MAX_PORTS && self.pads.iter().all(|q| q.port != *p));
-        let Some(port) =
-            forced.or_else(|| (0..MAX_PORTS).find(|p| self.pads.iter().all(|q| q.port != *p)))
+        let Some(known) = self.known.get(&id) else {
+            return;
+        };
+        let free = |p: &usize| *p < MAX_PORTS && self.pads.iter().all(|q| q.port != *p);
+        let device = self.settings.devices.get(&known.guid);
+        let Some(port) = prefer
+            .filter(free)
+            .or_else(|| device.and_then(|d| d.port).filter(free))
+            .or_else(|| (0..MAX_PORTS).find(free))
         else {
-            return; // More pads than ports: ignored.
+            return;
         };
         let deadzone = device
             .and_then(|d| d.deadzone)
             .map_or(self.settings.deadzone, |d| {
                 clamp_deadzone(d, self.settings.deadzone)
             });
-        self.pads.push(Pad {
+        let learned = known
+            .raw
+            .then(|| self.learned_maps.get(&known.guid))
+            .flatten();
+        let pad = Pad {
             id,
-            name: name.clone(),
+            name: known.name.clone(),
             port,
             deadzone,
             held: HashSet::new(),
@@ -425,23 +721,87 @@ impl<S: GamepadSource> GamepadInput<S> {
             stick_dirs: [false; 4],
             trigger_l2: false,
             trigger_r2: false,
-        });
-        self.notices.push(GamepadNotice::Connected { name, port });
+            translator: learned.map(|_| RawTranslator::default()),
+            modifier: pad_modifier(device, learned),
+            combo: false,
+        };
+        if notify {
+            self.notices.push(GamepadNotice::Connected {
+                name: pad.name.clone(),
+                port,
+            });
+        }
+        self.pads.push(pad);
+    }
+
+    /// Frees the pad's port (with a notice), the pad stays known.
+    fn detach(&mut self, id: PadId) -> Option<usize> {
+        let pos = self.pads.iter().position(|p| p.id == id)?;
+        let port = self.pads.remove(pos).port;
+        self.notices.push(GamepadNotice::Disconnected { port });
+        Some(port)
     }
 
     fn disconnect(&mut self, id: PadId) {
-        if let Some(pos) = self.pads.iter().position(|p| p.id == id) {
-            let pad = self.pads.remove(pos);
-            self.notices
-                .push(GamepadNotice::Disconnected { port: pad.port });
+        let known = self.known.remove(&id);
+        if self.reannounce.contains(&id) {
+            let port = self
+                .pads
+                .iter()
+                .position(|p| p.id == id)
+                .map(|pos| self.pads.remove(pos).port);
+            let database = known.is_some_and(|k| k.database);
+            self.silent.insert(id, Silent { port, database });
+            return;
+        }
+        self.detach(id);
+        if self.raw_capture == Some(id) {
+            self.raw_capture = None;
+            self.raw_taken.clear();
+            self.source.set_raw_logging(None);
+            self.sync_raw_guids();
+        }
+    }
+
+    fn raw(&mut self, id: PadId, input: RawInput, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
+        if self.raw_capture == Some(id) {
+            if self.raw_taken.len() < RAW_CAPTURE_MAX {
+                self.raw_taken.push((input, value));
+            }
+            return;
+        }
+        let Some(known) = self.known.get(&id) else {
+            return;
+        };
+        // Unlearned raw pad: no port, nothing reaches the game.
+        let Some(map) = self.learned_maps.get(&known.guid) else {
+            return;
+        };
+        let Some(translator) = self
+            .pads
+            .iter_mut()
+            .find(|p| p.id == id)
+            .and_then(|p| p.translator.as_mut())
+        else {
+            return;
+        };
+        let mut kinds = Vec::new();
+        translator.feed(map, input, value, &mut kinds);
+        for kind in kinds {
+            if let PadEventKind::Button { button, pressed } = kind {
+                self.button(id, button, pressed);
+            }
         }
     }
 
     fn button(&mut self, id: PadId, button: PadButton, pressed: bool) {
-        let modifier = self.modifier_button();
         let Some(idx) = self.pads.iter().position(|p| p.id == id) else {
             return;
         };
+        let modifier = self.modifier_of(&self.pads[idx]);
         let was_down = self.pads[idx].held.contains(&button);
         if self.learning {
             if pressed && !was_down {
@@ -460,11 +820,16 @@ impl<S: GamepadSource> GamepadInput<S> {
             self.pads[idx].held.remove(&button);
         }
         let held_modifier = self.pads[idx].held.contains(&modifier);
-        if !pressed || was_down || button == modifier {
+        if !pressed || was_down {
+            return;
+        }
+        if button == modifier {
+            self.pads[idx].combo = false;
             return;
         }
         if held_modifier {
-            if let Some(action) = self.hotkey_for(button) {
+            self.pads[idx].combo = true;
+            if let Some(action) = Self::hotkey_for(modifier, button) {
                 self.hotkeys.push(action);
             }
         } else if self.ui_capture
@@ -479,12 +844,13 @@ impl<S: GamepadSource> GamepadInput<S> {
 
     fn axis(&mut self, id: PadId, axis: PadAxis, value: f32) {
         let threshold = self.settings.trigger_threshold;
-        let modifier = self.modifier_button();
+        let global_modifier = self.modifier_button();
         let ui_capture = self.ui_capture;
         let learning = self.learning;
         let Some(pad) = self.pads.iter_mut().find(|p| p.id == id) else {
             return;
         };
+        let modifier = pad.modifier.unwrap_or(global_modifier);
         if !value.is_finite() {
             return;
         }
@@ -508,6 +874,9 @@ impl<S: GamepadSource> GamepadInput<S> {
                 *state = trigger(was);
                 if learning && *state && !was {
                     self.learned = Some(button);
+                }
+                if *state && !was && pad.held.contains(&modifier) {
+                    pad.combo = true;
                 }
             }
             PadAxis::RightX => pad.right.0 = value,
@@ -538,12 +907,22 @@ impl<S: GamepadSource> InputBackend for GamepadInput<S> {
             return;
         }
         for pad in &self.pads {
-            if self.modifier_held(pad) {
-                continue; // Hotkey mode: the core sees nothing from this pad.
+            if self.raw_capture == Some(pad.id) {
+                continue;
             }
             let Some(target) = state.pads.get_mut(pad.port) else {
                 continue;
             };
+            if self.modifier_held(pad) {
+                // Hotkey mode: the core sees the modifier alone (Select on a SNES pad), nothing once combined.
+                let modifier = self.modifier_of(pad);
+                if !pad.combo {
+                    for (_, retro) in self.map.bindings().iter().filter(|(b, _)| *b == modifier) {
+                        target.set(*retro, true);
+                    }
+                }
+                continue;
+            }
             for (button, retro) in self.map.bindings() {
                 if pad.is_down(*button) {
                     target.set(*retro, true);
@@ -590,6 +969,7 @@ mod tests {
                 name: "DS4".into(),
                 guid: guid.into(),
                 raw: false,
+                guessed: false,
             },
         }
     }

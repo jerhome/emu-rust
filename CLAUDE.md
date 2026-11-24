@@ -78,7 +78,7 @@ Dès qu'un développement démarre (premier agent lancé ou première modificati
 exécute `scripts/status.sh` (+ `git status --short`) et affiche : tableau **Ressources** (CPU interprété, température /
 bridage thermique, mémoire dispo, disque libre, `target/`, processus cargo/rustc ; alerte si mémoire < 1 Go,
 disque > 95 %, CPU bridé ou ≥ 90 °C), tableau **Agents**
-(agent, tâche, ✅ / ⏳ / ❌), **Étape du plan** sur une ligne, **Prochaine action**. Vérifier d'abord avec `CronList`
+(agent | modèle | tâche | ✅ / ⏳ / ❌, + CI de la PR ouverte via `gh pr checks`), **Étape du plan** sur une ligne, **Prochaine action**. Vérifier d'abord avec `CronList`
 qu'il n'existe pas déjà (les crons meurent avec la session).
 
 ## Définition de « terminé »

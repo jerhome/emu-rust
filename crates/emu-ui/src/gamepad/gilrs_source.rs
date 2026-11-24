@@ -11,6 +11,9 @@
 //! `DPadX/DPadY` is turned into `DPad*` button events by gilrs' default `axis_dpad_to_button` filter (with the
 //! `BTN_DPAD_*` codes); otherwise it arrives as an axis in `[-1, 1]`. In raw mode we therefore ignore gilrs' names
 //! and only keep `Code::into_u32`: buttons, axes and hats all become `RawInput` whatever gilrs called them.
+//!
+//! Exception (user decision of 2026-11-24, "guess and offer"): on macOS a `Driver` pad keeps gilrs' guessed names
+//! (as in phase 6, so nothing regresses) and is announced `guessed`; the UI offers to learn it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,8 +24,8 @@ use super::source::{
     GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, RawInput,
 };
 
-/// Real pads through gilrs 0.11. Pads without a trustworthy mapping, and models listed by `set_raw_guids`, are
-/// read raw (`Connected { raw: true }`, then `PadEventKind::Raw`).
+/// Real pads through gilrs 0.11. Pads without usable names, and models listed by `set_raw_guids`, are read raw
+/// (`Connected { raw: true }`, then `PadEventKind::Raw`); macOS guesses are announced `guessed: true`.
 pub struct GilrsSource {
     gilrs: Gilrs,
     translator: Translator,
@@ -53,7 +56,7 @@ impl GilrsSource {
         Raw::Connected {
             name: pad.name().to_owned(),
             guid: guid_hex(uuid),
-            mapped: is_mapped(
+            trust: mapping_trust(
                 pad.mapping_source(),
                 Platform::CURRENT,
                 pad.button_code(Button::South).is_some(),
@@ -125,26 +128,37 @@ impl Platform {
     };
 }
 
-/// Whether gilrs' button names can be trusted for this pad; `false` means raw mode.
-///
+/// How far gilrs' button names can be trusted for one pad (before learned models are applied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trust {
+    /// SDL database, or a platform that guarantees a gamepad layout.
+    Mapped,
+    /// Names guessed by gilrs (macOS): used as is, the UI offers to learn the pad.
+    Guessed,
+    /// No useful names: raw mode.
+    Unmapped,
+}
+
 /// gilrs reports `Driver` for every pad missing from its database (`None` is never returned in 0.11.2), so the
 /// default mapping is only trusted where the platform itself guarantees a gamepad layout: on Linux when the
 /// kernel driver exposes `BTN_SOUTH` (xpad, hid-playstation...: generic HID pads use the joystick range
 /// `BTN_TRIGGER..`), on Windows for WGI `Gamepad`-class devices (nil GUID). On macOS the default mapping is a
-/// guess on HID button numbers: never trusted.
-fn is_mapped(
+/// guess on HID button numbers (usages 1..15): kept as a guess rather than going raw, so the pad works at once.
+fn mapping_trust(
     source: MappingSource,
     platform: Platform,
     has_native_south: bool,
     nil_uuid: bool,
-) -> bool {
+) -> Trust {
+    let trusted = |ok: bool| if ok { Trust::Mapped } else { Trust::Unmapped };
     match source {
-        MappingSource::SdlMappings => true,
-        MappingSource::None => false,
+        MappingSource::SdlMappings => Trust::Mapped,
+        MappingSource::None => Trust::Unmapped,
         MappingSource::Driver => match platform {
-            Platform::Linux => has_native_south,
-            Platform::Windows => nil_uuid,
-            Platform::MacOs | Platform::Other => false,
+            Platform::Linux => trusted(has_native_south),
+            Platform::Windows => trusted(nil_uuid),
+            Platform::MacOs => Trust::Guessed,
+            Platform::Other => Trust::Unmapped,
         },
     }
 }
@@ -155,8 +169,7 @@ enum Raw {
     Connected {
         name: String,
         guid: String,
-        /// `false`: no trustworthy names (see `is_mapped`), the pad is read raw.
-        mapped: bool,
+        trust: Trust,
     },
     Disconnected,
     Button(Button, bool, u32),
@@ -185,9 +198,24 @@ struct KnownPad {
     name: String,
     guid: String,
     /// What the database says, before `raw_guids`.
-    mapped: bool,
+    trust: Trust,
     /// Mode announced in the last `Connected`.
     raw: bool,
+}
+
+impl KnownPad {
+    fn is_raw(&self, raw_guids: &HashSet<String>) -> bool {
+        self.trust == Trust::Unmapped || raw_guids.contains(&self.guid)
+    }
+
+    fn connected(&self) -> PadEventKind {
+        PadEventKind::Connected {
+            name: self.name.clone(),
+            guid: self.guid.clone(),
+            raw: self.raw,
+            guessed: !self.raw && self.trust == Trust::Guessed,
+        }
+    }
 }
 
 /// Keeps track of announced pads; turns `Raw` into normalised events.
@@ -203,26 +231,26 @@ struct Translator {
 impl Translator {
     fn translate(&mut self, id: PadId, raw: Raw, out: &mut Vec<PadEvent>) {
         let kind = match raw {
-            Raw::Connected { name, guid, mapped } => {
+            Raw::Connected { name, guid, trust } => {
                 if self.known.contains_key(&id) {
                     return; // duplicate announcement (initial scan + event)
                 }
-                let raw = !mapped || self.raw_guids.contains(&guid);
-                if raw {
-                    tracing::info!("manette détectée (mode brut) : {name:?} ({guid})");
-                } else {
-                    tracing::info!("manette détectée : {name:?} ({guid})");
-                }
-                self.known.insert(
-                    id,
-                    KnownPad {
-                        name: name.clone(),
-                        guid: guid.clone(),
-                        mapped,
-                        raw,
-                    },
-                );
-                PadEventKind::Connected { name, guid, raw }
+                let mut pad = KnownPad {
+                    name,
+                    guid,
+                    trust,
+                    raw: false,
+                };
+                pad.raw = pad.is_raw(&self.raw_guids);
+                let mode = match (pad.raw, trust) {
+                    (true, _) => " (mode brut)",
+                    (false, Trust::Guessed) => " (noms devinés)",
+                    _ => "",
+                };
+                tracing::info!("manette détectée{mode} : {:?} ({})", pad.name, pad.guid);
+                let kind = pad.connected();
+                self.known.insert(id, pad);
+                kind
             }
             Raw::Disconnected => {
                 if self.known.remove(&id).is_none() {
@@ -274,14 +302,14 @@ impl Translator {
             let Some(pad) = self.known.get_mut(&id) else {
                 continue;
             };
-            let raw = !pad.mapped || self.raw_guids.contains(&pad.guid);
+            let raw = pad.is_raw(&self.raw_guids);
             if raw == pad.raw {
                 continue;
             }
             pad.raw = raw;
             tracing::info!(
                 "manette réannoncée ({}) : {:?} ({})",
-                if raw { "mode brut" } else { "base SDL" },
+                if raw { "mode brut" } else { "noms de gilrs" },
                 pad.name,
                 pad.guid
             );
@@ -291,11 +319,7 @@ impl Translator {
             });
             out.push(PadEvent {
                 id,
-                kind: PadEventKind::Connected {
-                    name: pad.name.clone(),
-                    guid: pad.guid.clone(),
-                    raw,
-                },
+                kind: pad.connected(),
             });
         }
     }
@@ -375,7 +399,20 @@ mod tests {
         Raw::Connected {
             name: "Sony DualShock 4".into(),
             guid: DS4_GUID.into(),
-            mapped,
+            trust: if mapped {
+                Trust::Mapped
+            } else {
+                Trust::Unmapped
+            },
+        }
+    }
+
+    /// Same SNES pad seen on macOS: absent from the database, gilrs guesses the names.
+    fn snes_mac() -> Raw {
+        Raw::Connected {
+            name: "USB Gamepad".into(),
+            guid: SNES_GUID.into(),
+            trust: Trust::Guessed,
         }
     }
 
@@ -383,7 +420,7 @@ mod tests {
         Raw::Connected {
             name: "USB Gamepad".into(),
             guid: SNES_GUID.into(),
-            mapped: false,
+            trust: Trust::Unmapped,
         }
     }
 
@@ -412,6 +449,16 @@ mod tests {
             name: name.into(),
             guid: guid.into(),
             raw,
+            guessed: false,
+        }
+    }
+
+    fn guessed(name: &str, guid: &str) -> PadEventKind {
+        PadEventKind::Connected {
+            name: name.into(),
+            guid: guid.into(),
+            raw: false,
+            guessed: true,
         }
     }
 
@@ -564,21 +611,82 @@ mod tests {
     #[test]
     fn mapping_trust_per_platform() {
         use MappingSource::{Driver, None as NoMap, SdlMappings};
+        use Trust::{Guessed, Mapped, Unmapped};
         for p in [
             Platform::Linux,
             Platform::Windows,
             Platform::MacOs,
             Platform::Other,
         ] {
-            assert!(is_mapped(SdlMappings, p, false, false));
-            assert!(!is_mapped(NoMap, p, true, true));
+            assert_eq!(mapping_trust(SdlMappings, p, false, false), Mapped);
+            assert_eq!(mapping_trust(NoMap, p, true, true), Unmapped);
         }
-        assert!(is_mapped(Driver, Platform::Linux, true, false));
-        assert!(!is_mapped(Driver, Platform::Linux, false, false));
-        assert!(is_mapped(Driver, Platform::Windows, false, true));
-        assert!(!is_mapped(Driver, Platform::Windows, true, false));
-        assert!(!is_mapped(Driver, Platform::MacOs, true, true));
-        assert!(!is_mapped(Driver, Platform::Other, true, true));
+        assert_eq!(mapping_trust(Driver, Platform::Linux, true, false), Mapped);
+        assert_eq!(
+            mapping_trust(Driver, Platform::Linux, false, false),
+            Unmapped
+        );
+        assert_eq!(
+            mapping_trust(Driver, Platform::Windows, false, true),
+            Mapped
+        );
+        assert_eq!(
+            mapping_trust(Driver, Platform::Windows, true, false),
+            Unmapped
+        );
+        assert_eq!(mapping_trust(Driver, Platform::MacOs, true, true), Guessed);
+        assert_eq!(
+            mapping_trust(Driver, Platform::MacOs, false, false),
+            Guessed
+        );
+        assert_eq!(mapping_trust(Driver, Platform::Other, true, true), Unmapped);
+    }
+
+    #[test]
+    fn guessed_pad_keeps_names_until_learned() {
+        let mut t = Translator::default();
+        let out = feed(
+            &mut t,
+            vec![
+                (A, snes_mac()),
+                (A, Raw::Button(Button::South, true, 0x9_0002)),
+            ],
+        );
+        assert_eq!(
+            kinds(&out),
+            vec![
+                guessed("USB Gamepad", SNES_GUID),
+                PadEventKind::Button {
+                    button: PadButton::South,
+                    pressed: true
+                },
+            ]
+        );
+
+        let mut out = Vec::new();
+        t.set_raw_guids(&[SNES_GUID.into()], &mut out);
+        assert_eq!(
+            kinds(&out),
+            vec![
+                PadEventKind::Disconnected,
+                connected("USB Gamepad", SNES_GUID, true),
+            ]
+        );
+        let out = feed(
+            &mut t,
+            vec![(A, Raw::Button(Button::South, false, 0x9_0002))],
+        );
+        assert_eq!(kinds(&out), vec![raw_ev(RawInput::Button(0x9_0002), 0.0)]);
+
+        let mut out = Vec::new();
+        t.set_raw_guids(&[], &mut out);
+        assert_eq!(
+            kinds(&out),
+            vec![
+                PadEventKind::Disconnected,
+                guessed("USB Gamepad", SNES_GUID)
+            ]
+        );
     }
 
     #[test]

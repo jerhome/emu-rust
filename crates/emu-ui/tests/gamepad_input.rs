@@ -27,6 +27,7 @@ fn connect_guid(id: PadId, guid: &str) -> PadEvent {
             name: "Wireless Controller".into(),
             guid: guid.into(),
             raw: false,
+            guessed: false,
         },
     )
 }

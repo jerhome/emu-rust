@@ -580,6 +580,57 @@ pub const PAD_REMAP_NONE: &str = "—";
 pub const PAD_REMAP_NO_PAD: &str = "Branchez une manette pour changer un bouton.";
 pub const PAD_REMAP_MODE: &str = "Le bouton PS sert aux raccourcis : choisissez-en un autre.";
 
+pub const LEARN_TITLE: &str = "Configurer une manette";
+pub const LEARN_NOTE: &str =
+    "Pour une manette non reconnue ou mal configurée : on vous demande un bouton à la fois.";
+pub const LEARN_CONFIGURE: &str = "Configurer";
+pub const LEARN_FORGET: &str = "Oublier";
+pub const LEARN_LEARNED: &str = "apprise";
+pub const LEARN_SHAPE: &str = "Forme de la manette :";
+pub const LEARN_START: &str = "Commencer";
+pub const LEARN_SKIP: &str = "Passer";
+pub const LEARN_BACK: &str = "Revenir";
+pub const LEARN_CANCEL: &str = "Annuler";
+pub const LEARN_SAVE: &str = "Enregistrer";
+pub const LEARN_DONE: &str = "Terminé. Vérifiez la liste, puis enregistrez.";
+pub const LEARN_NOT_SET: &str = "non défini";
+pub const LEARN_EMPTY: &str = "Aucun bouton appris : rien à enregistrer.";
+#[allow(dead_code)]
+pub const LEARN_DISCONNECTED: &str = "Manette débranchée : configuration annulée.";
+pub const LEARN_SAVED: &str = "Manette enregistrée.";
+pub const LEARN_FORGOTTEN: &str = "Configuration de la manette oubliée.";
+
+pub fn learn_layout_label(layout: crate::gamepad::PadLayout) -> &'static str {
+    use crate::gamepad::PadLayout as L;
+    match layout {
+        L::Snes => "Super Nintendo",
+        L::Nes => "NES",
+        L::MegaDrive3 => "Mega Drive (3 boutons)",
+        L::MegaDrive6 => "Mega Drive (6 boutons)",
+    }
+}
+
+pub fn learn_prompt(label: &str) -> String {
+    format!("Appuyez sur : {label}")
+}
+
+pub fn learn_progress(done: usize, total: usize) -> String {
+    format!("Étape {} sur {total}", (done + 1).min(total))
+}
+
+#[allow(dead_code)]
+pub fn learn_used(label: &str) -> String {
+    format!("Cette entrée est déjà utilisée pour « {label} ». Choisissez-en une autre.")
+}
+
+pub fn learn_title_for(name: &str) -> String {
+    format!("Manette : {}", clean(name))
+}
+
+pub fn pad_name(name: &str) -> String {
+    clean(name)
+}
+
 pub fn pad_line(port: usize, name: &str) -> String {
     format!("Port {} : {}", port + 1, clean(name))
 }

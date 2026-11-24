@@ -2,12 +2,19 @@
 //! per system. The pad backend lives in the host loop; this page only sees a status snapshot and exchanges
 //! two facts with it (`pad_wants_learning`, `pad_learned`).
 
+// Host-facing methods are called by app.rs once G4b wires them; remove then.
+#![allow(dead_code)]
+
 use egui::{ComboBox, RichText, Slider, Ui};
 use emu_runtime::JoypadButton;
+use std::collections::BTreeMap;
 
 use super::{Level, LibraryUi, text, weak};
 use crate::config_gamepad::{GamepadConfig, HotkeyButton};
-use crate::gamepad::{PadButton, PadMap, set_binding};
+use crate::gamepad::{
+    LearnProgress, LearnSession, LearnedMap, PadButton, PadId, PadLayout, PadMap, RawInput,
+    set_binding,
+};
 use crate::keyboard::PadStyle;
 use crate::pad_mode::PadMode;
 
@@ -38,6 +45,163 @@ pub(super) struct PadUi {
     learning: Option<JoypadButton>,
     /// Slider / toggle edited: the host applies the new settings to the live backend.
     settings_changed: bool,
+    /// Attached pads that can be configured (id, GUID, name, has a learned map).
+    learnable: Vec<LearnPad>,
+    learn: Option<LearnScreen>,
+    /// A learned map was saved or forgotten: the host reloads `learned_maps`.
+    learned_changed: bool,
+}
+
+/// A pad offered by the « Configurer » list; filled by the host from `GamepadInput::pads()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LearnPad {
+    pub id: PadId,
+    pub guid: String,
+    pub name: String,
+}
+
+enum Stage {
+    Choose,
+    /// `current() == None` is the review stage.
+    Running(LearnSession),
+}
+
+/// State of the learning screen; the egui view only reads it and calls its methods.
+pub(super) struct LearnScreen {
+    pad: Target,
+    layout: PadLayout,
+    stage: Stage,
+    notice: Option<String>,
+}
+
+struct Target {
+    id: PadId,
+    guid: String,
+    name: String,
+}
+
+impl LearnScreen {
+    fn new(pad: &LearnPad) -> Self {
+        Self {
+            pad: Target {
+                id: pad.id,
+                guid: pad.guid.clone(),
+                name: pad.name.clone(),
+            },
+            layout: PadLayout::Snes,
+            stage: Stage::Choose,
+            notice: None,
+        }
+    }
+
+    fn begin(&mut self) {
+        self.stage = Stage::Running(LearnSession::new(self.layout));
+        self.notice = None;
+    }
+
+    fn session(&self) -> Option<&LearnSession> {
+        match &self.stage {
+            Stage::Running(s) => Some(s),
+            Stage::Choose => None,
+        }
+    }
+
+    /// Index of the current step, or the step count when everything is done.
+    fn position(&self) -> usize {
+        let steps = self.layout.steps();
+        self.session()
+            .and_then(|s| s.current())
+            .and_then(|c| steps.iter().position(|x| x.button == c.button))
+            .unwrap_or(steps.len())
+    }
+
+    fn is_review(&self) -> bool {
+        self.session().is_some_and(|s| s.current().is_none())
+    }
+
+    fn feed(&mut self, input: RawInput, value: f32) {
+        let layout = self.layout;
+        let Stage::Running(session) = &mut self.stage else {
+            return;
+        };
+        match session.feed(input, value) {
+            LearnProgress::AlreadyUsed(button) => {
+                let label = layout
+                    .steps()
+                    .iter()
+                    .find(|s| s.button == button)
+                    .map_or("", |s| s.label);
+                self.notice = Some(text::learn_used(label));
+            }
+            LearnProgress::Recorded | LearnProgress::Done => self.notice = None,
+            LearnProgress::Waiting => {}
+        }
+    }
+
+    fn skip(&mut self) {
+        if let Stage::Running(s) = &mut self.stage {
+            s.skip();
+            self.notice = None;
+        }
+    }
+
+    fn back(&mut self) {
+        if let Stage::Running(s) = &mut self.stage {
+            s.back();
+            self.notice = None;
+        }
+    }
+
+    /// The map as it stands (review stage), consuming the screen.
+    fn finish(self) -> Option<(LearnPad, PadLayout, LearnedMap)> {
+        let Stage::Running(session) = self.stage else {
+            return None;
+        };
+        let pad = LearnPad {
+            id: self.pad.id,
+            guid: self.pad.guid,
+            name: self.pad.name,
+        };
+        Some((pad, self.layout, session.finish()))
+    }
+}
+
+/// Writes a learned map under the pad's GUID, keeping the other device fields (port, deadzone, …).
+pub(super) fn store_learned(
+    config: &mut GamepadConfig,
+    pad: &LearnPad,
+    layout: PadLayout,
+    map: &LearnedMap,
+) {
+    let d = config.devices.entry(pad.guid.clone()).or_default();
+    d.name = Some(pad.name.clone());
+    d.layout = Some(layout.config_name().to_owned());
+    d.map = map.to_config();
+}
+
+/// Removes what learning wrote; `true` when there was something to forget.
+pub(super) fn forget_learned(config: &mut GamepadConfig, guid: &str) -> bool {
+    let Some(d) = config.devices.get_mut(guid) else {
+        return false;
+    };
+    let had = !d.map.is_empty() || d.layout.is_some() || d.name.is_some();
+    d.map.clear();
+    d.layout = None;
+    d.name = None;
+    if *d == Default::default() {
+        config.devices.remove(guid);
+    }
+    had
+}
+
+/// Learned maps of the config, by GUID (for `GamepadInput::set_learned_maps`). Entries without a map are skipped.
+pub(crate) fn learned_maps(config: &GamepadConfig) -> BTreeMap<String, LearnedMap> {
+    config
+        .devices
+        .iter()
+        .filter(|(_, d)| !d.map.is_empty())
+        .map(|(guid, d)| (guid.clone(), LearnedMap::from_config(&d.map)))
+        .collect()
 }
 
 /// Cores whose `pad_devices` offer a DualShock mode (PlayStation), catalog order.
@@ -144,9 +308,176 @@ impl LibraryUi {
         std::mem::take(&mut self.pad.settings_changed)
     }
 
-    /// Escape while waiting for a button cancels the remap instead of leaving the page.
+    /// Host -> page: pads that can be configured, refreshed with `set_pad_status`.
+    pub(crate) fn set_learnable_pads(&mut self, pads: Vec<LearnPad>) {
+        self.pad.learnable = pads;
+        let gone = self
+            .pad
+            .learn
+            .as_ref()
+            .is_some_and(|l| !self.pad.learnable.iter().any(|p| p.id == l.pad.id));
+        if gone {
+            self.pad.learn = None;
+            self.set_status(text::LEARN_DISCONNECTED.to_owned(), Level::Warn);
+        }
+    }
+
+    /// The pad whose raw inputs the host must route to `pad_raw_input` (`set_raw_capture`); `None`: no session.
+    pub(crate) fn pad_learn_target(&self) -> Option<PadId> {
+        self.pad.learn.as_ref().map(|l| l.pad.id)
+    }
+
+    /// Host -> page: one raw input of the pad in learning (`GamepadInput::take_raw`).
+    pub(crate) fn pad_raw_input(&mut self, input: RawInput, value: f32) {
+        if let Some(l) = &mut self.pad.learn {
+            l.feed(input, value);
+        }
+    }
+
+    /// `true` once after a learned map was saved or forgotten: the host calls `set_learned_maps(learned_maps(..))`.
+    pub(crate) fn take_learned_changed(&mut self) -> bool {
+        std::mem::take(&mut self.pad.learned_changed)
+    }
+
+    /// Learned maps of the current config.
+    pub(crate) fn learned_maps(&self) -> BTreeMap<String, LearnedMap> {
+        learned_maps(&self.config.input.gamepad)
+    }
+
+    /// Escape while waiting for a button cancels the remap or the learning instead of leaving the page.
     pub(super) fn cancel_pad_learning(&mut self) -> bool {
-        self.pad.learning.take().is_some()
+        let learn = self.pad.learn.take().is_some();
+        let remap = self.pad.learning.take().is_some();
+        learn || remap
+    }
+
+    fn save_learning(&mut self) {
+        let Some(screen) = self.pad.learn.take() else {
+            return;
+        };
+        if let Some((pad, layout, map)) = screen.finish() {
+            store_learned(&mut self.config.input.gamepad, &pad, layout, &map);
+            self.settings.dirty = true;
+            self.pad.learned_changed = true;
+            self.set_status(text::LEARN_SAVED.to_owned(), Level::Info);
+        }
+    }
+
+    /// « Configurer une manette »: list of pads, then the step-by-step screen.
+    fn learn_section(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(text::LEARN_TITLE).strong());
+        if self.pad.learn.is_none() {
+            weak(ui, text::LEARN_NOTE);
+            let pads = self.pad.learnable.clone();
+            for pad in pads {
+                let learned = self
+                    .config
+                    .input
+                    .gamepad
+                    .devices
+                    .get(&pad.guid)
+                    .is_some_and(|d| !d.map.is_empty());
+                ui.horizontal(|ui| {
+                    let mut line = text::pad_name(&pad.name);
+                    if learned {
+                        line = format!("{line} ({})", text::LEARN_LEARNED);
+                    }
+                    ui.label(line);
+                    if ui.button(text::LEARN_CONFIGURE).clicked() {
+                        self.pad.learn = Some(LearnScreen::new(&pad));
+                    }
+                    if learned && ui.button(text::LEARN_FORGET).clicked() {
+                        forget_learned(&mut self.config.input.gamepad, &pad.guid);
+                        self.settings.dirty = true;
+                        self.pad.learned_changed = true;
+                        self.set_status(text::LEARN_FORGOTTEN.to_owned(), Level::Info);
+                    }
+                });
+            }
+            return;
+        }
+        let mut save = false;
+        let mut cancel = false;
+        if let Some(l) = &mut self.pad.learn {
+            ui.label(text::learn_title_for(&l.pad.name));
+            match l.session() {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.label(text::LEARN_SHAPE);
+                        for layout in [
+                            PadLayout::Snes,
+                            PadLayout::Nes,
+                            PadLayout::MegaDrive3,
+                            PadLayout::MegaDrive6,
+                        ] {
+                            ui.selectable_value(
+                                &mut l.layout,
+                                layout,
+                                text::learn_layout_label(layout),
+                            );
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button(text::LEARN_START).clicked() {
+                            l.begin();
+                        }
+                        cancel = ui.button(text::LEARN_CANCEL).clicked();
+                    });
+                }
+                Some(session) => {
+                    let steps = l.layout.steps();
+                    let pos = l.position();
+                    if let Some(step) = session.current() {
+                        ui.label(RichText::new(text::learn_prompt(step.label)).heading());
+                        weak(ui, text::learn_progress(pos, steps.len()));
+                    } else {
+                        ui.label(text::LEARN_DONE);
+                    }
+                    if let Some(n) = &l.notice {
+                        ui.colored_label(ui.visuals().warn_fg_color, n);
+                    }
+                    let review = session.current().is_none();
+                    for (i, (step, rec)) in steps.iter().zip(session.recorded()).enumerate() {
+                        if i < pos || review {
+                            let shown = rec
+                                .map_or_else(|| text::LEARN_NOT_SET.to_owned(), |r| r.to_token());
+                            ui.label(format!("{} : {shown}", step.label));
+                        }
+                    }
+                }
+            }
+            if l.session().is_some() {
+                let review = l.is_review();
+                let empty = l
+                    .session()
+                    .is_none_or(|s| s.recorded().iter().all(Option::is_none));
+                ui.horizontal(|ui| {
+                    if !review && ui.button(text::LEARN_SKIP).clicked() {
+                        l.skip();
+                    }
+                    if ui.button(text::LEARN_BACK).clicked() {
+                        l.back();
+                    }
+                    cancel = ui.button(text::LEARN_CANCEL).clicked();
+                    if review {
+                        if ui
+                            .add_enabled(!empty, egui::Button::new(text::LEARN_SAVE))
+                            .clicked()
+                        {
+                            save = true;
+                        }
+                        if empty {
+                            weak(ui, text::LEARN_EMPTY);
+                        }
+                    }
+                });
+            }
+        }
+        if cancel {
+            self.pad.learn = None;
+        } else if save {
+            self.save_learning();
+        }
     }
 
     pub(super) fn gamepad_section(&mut self, ui: &mut Ui) {
@@ -194,6 +525,7 @@ impl LibraryUi {
             self.settings.dirty = true;
             self.pad.settings_changed = true;
         }
+        self.learn_section(ui);
         self.pad_mode_section(ui);
         self.remap_section(ui);
     }
@@ -348,5 +680,103 @@ mod tests {
         assert_eq!(map["swanstation"], "dualshock");
         set_dualshock_default(&mut map, &cores, false);
         assert_eq!(map.len(), 1, "digital is written as nothing");
+    }
+
+    fn pad() -> LearnPad {
+        LearnPad {
+            id: PadId(3),
+            guid: "03000000790000001100000000000000".to_owned(),
+            name: "USB Gamepad".to_owned(),
+        }
+    }
+
+    fn press(l: &mut LearnScreen, input: RawInput) {
+        l.feed(input, 1.0);
+        l.feed(input, 0.0);
+    }
+
+    fn run_all(l: &mut LearnScreen) {
+        l.begin();
+        for code in 0..l.layout.steps().len() as u32 {
+            press(l, RawInput::Button(code));
+        }
+    }
+
+    #[test]
+    fn full_sequence_reaches_review_and_writes_config() {
+        let mut l = LearnScreen::new(&pad());
+        l.layout = PadLayout::Nes;
+        run_all(&mut l);
+        assert!(l.is_review());
+        let (p, layout, map) = l.finish().unwrap();
+        let mut c = GamepadConfig::default();
+        store_learned(&mut c, &p, layout, &map);
+        let d = &c.devices[&p.guid];
+        assert_eq!(d.name.as_deref(), Some("USB Gamepad"));
+        assert_eq!(d.layout.as_deref(), Some("nes"));
+        assert_eq!(map.bindings().len(), PadLayout::Nes.steps().len());
+        assert_eq!(d.map, map.to_config());
+        assert_eq!(learned_maps(&c)[&p.guid].to_config(), d.map);
+    }
+
+    #[test]
+    fn skip_and_back_move_one_step() {
+        let mut l = LearnScreen::new(&pad());
+        l.begin();
+        assert_eq!(l.position(), 0);
+        press(&mut l, RawInput::Button(1));
+        assert_eq!(l.position(), 1);
+        l.skip();
+        assert_eq!(l.position(), 2);
+        l.back();
+        l.back();
+        assert_eq!(l.position(), 0);
+        l.back();
+        assert_eq!(l.position(), 0);
+        let (_, _, map) = l.finish().unwrap();
+        assert!(map.bindings().is_empty());
+    }
+
+    #[test]
+    fn duplicate_input_is_refused_with_a_message() {
+        let mut l = LearnScreen::new(&pad());
+        l.begin();
+        press(&mut l, RawInput::Button(1));
+        press(&mut l, RawInput::Button(1));
+        assert_eq!(l.position(), 1);
+        assert!(
+            l.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("déjà utilisée"))
+        );
+        press(&mut l, RawInput::Button(2));
+        assert_eq!(l.position(), 2);
+        assert!(l.notice.is_none());
+    }
+
+    #[test]
+    fn cancel_drops_the_session_and_leaves_config_alone() {
+        let mut c = GamepadConfig::default();
+        let before = c.clone();
+        let mut l = LearnScreen::new(&pad());
+        run_all(&mut l);
+        drop(l);
+        assert_eq!(c, before);
+        let p = pad();
+        let map = LearnedMap::from_config(&[("south".to_owned(), "b2".to_owned())].into());
+        store_learned(&mut c, &p, PadLayout::Snes, &map);
+        assert!(forget_learned(&mut c, &p.guid));
+        assert_eq!(c, before, "forgetting removes the whole empty entry");
+        assert!(!forget_learned(&mut c, &p.guid));
+    }
+
+    #[test]
+    fn forget_keeps_other_device_fields() {
+        let mut c = GamepadConfig::default();
+        let p = pad();
+        c.devices.entry(p.guid.clone()).or_default().port = Some(1);
+        store_learned(&mut c, &p, PadLayout::Snes, &LearnedMap::default());
+        forget_learned(&mut c, &p.guid);
+        assert_eq!(c.devices[&p.guid].port, Some(1));
     }
 }

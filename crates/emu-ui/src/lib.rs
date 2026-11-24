@@ -58,9 +58,10 @@ pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_conf
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad::GilrsSource;
 pub use crate::gamepad::{
-    GamepadError, GamepadInput, GamepadNotice, GamepadSettings, GamepadSource, NavKey, PadAxis,
-    PadBackend, PadButton, PadEvent, PadEventKind, PadId, PadMap, ScriptedPadSource,
-    retropad_from_name, retropad_name,
+    GamepadError, GamepadInput, GamepadNotice, GamepadSettings, GamepadSource, LearnProgress,
+    LearnSession, LearnStep, LearnedMap, NavKey, PadAxis, PadBackend, PadButton, PadEvent,
+    PadEventKind, PadId, PadInfo, PadLayout, PadMap, PadStatus, RawBinding, RawInput,
+    RawTranslator, ScriptedPadSource, UnrecognizedPad, retropad_from_name, retropad_name,
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};

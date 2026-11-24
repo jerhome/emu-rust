@@ -1,7 +1,5 @@
 //! Learned pad maps (7.2, docs/design/v7.2-manette-snes.md): raw native inputs -> positional `PadButton`s.
 //! Pure logic, no I/O.
-// Not called outside tests until G3 wires it into `GamepadInput`; remove then.
-#![allow(dead_code)]
 use std::collections::{BTreeMap, HashSet};
 
 use super::mapping::PadButton;
@@ -374,6 +372,11 @@ impl LearnSession {
         } else {
             LearnProgress::Recorded
         }
+    }
+
+    /// Binding recorded for each step of the layout (`None`: skipped or not reached yet).
+    pub fn recorded(&self) -> &[Option<RawBinding>] {
+        &self.recorded
     }
 
     /// Leaves the current step unbound.

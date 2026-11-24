@@ -23,6 +23,18 @@ pub struct GamepadDeviceConfig {
     pub port: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadzone: Option<f32>,
+    /// Display name of a learned pad (7.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Shape chosen while learning (`PadLayout::config_name`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    /// Per-pad hotkey button; `None`: the global one (or Select for a learned pad without Mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotkey_button: Option<HotkeyButton>,
+    /// Learned map: positional button name -> raw token (`b2`, `+a0`). Empty: nothing learned.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub map: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -97,5 +109,25 @@ autre = 3
         assert_eq!(again, c);
         assert!(!c.is_default());
         assert!(GamepadConfig::default().is_default());
+    }
+
+    #[test]
+    fn config_without_learned_fields_still_reads() {
+        let c: GamepadConfig = toml::from_str("[devices.abc]\nport = 0\n").unwrap();
+        let d = &c.devices["abc"];
+        assert!(d.name.is_none() && d.layout.is_none() && d.map.is_empty());
+        assert!(!toml::to_string(&c).unwrap().contains("map"));
+    }
+
+    #[test]
+    fn learned_fields_round_trip() {
+        let text = "[devices.abc]\nname = \"USB Gamepad\"\nlayout = \"snes\"\nhotkey_button = \"select\"\n\
+                    [devices.abc.map]\ndpup = \"-a1\"\nsouth = \"b2\"\n";
+        let c: GamepadConfig = toml::from_str(text).unwrap();
+        let d = &c.devices["abc"];
+        assert_eq!(d.hotkey_button, Some(HotkeyButton::Select));
+        assert_eq!(d.map["south"], "b2");
+        let again: GamepadConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
     }
 }

@@ -15,10 +15,16 @@ mod source;
 
 #[cfg(feature = "gamepad")]
 pub use gilrs_source::GilrsSource;
-pub use input::{GamepadInput, GamepadNotice, GamepadSettings, NavKey};
+pub use input::{
+    GamepadInput, GamepadNotice, GamepadSettings, NavKey, PadInfo, PadStatus, UnrecognizedPad,
+};
+pub use learned::{
+    LearnProgress, LearnSession, LearnStep, LearnedMap, PadLayout, RawBinding, RawTranslator,
+};
 pub use mapping::{PadButton, PadMap, retropad_from_name, retropad_name, set_binding};
 pub use source::{
-    GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, ScriptedPadSource,
+    GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, RawInput,
+    ScriptedPadSource,
 };
 
 use crate::config_gamepad::GamepadConfig;
