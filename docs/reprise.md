@@ -42,7 +42,8 @@ Mis à jour à chaque fin de session.
    tactiques, fuites d'information) → liste de dettes.
 8. Sur le Mac, quand l'utilisateur est sur l'écran Retina seul : interface HiDPI ×2, mise à l'échelle des jeux en
    16:10, performances à ~4 Mpx (SNES et Night Trap 32X plein écran), déplacement de fenêtre entre écrans.
-9. Ensuite : 7.6 interface en anglais ; 8.0 systèmes libretro non testés.
+9. Ensuite : 7.6 interface en anglais ; 8.0 systèmes libretro non testés ; idée non planifiée après 8.0 : édition web
+   (WASM, 8/16 bits) ou son dans le mode noVNC (voir la roadmap).
 
 ## Budget
 
