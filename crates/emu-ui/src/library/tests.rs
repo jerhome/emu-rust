@@ -1474,3 +1474,70 @@ fn reset_all_covers_needs_confirmation_and_single_reset_does_not() {
     assert_eq!(calls.borrow().len(), 2);
     assert!(calls.borrow()[1].is_some());
 }
+
+struct NeverFound;
+
+impl emu_assets::CoverSource for NeverFound {
+    fn kind(&self) -> emu_assets::CoverSourceKind {
+        emu_assets::CoverSourceKind::LibretroThumbnails
+    }
+    fn fetch(
+        &mut self,
+        _: &emu_assets::CoverQuery,
+    ) -> Result<Option<emu_assets::CoverFound>, emu_assets::AssetError> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn cover_status_counts_games_not_searches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = Library::open_in_memory().unwrap();
+    let options = ScanOptions {
+        roots: vec![repo_root().join("tests/data/roms")],
+        ..ScanOptions::default()
+    };
+    db.scan(&options, &AtomicBool::new(false), &mut |_| {})
+        .unwrap();
+    let ids: Vec<GameId> = db.games().unwrap().into_iter().map(|g| g.id).collect();
+    assert!(ids.len() > 1);
+    let settings = covers::CoverSettings {
+        download: true,
+        sources: vec![emu_assets::CoverSourceKind::LibretroThumbnails],
+        retry_days: 7,
+        screenscraper: None,
+        igdb: None,
+    };
+    let factory: covers::ChainFactory = Box::new(|_| {
+        Some(emu_assets::CoverChain::new(vec![
+            Box::new(NeverFound) as Box<dyn emu_assets::CoverSource>
+        ]))
+    });
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut w = covers::Worker::new(
+        db,
+        tmp.path(),
+        settings,
+        factory,
+        tx,
+        Arc::new(|| {}),
+        Arc::default(),
+    );
+    let drain = |w: &mut covers::Worker| {
+        for _ in 0..200 {
+            w.step();
+        }
+    };
+    drain(&mut w);
+    let n = ids.len() as u32;
+    assert_eq!((w.status().found, w.status().missing), (0, n));
+    for _ in 0..5 {
+        w.handle(covers::Command::Reset(Some(ids[0])));
+        drain(&mut w);
+    }
+    assert_eq!((w.status().found, w.status().missing), (0, n));
+    w.handle(covers::Command::Reset(None));
+    assert_eq!(w.status().missing, 0);
+    drain(&mut w);
+    assert_eq!((w.status().found, w.status().missing), (0, n));
+}

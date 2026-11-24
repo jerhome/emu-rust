@@ -259,6 +259,9 @@ pub(crate) struct Worker {
     /// Games recorded `Missing` since the last reset: undone if a source turns out to be broken
     /// (its first 404s looked like genuine absences).
     session_missing: Vec<GameId>,
+    /// Last chain answer per game (`true` = found): the status counters, so a game asked again replaces
+    /// its earlier result instead of adding to it.
+    outcomes: HashMap<GameId, bool>,
     tx: Sender<Reply>,
     notify: Notify,
     cancel: SharedCancel,
@@ -288,6 +291,7 @@ impl Worker {
             no_source: false,
             tried: HashSet::new(),
             session_missing: Vec::new(),
+            outcomes: HashMap::new(),
             tx,
             notify,
             cancel,
@@ -334,6 +338,7 @@ impl Worker {
             Command::Configure(settings) => {
                 self.chain = (self.factory)(&settings);
                 self.settings = settings;
+                self.outcomes.clear();
                 self.reset_session();
             }
             Command::Refresh => self.refresh_back(),
@@ -346,6 +351,7 @@ impl Worker {
                     chain.reset();
                     chain.reset_stats();
                 }
+                self.outcomes.clear();
                 self.reset_session();
             }
         }
@@ -363,6 +369,12 @@ impl Worker {
                 .map(|g| g.into_iter().map(|g| g.id).collect())
                 .unwrap_or_default(),
         };
+        match target {
+            Some(id) => {
+                self.outcomes.remove(&id);
+            }
+            None => self.outcomes.clear(),
+        }
         let mut files = Vec::new();
         for id in ids {
             if let Ok(Some(CoverRecord {
@@ -421,7 +433,9 @@ impl Worker {
             "jaquettes : source injoignable, {} absence(s) de cette session annulée(s)",
             self.session_missing.len()
         );
-        self.session_missing.clear();
+        for id in self.session_missing.drain(..) {
+            self.outcomes.remove(&id);
+        }
         if let Err(e) = self.db.clear_missing_covers() {
             tracing::warn!("jaquettes : {e}");
         }
@@ -514,6 +528,7 @@ impl Worker {
         }
         match result {
             Ok(Some(found)) => {
+                self.outcomes.insert(game.id, true);
                 let key = cover_key(game);
                 match self.cache.store(&game.system, &key, &found) {
                     Ok(path) => {
@@ -539,7 +554,10 @@ impl Worker {
                     checked_unix: super::now_unix(),
                 };
                 match self.db.set_cover(game.id, CoverKind::Boxart, &state) {
-                    Ok(()) => self.session_missing.push(game.id),
+                    Ok(()) => {
+                        self.session_missing.push(game.id);
+                        self.outcomes.insert(game.id, false);
+                    }
                     Err(e) => tracing::warn!("jaquette : {e}"),
                 }
                 None
@@ -599,9 +617,10 @@ impl Worker {
             .as_ref()
             .map(CoverChain::stats)
             .unwrap_or_default();
+        let count = |v: bool| self.outcomes.values().filter(|f| **f == v).count() as u32;
         WorkerStatus {
-            found: stats.found,
-            missing: stats.missing,
+            found: count(true),
+            missing: count(false),
             source_broken: stats.source_broken,
             offline,
             no_source: self.settings.download

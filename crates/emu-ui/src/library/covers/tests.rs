@@ -452,7 +452,7 @@ fn source_broken_records_nothing_and_undoes_session_missing() {
     }
     let status = r.worker.status();
     assert!(status.source_broken);
-    assert_eq!(status.missing, 2);
+    assert_eq!(status.missing, 0, "undone absences are no longer counted");
     // Later "not found" answers are not trusted either.
     r.answer(Ok(None));
     r.show(games[3].id);
