@@ -18,8 +18,8 @@ use crate::{
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
 /// v5 (4.0): `game.is_dir` (unpacked DOS game folders). v6 (6.0): `game.region` (disc systems), and the Redump
-/// `serial` / `region` of each `dat_entry`.
-pub const SCHEMA_VERSION: u32 = 6;
+/// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs).
+pub const SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -62,6 +62,10 @@ pub struct Game {
     /// tag; `None` = unknown or not a disc system. Column `game.region` (schema v6, `DiscRegion::key`), filled by
     /// the scan (also for a row left unchanged by it, the first time).
     pub region: Option<DiscRegion>,
+    /// Sega CD 32X disc (7.4, system `megacd` only): needs a core emulating the Mega CD and the 32X together
+    /// (picodrive). Disc probe (`disc_needs_32x`), else Redump name tag (`name_needs_32x`). Column `game.needs_32x`
+    /// (schema v7; NULL until the scan computes it, also for a row it leaves unchanged).
+    pub needs_32x: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,12 +236,16 @@ ALTER TABLE game ADD COLUMN region TEXT;
 ALTER TABLE dat_entry ADD COLUMN serial TEXT;
 ALTER TABLE dat_entry ADD COLUMN region TEXT;
 "#,
+    // 1 for a Sega CD 32X disc (7.4), 0 for another `megacd` game; NULL until the next scan fills it. Additive.
+    r#"
+ALTER TABLE game ADD COLUMN needs_32x INTEGER;
+"#,
 ];
 
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 
 const GAME_COLUMNS: &str = "id, path, entry, system, size, crc32, sha1, title, identification, favorite, \
-                            last_played_unix, play_count, is_dir, region";
+                            last_played_unix, play_count, is_dir, region, needs_32x";
 
 pub(crate) fn db_error(e: rusqlite::Error) -> LibraryError {
     LibraryError::Database(e.to_string())
@@ -326,6 +334,7 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
             .get::<_, Option<String>>(13)?
             .as_deref()
             .and_then(DiscRegion::from_key),
+        needs_32x: row.get::<_, Option<i64>>(14)?.is_some_and(|v| v != 0),
     })
 }
 
@@ -1650,5 +1659,42 @@ mod tests {
         migrate(&mut a, 1).unwrap();
         migrate(&mut b, 1).unwrap();
         assert_eq!(user_version(&b).ok(), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn v6_base_gains_needs_32x_without_loss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("v6.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            for m in &MIGRATIONS[..6] {
+                conn.execute_batch(m).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 6).unwrap();
+            conn.execute(
+                "INSERT INTO game (path, system, size, file_size, mtime_unix, title, identification, favorite,
+                                   play_count, region)
+                 VALUES ('/r/megacd/F.cue', 'megacd', 1, 1, 7, 'F', 'name', 1, 3, 'usa')",
+                [],
+            )
+            .unwrap();
+        }
+        let (lib, outcome) = Library::open(&db).unwrap();
+        assert_eq!(outcome, OpenOutcome::Opened);
+        assert_eq!(user_version(&lib.conn).ok(), Some(SCHEMA_VERSION));
+        let games = lib.games().unwrap();
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        assert!(g.favorite && g.play_count == 3 && g.region == Some(DiscRegion::Usa));
+        assert!(!g.needs_32x);
+        let stored: Option<i64> = lib
+            .conn
+            .query_row("SELECT needs_32x FROM game", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None, "NULL until a scan computes it");
+        lib.conn
+            .execute("UPDATE game SET needs_32x = 1", [])
+            .unwrap();
+        assert!(lib.games().unwrap()[0].needs_32x);
     }
 }

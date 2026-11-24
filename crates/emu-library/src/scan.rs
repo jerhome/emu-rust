@@ -20,8 +20,8 @@ use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_media_marker};
 use crate::systems::{Attribution, attribute, systems};
 use crate::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
-    RomHashes, SystemInfo, SystemKind, cue_references, disc_info, group_media, hash_reader,
-    region_from_name, systems_for_extension,
+    RomHashes, SystemInfo, SystemKind, cue_references, disc_info, disc_needs_32x, group_media,
+    hash_reader, name_needs_32x, region_from_name, systems_for_extension,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -169,6 +169,8 @@ struct Existing {
     title: String,
     /// Stored `game.region` (schema v6).
     region: Option<String>,
+    /// Stored `game.needs_32x` (schema v7; `None`: never computed).
+    needs_32x: Option<bool>,
 }
 
 /// How the system of an analysed file is decided once the DATs can be read (design v3.0 §3.5.2).
@@ -217,6 +219,9 @@ struct Analysis {
     region: Option<DiscRegion>,
     /// A zip of several disks of one computer: stored as `media = [the zip]` (see `zip_disk_order`).
     zip_disks: bool,
+    /// Sega CD 32X boot program found in the data track (7.4; probe of a `megacd` image or playlist only). The
+    /// Redump name tags are added when the row is stored.
+    needs_32x: bool,
 }
 
 enum Failure {
@@ -1143,6 +1148,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             stem: stem_of(&found.path),
             region: None,
             zip_disks: false,
+            needs_32x: false,
         });
     }
     if computers.len() > 1 {
@@ -1216,6 +1222,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         stem: stem_of(&found.path),
         region: None,
         zip_disks,
+        needs_32x: false,
     })
 }
 
@@ -1408,10 +1415,13 @@ fn analyze_file(
             return Err(Failure::Unclassified);
         }
     }
-    let region = if playlist {
-        playlist_region(found, discs)
+    let (region, needs_32x) = if playlist {
+        (
+            playlist_region(found, discs),
+            found.media.first().is_some_and(|m| probe_32x(Path::new(m))),
+        )
     } else {
-        None
+        (None, false)
     };
     // A lone DOS file: identified by its name and, for a small image, by its CRC32 (design v4.0 §3.4).
     let dos = match &rule {
@@ -1463,6 +1473,7 @@ fn analyze_file(
         stem: stem_of(&found.path),
         region,
         zip_disks: false,
+        needs_32x,
     })
 }
 
@@ -1524,6 +1535,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             .unwrap_or_default(),
         region: None,
         zip_disks: false,
+        needs_32x: false,
     })
 }
 
@@ -1548,6 +1560,7 @@ fn analyze_disc(
         stem: stem.clone(),
         region,
         zip_disks: false,
+        needs_32x: false,
     };
     let (system, pinned) = match attribute(ext, &found.folders) {
         Attribution::Folder(s) if s.folder_games => {
@@ -1617,6 +1630,7 @@ fn disc_analysis(
         stem: stem.clone(),
         region,
         zip_disks: false,
+        needs_32x: false,
     };
     if !system.disc {
         return Ok(analysis(
@@ -1635,14 +1649,31 @@ fn disc_analysis(
         crc_limit(system, max),
         cancel,
     )?;
-    Ok(analysis(
+    let mut analysis = analysis(
         Rule::Disc {
             system,
             pinned,
             matched,
         },
         region,
-    ))
+    );
+    analysis.needs_32x = system.id == CD_32X_SYSTEM && probe_32x(&found.path);
+    Ok(analysis)
+}
+
+/// System whose games may be Sega CD 32X discs (7.4: a variant of `megacd`, not a system of its own).
+const CD_32X_SYSTEM: &str = "megacd";
+
+/// Sega CD 32X probe of a disc image (`disc_needs_32x`); a `.chd` / `.pbp`, another file or a read error is `false`.
+fn probe_32x(path: &Path) -> bool {
+    lower_ext(path).is_some_and(|e| DISC_EXTENSIONS.contains(&e.as_str()) || e == "bin")
+        && disc_needs_32x(path).unwrap_or(false)
+}
+
+/// `needs_32x` column of a game stored in `system`: `None` outside `megacd`; else the probe, then the Redump tags
+/// of its title (DAT name) or file stem.
+fn needs_32x_of(system: &str, probed: bool, title: &str, stem: &str) -> Option<bool> {
+    (system == CD_32X_SYSTEM).then(|| probed || name_needs_32x(title) || name_needs_32x(stem))
 }
 
 /// Redump match (DAT game name, how) and region of a disc image.
@@ -1798,7 +1829,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
     let mut stmt = conn
         .prepare(
             "SELECT id, path, file_size, mtime_unix, sha1, entry, system, pinned, identification, is_dir,
-                    title, region
+                    title, region, needs_32x
              FROM game",
         )
         .map_err(db_error)?;
@@ -1818,6 +1849,7 @@ fn load_existing(conn: &Connection) -> Result<HashMap<String, Existing>, Library
                 is_dir: r.get::<_, i64>(9)? != 0,
                 title: r.get(10)?,
                 region: r.get(11)?,
+                needs_32x: r.get::<_, Option<i64>>(12)?.map(|v| v != 0),
             },
         ))
     })
@@ -1975,15 +2007,16 @@ fn store(
         .region
         .filter(|_| crate::system(&id.system).is_some_and(|s| s.disc))
         .map(DiscRegion::key);
+    let needs_32x = needs_32x_of(&id.system, analysis.needs_32x, &title, &analysis.stem);
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
-                           title, identification, pinned, is_dir, region)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                           title, identification, pinned, is_dir, region, needs_32x)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(path) DO UPDATE SET entry = excluded.entry, system = excluded.system, size = excluded.size,
              file_size = excluded.file_size, mtime_unix = excluded.mtime_unix, crc32 = excluded.crc32,
              sha1 = excluded.sha1, crc32_nh = excluded.crc32_nh, sha1_nh = excluded.sha1_nh,
              title = excluded.title, identification = excluded.identification, pinned = excluded.pinned,
-             is_dir = excluded.is_dir, region = excluded.region",
+             is_dir = excluded.is_dir, region = excluded.region, needs_32x = excluded.needs_32x",
         params![
             found.key,
             analysis.entry,
@@ -2000,6 +2033,7 @@ fn store(
             pinned,
             found.is_dir,
             region,
+            needs_32x,
         ],
     )
     .map_err(db_error)?;
@@ -2093,6 +2127,8 @@ pub(crate) fn run(
     let discs = DiscIndex::load(conn)?;
     // (row id, region key) of unchanged rows of a disc system whose region was never computed (v5 rows).
     let mut regions: Vec<(i64, &'static str)> = Vec::new();
+    // (row id, flag) of unchanged `megacd` rows whose `needs_32x` was never computed (v6 rows).
+    let mut cd_32x: Vec<(i64, bool)> = Vec::new();
     let mut names = NameIndex::default();
     let mut state = ScanProgress::default();
     let mut last_emit: Option<Instant> = None;
@@ -2124,6 +2160,14 @@ pub(crate) fn run(
                 if let Some(region) = region_of_row(probe, &o.title, discs.get(&system.id)) {
                     regions.push((o.id, region.key()));
                 }
+            }
+            if let Some(o) = old
+                && o.needs_32x.is_none()
+                && o.system == CD_32X_SYSTEM
+            {
+                let probe = f.media.first().map_or(f.path.as_path(), Path::new);
+                let flag = needs_32x_of(&o.system, probe_32x(probe), &o.title, &stem_of(&f.path));
+                cd_32x.extend(flag.map(|flag| (o.id, flag)));
             }
         } else {
             // No transaction is open here: a slow read never holds the write lock.
@@ -2184,12 +2228,19 @@ pub(crate) fn run(
         &mut report,
         &mut unclassified,
     )?;
-    if !regions.is_empty() {
+    if !regions.is_empty() || !cd_32x.is_empty() {
         let tx = conn.transaction().map_err(db_error)?;
         for (id, region) in &regions {
             tx.execute(
                 "UPDATE game SET region = ?2 WHERE id = ?1 AND region IS NULL",
                 params![id, region],
+            )
+            .map_err(db_error)?;
+        }
+        for (id, flag) in &cd_32x {
+            tx.execute(
+                "UPDATE game SET needs_32x = ?2 WHERE id = ?1 AND needs_32x IS NULL",
+                params![id, flag],
             )
             .map_err(db_error)?;
         }
@@ -2818,6 +2869,110 @@ mod tests {
     }
 
     /// PlayStation and 3DO (design v7.0 §3.4).
+    mod cd_32x {
+        use super::megacd::{scan, write};
+        use super::*;
+        use crate::Library;
+        use crate::disc::fixtures::{sega_cd_user, to_raw};
+
+        const SIG_AT: usize = 45 * 2048 + 1198;
+
+        fn cue_disc(dir: &Path, stem: &str, signature: bool) {
+            let track = format!("{stem} (Track 1).bin");
+            write(
+                &dir.join(&track),
+                &to_raw(&sega_cd_user(signature.then_some(SIG_AT)), 1),
+            );
+            write(
+                &dir.join(format!("{stem}.cue")),
+                format!("FILE \"{track}\" BINARY\n  TRACK 01 MODE1/2352\n").as_bytes(),
+            );
+        }
+
+        fn flags(lib: &Library) -> Vec<(String, bool, usize)> {
+            let mut v: Vec<_> = lib
+                .games()
+                .unwrap()
+                .iter()
+                .map(|g| {
+                    (
+                        g.path.file_name().unwrap().to_string_lossy().into_owned(),
+                        g.needs_32x,
+                        g.media.len(),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        }
+
+        #[test]
+        fn cd_32x_discs_are_flagged_and_never_grouped_with_the_sega_cd_disc() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            let dir = root.join("megacd");
+            // Same box, two editions: disc 1 is a plain Sega CD, disc 2 the 32X CD (one folder, as a user may do).
+            cue_disc(
+                &dir,
+                "Fahrenheit (USA) (Disc 1) (Key Disc) (Sega CD)",
+                false,
+            );
+            cue_disc(&dir, "Fahrenheit (USA) (Disc 2) (32X CD)", true);
+            // Signature only (no tag), tag only (`.chd`, never read), neither.
+            write(&dir.join("Probe Only.iso"), &sega_cd_user(Some(SIG_AT)));
+            write(&dir.join("Night Trap (USA) (Sega CD 32X).chd"), b"not read");
+            cue_disc(&dir, "Fahrenheit (Europe)", false);
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            let want = [
+                ("Fahrenheit (Europe).cue".to_owned(), false, 0),
+                (
+                    "Fahrenheit (USA) (Disc 1) (Key Disc) (Sega CD).cue".to_owned(),
+                    false,
+                    0,
+                ),
+                ("Fahrenheit (USA) (Disc 2) (32X CD).cue".to_owned(), true, 0),
+                ("Night Trap (USA) (Sega CD 32X).chd".to_owned(), true, 0),
+                ("Probe Only.iso".to_owned(), true, 0),
+            ];
+            assert_eq!(flags(&lib), want);
+            assert!(lib.games().unwrap().iter().all(|g| g.system == "megacd"));
+
+            // A v6 row (flag never computed) left unchanged by the scan gets it; a stored flag is kept.
+            lib.conn
+                .execute("UPDATE game SET needs_32x = NULL", [])
+                .unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert_eq!(report.unchanged, 5);
+            assert_eq!(flags(&lib), want);
+            let nulls: i64 = lib
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM game WHERE needs_32x IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(nulls, 0);
+        }
+
+        #[test]
+        fn games_of_other_systems_have_no_32x_flag() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            // A `32X CD` tag outside `megacd` means nothing.
+            write(&root.join("gb/Odd (32X CD).gb"), &[0u8; 512]);
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            assert_eq!(flags(&lib), [("Odd (32X CD).gb".to_owned(), false, 0)]);
+            let stored: Option<i64> = lib
+                .conn
+                .query_row("SELECT needs_32x FROM game", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(stored, None);
+        }
+    }
+
     mod ps_3do {
         use super::megacd::{has_error, names, scan, write, zip_of};
         use super::*;

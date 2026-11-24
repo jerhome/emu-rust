@@ -64,6 +64,7 @@ Une migration par version au plus, toujours sans perte (favoris, historique, jaq
 | **v5** | 4.0 | `game.is_dir` (jeux-dossiers DOS) ; métadonnées DOS éventuelles dans la même migration |
 | — | 5.0 | aucune migration (nouveaux systèmes seulement ; utilise la clé `(system, source)` de la v4) |
 | **v6** | 6.0 | `game.region` (région du disque : BIOS Mega CD, puis PlayStation en 7.0) |
+| **v7** | 7.4 | `game.needs_32x` (CD Mega CD + 32X : signature `32X Initial Program` de la piste de données, ou nom Redump « Mega-CD 32X / Sega CD 32X / 32X CD ») |
 | — | 7.0 | aucune migration (v6 suffit : `game.region`, `dat_entry.serial` / `region`) |
 
 Ordre ST puis Amiga décidé le 2026-11-19 : le ST est plus simple et testable sans ROM propriétaire (EmuTOS), il valide l'infrastructure ordinateur avant l'Amiga.
