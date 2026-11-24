@@ -64,7 +64,8 @@ pub struct Game {
     pub region: Option<DiscRegion>,
     /// Sega CD 32X disc (7.4, system `megacd` only): needs a core emulating the Mega CD and the 32X together
     /// (picodrive). Disc probe (`disc_needs_32x`), else Redump name tag (`name_needs_32x`). Column `game.needs_32x`
-    /// (schema v7; NULL until the scan computes it, also for a row it leaves unchanged).
+    /// (schema v7; NULL until the scan computes it, also for a row it leaves unchanged). NULL stays NULL outside
+    /// `megacd` (never computed there) and reads as `false`.
     pub needs_32x: bool,
 }
 

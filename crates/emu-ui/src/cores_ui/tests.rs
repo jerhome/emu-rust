@@ -217,6 +217,26 @@ fn disc_32x_honours_only_a_32x_capable_user_choice() {
 }
 
 #[test]
+fn disc_32x_ignores_a_user_override_of_the_32x_list_without_32x() {
+    let gpgx = id("genesis_plus_gx");
+    let mut config = CoresConfig::default();
+    config.preferred.insert("32x".into(), gpgx.to_string());
+    let prefs = preferences(&config);
+    let needs = GameNeeds {
+        needs_32x: true,
+        explicit: None,
+    };
+    assert_eq!(
+        choose_megacd(&["genesis_plus_gx", "picodrive"], &prefs, needs),
+        CoreChoice::Installed(id("picodrive"))
+    );
+    assert_eq!(
+        choose_megacd(&["genesis_plus_gx"], &prefs, needs),
+        CoreChoice::Install(id("picodrive"))
+    );
+}
+
+#[test]
 fn preferences_convert_library_ids_to_database_names() {
     let mut cfg = CoresConfig::default();
     cfg.preferred.insert("gb".into(), "sameboy".into());
