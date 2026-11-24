@@ -15,8 +15,10 @@ lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
 - **`unsafe`** interdit sauf dans `emu-libretro` et `emu-runtime` ; chaque bloc `unsafe` a un commentaire `// SAFETY:`.
 - **Cibles** : image Docker (WSLg / X11 / Wayland / noVNC), puis Linux, Windows, macOS **Intel** (`x86_64-apple-darwin`,
   OpenGL ≤ 4.1). Code spécifique OS via `#[cfg(...)]`.
-  Mac de test de l'utilisateur, modeste : MacBook Pro 13" début 2015, i5 2,7 GHz 2 cœurs, 8 Go DDR3,
-  Intel Iris 6100, macOS 12.7.6. Réglages par défaut légers ; ne pas exiger plus que cette machine.
+  Mac de test de l'utilisateur, modeste : MacBook Pro 13" début 2015 (`MacBookPro12,1`), i5-5257U 2,7 GHz
+  2 cœurs / 4 threads, 8 Go DDR3, Intel Iris 6100 (OpenGL 4.1 max, 1,5 Go partagés), macOS 12.7.6 ; capot fermé
+  sur écran externe **1920×1080 à 60 Hz** ; sortie audio **44,1 kHz** ; SSD presque plein (~15 Go libres).
+  Réglages par défaut légers ; ne pas exiger plus que cette machine.
   PC Windows de test (bureau) : portable **Intel Iris Xe** (CPU basse consommation), **OpenGL 3.3** sous Windows,
   Vulkan mal supporté (valider Vulkan par lavapipe en test) ; WSL2 + Docker (WSLg : OpenGL via Mesa d3d12).
   Détails à compléter (modèle CPU, RAM, disque, version de Windows, ressources WSL2).
