@@ -86,6 +86,9 @@ qu'il n'existe pas déjà (les crons meurent avec la session).
 - **Pas de pull request** : une branche par version ; quand `fmt`/`clippy`/`test` passent et que `qa-systems`/`reviewer`
   ont validé, la session principale fusionne elle-même dans `main` et pousse (la CI tourne sur `main`).
 - **Les tags (releases) sont validés par l'utilisateur** : jamais de tag sans son accord explicite.
+- **Numéro de version vérifié à CHAQUE fusion d'une version dans `main`** : la version du workspace
+  (`Cargo.toml`, affichée dans le pied de page) doit correspondre à la version fusionnée (ex. 7.3 → `7.3.0`) ;
+  sinon, faire corriger par `platform-build` avant de pousser.
 - La session principale **ne modifie pas le code elle-même** : toute correction, même d'une ligne, est déléguée à
   l'agent du périmètre (modèle adapté, Opus pour le délicat).
 - Plusieurs worktrees en parallèle : chacun garde **son propre** `CARGO_TARGET_DIR` (artefacts mélangés sinon).
