@@ -3,8 +3,6 @@
 
 use egui::{Color32, Context, CornerRadius, FontId, Stroke, TextStyle};
 
-// Tokens are consumed progressively by the grid, manual and pad screens.
-#[allow(dead_code)]
 pub(crate) const BG: Color32 = Color32::from_rgb(0x14, 0x17, 0x1d);
 pub(crate) const PANEL: Color32 = Color32::from_rgb(0x1b, 0x1f, 0x27);
 pub(crate) const CARD: Color32 = Color32::from_rgb(0x23, 0x28, 0x34);
@@ -13,24 +11,18 @@ pub(crate) const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe9, 0xef);
 pub(crate) const TEXT_WEAK: Color32 = Color32::from_rgb(0x9a, 0xa2, 0xb3);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x4a, 0xa3, 0xff);
 pub(crate) const ACCENT_DIM: Color32 = Color32::from_rgb(0x28, 0x50, 0x7f);
-#[allow(dead_code)]
 pub(crate) const OK: Color32 = Color32::from_rgb(0x5c, 0xc9, 0x8a);
 pub(crate) const WARN: Color32 = Color32::from_rgb(0xe8, 0xb8, 0x4a);
 pub(crate) const ERROR: Color32 = Color32::from_rgb(0xff, 0x6e, 0x6e);
 
-#[allow(dead_code)]
 pub(crate) const FONT_BODY: f32 = 15.0;
-#[allow(dead_code)]
 pub(crate) const FONT_SMALL: f32 = 12.0;
-#[allow(dead_code)]
 pub(crate) const FONT_TITLE: f32 = 22.0;
-#[allow(dead_code)]
 pub(crate) const FONT_SECTION: f32 = 18.0;
 
 pub(crate) const SP_XS: f32 = 4.0;
 pub(crate) const SP_S: f32 = 8.0;
 pub(crate) const SP_M: f32 = 12.0;
-#[allow(dead_code)]
 pub(crate) const SP_L: f32 = 20.0;
 pub(crate) const RADIUS: u8 = 6;
 pub(crate) const FOCUS_WIDTH: f32 = 2.0;

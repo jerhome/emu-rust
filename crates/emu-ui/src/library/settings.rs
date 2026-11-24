@@ -475,6 +475,9 @@ impl LibraryUi {
 
     /// T8: the first call (`confirmed == false`) only asks; nothing is forgotten without the confirmation.
     pub(super) fn reset_all_covers(&mut self, confirmed: bool) {
+        if self.capture {
+            return; // capture mode never touches the cover cache
+        }
         if !confirmed {
             self.settings.reset_all_confirm = true;
             self.settings.focus_reset_no = true;
