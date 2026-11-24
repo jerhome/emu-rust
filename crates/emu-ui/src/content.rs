@@ -729,6 +729,7 @@ mod tests {
             media: media.iter().map(PathBuf::from).collect(),
             is_dir: false,
             region: None,
+            needs_32x: false,
         }
     }
 

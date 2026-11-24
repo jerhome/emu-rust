@@ -166,6 +166,15 @@ impl LibraryUi {
                     }
                 });
             }
+            if let Some(game) = self.selected_game().filter(|g| g.needs_32x) {
+                let labels = grid::badges(game);
+                ui.horizontal_wrapped(|ui| {
+                    for label in labels {
+                        badge(ui, label);
+                    }
+                    super::weak(ui, text::NOTE_32X);
+                });
+            }
             self.pad_notice_line(ui, !dialog_open);
             self.status_line(ui);
             if !self.unclassified.is_empty() && ui.small_button(text::UNCLASSIFIED_SHOW).clicked() {
@@ -419,6 +428,10 @@ fn paint_card(
             Color32::from_rgb(255, 210, 80),
         );
     }
+    let mut left = cover.left_top() + Vec2::new(6.0, 6.0);
+    for label in grid::badges(game) {
+        left.x += paint_badge(&painter, left, label) + 4.0;
+    }
     let mut job = egui::text::LayoutJob::simple(
         text::game_title(&game.title),
         FontId::proportional(13.0),
@@ -441,6 +454,28 @@ fn paint_card(
         };
         painter.rect_stroke(rect.expand(2.0), radius, stroke, StrokeKind::Outside);
     }
+}
+
+const BADGE_BG: Color32 = Color32::from_rgb(30, 60, 110);
+
+/// Small framed label with its top-left corner at `at`; returns its width.
+fn paint_badge(painter: &egui::Painter, at: egui::Pos2, label: &str) -> f32 {
+    let galley =
+        painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.0), Color32::WHITE);
+    let rect = Rect::from_min_size(at, galley.size() + vec2(10.0, 4.0));
+    painter.rect_filled(rect, CornerRadius::same(3), BADGE_BG);
+    painter.galley(at + vec2(5.0, 2.0), galley, Color32::WHITE);
+    rect.width()
+}
+
+/// Same badge as a widget (status bar of the selected game).
+fn badge(ui: &mut Ui, label: &str) {
+    ui.label(
+        egui::RichText::new(format!(" {label} "))
+            .strong()
+            .color(Color32::WHITE)
+            .background_color(BADGE_BG),
+    );
 }
 
 /// Largest rectangle of `size`'s aspect ratio centred in `frame`.

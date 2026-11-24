@@ -2,7 +2,7 @@
 //! better with, or needs, a file the user must provide. Advice only: nothing is downloaded (ADR 0005), the
 //! button opens the existing BIOS import. Computed once per selected game (a directory read), never per frame.
 
-use emu_assets::cores::{CoreChoice, choose_core};
+use emu_assets::cores::CoreChoice;
 use emu_assets::{FirmwareAdvice, firmware_advice};
 use emu_library::Game;
 
@@ -56,12 +56,18 @@ impl LibraryUi {
         let database = emu_library::system(&game.system).map(|s| s.database.as_str());
         let installed: Vec<_> = manager.installed().into_iter().map(|c| c.id).collect();
         let ext = grid::launch_extension(game);
-        let core = match choose_core(
+        let explicit = self.explicit_core(&game.system);
+        let needs = cores_ui::GameNeeds {
+            needs_32x: game.needs_32x,
+            explicit: explicit.as_ref(),
+        };
+        let core = match cores_ui::choose_game_core(
             database,
             ext.as_deref(),
             &installed,
             &manager.infos(),
             &prefs,
+            needs,
         ) {
             CoreChoice::Installed(id) | CoreChoice::Install(id) => id,
             CoreChoice::Unknown => return None,

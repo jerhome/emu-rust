@@ -286,6 +286,7 @@ mod tests {
             media,
             is_dir,
             region: None,
+            needs_32x: false,
         }
     }
 
