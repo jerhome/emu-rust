@@ -9,6 +9,7 @@
 #[cfg(feature = "gamepad")]
 mod gilrs_source;
 mod input;
+mod learned;
 mod mapping;
 mod source;
 

@@ -75,6 +75,9 @@ pub trait GamepadSource {
     /// Models (GUIDs) to read raw even when the database maps them; a pad already plugged in is re-announced
     /// (`Disconnected` then `Connected { raw }`). Default: ignored (scripted sources).
     fn set_raw_guids(&mut self, _guids: &[String]) {}
+
+    /// Learning screen: native codes of `pad` are logged at `debug` (never otherwise). Default: ignored.
+    fn set_raw_logging(&mut self, _pad: Option<PadId>) {}
 }
 
 impl<S: GamepadSource + ?Sized> GamepadSource for Box<S> {
@@ -84,6 +87,10 @@ impl<S: GamepadSource + ?Sized> GamepadSource for Box<S> {
 
     fn set_raw_guids(&mut self, guids: &[String]) {
         (**self).set_raw_guids(guids);
+    }
+
+    fn set_raw_logging(&mut self, pad: Option<PadId>) {
+        (**self).set_raw_logging(pad);
     }
 }
 

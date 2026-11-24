@@ -2,20 +2,34 @@
 //!
 //! `Gilrs` itself cannot be created in tests (no `/dev/input` in the dev container): the conversion lives in
 //! `Translator`, fed with `Raw` values built from gilrs events, and is tested on its own.
+//!
+//! Raw mode (ADR 0016, 2026-11-23 amendment): what gilrs 0.11.2 really does with a pad absent from its SDL database
+//! (read in its sources): `mapping_source()` never returns `MappingSource::None`; such a pad gets a *default*
+//! mapping and reports `Driver`. That default mapping names native codes that happen to match the platform's
+//! "gamepad" codes (evdev `BTN_SOUTH`..., HID button usages 1..15 on macOS, WGI button indices), everything else
+//! comes as `Button::Unknown` / `Axis::Unknown`, always with its native `Code`. A hat whose codes match the default
+//! `DPadX/DPadY` is turned into `DPad*` button events by gilrs' default `axis_dpad_to_button` filter (with the
+//! `BTN_DPAD_*` codes); otherwise it arrives as an axis in `[-1, 1]`. In raw mode we therefore ignore gilrs' names
+//! and only keep `Code::into_u32`: buttons, axes and hats all become `RawInput` whatever gilrs called them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gilrs::{Axis, Button, EventType, Gilrs, MappingSource};
 
 use super::mapping::PadButton;
-use super::source::{GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId};
+use super::source::{
+    GamepadError, GamepadSource, PadAxis, PadEvent, PadEventKind, PadId, RawInput,
+};
 
-/// Real pads through gilrs 0.11. Pads with `MappingSource::None` are ignored with a `warn!`.
+/// Real pads through gilrs 0.11. Pads without a trustworthy mapping, and models listed by `set_raw_guids`, are
+/// read raw (`Connected { raw: true }`, then `PadEventKind::Raw`).
 pub struct GilrsSource {
     gilrs: Gilrs,
     translator: Translator,
     /// Pads plugged in before creation are announced by the first `poll_events` (gilrs sends no event for them).
     initial_done: bool,
+    /// Re-announcements produced by `set_raw_guids`, delivered by the next `poll_events`.
+    pending: Vec<PadEvent>,
 }
 
 impl GilrsSource {
@@ -26,6 +40,7 @@ impl GilrsSource {
                 gilrs,
                 translator: Translator::default(),
                 initial_done: false,
+                pending: Vec::new(),
             }),
             // `NotImplemented` carries a dummy backend that never reports a pad: treated as unavailable.
             Err(e) => Err(GamepadError::Backend(e.to_string())),
@@ -34,16 +49,23 @@ impl GilrsSource {
 
     fn connected(&self, id: gilrs::GamepadId) -> Raw {
         let pad = self.gilrs.gamepad(id);
+        let uuid = pad.uuid();
         Raw::Connected {
             name: pad.name().to_owned(),
-            guid: guid_hex(pad.uuid()),
-            mapped: pad.mapping_source() != MappingSource::None,
+            guid: guid_hex(uuid),
+            mapped: is_mapped(
+                pad.mapping_source(),
+                Platform::CURRENT,
+                pad.button_code(Button::South).is_some(),
+                uuid == [0; 16],
+            ),
         }
     }
 }
 
 impl GamepadSource for GilrsSource {
     fn poll_events(&mut self, out: &mut Vec<PadEvent>) {
+        out.append(&mut self.pending);
         if !self.initial_done {
             self.initial_done = true;
             let present: Vec<_> = self.gilrs.gamepads().map(|(id, _)| id).collect();
@@ -60,6 +82,14 @@ impl GamepadSource for GilrsSource {
             self.translator.translate(pad_id(event.id), raw, out);
         }
     }
+
+    fn set_raw_guids(&mut self, guids: &[String]) {
+        self.translator.set_raw_guids(guids, &mut self.pending);
+    }
+
+    fn set_raw_logging(&mut self, pad: Option<PadId>) {
+        self.translator.raw_log = pad;
+    }
 }
 
 fn pad_id(id: gilrs::GamepadId) -> PadId {
@@ -75,30 +105,74 @@ fn guid_hex(uuid: [u8; 16]) -> String {
     })
 }
 
-/// A gilrs event reduced to what the translation needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Linux,
+    Windows,
+    MacOs,
+    Other,
+}
+
+impl Platform {
+    const CURRENT: Platform = if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else if cfg!(target_os = "windows") {
+        Platform::Windows
+    } else if cfg!(target_os = "macos") {
+        Platform::MacOs
+    } else {
+        Platform::Other
+    };
+}
+
+/// Whether gilrs' button names can be trusted for this pad; `false` means raw mode.
+///
+/// gilrs reports `Driver` for every pad missing from its database (`None` is never returned in 0.11.2), so the
+/// default mapping is only trusted where the platform itself guarantees a gamepad layout: on Linux when the
+/// kernel driver exposes `BTN_SOUTH` (xpad, hid-playstation...: generic HID pads use the joystick range
+/// `BTN_TRIGGER..`), on Windows for WGI `Gamepad`-class devices (nil GUID). On macOS the default mapping is a
+/// guess on HID button numbers: never trusted.
+fn is_mapped(
+    source: MappingSource,
+    platform: Platform,
+    has_native_south: bool,
+    nil_uuid: bool,
+) -> bool {
+    match source {
+        MappingSource::SdlMappings => true,
+        MappingSource::None => false,
+        MappingSource::Driver => match platform {
+            Platform::Linux => has_native_south,
+            Platform::Windows => nil_uuid,
+            Platform::MacOs | Platform::Other => false,
+        },
+    }
+}
+
+/// A gilrs event reduced to what the translation needs. `u32` fields are `Code::into_u32` (raw mode).
 #[derive(Debug, Clone, PartialEq)]
 enum Raw {
     Connected {
         name: String,
         guid: String,
-        /// `false` for `MappingSource::None`: raw indices, no reliable button names.
+        /// `false`: no trustworthy names (see `is_mapped`), the pad is read raw.
         mapped: bool,
     },
     Disconnected,
-    Button(Button, bool),
+    Button(Button, bool, u32),
     /// Analog value of a button, in `[0, 1]` (gilrs reports L2/R2 this way).
     ButtonValue(Button, f32),
-    Axis(Axis, f32),
+    Axis(Axis, f32, u32),
     Ignored,
 }
 
 impl Raw {
     fn from_event(event: EventType) -> Self {
         match event {
-            EventType::ButtonPressed(b, _) => Raw::Button(b, true),
-            EventType::ButtonReleased(b, _) => Raw::Button(b, false),
+            EventType::ButtonPressed(b, c) => Raw::Button(b, true, c.into_u32()),
+            EventType::ButtonReleased(b, c) => Raw::Button(b, false, c.into_u32()),
             EventType::ButtonChanged(b, v, _) => Raw::ButtonValue(b, v),
-            EventType::AxisChanged(a, v, _) => Raw::Axis(a, v),
+            EventType::AxisChanged(a, v, c) => Raw::Axis(a, v, c.into_u32()),
             EventType::Disconnected => Raw::Disconnected,
             // Connected needs the gamepad handle (see `GilrsSource::connected`); the rest carries no state.
             _ => Raw::Ignored,
@@ -106,71 +180,150 @@ impl Raw {
     }
 }
 
-/// Keeps track of announced and ignored pads; turns `Raw` into normalised events.
+#[derive(Debug, Clone)]
+struct KnownPad {
+    name: String,
+    guid: String,
+    /// What the database says, before `raw_guids`.
+    mapped: bool,
+    /// Mode announced in the last `Connected`.
+    raw: bool,
+}
+
+/// Keeps track of announced pads; turns `Raw` into normalised events.
 #[derive(Debug, Default)]
 struct Translator {
-    known: HashSet<PadId>,
-    ignored: HashSet<PadId>,
+    known: HashMap<PadId, KnownPad>,
+    /// Learned models: read raw even when the database maps them.
+    raw_guids: HashSet<String>,
+    /// Pad whose raw codes are logged at `debug` (learning screen only).
+    raw_log: Option<PadId>,
 }
 
 impl Translator {
     fn translate(&mut self, id: PadId, raw: Raw, out: &mut Vec<PadEvent>) {
         let kind = match raw {
             Raw::Connected { name, guid, mapped } => {
-                if !mapped {
-                    if self.ignored.insert(id) {
-                        tracing::warn!(
-                            "manette sans correspondance de boutons ignorée : {name:?} ({guid})"
-                        );
-                    }
-                    return;
+                if self.known.contains_key(&id) {
+                    return; // duplicate announcement (initial scan + event)
                 }
-                self.ignored.remove(&id);
-                if !self.known.insert(id) {
-                    return;
+                let raw = !mapped || self.raw_guids.contains(&guid);
+                if raw {
+                    tracing::info!("manette détectée (mode brut) : {name:?} ({guid})");
+                } else {
+                    tracing::info!("manette détectée : {name:?} ({guid})");
                 }
-                tracing::info!("manette détectée : {name:?} ({guid})");
-                PadEventKind::Connected {
-                    name,
-                    guid,
-                    raw: false,
-                }
+                self.known.insert(
+                    id,
+                    KnownPad {
+                        name: name.clone(),
+                        guid: guid.clone(),
+                        mapped,
+                        raw,
+                    },
+                );
+                PadEventKind::Connected { name, guid, raw }
             }
             Raw::Disconnected => {
-                self.ignored.remove(&id);
-                if !self.known.remove(&id) {
+                if self.known.remove(&id).is_none() {
                     return;
                 }
                 PadEventKind::Disconnected
             }
-            _ if !self.known.contains(&id) => return,
-            Raw::Button(b, pressed) => {
-                // Triggers are analog: their value (`ButtonValue`) decides, with our threshold.
-                if matches!(b, Button::LeftTrigger2 | Button::RightTrigger2) {
-                    return;
-                }
-                let Some(button) = convert_button(b) else {
-                    return;
-                };
-                PadEventKind::Button { button, pressed }
-            }
-            Raw::ButtonValue(b, value) => {
-                let axis = match b {
-                    Button::LeftTrigger2 => PadAxis::L2,
-                    Button::RightTrigger2 => PadAxis::R2,
-                    _ => return,
-                };
-                PadEventKind::Axis { axis, value }
-            }
-            Raw::Axis(a, value) => {
-                let Some(axis) = convert_axis(a) else {
-                    return;
-                };
-                PadEventKind::Axis { axis, value }
-            }
             Raw::Ignored => return,
+            other => {
+                let Some(pad) = self.known.get(&id) else {
+                    return;
+                };
+                let converted = if pad.raw {
+                    self.convert_raw(id, other)
+                } else {
+                    convert_mapped(other)
+                };
+                let Some(kind) = converted else {
+                    return;
+                };
+                kind
+            }
         };
         out.push(PadEvent { id, kind });
+    }
+
+    /// Raw mode: gilrs' names are ignored, only native codes remain. `ButtonValue` is skipped: it duplicates
+    /// `Pressed`/`Released` and carries no code.
+    fn convert_raw(&self, id: PadId, raw: Raw) -> Option<PadEventKind> {
+        let (input, value) = match raw {
+            Raw::Button(_, pressed, code) => {
+                (RawInput::Button(code), if pressed { 1.0 } else { 0.0 })
+            }
+            Raw::Axis(_, value, code) => (RawInput::Axis(code), value),
+            _ => return None,
+        };
+        if self.raw_log == Some(id) {
+            tracing::debug!("entrée brute : {input:?} = {value}");
+        }
+        Some(PadEventKind::Raw { input, value })
+    }
+
+    /// Applies the learned models; pads whose mode changes are re-announced (`Disconnected` then `Connected`).
+    fn set_raw_guids(&mut self, guids: &[String], out: &mut Vec<PadEvent>) {
+        self.raw_guids = guids.iter().cloned().collect();
+        let mut ids: Vec<PadId> = self.known.keys().copied().collect();
+        ids.sort();
+        for id in ids {
+            let Some(pad) = self.known.get_mut(&id) else {
+                continue;
+            };
+            let raw = !pad.mapped || self.raw_guids.contains(&pad.guid);
+            if raw == pad.raw {
+                continue;
+            }
+            pad.raw = raw;
+            tracing::info!(
+                "manette réannoncée ({}) : {:?} ({})",
+                if raw { "mode brut" } else { "base SDL" },
+                pad.name,
+                pad.guid
+            );
+            out.push(PadEvent {
+                id,
+                kind: PadEventKind::Disconnected,
+            });
+            out.push(PadEvent {
+                id,
+                kind: PadEventKind::Connected {
+                    name: pad.name.clone(),
+                    guid: pad.guid.clone(),
+                    raw,
+                },
+            });
+        }
+    }
+}
+
+fn convert_mapped(raw: Raw) -> Option<PadEventKind> {
+    match raw {
+        Raw::Button(b, pressed, _) => {
+            // Triggers are analog: their value (`ButtonValue`) decides, with our threshold.
+            if matches!(b, Button::LeftTrigger2 | Button::RightTrigger2) {
+                return None;
+            }
+            let button = convert_button(b)?;
+            Some(PadEventKind::Button { button, pressed })
+        }
+        Raw::ButtonValue(b, value) => {
+            let axis = match b {
+                Button::LeftTrigger2 => PadAxis::L2,
+                Button::RightTrigger2 => PadAxis::R2,
+                _ => return None,
+            };
+            Some(PadEventKind::Axis { axis, value })
+        }
+        Raw::Axis(a, value, _) => {
+            let axis = convert_axis(a)?;
+            Some(PadEventKind::Axis { axis, value })
+        }
+        _ => None,
     }
 }
 
@@ -210,23 +363,31 @@ fn convert_axis(a: Axis) -> Option<PadAxis> {
         _ => return None,
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const A: PadId = PadId(0);
+    const DS4_GUID: &str = "030000004c050000c405000000000000";
+    const SNES_GUID: &str = "03000000790000001100000000000000";
 
     fn connect(mapped: bool) -> Raw {
         Raw::Connected {
             name: "Sony DualShock 4".into(),
-            guid: "030000004c050000c405000000000000".into(),
+            guid: DS4_GUID.into(),
             mapped,
         }
     }
 
-    fn run(raws: Vec<(PadId, Raw)>) -> Vec<PadEvent> {
-        let mut t = Translator::default();
+    fn snes() -> Raw {
+        Raw::Connected {
+            name: "USB Gamepad".into(),
+            guid: SNES_GUID.into(),
+            mapped: false,
+        }
+    }
+
+    fn feed(t: &mut Translator, raws: Vec<(PadId, Raw)>) -> Vec<PadEvent> {
         let mut out = Vec::new();
         for (id, raw) in raws {
             t.translate(id, raw, &mut out);
@@ -234,8 +395,24 @@ mod tests {
         out
     }
 
+    fn run(raws: Vec<(PadId, Raw)>) -> Vec<PadEvent> {
+        feed(&mut Translator::default(), raws)
+    }
+
     fn kinds(events: &[PadEvent]) -> Vec<PadEventKind> {
         events.iter().map(|e| e.kind.clone()).collect()
+    }
+
+    fn raw_ev(input: RawInput, value: f32) -> PadEventKind {
+        PadEventKind::Raw { input, value }
+    }
+
+    fn connected(name: &str, guid: &str, raw: bool) -> PadEventKind {
+        PadEventKind::Connected {
+            name: name.into(),
+            guid: guid.into(),
+            raw,
+        }
     }
 
     #[test]
@@ -249,14 +426,32 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_pad_emits_nothing() {
+    fn unmapped_pad_is_announced_raw_and_sends_codes() {
+        // DragonRise-like: cross on two axes, hat turned into D-pad buttons by gilrs, unknown buttons.
         let out = run(vec![
-            (A, connect(false)),
-            (A, Raw::Button(Button::South, true)),
-            (A, Raw::Axis(Axis::LeftStickX, 1.0)),
+            (A, snes()),
+            (A, Raw::Axis(Axis::LeftStickX, -1.0, 0x3_0000)),
+            (A, Raw::Axis(Axis::Unknown, 0.004, 0x3_0001)),
+            (A, Raw::Button(Button::Unknown, true, 0x1_0122)),
+            (A, Raw::ButtonValue(Button::Unknown, 1.0)), // duplicate of the press, no code: dropped
+            (A, Raw::Button(Button::DPadUp, true, 0x1_0220)),
+            (A, Raw::Button(Button::LeftTrigger2, false, 7)), // raw: no trigger special case
+            (A, Raw::Ignored),
             (A, Raw::Disconnected),
+            (A, Raw::Axis(Axis::LeftStickX, 1.0, 0x3_0000)), // after disconnection: dropped
         ]);
-        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(
+            kinds(&out),
+            vec![
+                connected("USB Gamepad", SNES_GUID, true),
+                raw_ev(RawInput::Axis(0x3_0000), -1.0),
+                raw_ev(RawInput::Axis(0x3_0001), 0.004),
+                raw_ev(RawInput::Button(0x1_0122), 1.0),
+                raw_ev(RawInput::Button(0x1_0220), 1.0),
+                raw_ev(RawInput::Button(7), 0.0),
+                PadEventKind::Disconnected,
+            ]
+        );
     }
 
     #[test]
@@ -264,15 +459,15 @@ mod tests {
         let out = run(vec![
             (A, connect(true)),
             (A, connect(true)), // duplicate announcement (initial scan + event) is dropped
-            (A, Raw::Button(Button::South, true)),
-            (A, Raw::Button(Button::Mode, false)),
-            (A, Raw::Button(Button::RightThumb, true)),
-            (A, Raw::Button(Button::C, true)),
-            (A, Raw::Button(Button::LeftTrigger2, true)),
+            (A, Raw::Button(Button::South, true, 1)),
+            (A, Raw::Button(Button::Mode, false, 2)),
+            (A, Raw::Button(Button::RightThumb, true, 3)),
+            (A, Raw::Button(Button::C, true, 4)),
+            (A, Raw::Button(Button::LeftTrigger2, true, 5)),
             (A, Raw::ButtonValue(Button::LeftTrigger2, 0.7)),
             (A, Raw::ButtonValue(Button::South, 1.0)),
-            (A, Raw::Axis(Axis::LeftStickY, -0.8)),
-            (A, Raw::Axis(Axis::DPadX, 1.0)),
+            (A, Raw::Axis(Axis::LeftStickY, -0.8, 6)),
+            (A, Raw::Axis(Axis::DPadX, 1.0, 7)),
             (A, Raw::Ignored),
             (A, Raw::Disconnected),
             (A, Raw::Disconnected),
@@ -280,11 +475,7 @@ mod tests {
         assert_eq!(
             kinds(&out),
             vec![
-                PadEventKind::Connected {
-                    name: "Sony DualShock 4".into(),
-                    guid: "030000004c050000c405000000000000".into(),
-                    raw: false,
-                },
+                connected("Sony DualShock 4", DS4_GUID, false),
                 PadEventKind::Button {
                     button: PadButton::South,
                     pressed: true
@@ -314,12 +505,80 @@ mod tests {
     #[test]
     fn events_of_unknown_pads_are_dropped() {
         let out = run(vec![
-            (A, Raw::Button(Button::South, true)),
+            (A, Raw::Button(Button::South, true, 1)),
             (PadId(1), connect(true)),
-            (A, Raw::Axis(Axis::LeftStickX, 1.0)),
+            (A, Raw::Axis(Axis::LeftStickX, 1.0, 2)),
         ]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, PadId(1));
+    }
+
+    #[test]
+    fn learned_guid_switches_a_mapped_pad_to_raw_and_back() {
+        let b = PadId(1);
+        let mut t = Translator::default();
+        let mut out = feed(&mut t, vec![(A, connect(true)), (b, snes())]);
+        out.clear();
+
+        t.set_raw_guids(&[DS4_GUID.into(), SNES_GUID.into()], &mut out);
+        // Only the DS4 changes mode; the SNES pad was already raw.
+        assert_eq!(
+            kinds(&out),
+            vec![
+                PadEventKind::Disconnected,
+                connected("Sony DualShock 4", DS4_GUID, true),
+            ]
+        );
+        assert!(out.iter().all(|e| e.id == A));
+
+        let out = feed(&mut t, vec![(A, Raw::Button(Button::South, true, 0x130))]);
+        assert_eq!(kinds(&out), vec![raw_ev(RawInput::Button(0x130), 1.0)]);
+
+        let mut out = Vec::new();
+        t.set_raw_guids(&[DS4_GUID.into()], &mut out);
+        assert!(out.is_empty(), "same mode, no re-announcement: {out:?}");
+
+        t.set_raw_guids(&[], &mut out);
+        assert_eq!(
+            kinds(&out),
+            vec![
+                PadEventKind::Disconnected,
+                connected("Sony DualShock 4", DS4_GUID, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn learned_guid_applies_at_connection() {
+        let mut t = Translator::default();
+        let mut out = Vec::new();
+        t.set_raw_guids(&[DS4_GUID.into()], &mut out);
+        assert!(out.is_empty());
+        let out = feed(&mut t, vec![(A, connect(true))]);
+        assert_eq!(
+            kinds(&out),
+            vec![connected("Sony DualShock 4", DS4_GUID, true)]
+        );
+    }
+
+    #[test]
+    fn mapping_trust_per_platform() {
+        use MappingSource::{Driver, None as NoMap, SdlMappings};
+        for p in [
+            Platform::Linux,
+            Platform::Windows,
+            Platform::MacOs,
+            Platform::Other,
+        ] {
+            assert!(is_mapped(SdlMappings, p, false, false));
+            assert!(!is_mapped(NoMap, p, true, true));
+        }
+        assert!(is_mapped(Driver, Platform::Linux, true, false));
+        assert!(!is_mapped(Driver, Platform::Linux, false, false));
+        assert!(is_mapped(Driver, Platform::Windows, false, true));
+        assert!(!is_mapped(Driver, Platform::Windows, true, false));
+        assert!(!is_mapped(Driver, Platform::MacOs, true, true));
+        assert!(!is_mapped(Driver, Platform::Other, true, true));
     }
 
     #[test]
