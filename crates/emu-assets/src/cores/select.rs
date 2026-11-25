@@ -23,6 +23,9 @@ struct PreferencesFile {
 #[serde(deny_unknown_fields)]
 struct SystemEntry {
     cores: Vec<String>,
+    /// Cores imposed on Sega CD 32X games (ADR 0024 §3).
+    #[serde(default)]
+    cd32x_cores: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +173,8 @@ pub struct PadDevices {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CorePreferences {
     systems: BTreeMap<String, Vec<CoreId>>,
+    /// `cd32x_cores` per system; never touched by `with_overrides`.
+    cd32x: BTreeMap<String, Vec<CoreId>>,
     cores: BTreeMap<CoreId, CoreProps>,
 }
 
@@ -188,6 +193,7 @@ impl CorePreferences {
     fn parse(text: &str) -> Result<Self, String> {
         let file: PreferencesFile = toml::from_str(text).map_err(|e| e.to_string())?;
         let mut systems = BTreeMap::new();
+        let mut cd32x = BTreeMap::new();
         for (system, entry) in file.systems {
             let mut cores = Vec::new();
             for core in entry.cores {
@@ -196,7 +202,18 @@ impl CorePreferences {
                     cores.push(id);
                 }
             }
-            systems.insert(system, cores);
+            systems.insert(system.clone(), cores);
+            let mut imposed = Vec::new();
+            for core in entry.cd32x_cores {
+                let id = CoreId::new(&core)
+                    .ok_or_else(|| format!("id invalide (cd32x_cores) : {core}"))?;
+                if !imposed.contains(&id) {
+                    imposed.push(id);
+                }
+            }
+            if !imposed.is_empty() {
+                cd32x.insert(system, imposed);
+            }
         }
         let mut cores = BTreeMap::new();
         for (core, entry) in file.cores {
@@ -207,7 +224,11 @@ impl CorePreferences {
             let props = core_props(&core, entry)?;
             cores.insert(id, props);
         }
-        Ok(Self { systems, cores })
+        Ok(Self {
+            systems,
+            cd32x,
+            cores,
+        })
     }
 
     /// Parses a `data/cores.toml`-format text (tests of sibling modules); panics on invalid data.
@@ -233,6 +254,12 @@ impl CorePreferences {
     /// Preferred cores for a system, best first (empty if unknown).
     pub fn for_system(&self, system: &str) -> &[CoreId] {
         self.systems.get(system).map_or(&[], Vec::as_slice)
+    }
+
+    /// Cores imposed on the Sega CD 32X games of `system` (database name): `cd32x_cores` of its `cores.toml`
+    /// entry; empty when the system has none. `with_overrides` never changes this list.
+    pub fn cd32x_cores(&self, system: &str) -> &[CoreId] {
+        self.cd32x.get(system).map_or(&[], Vec::as_slice)
     }
 
     /// `media` of `data/cores.toml`; `Direct` for cores without an entry.
@@ -1174,6 +1201,27 @@ pub fn choose_core(
     CoreChoice::Unknown
 }
 
+/// Core of a Sega CD 32X game of `system` (ADR 0024 §3): first of [`CorePreferences::cd32x_cores`] that is
+/// installed, else `Install(first)`; never another core, whatever the user preference. `None` when the system
+/// has no such list (the caller then uses [`choose_core`]).
+pub fn choose_cd32x_core(
+    system: &str,
+    installed: &[CoreId],
+    prefs: &CorePreferences,
+) -> Option<CoreChoice> {
+    let imposed = prefs.cd32x_cores(system);
+    let first = imposed.first()?;
+    Some(
+        imposed
+            .iter()
+            .find(|id| installed.contains(id))
+            .map_or_else(
+                || CoreChoice::Install(first.clone()),
+                |id| CoreChoice::Installed(id.clone()),
+            ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1995,5 +2043,66 @@ mod tests {
                 "{core}"
             );
         }
+    }
+
+    const MEGACD: &str = "Sega - Mega-CD - Sega CD";
+
+    #[test]
+    fn cd32x_cores_builtin_and_invalid_id() {
+        let prefs = CorePreferences::builtin();
+        assert_eq!(prefs.cd32x_cores(MEGACD), [id("picodrive")]);
+        assert!(prefs.cd32x_cores(GB).is_empty());
+        assert!(prefs.cd32x_cores("Unknown").is_empty());
+        let bad = "[systems.\"X\"]\ncores = [\"a\"]\ncd32x_cores = [\"../evil\"]\n";
+        assert!(CorePreferences::parse(bad).is_err());
+    }
+
+    #[test]
+    fn choose_cd32x_core_picodrive_installed() {
+        let prefs = CorePreferences::builtin();
+        let installed = [id("genesis_plus_gx"), id("picodrive")];
+        assert_eq!(
+            choose_cd32x_core(MEGACD, &installed, &prefs),
+            Some(CoreChoice::Installed(id("picodrive")))
+        );
+    }
+
+    #[test]
+    fn choose_cd32x_core_absent_installs_picodrive_even_with_gpgx() {
+        let prefs = CorePreferences::builtin();
+        for installed in [vec![], vec![id("genesis_plus_gx")]] {
+            assert_eq!(
+                choose_cd32x_core(MEGACD, &installed, &prefs),
+                Some(CoreChoice::Install(id("picodrive")))
+            );
+        }
+    }
+
+    #[test]
+    fn choose_cd32x_core_ignores_user_preference() {
+        let overrides = BTreeMap::from([(MEGACD.to_string(), "genesis_plus_gx".to_string())]);
+        let prefs = CorePreferences::builtin().with_overrides(&overrides);
+        assert_eq!(prefs.for_system(MEGACD)[0], id("genesis_plus_gx"));
+        assert_eq!(prefs.cd32x_cores(MEGACD), [id("picodrive")]);
+        assert_eq!(
+            choose_cd32x_core(MEGACD, &[id("genesis_plus_gx")], &prefs),
+            Some(CoreChoice::Install(id("picodrive")))
+        );
+        assert_eq!(
+            choose_core(
+                Some(MEGACD),
+                None,
+                &[id("genesis_plus_gx")],
+                &BTreeMap::new(),
+                &prefs
+            ),
+            CoreChoice::Installed(id("genesis_plus_gx"))
+        );
+    }
+
+    #[test]
+    fn choose_cd32x_core_system_without_list_is_none() {
+        let prefs = CorePreferences::builtin();
+        assert_eq!(choose_cd32x_core(GB, &[id("mgba")], &prefs), None);
     }
 }

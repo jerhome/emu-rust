@@ -34,6 +34,8 @@ cores = ["hatari", "hatarib"]                     # GPLv2, GPLv2 (ADR 0015 §1)
 
 [systems."Sega - Mega-CD - Sega CD"]
 cores = ["genesis_plus_gx", "picodrive"]          # Non-commercial, MAME (non-commercial)
+# Sega CD 32X games (ADR 0024 §3): only picodrive emulates the 32X; never falls back on `cores`.
+cd32x_cores = ["picodrive"]
 
 [systems."Commodore - Amiga"]
 cores = ["puae", "puae2021"]                      # GPLv2, GPLv2 (ADR 0017 §1); same order on every OS

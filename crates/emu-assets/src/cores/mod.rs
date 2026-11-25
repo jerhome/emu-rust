@@ -34,5 +34,5 @@ pub use ps1_bios::{
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
     FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, OptionalFirmware,
-    PadDevices, RequiredFirmware, SaveScopePref, choose_core,
+    PadDevices, RequiredFirmware, SaveScopePref, choose_cd32x_core, choose_core,
 };
