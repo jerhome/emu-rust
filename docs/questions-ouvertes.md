@@ -498,8 +498,7 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
    - b) Dans la 8.0.
 8. **Case « Tout afficher »** : les cores qui ne sont pas des émulateurs (jeux, moteurs, lecteurs) et qui
    acceptent des fichiers.
-   - a) **Défaut : ajoutables s'ils acceptent un format à fichier unique (ni disque, ni arcade), avec la marque
-     « non testé ».**
+   - a) **Défaut : ajoutables s'ils acceptent une extension de fichier unique, avec la marque « non testé ».**
    - b) Visibles seulement.
 9. **Fréquence de l'avertissement « non testé ».**
    - a) **Défaut : au premier lancement de chaque jeu (au moment de l'essai à blanc), jusqu'à ce que vous cliquiez
@@ -542,3 +541,34 @@ Intégrées à l'ADR 0025 (toujours « proposé » : l'acceptation sera demandé
 | Q10 MSX | défaut | copie à la main expliquée dans le guide, repli `fmsx` |
 | Q11 message de fermeture brutale | défaut | pour tous les cores, texte neutre |
 | Q12 liste des noms de dossiers | **autre que le défaut : ne pas la montrer** | l'architecte la relit seul (lot PC1) |
+
+### Questions de la relecture courte (2026-11-25)
+
+Relectures `.claude/rv-8.0-2.md` et `.claude/rv-8.0-3.md` (7 majeurs, 13 mineurs, tous traités dans l'ADR 0025 et
+le design 8.0 ; R2 précisée après la seconde). Trois points
+demandent votre avis ; la **réponse par défaut** est déjà appliquée dans les textes. Réponses déjà données, non
+reposées : Q1 (jeux masqués), Q4 (votre core en tête), Q5 (bascule par le rangement).
+
+1. **R1 — Annuler une bascule dont certains jeux ne peuvent pas revenir** (un fichier modifié depuis, ou sa place
+   d'origine occupée).
+   - a) **Défaut : l'annulation est refusée avant toute action, avec la liste des jeux en cause ; vous les réglez
+      puis vous annulez.** Si elle s'arrête malgré tout en chemin (coupure), le système officiel reste actif et les
+      jeux revenus y restent rattachés : aucun jeu n'est caché.
+   - b) Annuler ce qui peut l'être : le système officiel reste actif, les jeux revenus y restent rattachés.
+2. **R2 — Supprimer un système ajouté qui porte le même nom de dossier qu'un système officiel, alors que vous avez
+   répondu « Non, ce n'est pas la même machine ».** Ses jeux apparaîtraient sous la machine officielle, dont le core
+   pourrait les lancer et y écrire des sauvegardes.
+   - a) **Défaut : la suppression demande « Oublier ses jeux et supprimer » ou « Annuler » ; elle reste refusée tant
+      que des jeux de votre machine sont dans le dossier (emu-rust les liste et ouvre le dossier ; vous les déplacez
+      ailleurs). Les fichiers ne sont jamais touchés ; les bases d'identification, partagées avec le système
+      officiel, sont gardées.**
+   - b) Garder le système officiel masqué tant que les jeux de votre machine sont dans la bibliothèque.
+   - c) Supprimer quand même : limite connue, écrite dans le guide.
+3. **R3 — « Restaurer » un système remplacé par une bascule** (il est dans « Systèmes retirés »).
+   - a) **Défaut : pas de bouton « Restaurer » ; la ligne dit « remplacé par (système officiel) ». Le seul retour
+      est « Annuler le dernier rangement », tant que vous n'avez rien rangé d'autre ; une bascule sans déplacement
+      est définitive.**
+   - b) « Restaurer » proposé avec l'avertissement « le système officiel sera de nouveau masqué et les jeux
+      basculés cachés ».
+
+**Réponses de l'utilisateur (2026-11-25)** : R1, R2 et R3 = **défaut**. ADR 0025 **acceptée** le même jour.

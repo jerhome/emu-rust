@@ -1,8 +1,7 @@
 # ADR 0025 — Version 8.0 : systèmes personnalisés (systèmes libretro non testés)
 
-Statut : **proposé** (2026-11-25, architecte ; amendé le même jour après la revue indépendante
-`.claude/rv-8.0.md`). À faire accepter par l'utilisateur avec ses réponses aux questions 8.0
-(`docs/questions-ouvertes.md`).
+Statut : **accepté** (2026-11-25, par l'utilisateur, après la revue indépendante et quatre relectures courtes ;
+réponses aux questions 8.0 et R1-R3 dans `docs/questions-ouvertes.md`).
 Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 et feuille de route (ligne 8.0) ; étude
 `docs/essais-systemes-personnalises.md`, dont les réponses de l'utilisateur (§10, 2026-11-21) **font foi** : défaut
 recommandé partout, sauf **Q15** (export / import d'une définition : **reporté**, à rappeler à la conception de la
@@ -22,7 +21,7 @@ Revue indépendante : `VERDICT : À AMENDER` (1 bloquant, 5 majeurs, 15 mineurs)
 
 - **B1 (Q16)** : une définition valide en conflit avec un système officiel (même id **ou** même `database`) reste
   **active** et masque l'officiel ; la bascule est proposée dans tous les cas, reportée avec un message si elle
-  exige un déplacement de dossier ; « en erreur » est réservé aux fichiers invalides ; tant que la définition est
+  exige un déplacement de dossier (remplacé par la réponse Q5 : déplacement par le rangement) ; « en erreur » est réservé aux fichiers invalides ; tant que la définition est
   active, sa liste de cores prime sur `cores.toml` ; les clés de sauvegarde de `cores.toml` sont gelées par un test
   (§10). Table des ids injective, entrées futures = réduction sans suffixe (§3).
 - **M1** : liste explicite des extensions de disque de la 8.0 et palier par machine dans la table des ids (§2, §9).
@@ -47,10 +46,33 @@ Deuxième relecture (`VERDICT : OK`, 4 mineurs) et **réponses de l'utilisateur 
 - **Q1 (non défaut)** : supprimer un système **garde ses jeux masqués** ; ils réapparaissent s'il est recréé ou
   restauré ; « Oublier ses jeux » est une action explicite séparée (§9, §13).
 - **Q5 (non défaut)** : la bascule qui exige un déplacement passe par **le rangement** de la 7.1 (aperçu, accord,
-  journal, annulation) ; précise ADR 0023 (ligne `S`, journal en version 2) (§10).
+  journal, annulation) ; précise ADR 0023 (en-tête de bascule, journal en version 2) (§10).
 - **Q12 (non défaut)** : la liste des ids n'est pas montrée à l'utilisateur ; l'architecte la relit seul (§3).
 - Autres réponses : défauts confirmés (Q2-Q4, Q6-Q11) ; Q8 précisée : un non-émulateur est ajoutable s'il accepte
   un format à fichier unique (ni disque, ni arcade) (§9).
+
+Relecture courte du 2026-11-25 (`.claude/rv-8.0-2.md`, `VERDICT : À AMENDER`, 0 bloquant, 4 majeurs, 8 mineurs) ;
+changements :
+
+- **M1** : une bascule avec déplacement ne change le système des lignes et la définition **qu'en une fois** (ligne
+  `F`), quand toutes les unités sont à destination ou toutes revenues ; bascule ou annulation incomplète : aucun
+  jeu masqué ; annulation proposée seulement si toutes les unités peuvent revenir (§10).
+- **M2** : dossiers des systèmes retirés, masqués ou en erreur réservés au rangement (§12).
+- **M3** : supprimer une définition en conflit incertain passe par « Oublier ses jeux » (§9).
+- **M4** : revue de la grammaire du journal version 2 avant l'exécution (PV3), puis du code (PV4) (Conséquences).
+- Mineurs : choix des touches, préférence et profil antérieurs dans l'en-tête (m1) ; aucun chemin libre dans
+  l'en-tête (m2) ; DAT gardés, jaquettes non défaites (m3) ; « Restaurer » exclut les définitions remplacées
+  (m4) ; version 2 réservée à la bascule, retour à une 7.x écrit (m5) ; annulation limitée au dernier journal
+  écrite (m6) ; restes de la « bascule reportée » retirés du design (m7) ; énoncé de Q8 rétabli (m8).
+- Questions R1 à R3 ajoutées en fin de `docs/questions-ouvertes.md` (réponse par défaut appliquée ici).
+
+Troisième relecture courte (`.claude/rv-8.0-3.md`, `VERDICT : À AMENDER`, 0 bloquant, 3 majeurs, 5 mineurs) ;
+changements : ids actifs jamais réservés, exception de `plan_switch` (M1, §12, §14) ; nombre d'unités du plan dans
+l'en-tête, fin due = toutes validées (M2) ; même portée de réécriture à l'aller et à l'annulation, toutes les
+lignes (M3) ; fin de bascule avant les identités (m1) ; fin d'annulation seulement après un aller à `F` (m2) ;
+définition recréée, échec de la fin de bascule (m3) ; suppression en conflit incertain : DAT gardés, refusée tant
+que des jeux restent dans le dossier (m4, R2 reformulée) ; annulation partielle : déplacement à la main écrit
+(m5). Contrat 9.0 : `HwContextKind::Direct3D11`, `HwRenderRequest` `#[non_exhaustive]`.
 
 ## Contexte
 
@@ -110,7 +132,8 @@ L'application en publie un nouvel **instantané** à chaque changement ; `catalo
 
 - **Emplacement** : `<data>/systems/<id>.toml` (`DataDirs::custom_systems`). Pas dans `config.toml` : secrets et
   droits `0600` à part, taille bornée à 1 Mio, et un fichier par système rend l'export futur (Q15) trivial et la
-  suppression atomique. Fichiers retirés : `<data>/systems/.retired/<id>-<unix>.toml`, jamais effacés.
+  suppression atomique. Fichiers retirés : `<data>/systems/.retired/<id>-<unix>.toml` (par l'utilisateur) ou
+  `<id>-<unix>.replaced.toml` (par une bascule), seuls noms acceptés, jamais effacés.
 - **Propriétaire du format** : `emu-library`. La liste des cores y figure en texte (syntaxe d'id de core vérifiée) ;
   `emu-ui` la convertit en `CoreId` et la passe à `emu-assets` (`CorePreferences::with_custom_systems`).
 - **Format 1** (seule version écrite en 8.0) :
@@ -331,7 +354,20 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   identification, jaquettes compris), ainsi que ses DAT importés. Elles réapparaissent si le système est
   **restauré** (Réglages → Systèmes personnalisés → « Systèmes retirés » → « Restaurer » : la définition revient de
   `.retired/`) ou **recréé** avec le même id. Action séparée et confirmée, sur un système retiré : « Oublier ses
-  jeux » (`Library::forget_system` : lignes des jeux et DAT de cet id ; fichiers jamais touchés).
+  jeux » (`Library::forget_system(id, ForgetDats::Remove)` : lignes des jeux et DAT de cet id ; fichiers jamais
+  touchés).
+- **Supprimer une définition en conflit incertain** (relectures courtes, M3 puis m4 ; même id qu'un officiel,
+  autre `database` ou aucune) : ses lignes portent l'id de l'officiel, qui redeviendrait visible ; ses jeux
+  apparaîtraient sous une autre machine, dont le core pourrait les lancer et y écrire des sauvegardes. La
+  suppression ordinaire est donc refusée. Le dialogue propose « Oublier ses jeux et supprimer » ou « Annuler »
+  (défaut) ; la première est **refusée tant qu'un fichier de jeu de ce système reste sous `roms/<id>/`** (liste
+  montrée, « Ouvrir le dossier » ; l'utilisateur les déplace ailleurs). Elle oublie alors les **lignes des jeux
+  seulement** (`forget_system(id, ForgetDats::Keep)` : les DAT de cet id sont aussi ceux de l'officiel), puis
+  retire la définition. Question R2 (`docs/questions-ouvertes.md`).
+- **« Restaurer »** ne propose que les définitions retirées par l'utilisateur (`Retirement::Removed`) ; une
+  définition retirée par une bascule (`Replaced`, nom `<id>-<unix>.replaced.toml`) est listée « remplacée par
+  (officiel) », sans bouton : la restaurer masquerait de nouveau l'officiel et cacherait les jeux basculés (m4) ;
+  seule l'annulation du rangement (§10) la rend.
 
 ### 10. Bascule vers un système officiel (Q16)
 
@@ -346,35 +382,80 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   (système) officiellement. Basculer (recommandé) » ; jamais de bascule automatique. Cas incertain : pas de
   recommandation, mais « Une machine officielle porte le même nom de dossier : est-ce la même machine ? » — « Oui,
   basculer » ou « Non » (la définition reste active, l'officiel reste masqué, le bandeau peut être fermé ;
-  supprimer la définition rend l'officiel).
-- **Étapes communes** de toute bascule : (a) **touches** : si la clé de profil officielle (`PadStyle::profile_key`)
-  n'existe pas, le profil `<core>@<id>` y est copié ; si elle existe et diffère (core partagé avec un système
-  officiel), emu-rust demande « Garder vos touches » (défaut, copie par-dessus) ou « Garder celles de (système
-  officiel) » ; (b) **core** : si le core de l'utilisateur n'est pas le premier core officiel,
+  la suppression de la définition suit alors la règle « autre machine, même dossier » du §9).
+- **Choix avant toute action** : les questions d'une bascule (touches, ci-dessous) sont posées **avant** la
+  première modification, dans le bandeau ou l'aperçu ; la réponse est notée (en-tête du journal pour la bascule avec
+  déplacement). Une reprise au démarrage n'interroge jamais l'utilisateur.
+- **Étapes communes** de toute bascule, dans cet ordre : (a) **touches** : si la clé de profil officielle
+  (`PadStyle::profile_key`) n'existe pas, le profil `<core>@<id>` y est copié ; si elle existe et diffère (core
+  partagé avec un système officiel), emu-rust demande « Garder vos touches » (défaut, copie par-dessus) ou « Garder
+  celles de (système officiel) » ; (b) **core** : si le core de l'utilisateur n'est pas le premier core officiel,
   `[cores.preferred]` le garde en tête (ses sauvegardes, rangées par core, restent visibles), le core recommandé
-  étant proposé en alternative (réponse Q4) ; (c) définition dans `.retired/` ; (d) publication, scan.
-- **Bascule en place ou incertaine acceptée** : étapes communes seules. Même id ⇒ même dossier, mêmes lignes
-  (favoris, historique, jaquettes) : **aucun fichier déplacé**.
+  étant proposé en alternative (réponse Q4) ; (c) **lignes et définition** : `game.system` réécrit (bascule avec
+  déplacement seulement), puis définition dans `.retired/` (`Retirement::Replaced`) ; (d) publication, scan.
+  Toutes sont idempotentes.
+- **Bascule en place ou incertaine acceptée** : étapes communes seules, sans journal. Même id ⇒ même dossier, mêmes
+  lignes (favoris, historique, jaquettes) : **aucun fichier déplacé**. Elle est **définitive** : une définition
+  retirée par bascule ne se restaure pas (§9).
 - **Bascule avec déplacement** (réponse Q5) : elle passe par **le rangement** de la 7.1 (ADR 0023), qu'elle
-  précise :
+  précise. **Principe** (relecture courte, M1) : le système des lignes ne change **qu'en une fois**, avec la
+  définition, quand **toutes** les unités sont à destination (ou toutes revenues) ; à aucun moment un jeu n'est
+  rattaché à un système absent du catalogue.
   1. **Aperçu** calculé comme si la bascule était faite (catalogue où la définition est retirée et l'officiel
      actif) : toute unité sous `roms/<id perso>/` a pour destination `roms/<id officiel>/` (même chemin relatif) et
      pour système l'id officiel ; les fichiers qui ne sont pas des jeux restent en place (signalés). Unité bloquée,
      doublon ou conflit (ADR 0023 §4.2, §4.4) : la bascule n'est **pas** proposée tant qu'il en reste (le rapport dit
-     lesquelles résoudre) ; une bascule partielle laisserait des jeux sur un système qui n'existe plus.
-  2. **Accord** de l'utilisateur sur l'aperçu, puis exécution avec les primitives et le verrou du rangement
-     (liens physiques, jamais d'écrasement, une transaction par unité). La ligne de bibliothèque est **conservée** :
-     `Library::relocate` réécrit les chemins **et** `game.system` (id officiel) ; favoris, historique,
-     identification et jaquettes suivent. Les DAT importés de l'ancien id sont oubliés (l'officiel a les siens).
-  3. **Journal** : l'en-tête porte une ligne `S <id perso> <id officiel> <fichier de définition>` ; le format du
-     journal passe en **version 2** (lecteurs : versions 1 et 2 ; amendement d'ADR 0023 §4.8, lot PD1). Après la
-     ligne `E` et les identités (étape 5 d'ADR 0023, inchangée : les sauvegardes sont nommées par le core et le nom
-     du fichier, qui ne changent pas), les étapes communes (a) à (d) sont faites ; la reprise au démarrage les
-     rejoue si `E` est posée et la définition encore en place (idempotent).
-  4. **Annulation** : « Annuler le dernier rangement » ramène les fichiers (ADR 0023 §4.6), remet `game.system`
-     sur l'id personnalisé, **restaure la définition** depuis `.retired/` et rend la préférence de core et le profil
-     de touches antérieurs (notés dans le journal).
-  5. Jaquettes en cache (`covers/<système>/`) : le dossier de l'ancien id est renommé vers l'id officiel s'il
+     lesquelles résoudre). Texte de l'aperçu : « Annulable tant que vous ne rangez rien d'autre » (point 5).
+  2. **Accord** de l'utilisateur sur l'aperçu (choix des touches compris), puis exécution avec les primitives et le
+     verrou du rangement (liens physiques, jamais d'écrasement, une transaction par unité). La transaction d'une
+     unité ne réécrit **que les chemins** (`Library::relocate`, inchangé) : la ligne garde l'id personnalisé, encore
+     actif ; favoris, historique, identification et jaquettes suivent.
+  3. **Fin de bascule** : quand l'aller est clos (`E`) **et que toutes les unités du plan sont validées** —
+     l'en-tête du journal porte leur nombre `n` (unités numérotées 0 à n − 1) : il faut un bloc validé `C u` pour
+     chacune (une unité sans `B`, changée depuis l'aperçu ou laissée par une annulation entre deux unités ou par la
+     borne du journal, rend la bascule incomplète) — les étapes communes sont faites :
+     `Library::reassign_system` (**toutes** les lignes de l'id perso vers l'id officiel, une transaction, y compris
+     les lignes hors de `roms/<id perso>/`, par exemple sur une racine externe débranchée), touches et core
+     d'après l'en-tête, retrait de la définition sous le nom noté dans l'en-tête — puis la ligne `F` est posée ;
+     publication, scan. **Bascule incomplète** : pas de `F` ; la définition reste active et l'officiel masqué ; les
+     jeux déjà déplacés restent visibles sous le système personnalisé, depuis `roms/<id officiel>/` ; le rapport
+     dit « bascule incomplète : N jeux restent dans `roms/<id perso>/` ; résolvez-les puis relancez la bascule »,
+     et `plan_switch` reprend les unités restantes (nouveau journal). Les DAT importés de l'id perso sont
+     **gardés** (lignes d'un système absent, sans effet) : rien à défaire.
+  4. **Journal** : la bascule écrit le journal en **version 2** ; **le rangement ordinaire reste en version 1**
+     (relecture courte, m5). L'en-tête porte, avant le premier `B`, les lignes de bascule : id perso, id officiel,
+     **nom du fichier retiré** (`<id perso>-<unix>.replaced.toml`, `unix` du journal ; aucun chemin libre : le
+     fichier actif est `<id perso>.toml` sous `systems/`, le retiré sous `systems/.retired/` ; nom contrôlé par le
+     lecteur strict, sans `/` ni `..`), **nombre d'unités du plan**, **choix des touches**, **préférence de core**
+     et **profil de touches officiel antérieurs** (bornés). Lecteurs : versions 1 et 2 ; amendement d'ADR 0023
+     §4.8 (lot PD1). Esquisse de grammaire : design 8.0 §2.6 ; PD1 l'écrit en entier et `reviewer` la relit
+     (**PV3**) **avant** que PB3 n'écrive l'exécution (ADR 0023, Conséquences). La reprise au démarrage rejoue la
+     fin de bascule si `E` est posée sans `F` et que les n unités sont validées (idempotent, sans question : le
+     choix est dans l'en-tête) ; elle passe **avant** les identités (`F` précède `I`).
+     **Échec de la fin de bascule** (`complete_switch` : définition à restaurer dont la place est prise, fichier
+     retiré absent, base ou disque en erreur) : le journal reste « fin due » ; il **bloque** tout nouveau rangement
+     et toute annulation (un rangement plus récent rendrait la fin introuvable) et la fin est retentée à chaque
+     démarrage ; l'interface donne la raison et l'action (« `systems/<id>.toml` existe : supprimez ce système
+     puis relancez »).
+  5. **Annulation** : « Annuler le dernier rangement » n'est **proposée que si toutes les unités peuvent revenir**
+     (contrôle d'ADR 0023 §4.6 fait d'avance : fichiers inchangés, places d'origine libres) **et, si l'aller a son
+     `F`, que `systems/<id perso>.toml` est libre** (définition recréée entre-temps ⇒ « supprimez d'abord le
+     système (id) ») ; sinon elle est refusée avant toute action, avec la raison. Chaque unité revient (chemins
+     seulement). **Fin d'annulation** seulement si l'aller a son `F` : quand `U` est posée et que toutes les
+     unités de l'aller sont revenues, `reassign_system` de **toutes** les lignes de l'id officiel vers l'id perso
+     (même portée qu'à l'aller : aucune ligne basculée n'est oubliée ; une ligne ajoutée par un scan depuis la
+     bascule suit aussi et reste visible sous le système restauré), définition restaurée depuis le nom noté,
+     préférence de core et profil de touches antérieurs rendus, puis `F`. Aller sans `F` (bascule incomplète) :
+     l'annulation ramène les chemins, rien d'autre (les lignes n'ont jamais changé de système). **Annulation
+     partielle malgré tout** (annulation interrompue, devenue définitive, ADR 0023 §4.8 RV1 5 ; fichier changé
+     entre le contrôle et l'exécution) : pas de `F` ; la définition reste retirée, l'officiel actif ; les jeux
+     revenus restent rattachés à l'officiel (même `database` : même machine, jouables) depuis `roms/<id perso>/`,
+     dossier réservé au rangement (§12) et définition remplacée non restaurable (§9) : **le rapport et le guide
+     disent de les déplacer à la main vers `roms/<id officiel>/`** (puis scan). **Limites, écrites dans
+     l'aperçu et le guide** : seul le **dernier** journal s'annule (ADR 0023 §4.6) — tout rangement après la
+     bascule la rend définitive ; les jaquettes renommées (point 6) ne sont pas défaites (elles se retéléchargent
+     sur action).
+  6. Jaquettes en cache (`covers/<système>/`) : le dossier de l'ancien id est renommé vers l'id officiel s'il
      n'existe pas, sinon les jaquettes se retéléchargent sur action.
 - **Sauvegardes d'un même core** : les propriétés par core de `cores.toml` qui fixent le chemin des sauvegardes
   (`media`, `save_scope`, `save_family`, `game_saves`) s'appliquent déjà au système personnalisé ; une bascule avec
@@ -402,6 +483,16 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
 - **Rangement** : un système personnalisé n'est candidat que si l'extension n'appartient à **aucun autre système** ;
   l'unité est alors **Suggérée** (décochée, raison « système non testé ») ; sinon candidats d'aujourd'hui, sans
   système personnalisé. Une unité déjà connue garde son système.
+- **Dossiers réservés** (relectures courtes, M2 puis M1) : réservés = (ids des définitions **retirées**
+  `.retired/`, **en erreur**, des officiels **masqués**, et ids de `game.system`) **moins les ids actifs** de
+  l'instantané. Un tel `roms/<id>/` n'est ni une source ni une destination du rangement : rien n'y est pris ni posé,
+  il n'est jamais retiré même vide, et l'aperçu le signale (« dossier d'un système retiré ou en erreur : laissé tel
+  quel »). Un id actif n'est **jamais** réservé : une définition `megadrive` invalide ou retirée (`.replaced`
+  compris), une définition retirée puis recréée, un conflit sur le même id ne bloquent pas le dossier du système
+  actif. **Exception** : `plan_switch` prend sa source `roms/<id perso>/`, réservée dans son catalogue « après ».
+  Liste : `Catalog::reserved_folders()` (déjà diminuée des ids actifs) plus les ids de la base absents du
+  catalogue. Sans cela, ses fichiers seraient classés un par un (un `.bin` vers la Mega Drive) et « Restaurer » ne
+  retrouverait plus les jeux (contraire à la réponse Q1). « Créer les dossiers des systèmes » ne les recrée pas.
 - **Glisser-déposer (7.2.1)** : sa conception appellera le même classement, instantané pris au dépôt.
 
 ### 13. Schéma, données, ordre de démarrage
@@ -412,9 +503,28 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   en erreur, dossier illisible, système masqué ou retiré) ; elles ne sont pas affichées. Seul « Oublier ses jeux »
   (`forget_system`) les retire.
 - **Ordre de démarrage**, interface et modes ligne de commande (`library`, `cores`) : chargement et publication du
-  catalogue, **puis** reprise du journal de rangement, construction des préférences de cores, scan.
+  catalogue, **puis** reprise du journal de rangement, **puis** fin de bascule en attente (`pending_switch` :
+  touches et core d'après l'en-tête, `complete_switch`, nouvelle publication), **puis** identités du rangement, construction des préférences de
+  cores, scan.
 - Fichiers nouveaux sous `<data>` : `systems/` (+ `.retired/`), `cache/dry-run/`, `cache/dry-runs.toml`,
   `cache/launch-<pid>.marker`, `cache/input-descriptors/`. Écritures atomiques.
+
+### 14. Effet sur chaque système livré
+
+Toute capacité nouvelle est inactive tant que l'utilisateur n'a ajouté aucun système personnalisé, sauf le témoin
+de lancement, étendu à tous les cores par la réponse Q11.
+
+| Système (`systems.toml`) | Effet |
+|---|---|
+| megadrive | change : témoin de lancement (Q11) ; à vérifier : attribution et rapport du scan, rangement (non-régression PB1, PB2 ; `.bin` sous `roms/<id perso>/` reste au système perso, jamais proposé ailleurs) |
+| snes, nes, gb, gbc, gamegear, mastersystem, gba, 32x | change : témoin (Q11) ; à vérifier : scan et rangement (PB1, PB2) |
+| atarist, amiga, dos, cpc, c64 | change : témoin (Q11) ; à vérifier : scan et rangement (PB1, PB2) |
+| megacd, psx, 3do | change : témoin (Q11) ; à vérifier : scan et rangement (PB1, PB2), extensions de disque inchangées (`DISC_EXTENSIONS` non touchée) |
+
+Aucun système livré ne change de core, de clé de sauvegarde (instantané figé, §10), de dossier ou d'id ; la bascule
+ne concerne qu'un officiel ajouté par une version future. Le dossier d'un système livré n'est **jamais réservé** au
+rangement (§12 : ids actifs exclus), même si une définition du même id est invalide, retirée ou remplacée (test
+PB2).
 
 ## Conséquences
 
@@ -422,6 +532,13 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   interface. 8.1, 8.2, 8.3 et 9.0 étendent `format`, `render`, la table des paliers et `addability`.
 - Fuite volontaire et bornée des instantanés (20 à 50 Kio par modification réelle).
 - Un core non testé peut fermer l'application **en cours de partie** ; le témoin le dit, la SRAM limite la perte.
+- Revue `reviewer` du rangement étendu (ADR 0023, Conséquences) : grammaire du journal version 2 **avant**
+  l'exécution (lot PV3, sur le texte de PD1), puis `emu-library/src/tidy/` de PB3 comme code sensible (lot PV4).
+- Journal version 2 : écrit par la seule bascule avec déplacement. Un binaire 7.x refuse en entier un journal
+  version 2, ce qui bloque chez lui tout rangement et toute annulation tant que ce journal est le plus récent ;
+  écrit dans l'amendement PD1 et le guide d'essai 8.0. Sans conséquence pratique en 8.0 (aucune bascule réelle) ;
+  à partir de la version qui ajoute un officiel, revenir à une version plus ancienne perd de toute façon ce
+  système.
 - Revue `reviewer` : `unsafe` des copies FFI et de `SetErrorMode` ; enfant d'essai (dès sa livraison) ; analyse des
   définitions et des `.info` ; avertissement « contenu non vérifié ».
 - Assistance : un défaut sur un système personnalisé n'est pas un défaut d'emu-rust ; la marque figure partout.
