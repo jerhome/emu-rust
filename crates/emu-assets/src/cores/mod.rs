@@ -8,12 +8,14 @@ mod index;
 mod info;
 mod manager;
 mod platform;
+mod ps1_bios;
 mod select;
 
 pub use archive::{ArchiveError, ExtractLimits, extract_core, read_info_bundle};
 pub use firmware::{
-    FirmwareCheck, FirmwareError, FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE,
-    check_core_firmware, check_firmware, check_required,
+    AdviceFile, AdviceNeed, EnhancementKind, FirmwareAdvice, FirmwareCheck, FirmwareEnhancement,
+    FirmwareError, FirmwareState, FirmwareStatus, KnownFirmware, MAX_FIRMWARE_SIZE,
+    check_core_firmware, check_firmware, check_required, firmware_advice, firmware_enhancements,
 };
 pub use id::CoreId;
 pub use index::{BuildDate, MAX_INDEX_ENTRIES, RemoteCore, parse_index_extended};
@@ -25,8 +27,12 @@ pub use manager::{
     Origin, RemoteCatalog,
 };
 pub use platform::Platform;
+pub(crate) use ps1_bios::lookup as ps1_lookup;
+pub use ps1_bios::{
+    PS1_BIOS, Ps1Bios, Ps1Region, ps1_bios_for_md5, ps1_region_for_name, ps1_wrong_region,
+};
 pub use select::{
     BuiltinFirmware, CoreActions, CoreChoice, CoreMediaPolicy, CorePreferences, FirmwareFallback,
-    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, PadDevices,
-    RequiredFirmware, SaveScopePref, choose_core,
+    FirmwareVariant, FolderPolicy, LayoutOption, M3uLaunchPref, MultiDiscPref, OptionalFirmware,
+    PadDevices, RequiredFirmware, SaveScopePref, choose_core,
 };

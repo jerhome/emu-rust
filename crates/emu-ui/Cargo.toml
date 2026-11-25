@@ -35,6 +35,8 @@ rfd = "0.18"
 # Opens the ROM folder in the system file manager (MIT OR Apache-2.0); the path is passed as an argument (on Linux without xdg-open installed, opener
 # runs its embedded script via `sh -c <script> xdg-open <path>`, path positional: no injection).
 opener = { version = "0.9", default-features = false }
+# Local time of the log lines (MIT OR Apache-2.0); `clock` only: reads the zone through the OS, no `unsafe` here.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

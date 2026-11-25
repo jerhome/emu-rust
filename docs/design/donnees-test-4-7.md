@@ -24,7 +24,7 @@ nécessitant d'être construits).
 
 | Élément | Valeur |
 |---|---|
-| Projet | 240p Test Suite (Artemio Urbina et al.), https://github.com/ArtemioUrbina/240pTestSuite |
+| Projet | 240p Test Suite (Artemio Urbina et al.), <https://github.com/ArtemioUrbina/240pTestSuite> |
 | Licence | **GPL-2.0** (fichier `LICENSE` du dépôt = GNU GPL v2). Les ISO contiennent en plus le texte standard de licence Sega du secteur système (boot header « PRODUCED BY OR UNDER LICENSE ») : c'est le gabarit du format, pas du code Sega redistribué ; à mentionner dans `THIRD-PARTY-DATA.txt`. |
 | URL stable | `https://sourceforge.net/projects/testsuite240p/files/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-SegaCD-1.21.zip/download` (même schéma que `ROM_URL` du script ; redirections https) |
 | Taille zip | 5 524 628 o (< `--max-filesize 64M` du script) |
@@ -129,7 +129,7 @@ retenir qu'après un essai réel de chacune sur le core (aucune n'a été lancé
 
 ## 3. 32X (6.0, core picodrive)
 
-Sans BIOS (BIOS 32X intégrés au core). **Aucune ROM 32X libre « officielle » n'était connue** (étude) ; une est
+Sans BIOS (picodrive génère son propre code de démarrage 32X, aucune image du BIOS Sega). **Aucune ROM 32X libre « officielle » n'était connue** (étude) ; une est
 maintenant trouvée.
 
 | Fichier | URL | Licence | Octets | SHA-256 | Remarque |

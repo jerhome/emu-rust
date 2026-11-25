@@ -1,8 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=emu-rust
-Comment=Libretro frontend
+GenericName=Game console emulator frontend
+Comment=Libretro frontend: play your games with existing libretro cores
 Exec=emu-rust
 Icon=emu-rust
 Terminal=false
 Categories=Game;Emulator;
+StartupWMClass=emu-rust

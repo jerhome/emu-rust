@@ -170,11 +170,444 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-21 | 7.1 / 7.2 | Suite après la 7.0 | **Utilisateur** : la 7.1 aura un contenu qu'il précisera (spécifications à venir) ; le Mega CD + 32X (Night Trap 32X) ira en **7.2**, pas urgent. | décidé |
 | 2026-11-21 | 7.0 | Feu vert pour la 7.0 (PlayStation + 3DO) | **Utilisateur** : feu vert donné le 2026-11-21 après ses essais de la 6.0 ; jeux d'essai prévus : GTA (PS1), Road Rash (3DO). | décidé |
 | 2026-11-21 | 3.0+ | Jeux Amiga en `.ipf` (essai utilisateur : Hunter) | `.ipf` reconnu seulement sous `roms/amiga/` ; lecture par puae seulement avec la bibliothèque SPS `capsimg` (non redistribuable) déposée à la main dans `system/`. Défaut : conseiller l'ADF ; **proposer d'avancer l'import guidé de capsimg** (design 3.0 §9 q.7, reporté). **Essai Windows 2026-11-21** : `capsimg.dll` dans `system/` + relance → toujours l'écran « disquette Workbench » (IPF non lu ; cause non établie : DLL 32 bits ? nom/chemin attendu par puae sous Windows ?) ; l'utilisateur passe à l'ADF (Another World OK) et **met ce point de côté** (Hunter retiré de son plan d'essais). À diagnostiquer avant tout import guidé (journal puae, nom attendu). | à diagnostiquer |
-| 2026-11-21 | assets | Installation de `vice_x64` refusée (« CRC ») sous Windows malgré « Vérifier les mises à jour » | **Cause : buildbot** — `.index-extended` daté du 2026-11-20 (CRC f0c3c374) alors que le zip a été reconstruit le 21/11 07h30 (DLL CRC 484b598c) ; idem `vice_x64sc`. Contournement donné : attendre, ou DLL manuelle dans `%APPDATA%\emu-rust\data\cores\` (core « manuel »). Proposition : si le `Last-Modified` du zip est postérieur à la date de l'index, message « buildbot en cours de mise à jour, réessayez plus tard » au lieu d'une erreur d'empreinte (2e cas après hatari en 2.0). | à décider |
-| 2026-11-21 | après 6.0 | Jeux « Sega CD 32X » (Mega CD + 32X, ex. Night Trap 32X) demandés par l'utilisateur | Hors 6.0 (ADR 0020 §7). Faisable avec picodrive (BIOS Mega CD de la région requis) : reconnaître un CD 32X au scan, l'envoyer à picodrive au lieu de genesis_plus_gx, contrôle de BIOS Mega CD. Défaut proposé : petite version après la 7.0 (ou 7.x). | à décider |
+| 2026-11-21 | assets | Installation de `vice_x64` refusée (« CRC ») sous Windows malgré « Vérifier les mises à jour » | **Cause : buildbot** — `.index-extended` daté du 2026-11-20 (CRC f0c3c374) alors que le zip a été reconstruit le 21/11 07h30 (DLL CRC 484b598c) ; idem `vice_x64sc`. Contournement donné : attendre, ou DLL manuelle dans `%APPDATA%\emu-rust\data\cores\` (core « manuel »). Proposition : si le `Last-Modified` du zip est postérieur à la date de l'index, message « buildbot en cours de mise à jour, réessayez plus tard » au lieu d'une erreur d'empreinte (2e cas après hatari en 2.0). | décidé (défaut, 2026-11-22, ligne PC) : message « buildbot en cours de mise à jour » ; livré en 7.5 |
+| 2026-11-21 | après 6.0 | Jeux « Sega CD 32X » (Mega CD + 32X, ex. Night Trap 32X) demandés par l'utilisateur | Hors 6.0 (ADR 0020 §7). Faisable avec picodrive (BIOS Mega CD de la région requis) : reconnaître un CD 32X au scan, l'envoyer à picodrive au lieu de genesis_plus_gx, contrôle de BIOS Mega CD. Défaut proposé : petite version après la 7.0 (ou 7.x). | décidé : 7.4 (Mac), compléments PC en 7.5 (ADR 0024) |
 | 2026-11-23 | 7.2 / 7.3 / 7.4 | Manette USB type SNES, refonte de l'interface, Sega CD 32X | **Utilisateur** : manette USB simple type SNES en **7.2** ; nouvelle **7.3 « Refonte visuelle et accompagnement »** (thème sombre uniquement, assistant de premier lancement, aide) ; le Sega CD 32X passe en **7.4** (essai avec l'édition 32X de Night Trap ou Fahrenheit). Remplace la ligne du 2026-11-21 « Mega CD + 32X en 7.2 ». | décidé |
 | 2026-11-23 | 7.2 | Manette SNES non reconnue au branchement : comment lancer l'apprentissage ? | Notification « Manette non reconnue » renvoyant à Réglages → Manettes → Configurer ; jamais d'ouverture automatique en jeu (design 7.2 §4). | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 | Raccourcis sur un pad sans bouton PS | **Select** maintenu = modificateur (Select + Start = menu, Select + R / L = sauver / charger) ; Select seul reste Select en jeu ; réglable par manette (ADR 0016, amendement 2026-11-23 point 4). | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 | Pad reconnu par la base SDL mais mal mappé (même puce, câblages différents) | « Configurer » proposé aussi pour les manettes reconnues ; le mapping appris remplace la base pour ce modèle (GUID), donc pour toutes les manettes identiques ; « Oublier » revient à la base. | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 | Sticks analogiques des pads non reconnus | Hors 7.2 : seuls croix et boutons s'apprennent (suffisant pour un pad SNES) ; à ajouter si un pad à sticks non reconnu se présente. | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 → 7.3 | Manuel utilisateur | **Utilisateur** : prévoir un manuel, d'abord un simple `docs/manuel.md` (rédigé à partir de la 7.2 et complété à chaque version), puis intégré à l'application pendant la 7.3 (refonte et accompagnement). | décidé |
+| 2026-11-21 | PC 7.1 | Conception de la 7.1 | **ADR 0023 acceptée** (amendée après revue indépendante : reprise par unité, marqueur d'identités, groupes multi-CD, console à deux exécutables), `docs/design/v7.1-finition-interface.md`. | décidé (architecte) **Fusion (D1)** : livrée en 7.5 (finition) et 7.6 (rangement) ; ADR 0023 amendée. |
+| 2026-11-21 | PC 7.1 | **Icône** : quatre variantes (`docs/design/icone/planche.png` : A cartouche, B croix et boutons, C écran, D grille de bibliothèque) | **Choix de l'utilisateur.** Défaut de travail : **B** (la plus lisible en 16 px) ; changer de variante = régénérer les fichiers (tâche FP1, quelques minutes). | **décidé : B (choix de l'utilisateur, 2026-11-21)** **Fusion (2026-11-25, D2)** : remplacé — dessin Mac, chaîne PC. |
+| 2026-11-21 | PC 7.1 | Avertissement « BIOS de remplacement » (7.0 : une fois par jeu, confirmé q.1) | Défaut 7.1 : **une fois par core et fichier** (`[interface] firmware_hints_seen`), les jeux déjà avertis ne le sont plus ; fichiers facultatifs (BIOS GBA, ROM MT-32…) : simple bandeau refermable + écran Cores. | **confirmé par l’utilisateur le 2026-11-21** **Fusion (D7)** : annonce « une fois par core et fichier » abandonnée ; bandeau du jeu sélectionné (Mac) avec les données PC. |
+| 2026-11-21 | PC 7.1 | Rangement : jeux-dossiers DOS et zips DOS trouvés en vrac ; nom présent dans un seul DAT | Proposés **décochés** (« suggérés ») dans l'aperçu ; seules les identifications sûres (en-tête, empreinte DAT, extension propre) sont cochées d'office. | défaut |
+| 2026-11-21 | PC 7.1 | Rangement : destination déjà occupée (doublon ou autre fichier du même nom) | L'élément reste en place, signalé ; **aucun renommage ni suppression automatique** (le nom du fichier porte les sauvegardes). | défaut |
+| 2026-11-21 | PC 7.1 | Rangement : CD à plusieurs fichiers (`.cue` + pistes, `.m3u`) | Un **sous-dossier par jeu** `roms/<id>/<nom>/` (les pistes de jeux différents portent souvent le même nom) ; images uniques (`.chd`, `.iso`) à plat. | défaut |
+| 2026-11-21 | PC 7.1 | Rangement : dossiers externes déclarés (`[library] roots`) | **Jamais rangés** : seul `<data>/roms` l'est. | défaut |
+| 2026-11-21 | PC 7.1 | Rangement : BIOS déposé par erreur dans `roms/` (md5 connu) | Signalé dans l'aperçu avec « Importer un BIOS… », pas déplacé par le rangement. | défaut |
+| 2026-11-21 | PC 7.1 | Rangement : annulation | Seul le **dernier** rangement s'annule (20 journaux gardés pour la trace) ; un fichier modifié ou supprimé depuis reste où il est et figure au rapport. | défaut |
+| 2026-11-22 | PC 7.1 | Rangement : annulation interrompue ou partielle (annulée par l'utilisateur, coupure, jeu modifié, place d'origine occupée) | Le journal est marqué « annulé » et ne se ré-annule pas : les jeux non revenus restent rangés sous `roms/<système>/` (état sain), listés au rapport ; pour les remettre, les déplacer à la main (ADR 0023 §4.8). À rouvrir si l'essai le demande. | défaut |
+| 2026-11-21 | PC 7.1 | Console Windows : ligne de commande et réglage « Afficher la console » | **Deux exécutables, même programme** : `emu-rust.exe` (graphique, sans terminal) et `emu-rust-cli.exe` (console : attendu par l'invite, `$LASTEXITCODE` correct). Avec `console = true`, `emu-rust.exe` relance `emu-rust-cli.exe`. `AttachConsole` / `AllocConsole` écartés (invite qui n'attend pas, `unsafe`, non testable). La relance avec console reste un essai utilisateur. | décidé (architecte) |
+| 2026-11-21 | PC 7.1 | Console sous Linux / macOS | Pas de réglage (aucune fenêtre de terminal propre à l'application) : `.desktop` `Terminal=false`, `.app` ; lancé depuis un terminal, le journal continue d'y être écrit. | défaut **Fusion (D3)** : réglage `[app] show_terminal` proposé aussi sous macOS (relance dans Terminal.app). |
+| 2026-11-21 | PC 7.1 | Journal : niveau de détail, fichier | Niveau actuel (`info` pour l'application et le core), `RUST_LOG` pour plus ; fichier `<data>/logs/emu-rust.log` (session en cours + précédente, 2 Mio) ; pas de presse-papiers ni d'« Enregistrer sous… » : « Ouvrir le dossier des journaux ». | défaut **Fusion** : presse-papiers actif (bouton « Copier », 7.5) ; page « Journal » ouverte depuis le pied de page (D6). |
+| 2026-11-21 | PC 7.1 | Erreur fatale avant l'ouverture de la fenêtre, sans console | Windows : boîte de message native ; macOS / Linux : journal + `stderr` seulement (boîte native macOS : plus tard si l'essai le demande). | défaut |
+| 2026-11-21 | PC 7.1 | États sauvegardés après rangement, pour les cores qui mémorisent le chemin du média (CD, `media_direct`) | À mesurer par `qa-systems` (FQ3) ; si un core le fait : le dire dans le guide d'essai (réinsérer le disque par le menu « CD ») ; l'annulation remet les chemins. | à faire |
+| 2026-11-21 | PC 7.1 | Rangement : autre volume, exFAT / FAT, `roms/<id>` lié ou monté ailleurs ; seconde instance en jeu | **Pas de copie entre volumes en 7.1** : l'unité est bloquée et expliquée (à ranger à la main) ; idem sans liens physiques ou si `roms/<id>` n'est pas un vrai dossier. Une seconde fenêtre d'emu-rust en train de jouer n'est pas exclue par le verrou : ne pas ranger pendant ce temps (dit dans l'aperçu). À rouvrir si l'essai le demande. | défaut |
+| 2026-11-21 | PC 7.2 | CD 32X : où stocker la marque « CD 32X » ? | **Aucune migration** (schéma v6 gardé : retour à la 7.1 / 6.0 possible sur le même dossier). Marque automatique dérivée du titre et des noms de fichiers ; marque manuelle dans `config.toml` (`[library] cd32x`, clé = nom du fichier, minuscules Unicode). Renommer le fichier perd la marque manuelle ; plusieurs jeux Mega CD de même nom de fichier (`image.cue`) sont marqués ensemble, et le message le dit. ADR 0024 §2. | décidé (architecte) **Fusion (D4)** : remplacé — colonne `game.needs_32x` (v7, 7.4) + marque manuelle `[library] cd32x` gardée. |
+| 2026-11-21 | PC 7.2 | CD 32X : où placer l'action « Ce jeu est un CD 32X », et comment y inviter ? | **Clic droit** sur la vignette (validé par l'utilisateur le 2026-11-21) + une touche choisie par `ui`. **Invitation** : quand le jeu sélectionné est un jeu Mega CD non marqué et non identifié par son contenu (tout `.chd`), la ligne d'aide de la bibliothèque ajoute « Jeu Sega CD 32X ? Clic droit → Ce jeu est un CD 32X ». Écartés : bandeau « une fois » (état à mémoriser, vu par ceux qui n'ont pas de CD 32X), message après un arrêt rapide (heuristique, échec déjà subi). ADR 0024 §4. | décidé (architecte) |
+| 2026-11-21 | PC 7.2 | CD 32X : étiquettes reconnues dans le nom | `(Sega CD 32X)`, `(Mega-CD 32X)`, `(Mega CD 32X)`, `(32X CD)`, `(CD 32X)` et `(32X)` seul, pour un jeu rangé sous Mega CD (casse et tiret indifférents). Non reconnus, à marquer à la main : `[32X]` entre crochets (TOSEC), nom sans étiquette. | défaut **Fusion (D9)** : `(32X)` nu **refusé**. |
+| 2026-11-21 | PC 7.2 | CD 32X : numéro de série (`T-1620xF`) et en-tête « SEGA 32X » | Non utilisés en 7.2 (en-tête réel jamais relevé ; trois jeux échappent au motif ; les deux disques de Night Trap partagent le numéro, que l'identification Redump ne départage pas). À rouvrir après relevé de l'en-tête d'un vrai disque. | reporté |
+| 2026-11-21 | PC 7.2 | CD 32X à plusieurs disques non regroupés : Fahrenheit (disque 1 Mega CD « Key Disc », disque 2 CD 32X), Slam City (4 disques), Supreme Warrior USA (noms Redump trop différents) | Une entrée par disque, pas de regroupement automatique ; chaque disque étiqueté part sur picodrive ; changement de disque par le menu « CD » ou un `.m3u`. Fahrenheit : marquer à la main le disque 1, ou `.m3u`. Listés dans le guide d'essai ; à valider par un essai réel. | défaut |
+| 2026-11-21 | PC 7.2 | CD 32X et préférence « Core utilisé » du Mega CD | La préférence ne s'applique pas aux jeux marqués : picodrive est imposé (`cd32x_cores` de `cores.toml`), jamais de repli sur genesis_plus_gx (dialogue « Installer picodrive » s'il manque). Marquer un jeu déjà joué avec genesis_plus_gx le fait repartir sans ses sauvegardes `.brm` (dit dans le message). | décidé (architecte) **Fusion (D4)** : `cd32x_cores` abandonné ; règle Mac `choose_game_core` (cores de la 32X), jamais de repli sur genesis_plus_gx. |
+| 2026-11-21 | PC 7.2 | CD 32X en `.cue` : pistes 01 de plus de 512 Mio (Night Trap disque 1, Corpse Killer, Slam City, Fahrenheit disque 2) jamais comparées au DAT | Borne de CRC du Mega CD portée à **800 Mio** (comme la 3DO). Un `.cue` déjà scanné n'est pas ré-analysé : rescan complet ou marquage manuel (guide d'essai). | décidé (architecte) **Fusion (D8)** : remplacé — borne gardée à **512 Mio** ; sonde `32X Initial Program`, nom ou marque manuelle. |
+| 2026-11-21 | PC 7.2 | **À relever par l'utilisateur** : nom exact des deux fichiers de son Night Trap 32X (réponse du 2026-11-21 : **deux disques, en `.chd`**) | Un `.chd` n'est jamais lu : reconnaissance par l'étiquette du nom, sinon marquage manuel (invitation dans la ligne d'aide). Nommés `… (Disc 1)` / `… (Disc 2)`, les deux disques forment un seul jeu ; sinon chacun est à marquer. À ranger sous `roms/megacd/`. | **relevé le 2026-11-22** : `Night Trap (Europe) (Disc 1) (Mega-CD 32X).chd` et `… (Disc 2) (Mega-CD 32X).chd` — étiquette « Mega-CD 32X » et « (Disc N) » présentes : à reconnaître par le nom en 7.2 (vérifier que le motif de SB1 accepte « Mega-CD 32X »). |
+| 2026-11-22 | PC 7.1 | Faces `.d64` non regroupées : `MANIACD0.D64` et `MANIACD1.D64` (Maniac Mansion C64, essai utilisateur) donnent deux tuiles, la face 2 ne démarre pas ; le zip fonctionne | Défaut proposé : regrouper aussi les noms « préfixe commun + chiffre final » (`…D0`/`…D1`, `…1`/`…2`, en 8.3 majuscules) **dans un même dossier système d'ordinateur** (c64, amiga, st, cpc, dos), ordre numérique, seulement si le préfixe fait ≥ 4 caractères et qu'il n'y a pas d'autre fichier du même préfixe ; à faire en 7.1 (library-assets) | défaut **Fusion** : livré en 7.5 (lot L3). |
+
+## Ligne PC (reprise à la fusion du 2026-11-25)
+
+<!-- markdownlint-disable MD029 -- numéros de questions repris de la ligne PC -->
+
+Sections écrites sur la ligne PC (`wip-7.1` / `wip-7.2`) et reprises telles quelles ; les numéros de version y sont
+ceux de la ligne PC : **7.1 PC** = 7.5 (finition) et 7.6 (rangement), **7.2 PC** (CD 32X) = 7.4 + compléments 7.5,
+**7.2.1** (glisser-déposer) = après la 7.6 ; paliers 8.x renumérotés (ADR 0025, amendement de fusion : CD 8.2,
+ordinateurs 8.3, arcade 8.4 ; 8.1 = jgenesis).
+
+### 7.2 — à discuter avec l'utilisateur
+
+Ajouté le 2026-11-21 (architecte). La 7.2 est **à l'étude** : `docs/essais-glisser-deposer.md` et
+`docs/essais-sega-cd-32x.md`. Rien n'est conçu tant que ces questions n'ont pas de réponse (demande de
+l'utilisateur : discuter du glisser-déposer avant la conception). Chaque question propose un **défaut recommandé** ;
+« ok pour les défauts » suffit.
+
+#### Glisser-déposer de jeux dans la fenêtre
+
+À savoir d'abord : emu-rust reçoit seulement **l'emplacement du fichier** déposé, jamais le nom du programme d'où
+il vient. « Uniquement depuis le gestionnaire de fichiers » devient donc : « uniquement un vrai fichier, rangé à un
+endroit durable de l'ordinateur ».
+
+1. **Copier ou déplacer le fichier déposé ?**
+   - a) **Copier** : l'original reste où il était (Téléchargements, clé USB…) ; prend de la place en double.
+   - b) Déplacer : pas de doublon, mais le fichier disparaît de son dossier d'origine.
+   - c) Copier, avec une case « Déplacer plutôt que copier » dans la fenêtre de confirmation (choix mémorisé).
+   - **Défaut recommandé : c** (copie tant que la case n'est pas cochée).
+
+2. **Faut-il toujours montrer un aperçu avant de ranger ?**
+   - a) Toujours : liste « tel fichier → tel dossier », bouton « Ranger ».
+   - b) **Rangement direct quand tout est sûr** (jeu reconnu sans hésitation, pas de doublon), avec un message
+     « 3 jeux ajoutés — Annuler » ; aperçu seulement s'il y a un doute, un choix à faire ou un dossier entier.
+   - c) Jamais d'aperçu : ce qui est douteux est simplement refusé.
+   - **Défaut recommandé : b.**
+
+3. **Ce qui vient d'un navigateur ou d'un e-mail (lien, image, pièce jointe).** Le système refuse lui-même ces
+   dépôts : le pointeur affiche le symbole « interdit » et emu-rust n'est pas prévenu ; il ne peut donc **pas**
+   afficher de message.
+   - a) **Accepter ce comportement** (pointeur « interdit », rien ne se passe) ; un vrai message d'erreur reste
+     affiché pour tout ce qu'emu-rust reçoit et refuse (questions 4 et 6).
+   - b) Exiger un message dans tous les cas : demande du code propre à chaque système (Windows, macOS, Linux),
+     nettement plus long et plus risqué.
+   - **Défaut recommandé : a.**
+
+4. **Fichier tiré depuis une archive ouverte** (zip ouvert dans 7-Zip, WinRAR ou l'Explorateur, sans l'avoir
+   extraite). Le logiciel d'archive fabrique un fichier temporaire qu'il efface aussitôt.
+   - a) **Refuser avec un message** : « Extrayez d'abord l'archive dans un dossier, puis déposez le fichier. »
+   - b) Tenter la copie quand même (peut échouer une fois sur deux selon le logiciel).
+   - **Défaut recommandé : a.** (Le zip lui-même, déposé depuis le gestionnaire de fichiers, est accepté : n° 5.)
+
+5. **Un fichier `.zip` déposé depuis le gestionnaire de fichiers.**
+   - a) **Rangé tel quel, sans le décompresser**, comme le fait le bouton « Ranger les ROMs… » de la 7.1 (un zip
+     contenant un jeu de console est un jeu ; un zip contenant une image de CD est refusé avec le conseil habituel).
+   - b) Décompressé par emu-rust avant rangement.
+   - **Défaut recommandé : a** (emu-rust ne décompresse jamais vos fichiers).
+
+6. **Un fichier téléchargé, déposé depuis la barre de téléchargements du navigateur ou depuis le dossier
+   Téléchargements.** C'est un vrai fichier sur le disque : emu-rust ne peut pas le distinguer d'un fichier déposé
+   depuis l'Explorateur.
+   - a) **Accepté** (c'est le cas le plus courant : on télécharge un homebrew, on le dépose).
+   - b) Refuser tout ce qui se trouve dans le dossier Téléchargements (gênant : il faudrait d'abord le déplacer).
+   - **Défaut recommandé : a.**
+
+7. **Un dossier entier déposé.**
+   - a) **Accepté, toujours avec aperçu** : emu-rust cherche les jeux dedans (un jeu DOS en dossier est pris en
+     bloc) ; les fichiers qui ne sont pas des jeux sont laissés.
+   - b) Refusé : seuls des fichiers peuvent être déposés.
+   - **Défaut recommandé : a.**
+
+8. **Linux.** Le dépôt fonctionne sous Windows et macOS, et sous Linux « X11 ». Il **ne fonctionne pas** sous
+   Linux « Wayland » (donc pas non plus pour la version Linux lancée dans WSL), ni dans Docker.
+   - a) **Accepter cette limite** ; à ces endroits, on continue d'utiliser « Ouvrir le dossier des ROMs » puis
+     « Ranger les ROMs… ».
+   - b) Étudier un contournement pour Wayland (change la façon dont la fenêtre s'affiche sous Linux ; chantier à
+     part).
+   - **Défaut recommandé : a.**
+
+9. **Quand peut-on déposer, et que fait « Annuler » ?**
+   - Dépôt accepté sur tous les écrans hors jeu ; **pendant une partie : refusé avec un message** (« quittez le jeu
+     pour ajouter des jeux »). Déposer une disquette pour l'insérer dans le jeu en cours serait une autre fonction.
+   - « Annuler » après un dépôt : **retire les copies qu'emu-rust vient de faire** (seulement si elles n'ont pas
+     été modifiées) ; si le fichier avait été déplacé, il retourne à sa place d'origine.
+   - Autres défauts : un fichier déjà présent dans `roms/` n'est pas copié une seconde fois ; un BIOS reconnu
+     ouvre « Importer un BIOS… » ; un fichier qui n'est pas un jeu est refusé avec un message.
+   - **Défaut recommandé : tout ce qui précède.** Un point à changer ?
+
+#### Sega CD 32X (Mega CD + 32X)
+
+À savoir : six jeux seulement (Night Trap, Corpse Killer, Fahrenheit, Slam City, Supreme Warrior, Surgical
+Strike). Ils fonctionnent avec picodrive (déjà installé pour la 32X) et le BIOS Mega CD que vous fournissez déjà.
+
+10. **Où ranger ces jeux dans la bibliothèque ?**
+    - a) **Sous « Mega CD », avec une pastille « 32X »** : vous les mettez avec vos autres CD Mega CD
+      (`roms/megacd/`), emu-rust choisit tout seul le bon moteur.
+    - b) Un système à part « Mega CD 32X » avec son propre dossier.
+    - **Défaut recommandé : a** (c'est aussi ainsi que les bases de données de jeux les classent).
+
+11. **Reconnaissance.** emu-rust reconnaîtra ces disques par leur empreinte (fichiers `.cue`) ou par la mention
+    `(Sega CD 32X)` / `(Mega-CD 32X)` / `(32X CD)` dans le nom du fichier (seul moyen pour un `.chd`).
+    - Votre Night Trap 32X : est-ce un `.cue` avec ses pistes, ou un `.chd` ? Quel est le nom exact du fichier ?
+    - a) **Si le nom ne porte pas la mention, une action « Ce jeu est un CD 32X »** dans le menu du jeu permet de
+      le marquer à la main.
+    - b) Pas de marquage manuel : il faut renommer le fichier.
+    - **Défaut recommandé : a.**
+
+12. **Essai.** Aucun CD 32X libre n'existe : les tests automatiques vérifieront seulement qu'emu-rust choisit
+    picodrive et que la 32X s'allume (disque et BIOS factices). Le vrai jeu ne peut être validé que par vous.
+    - a) **Publier la 7.2 en pré-release sur cette base**, votre essai de Night Trap 32X décidant de la suite.
+    - b) Attendre votre essai d'une version de travail avant toute pré-release.
+    - **Défaut recommandé : a.**
+
+13. **Ordre et contenu de la 7.2.** Le glisser-déposer dépend du rangement de la 7.1 ; le CD 32X est indépendant
+    et petit.
+    - a) **Une seule 7.2 avec les deux**, CD 32X fait en premier.
+    - b) CD 32X seul en 7.2, glisser-déposer en 7.3.
+    - **Défaut recommandé : a.**
+
+#### Réponses de l'utilisateur (2026-11-21, questionnaire)
+
+Toutes les options recommandées sont retenues, sauf :
+
+- **Q4, archive ouverte** : l'utilisateur veut **garder le choix**. emu-rust affiche un avertissement : le fichier vient
+  d'une archive ouverte et peut disparaître. L'avertissement propose « Extraire d'abord » (conseil, rien n'est copié)
+  ou « Tenter la copie quand même ».
+- **Q13, découpage** : version **7.2 = Sega CD 32X** ; **glisser-déposer en 7.2.1**.
+- **Q11, Night Trap 32X** : format (`.cue` ou `.chd`) et nom exact **à relever par l'utilisateur**. Le marquage
+  manuel « Ce jeu est un CD 32X » est retenu (défaut a).
+
+Les autres questions prennent le défaut recommandé :
+
+| Question | Réponse retenue |
+|---|---|
+| Q1 | Copier, avec la case « Déplacer plutôt que copier » mémorisée |
+| Q2 | Rangement direct si tout est sûr, avec « Annuler » ; aperçu en cas de doute ou pour un dossier |
+| Q3 | Accepter le curseur « interdit » pour les dépôts depuis un navigateur ou un e-mail |
+| Q5 | Zip rangé tel quel, jamais décompressé |
+| Q6 | Fichier des Téléchargements accepté |
+| Q7 | Dossier entier accepté, toujours avec aperçu |
+| Q8 | Wayland, WSL et Docker : limite acceptée, « Ouvrir le dossier des ROMs » puis « Ranger » |
+| Q9 | Comportement du dépôt et de « Annuler » : défauts retenus |
+| Q10 | Sous « Mega CD », avec une pastille « 32X » |
+| Q12 | Pré-release sur la base des tests factices ; l'essai de l'utilisateur décide de la suite |
+
+### 9.0 — rendu matériel : à discuter avec l'utilisateur
+
+Ajouté le 2026-11-22 (architecte). Étude préliminaire : `docs/etude-9.0-rendu-materiel.md` (§9, texte complet des
+questions). Ni ADR ni découpage avant les réponses.
+**Périmètre (consigne du 2026-11-22)** : Windows natif, puis macOS Intel, puis Linux natif ; WSL / WSLg, Docker et
+noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0. Défaut recommandé en gras ; « ok pour les défauts » suffit.
+
+1. **Premier système de la 9.0.** a) **PlayStation en haute résolution (swanstation), sans nouveau système** ;
+   b) Nintendo 64 ; c) Dreamcast.
+2. **Premier système nouveau (9.1).** a) **Dreamcast (flycast)** ; b) Nintendo 64 ; c) les deux ensemble.
+3. **PlayStation par défaut.** a) **pcsx_rearmed en logiciel reste le défaut, la haute résolution est un réglage** ;
+   b) swanstation en haute résolution devient le défaut.
+4. **Résolution interne à l'activation.** a) **×2**, réglable de ×1 à ×8 ; b) ×4 ; c) selon la taille de la fenêtre.
+5. **Place de DirectX 11.** a) **Après la mesure OpenGL sur l'Iris Xe : 9.2 si OpenGL est bon, avant la 9.1 sinon** ;
+   b) toujours avant tout nouveau système ; c) seulement en cas de problème.
+6. **Méthode DirectX 11.** a) **Pont d'abord (interface en OpenGL, image du core copiée), coût mesuré** ;
+   b) interface entièrement en DirectX d'emblée.
+7. **Mode mesure.** a) **« Mesurer 60 s » puis coller le rapport** ; b) simple compteur à l'écran.
+8. **macOS Intel.** a) **Accepter des cores ou réglages absents, affichés grisés** ; b) tout ou rien sur toutes les
+   cibles.
+9. **Saturn et Nintendo DS** (cores sans rendu matériel). a) **Étude à part, sans attendre la 9.x** ; b) en 9.3 ;
+   c) pas intéressé.
+10. **GameCube / Wii, 3DS, PlayStation 2.** a) **Hors 9.x, à redécider** ; b) à prévoir (lequel ?).
+11. **Vulkan.** a) **9.4, tests automatiques, essai par le camarade** ; b) plus tôt ; c) abandonné.
+12. **Ordre des versions.** a) **7.1 → 7.2 → 8.0 → 9.0** ; b) 9.0 avant la 8.0.
+13. **À relever sur le portable Windows** (pas de défaut) : processeur, mémoire, version du pilote Intel (`dxdiag`).
+
+### Réponses utilisateur du 2026-11-23
+
+- **Annulation partielle d'un rangement** : on ne peut pas la relancer en 7.1 (défaut de l'architecte confirmé).
+  Pouvoir réessayer une annulation partielle reste **à noter de côté** pour une version ultérieure.
+- **BIOS PS1** : reconnaître **autant de révisions que possible** (toutes régions : SCPH-1000/1001/1002/3000/3500/
+  5500/5501/5502/5552/7000/7001/7002/7502/9000/9001/9002/100/101/102, PSone…), par hash, sans aucun
+  téléchargement. Tâche secondaire 7.1 (library-assets).
+
+#### Réponses 9.0 du 2026-11-23 (partielles)
+
+1. a) PlayStation haute résolution (swanstation) en premier, sans nouveau système.
+2. N64 puis Dreamcast, en deux versions séparées (choix laissé à l'architecte, retenu) : 9.1 N64, 9.2 Dreamcast ; les paliers suivants se décalent (DirectX 11 9.3 si OpenGL est bon, PSP/Saturn 9.4, Vulkan 9.5).
+3. a) pcsx_rearmed logiciel reste le défaut ; la haute résolution est un réglage.
+4. a) ×2 à l'activation, réglable de ×1 à ×8.
+6. a) Pont d'abord (choix laissé à l'architecte, recommandation retenue).
+7. a) Bouton « Mesurer 60 s » + rapport à coller.
+8. a) macOS Intel : cores/réglages absents affichés grisés.
+5. a) DirectX 11 après la mesure OpenGL sur l'Iris Xe (avant la 9.1 si OpenGL est mauvais).
+9. Nintendo DS : étude à part, pas d'urgence (Saturn reste avec la PSP).
+10. GameCube / Wii, 3DS, PS2 : hors 9.x, plus tard.
+11. Vulkan : en dernier palier ; **l'utilisateur l'essaiera lui-même d'abord** (sur l'Iris Xe, même si ce n'est pas idéal), puis le camarade.
+12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
+13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. Pilote graphique Intel 32.0.101.7088.
+
+#### Conception 9.0 du 2026-11-25 (ADR 0026, `docs/design/v9.0-rendu-materiel.md`)
+
+- Réponses de l'utilisateur du 2026-11-25 aux questions de la revue (Q-A à Q-F) et aux 7 questions de la conception :
+  consignées dans la conception (section « Réponses de l'utilisateur du 2026-11-25 » et §11), reportées dans l'ADR.
+- **Questions restantes** (Q-G à Q-J, avec défaut) : conception, §12. À trancher avant le lot GX1 ; elles ne
+  bloquent pas le prototype (`proto-9.0`) ni l'image / CI.
+
+### Piste capsimg / IPF (essai Hunter du 2026-11-23, remis de côté)
+
+`capsimg.dll` 64 bits (fs3) trouvée par puae dans `system/` mais `LoadLibrary` refuse (« DLOPEN: Failed to open »,
+« Unable to open capsimg.dll ») ; ni `Unblock-File` ni `msvcp140.dll` à côté d'`emu-rust.exe` n'y changent rien ;
+pas de droits admin. puae ne journalise pas l'erreur Windows. **Piste notée (accord utilisateur)** : une sonde
+emu-rust qui charge elle-même `capsimg.dll` (sans l'exécuter au-delà du chargement) et affiche l'erreur Windows exacte
+(`GetLastError`, ex. 126 module introuvable, 193 mauvaise architecture) et la liste des DLL importées (table d'import
+PE) absentes ; à intégrer à l'import guidé de capsimg (validation PE 64 bits + 14 exports `CAPS*`). Rapport :
+`.claude/ipf-capsimg.md` (dépôt A, local).
+
+### Essais de changement de média à faire plus tard (demande utilisateur du 2026-11-23, non bloquant)
+
+L'utilisateur confirmera plus tard, sans bloquer aucune validation ni release :
+
+- changement de CD en cours de partie : Night Trap (Mega CD 32X, picodrive, disque 2), et plus largement Mega CD / PS1 / 3DO ;
+- **tous** les changements de disquettes (Atari ST, Amiga, CPC, C64, DOS) et de **cassettes** (CPC, C64…) par le menu en jeu.
+À intégrer à un futur guide d'essai (liste par système, jeu d'essai, étapes, quoi rapporter).
+
+### Mac 68k (étude du 2026-11-23, `docs/etude-mac68k.md`)
+
+Constat : le seul core libretro (minivmac, buildbot OK sur nos 3 cibles) émule un **Mac II** (pas un Mac Plus), sans
+savestates, sans changement de disque libretro, et **sans `RETRO_DEVICE_MOUSE`** (pointeur piloté par le stick gauche).
+
+1. Possèdes-tu une ROM de Mac II (`MacII.ROM`, 256 Ko, md5 `66223be1497460f1e60885eeb35e03cc` d'après le `.info`) ? Une ROM de Mac Plus ne servirait pas.
+2. Possèdes-tu une disquette ou image système bootable (System 6.0.x / 7.x) ? Sans elle, le Mac affiche seulement la disquette au point d'interrogation.
+3. Quelle version de SimCity (Classic 1.x en noir et blanc ou couleur ? SimCity 2000 ?) et sous quel format (disquette réelle ou image, `.dsk`/`.img`/DiskCopy `.dc42`) ?
+4. Souris : acceptes-tu que la souris de l'ordinateur soit convertie en stick gauche (précision limitée) ? Si non, le Mac 68k est déconseillé.
+5. Changement de disquette : acceptes-tu le navigateur de fichiers interne du core (manette Y) plutôt que notre menu « Changer de média » ?
+6. Veux-tu un essai préalable du core hors emu-rust (RetroArch ou essai simple) avant tout développement ?
+7. Snow (Rust, MIT, Mac 128K à LC III, très actif) n'est pas un core libretro : une exception à l'ADR 0001 (« pas de core maison ») est hors de question sans ton accord explicite. Veux-tu que je l'écarte définitivement ?
+
+#### Recommandations du 2026-11-25 (acceptées par l'utilisateur)
+
+- **Système** : **System 6.0.8** (léger, sûr sur le Mac II du core, tient sur une disquette 800 Ko) ; repli :
+  System 7.0.1 (plus lourd, RAM du core non vérifiée). Apple a distribué gratuitement les System 6.0.x à 7.5.3 ;
+  emu-rust ne les télécharge pas : l'utilisateur fournit l'image.
+- **Jeu** : **SimCity Classic 1.2 couleur** (le Mac II affiche 640×480 en 256 couleurs). SimCity 2000 déconseillé
+  (System 7, 4 Mo de RAM, souris précise indispensable alors qu'elle passe par le stick émulé).
+- **Un seul disque** : le core n'ouvre qu'un disque au démarrage. Préparer une seule image qui contient le System
+  6.0.8 et SimCity ; elle sert aussi de disque de sauvegarde des villes (copie de travail, jamais l'original).
+
+#### Comment préparer l'image (à rappeler à l'utilisateur au moment de l'essai)
+
+Sous Windows, avec Mini vMac autonome (<https://www.gryphel.com/c/minivmac/>), pas avec emu-rust :
+
+1. Télécharger la **variante Mac II** de Mini vMac pour Windows x64 (page « Variations » du site ; la version par
+   défaut émule un Mac Plus et refuserait `MacII.ROM`).
+2. Placer `MacII.ROM` à côté de l'exécutable (ou la glisser sur la fenêtre). C'est la même ROM que celle du core :
+   l'essai la vérifie au passage.
+3. Récupérer une image vierge de 20 Mo dans le paquet « Blanks » du même site.
+4. Lancer Mini vMac, glisser la disquette de démarrage System 6.0.8 (« System Startup » ou « System Tools »), puis
+   l'image vierge : le Mac propose de l'initialiser, accepter (nom du volume : `SimCity`).
+5. Lancer l'**Installer** du System 6.0.8 (il demandera les autres disquettes, à glisser sur la fenêtre) et choisir
+   le volume `SimCity` comme destination.
+6. Glisser la disquette de SimCity sur la fenêtre, puis copier son icône (ou son dossier) sur le volume `SimCity`.
+7. Menu Special → Shut Down, fermer Mini vMac, puis redémarrer sur la seule image pour vérifier qu'elle démarre
+   et que SimCity se lance.
+8. Renommer l'image `SimCity (System 6.0.8).dsk` et la garder de côté jusqu'au palier ordinateurs de la 8.x.
+
+Points à vérifier le moment venu : si les disquettes Apple sont en `.sea`, `.hqx` ou `.bin`, il faudra d'abord les
+décompresser (Claude indiquera l'outil) ; Mini vMac lit les images brutes et, a priori, les images DiskCopy 4.2.
+
+#### Réponses de l'utilisateur du 2026-11-25 (questionnaire)
+
+1. ROM Mac II : **oui**, l'utilisateur l'a (md5 à vérifier à l'essai).
+2. Souris → stick gauche : **oui, à essayer** (l'essai dira si SimCity reste jouable).
+3. Essai préalable et Snow : « Peut-on essayer avec Snow direct ? Je ne suis pas attaché à minivmac. » Snow n'est
+   donc **pas écarté** : essai de Snow autonome possible tout de suite ; son intégration dans emu-rust demanderait
+   d'amender l'ADR 0001 (décision de l'utilisateur, après étude par l'architecte).
+4. Question 5 (navigateur de disquettes interne de minivmac) : sans objet tant que le choix minivmac / Snow n'est
+   pas fait ; l'image unique la rend secondaire.
+
+#### Décision finale du 2026-11-25
+
+- **minivmac retenu** ; **Snow laissé pour plus tard** (non écarté définitivement ; toute intégration passerait par
+  un amendement de l'ADR 0001, avec l'accord de l'utilisateur).
+- **Pas d'essai préalable** dans RetroArch : le Mac 68k entre directement au palier ordinateurs de la 8.x ; l'essai
+  réel se fera avec la rc (image unique System 6.0.8 + SimCity 1.2, procédure ci-dessus).
+- Changement de disquette : **navigateur interne de minivmac accepté** (touche Y) ; rien à développer pour cela.
+- Toutes les questions Mac 68k ont une réponse.
+
+### 8.0 — systèmes personnalisés : questions restantes (ADR 0025, 2026-11-25, amendée après revue)
+
+Conception : ADR 0025 (proposé, amendé après la revue indépendante), `docs/design/v8.0-systemes-personnalises.md`.
+Les réponses du questionnaire du 2026-11-21 sont appliquées. Questions de l'architecte et de la revue, fusionnées.
+Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne dit rien.
+
+1. **Supprimer un système ajouté.** Ses fichiers, sauvegardes, options et le core ne sont jamais touchés.
+   - a) **Défaut : la définition est archivée ; ses jeux sont retirés de la bibliothèque, favoris et historique
+     compris (le recréer retrouve les sauvegardes, pas les favoris).**
+   - b) Garder les jeux masqués, favoris compris, jusqu'à une suppression explicite.
+2. **Cores d'ordinateurs (clavier et souris) en 8.0**, alors que le clavier complet arrive en 8.2.
+   - a) **Défaut : ajout permis avec l'avertissement « clavier complet et souris : prévus en 8.2 »** (nécessaire
+     pour le MSX en cartouche du plan d'essais).
+   - b) Grisés jusqu'en 8.2.
+3. **Essai à blanc qui plante, ou qui ne répond pas en 30 s.**
+   - a) **Défaut : même boîte dans les deux cas : « Changer de core » (recommandé) ou « Lancer quand même »
+     (emu-rust risque de se fermer ou de geler).**
+   - b) Bloquer le lancement avec ce core.
+   - c) Plantage : boîte ; délai dépassé : lancement direct.
+4. **Bascule vers un système officiel (Q16) quand votre core n'est pas le core recommandé.**
+   - a) **Défaut : garder votre core en premier (vos sauvegardes, rangées par core, restent visibles) ; le core
+     recommandé est proposé en alternative.**
+   - b) Passer au core recommandé (les sauvegardes de l'ancien core ne sont pas reprises).
+5. **Bascule impossible sans déplacer un dossier** (votre système et le système officiel n'ont pas le même nom de
+   dossier ; cas rare).
+   - a) **Défaut : bascule reportée avec un message ; votre définition reste active, vos jeux restent jouables.**
+   - b) Proposer le déplacement par le rangement (aperçu, annulation), dès qu'une version le rend nécessaire.
+6. **Core qui émule une console à cartouche et sa version CD** (PC Engine et PC Engine CD).
+   - a) **Défaut : la machine CD est visible mais grisée « prévu en 8.1 ».**
+   - b) Masquée.
+7. **Nintendo DS (Zelda, au stylet)** : deux écrans et écran tactile sont une nouveauté d'interface.
+   - a) **Défaut : hors 8.0, palier à part en fin de 8.x (vous l'aviez dite pas urgente).**
+   - b) Dans la 8.0.
+8. **Case « Tout afficher »** : les cores qui ne sont pas des émulateurs (jeux, moteurs, lecteurs) et qui
+   acceptent des fichiers.
+   - a) **Défaut : ajoutables s'ils acceptent une extension de fichier unique, avec la marque « non testé ».**
+   - b) Visibles seulement.
+9. **Fréquence de l'avertissement « non testé ».**
+   - a) **Défaut : au premier lancement de chaque jeu (au moment de l'essai à blanc), jusqu'à ce que vous cliquiez
+     « Ça marche chez moi » pour ce système et ce core.**
+   - b) Une seule fois par système et core.
+   - c) À chaque lancement jusqu'à « Ça marche chez moi ».
+10. **MSX (Metal Gear)** : bluemsx attend une arborescence `Machines/` et `Databases/` dans `system/`, qu'emu-rust
+    ne sait pas importer.
+    - a) **Défaut : copie à la main, expliquée dans le guide d'essai (« Ouvrir le dossier système ») ; repli sur le
+      core `fmsx` si plus simple.**
+    - b) Un import d'arborescence dans l'application (travail en plus pour la 8.0).
+11. **Message « emu-rust s'est arrêté pendant (jeu) » au redémarrage.**
+    - a) **Défaut : pour tous les cores, officiels compris (la proposition de changer de core reste réservée aux
+      cores non testés).**
+    - b) Seulement pour les cores non testés.
+12. **Noms de dossiers des machines** (`roms/pcengine/`, `roms/atari2600/`… : définitifs, ils ne se renomment
+    jamais).
+    - a) **Défaut : l'architecte vous montre la liste complète (≈ 165 noms) avant la pré-version ; vous corrigez si
+      besoin.**
+    - b) Pas besoin de la voir.
+
+Rappel demandé par l'utilisateur : **Q15, export / import d'une définition**, est reporté ; le lui rappeler à la
+conception de la 8.1 (le format 1 le permet déjà : ni binaire, ni URL, ni chemin absolu).
+
+#### Réponses de l'utilisateur du 2026-11-25
+
+Intégrées à l'ADR 0025 (toujours « proposé » : l'acceptation sera demandée) et au design 8.0.
+
+| Question | Réponse | Effet |
+|---|---|---|
+| Q1 supprimer un système | **autre que le défaut : garder les jeux masqués** | lignes gardées (favoris, historique), réapparues si le système est restauré ou recréé (même id) ; « Oublier ses jeux » = action explicite séparée ; fichiers et sauvegardes toujours conservés |
+| Q2 ordinateurs en 8.0 | défaut | ajoutables avec « clavier : 8.2 » |
+| Q3 essai à blanc qui plante ou dépasse 30 s | défaut | boîte « Changer de core » (recommandé) / « Lancer quand même » |
+| Q4 bascule avec un autre core | défaut | son core en tête, le recommandé en alternative |
+| Q5 bascule exigeant un déplacement | **autre que le défaut : proposer le rangement** | le rangement 7.1 déplace le dossier (aperçu, accord, journal, annulation), puis la bascule se fait ; lots PB3 et PU4 ajoutés |
+| Q6 core mixte | défaut | machine CD grisée « 8.1 » |
+| Q7 Nintendo DS | défaut | hors 8.0, palier à part en fin de 8.x |
+| Q8 non-émulateurs | défaut | ajoutables s'ils acceptent un format à fichier unique (ni disque, ni arcade) |
+| Q9 avertissement « non testé » | défaut | au premier lancement de chaque jeu, jusqu'à « Ça marche chez moi » |
+| Q10 MSX | défaut | copie à la main expliquée dans le guide, repli `fmsx` |
+| Q11 message de fermeture brutale | défaut | pour tous les cores, texte neutre |
+| Q12 liste des noms de dossiers | **autre que le défaut : ne pas la montrer** | l'architecte la relit seul (lot PC1) |
+
+#### Questions de la relecture courte (2026-11-25)
+
+Relectures `.claude/rv-8.0-2.md` et `.claude/rv-8.0-3.md` (7 majeurs, 13 mineurs, tous traités dans l'ADR 0025 et
+le design 8.0 ; R2 précisée après la seconde). Trois points
+demandent votre avis ; la **réponse par défaut** est déjà appliquée dans les textes. Réponses déjà données, non
+reposées : Q1 (jeux masqués), Q4 (votre core en tête), Q5 (bascule par le rangement).
+
+1. **R1 — Annuler une bascule dont certains jeux ne peuvent pas revenir** (un fichier modifié depuis, ou sa place
+   d'origine occupée).
+   - a) **Défaut : l'annulation est refusée avant toute action, avec la liste des jeux en cause ; vous les réglez
+      puis vous annulez.** Si elle s'arrête malgré tout en chemin (coupure), le système officiel reste actif et les
+      jeux revenus y restent rattachés : aucun jeu n'est caché.
+   - b) Annuler ce qui peut l'être : le système officiel reste actif, les jeux revenus y restent rattachés.
+2. **R2 — Supprimer un système ajouté qui porte le même nom de dossier qu'un système officiel, alors que vous avez
+   répondu « Non, ce n'est pas la même machine ».** Ses jeux apparaîtraient sous la machine officielle, dont le core
+   pourrait les lancer et y écrire des sauvegardes.
+   - a) **Défaut : la suppression demande « Oublier ses jeux et supprimer » ou « Annuler » ; elle reste refusée tant
+      que des jeux de votre machine sont dans le dossier (emu-rust les liste et ouvre le dossier ; vous les déplacez
+      ailleurs). Les fichiers ne sont jamais touchés ; les bases d'identification, partagées avec le système
+      officiel, sont gardées.**
+   - b) Garder le système officiel masqué tant que les jeux de votre machine sont dans la bibliothèque.
+   - c) Supprimer quand même : limite connue, écrite dans le guide.
+3. **R3 — « Restaurer » un système remplacé par une bascule** (il est dans « Systèmes retirés »).
+   - a) **Défaut : pas de bouton « Restaurer » ; la ligne dit « remplacé par (système officiel) ». Le seul retour
+      est « Annuler le dernier rangement », tant que vous n'avez rien rangé d'autre ; une bascule sans déplacement
+      est définitive.**
+   - b) « Restaurer » proposé avec l'avertissement « le système officiel sera de nouveau masqué et les jeux
+      basculés cachés ».
+
+**Réponses de l'utilisateur (2026-11-25)** : R1, R2 et R3 = **défaut**. ADR 0025 **acceptée** le même jour.
+
+<!-- markdownlint-enable MD029 -->
+
+## 7.5 — fusion PC + Mac (architecte, 2026-11-25)
+
+Déjà répondues, non reposées : décisions **D1 à D15** de l'utilisateur (`.claude/fusion-plan.md`, toutes au défaut :
+versions, icône, console, CD 32X, pied de page, journal, fichiers d'origine, borne 512 Mio, `(32X)` nu refusé,
+jgenesis en 8.1, numéros d'ADR, CHANGELOG, reprise, tags, branche). Questions nouvelles, chacune avec sa réponse par
+défaut (« ok pour les défauts » suffit) :
+
+| # | Question | Défaut |
+|---|---|---|
+| F1 | **PC Engine CD-ROM²** : la roadmap Mac du 2026-11-24 le mettait en 8.0 ; dans l'ADR 0025 un format disque attend le palier CD. En 8.0 avec la HuCard, ou au palier CD (8.2) ? | **8.0 = HuCard seulement**, CD-ROM² en 8.2 avec les autres CD (Redump, multi-disques) |
+| F2 | **Bandeau des fichiers d'origine** pour PlayStation et 3DO : le bandeau Mac disait « requis » (swanstation, opera) ; les données PC (`required_firmware` avec `fallback`) disent « améliore » (le core démarre avec son remplaçant). Lequel ? | **« améliore »** (données de `cores.toml`, cohérent avec le dialogue « une fois par jeu » de la 7.0) ; « requis » reste pour le Mega CD |
+| F3 | **`[interface] console = true`** d'un `config.toml` de la 7.1.0-rc.1 PC : converti en `[app] show_terminal = true` et retiré du fichier à la première sauvegarde ? | **oui** (alias à sens unique ; les autres clés de `[interface]` sont gardées telles quelles) |
+| F4 | **Disquettes à chiffre final** (`MANIACD0` / `MANIACD1`) : regroupées pour tous les ordinateurs (C64, CPC, Amiga, ST, DOS) ou seulement le C64 ? | **tous les ordinateurs**, règle stricte du PC (préfixe ≥ 4 caractères, lettre `D` ou mot « disk / side », même dossier) |

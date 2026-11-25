@@ -26,6 +26,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Icon source fingerprint
+        # Generated icons are committed; only the SVG fingerprint is compared (run scripts/gen-icons.sh).
+        run: cd packaging/icon && sha256sum --check --strict SOURCE.sha256
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -138,7 +142,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --features emu-app/cli-bin --target x86_64-pc-windows-msvc -- -D warnings
 
       - name: Test
         # Mock-core tests stay `cfg(unix)` until the helper can build a .dll (ADR 0012).
@@ -148,12 +152,68 @@ jobs:
         run: cargo build --locked --workspace --no-default-features --target x86_64-pc-windows-msvc
 
       - name: Build release
-        # MSVC toolchain; console subsystem (ADR 0012).
-        run: cargo build --locked --release -p emu-app --target x86_64-pc-windows-msvc
+        # MSVC toolchain; emu-rust.exe (GUI subsystem) + emu-rust-cli.exe (console), ADR 0023 §3.
+        run: cargo build --locked --release -p emu-app --features cli-bin --target x86_64-pc-windows-msvc
+
+      - name: Workspace version
+        id: ver
+        shell: bash
+        run: echo "version=$(scripts/workspace-version.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test (emu-rust-cli.exe)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $out = & target/x86_64-pc-windows-msvc/release/emu-rust-cli.exe --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "emu-rust-cli.exe --version exited with $LASTEXITCODE"; exit 1 }
+          Write-Output $out
+          if (-not (($out | Out-String) -match [regex]::Escape($env:VERSION))) { Write-Error "version mismatch"; exit 1 }
+          # An unknown argument must give a usage error (code 2), seen by PowerShell because the exe is a console one.
+          & target/x86_64-pc-windows-msvc/release/emu-rust-cli.exe --no-such-option 2>$null
+          if ($LASTEXITCODE -ne 2) { Write-Error "unknown argument: expected exit code 2, got $LASTEXITCODE"; exit 1 }
+
+      - name: PE subsystems (GUI = 2, console = 3)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Subsystem([string]$path) {
+            $b = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            if ([BitConverter]::ToUInt32($b, $pe) -ne 0x00004550) { throw "$path: no PE signature" }
+            # Optional header starts 24 bytes after the PE signature; Subsystem is at offset 68 (PE32 and PE32+).
+            [int][BitConverter]::ToUInt16($b, $pe + 24 + 68)
+          }
+          $dir = 'target/x86_64-pc-windows-msvc/release'
+          $gui = Get-Subsystem "$dir/emu-rust.exe"
+          $cui = Get-Subsystem "$dir/emu-rust-cli.exe"
+          Write-Output "emu-rust.exe subsystem=$gui, emu-rust-cli.exe subsystem=$cui"
+          if ($gui -ne 2) { throw "emu-rust.exe must use the GUI subsystem (2), got $gui" }
+          if ($cui -ne 3) { throw "emu-rust-cli.exe must use the console subsystem (3), got $cui" }
+
+      - name: Windows resources (name and version in both executables)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'target/x86_64-pc-windows-msvc/release'
+          # winresource derives the version from the package; compare the numeric core (7.1.0 for 7.1.0-rc.1).
+          $core = ($env:VERSION -split '[-+]')[0]
+          foreach ($exe in 'emu-rust.exe', 'emu-rust-cli.exe') {
+            $vi = (Get-Item "$dir/$exe").VersionInfo
+            Write-Output "$exe ProductName='$($vi.ProductName)' ProductVersion='$($vi.ProductVersion)' FileVersion='$($vi.FileVersion)'"
+            if ([string]::IsNullOrWhiteSpace($vi.ProductName)) { throw "$exe has no version resource (ProductName empty)" }
+            if (-not ([string]$vi.ProductVersion).StartsWith($core)) { throw "$exe ProductVersion '$($vi.ProductVersion)' does not match workspace version $env:VERSION" }
+          }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: emu-rust-windows-x86_64
-          path: target/x86_64-pc-windows-msvc/release/emu-rust.exe
+          path: |
+            target/x86_64-pc-windows-msvc/release/emu-rust.exe
+            target/x86_64-pc-windows-msvc/release/emu-rust-cli.exe
           if-no-files-found: error
           retention-days: 14

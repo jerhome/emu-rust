@@ -474,14 +474,34 @@ pub fn disc_needs_32x(path: &Path) -> Result<bool, LibraryError> {
     Ok(has_cd_32x_signature(&head))
 }
 
-/// Redump tags of the Sega CD 32X discs (`Sega - Mega-CD - Sega CD` DAT lists them with the Mega CD ones).
-const CD_32X_TAGS: &[&str] = &["(mega-cd 32x)", "(sega cd 32x)", "(32x cd)"];
+/// Parenthesised tags of the Sega CD 32X discs (`Sega - Mega-CD - Sega CD` DAT lists them with the Mega CD ones),
+/// once lowercased, with `-` read as a space and inner spaces collapsed. A bare `(32X)` is NOT one: it tags the
+/// 32X cartridges and some Mega CD-only discs (ADR 0024, decision D9).
+const CD_32X_TAGS: &[&str] = &["sega cd 32x", "mega cd 32x", "32x cd", "cd 32x"];
 
-/// A Redump game or file name tagged as a Sega CD 32X disc: `(Mega-CD 32X)`, `(Sega CD 32X)` or `(32X CD)`,
-/// case ignored. Fallback of [`disc_needs_32x`] (`.chd`, header unreadable).
+/// A Redump game or file name carrying a Sega CD 32X tag between parentheses: `(Sega CD 32X)`, `(Mega-CD 32X)`,
+/// `(Mega CD 32X)`, `(32X CD)` or `(CD 32X)` (ASCII case-insensitive, `-` or spaces, extra spaces ignored). Other
+/// forms (`[32X CD]`, `(32X)`, `(32X Edition)`, `Mars 32X CD`) are refused. Fallback of [`disc_needs_32x`]
+/// (`.chd`, header unreadable). Pure.
 pub fn name_needs_32x(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    CD_32X_TAGS.iter().any(|tag| lower.contains(tag))
+    let mut rest = name;
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(')') else {
+            break;
+        };
+        let group = after[..close]
+            .to_ascii_lowercase()
+            .replace('-', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if CD_32X_TAGS.contains(&group.as_str()) {
+            return true;
+        }
+        rest = &after[close + 1..];
+    }
+    false
 }
 
 /// Header probe of a `.cue` (its first data track), a `.iso` or a raw `.bin` track: Sega CD, 3DO, PlayStation.
@@ -1708,6 +1728,11 @@ mod tests {
             "Night Trap (USA) (Sega CD 32X)",
             "Corpse Killer (Europe) (Mega-CD 32X)",
             "fahrenheit (usa) (32x cd).chd",
+            "A (Mega CD 32X)",
+            "A (CD 32X)",
+            "A (usa) (SEGA-CD  32x)",
+            "A (mega-cd 32x) (Disc 1)",
+            "A (Disc 2) (Mega-CD 32X)",
         ] {
             assert!(name_needs_32x(name), "{name}");
         }
@@ -1716,6 +1741,14 @@ mod tests {
             "Fahrenheit (Europe)",
             "Virtua Racing Deluxe (USA) (32X)",
             "Mars 32X CD",
+            "A (32X)",
+            "A [32X]",
+            "A [32X CD]",
+            "A (32X Edition)",
+            "A (Sega CD)",
+            "A (32X",
+            "32X Game",
+            "",
         ] {
             assert!(!name_needs_32x(name), "{name}");
         }

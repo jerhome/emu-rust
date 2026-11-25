@@ -8,10 +8,18 @@ Aucun core, BIOS ni jeu n'est fourni. Vous fournissez le core libretro et la ROM
 Sans argument, emu-rust ouvre la bibliothèque de jeux : indiquez le dossier de vos ROMs dans les Réglages, lancez
 le scan, puis installez les cores depuis l'écran Cores, ou en ligne de commande :
   emu-rust --install-core recommended      (aussi : --list-cores, --update-cores)
+Sous Windows, deux exécutables : emu-rust.exe (interface, sans console) et emu-rust-cli.exe (console : à utiliser pour
+les commandes en ligne, p. ex. emu-rust-cli --install-core recommended, --help, --version, afin de voir leur sortie).
 Les cores sont téléchargés depuis le buildbot libretro (HTTPS), vérifiés, et rangés dans le dossier de données
 (cores/). Les BIOS ne sont jamais téléchargés : l'écran Cores indique ceux qui manquent. Les jaquettes sont
 désactivées par défaut (activation dans les Réglages).
 La méthode manuelle ci-dessous reste possible : --core accepte un chemin.
+
+0a. Journal et terminal (7.5)
+---------------------------
+Journal : bouton « Journal » (pied de page de la fenêtre) : messages et erreurs récents de l'application, copiables.
+Terminal (Windows) : Réglages > « Afficher le terminal (après redémarrage) » ouvre une console avec emu-rust.exe, utile au
+diagnostic ; sans ce réglage emu-rust.exe n'ouvre aucune fenêtre de terminal.
 
 0b. Atari ST (2.0, en développement)
 ------------------------------------
@@ -85,7 +93,8 @@ Programmes de test libres (outils de développement seulement) : rpg-adventure (
 
 Game Boy Advance (mgba, 6.0) : fichiers .gba (ou .zip). Le BIOS gba_bios.bin (dossier system/) est FACULTATIF : mgba en
   intègre un équivalent ; s'il est présent il est utilisé, s'il manque aucun avertissement. Sauvegardes .srm par jeu.
-32X (picodrive, 6.0) : fichiers .32x (ou .bin reconnu par son en-tête). AUCUN BIOS à fournir (BIOS 32X intégrés au core).
+32X (picodrive, 6.0) : fichiers .32x (ou .bin reconnu par son en-tête). AUCUN BIOS à fournir : picodrive remplace le BIOS 32X par
+  son propre code de démarrage (code original du core, aucune ROM Sega).
 Mega CD (6.0) : le BIOS dépend de la région du disque et n'est jamais téléchargé : à vous de le déposer (system/,
   bios_CD_E.bin / bios_CD_U.bin / bios_CD_J.bin). Format conseillé : .chd ; .cue avec toutes ses pistes, .m3u (multi-disques).
 Licences non embarquées (rien de plus dans THIRD-PARTY-DATA.txt) : mgba MPL-2.0 ; picodrive et genesis_plus_gx : licences
@@ -144,8 +153,9 @@ Le core et la ROM peuvent être n'importe où : on passe leur chemin en ligne de
 -----------------------------
   Linux   : ./emu-rust --core ./genesis_plus_gx_libretro.so --rom ./240pSuite-GenesisMD-1.21.zip
   macOS   : ./emu-rust.app/Contents/MacOS/emu-rust --core ./genesis_plus_gx_libretro.dylib --rom ./240pSuite-GenesisMD-1.21.zip
-  Windows : .\emu-rust.exe --core .\genesis_plus_gx_libretro.dll --rom .\240pSuite-GenesisMD-1.21.zip
-  Aide    : emu-rust --help        Version : emu-rust --version
+  Windows : .\emu-rust-cli.exe --core .\genesis_plus_gx_libretro.dll --rom .\240pSuite-GenesisMD-1.21.zip
+            (emu-rust.exe accepte les mêmes options mais n'affiche rien dans le terminal : voir plus haut)
+  Aide    : emu-rust --help        Version : emu-rust --version        (Windows : emu-rust-cli.exe)
 
 Données (config.toml, saves/, states/) : --data-dir DIR, sinon EMU_DATA_DIR, sinon :
   Linux ~/.local/share/emu-rust   macOS ~/Library/Application Support/emu-rust   Windows %APPDATA%\emu-rust\data

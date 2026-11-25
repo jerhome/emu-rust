@@ -4,6 +4,7 @@ Frontend **libretro** écrit en Rust : il charge des cores libretro existants (`
 image, son, entrées, bibliothèque de jeux, téléchargements (cores, BIOS libres, covers). Usage **personnel**.
 Feuille de route : `docs/roadmap.md`. **En début de session, lire `docs/reprise.md`** (état et prochaines tâches ;
 la mémoire de Claude est locale à chaque machine) et le mettre à jour en fin de session. Décisions d'architecture : `docs/adr/` (elles font autorité).
+Vocabulaire de nos échanges : `docs/glossaire.md`.
 
 Conventions communes de mes projets Rust : `../agents-home/docs/rust/CONVENTIONS.md` (Home Repo `../agents-home`,
 lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
@@ -33,10 +34,16 @@ lis son `AGENTS.md`). En cas de conflit, ce fichier et les ADR du repo priment.
 
 Claude tourne dans un conteneur **sans écran, sans son, sans `/dev/input`**. Il a un démon Docker
 dédié (service `dind`, `DOCKER_HOST` déjà réglé), séparé de celui de l'hôte.
+
 - Tests : headless (empreintes d'images, WAV) ; captures d'interface via `Xvfb` (installé).
 - Docker : les images se construisent et se testent en headless ici (dind) ; l'essai réel (WSLg, son, clavier)
   est fait par **l'utilisateur** sur son hôte (Windows + WSL2). Disque limité : `docker image prune` après usage.
 - Pas de build macOS possible ici ; Windows plus tard par cross-compilation.
+- **Avant toute commande cargo** : `. ~/.local/udev/env.sh; export CARGO_INCREMENTAL=0` (sinon `libudev-sys` échoue :
+  `libudev.pc` introuvable), et `CARGO_TARGET_DIR=<racine du worktree>/target` : on travaille dans le worktree
+  indiqué par la consigne, jamais dans un autre.
+- **Disque** : `df -h /workspace` avant un build. Jamais de nouveau dossier `target` (ni d'autre `CARGO_TARGET_DIR`).
+  Sous 15 Go libres : ne pas lancer le build, le signaler dans le rapport.
 
 ## Architecture (workspace Cargo)
 

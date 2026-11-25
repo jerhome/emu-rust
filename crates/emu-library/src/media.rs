@@ -106,6 +106,49 @@ fn find_marker(stem: &str) -> Option<Marker> {
     })
 }
 
+/// Floppy formats for which a bare trailing digit (`MANIACD0.D64`, `MANIACD1.D64`) may number the disks.
+const DIGIT_SUFFIX_EXTENSIONS: &[&str] = &["d64", "g64", "d71", "d81", "adf", "dsk", "st", "msa"];
+/// Shortest radical (name without the final digit) accepted by the bare-digit rule.
+const MIN_RADICAL_CHARS: usize = 3;
+/// Words that may end the radical of a group starting at 1 (`Quest D1`, `Quest_Disk2`): without one, `Game1` /
+/// `Game2` is more likely two games of a series than two disks.
+const DISK_WORDS: &[&str] = &["d", "disk", "disc", "dsk", "diskette", "side"];
+
+/// `Name3` -> (`Name`, 3): a single final digit after a non-digit, radical of at least [`MIN_RADICAL_CHARS`].
+fn split_digit_suffix(stem: &str) -> Option<(String, u32)> {
+    let last = stem.chars().next_back()?;
+    let digit = last.to_digit(10).filter(|_| last.is_ascii_digit())?;
+    let head = &stem[..stem.len() - 1];
+    if head.chars().next_back().is_none_or(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let radical = tidy(head.to_owned());
+    (radical.chars().count() >= MIN_RADICAL_CHARS).then_some((radical, digit))
+}
+
+/// Does the radical end with a disk word of its own (`Quest D`, `Quest_Disk`, `Quest-Side`), or with an
+/// uppercase `D` glued to the name (`MANIACD`, `DemoD`)? A longer glued word (`Xdisk`) or a lowercase final `d`
+/// (`Blood`, `World`, `Island`) does not count.
+fn ends_with_disk_word(radical: &str) -> bool {
+    let lower = radical.to_lowercase();
+    let word = lower
+        .rsplit(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or("");
+    let last_word = radical
+        .rsplit(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or("");
+    (word.len() < lower.len() && DISK_WORDS.contains(&word))
+        || (last_word.chars().count() > 1
+            && last_word.ends_with('D')
+            && last_word
+                .chars()
+                .rev()
+                .nth(1)
+                .is_some_and(char::is_alphabetic))
+}
+
 fn tidy(mut name: String) -> String {
     while name.contains("  ") {
         name = name.replace("  ", " ");
@@ -122,6 +165,16 @@ pub(crate) fn strip_media_marker(stem: &str) -> String {
     }
 }
 
+/// Name of a group member as `group_media` would name its group: the standard marker removed, else the final
+/// digit of a floppy numbered `MANIACD0`. Only for files known to come from a [`MediaGroup`]: on a plain title
+/// (`Tekken 3`) the digit is part of the name.
+pub(crate) fn strip_group_member_name(stem: &str) -> String {
+    match find_marker(stem) {
+        Some(_) => strip_media_marker(stem),
+        None => split_digit_suffix(stem).map_or_else(|| stem.to_owned(), |(radical, _)| radical),
+    }
+}
+
 fn ext_lower(path: &Path) -> String {
     path.extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -132,6 +185,14 @@ fn ext_lower(path: &Path) -> String {
 /// `(Disk N)`, `(Side A|B)`, trailing `Disk N`; case-insensitive). Returns the groups (two files or more) and
 /// the other files, in input order. `.m3u` files are never grouped: one named like a group becomes its
 /// `playlist` (and is not returned among the others). A group is cut at [`MAX_MEDIA_IMAGES`] members.
+///
+/// Second rule, floppies only (`.d64 .g64 .d71 .d81 .adf .dsk .st .msa`, files without a marker above): same
+/// folder, same extension, same radical of 3 characters or more, and a single final digit (`MANIACD0`,
+/// `MANIACD1`). The digits must form a contiguous run without duplicate, starting at 0 (always accepted) or at 1
+/// (accepted only when the radical ends with a disk word such as `D`, `Disk`, `Side`: bare `Game1` / `Game2`
+/// stay two games; a start at 0 needs no such word, so `Level0` / `Level1` do group, an accepted risk, since a series is far more common than a two-disk game with that naming). Two-digit endings
+/// (`Game10`) never match; a gap (`G0`, `G1`, `G3`) cancels the group; a group never has a playlist nor reports
+/// missing disks. The group name is the radical as written (`MANIACD`).
 pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
     type Key = (PathBuf, String, String);
     let mut buckets: BTreeMap<Key, Vec<(u32, Option<u32>, usize)>> = BTreeMap::new();
@@ -200,6 +261,56 @@ pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
                 members: entries.iter().map(|(_, _, i)| files[*i].clone()).collect(),
                 playlist: playlist.map(|p| files[p].clone()),
                 missing,
+            },
+        ));
+    }
+    // Bare trailing digit (`MANIACD0` / `MANIACD1`): floppy extensions only, files without a standard marker.
+    let mut digit_buckets: BTreeMap<Key, (String, Vec<(u32, usize)>)> = BTreeMap::new();
+    for (i, path) in files.iter().enumerate() {
+        let ext = ext_lower(path);
+        if !DIGIT_SUFFIX_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if find_marker(&stem).is_some() {
+            continue;
+        }
+        let Some((radical, digit)) = split_digit_suffix(&stem) else {
+            continue;
+        };
+        let key = (
+            path.parent().map(Path::to_path_buf).unwrap_or_default(),
+            ext,
+            radical.to_lowercase(),
+        );
+        digit_buckets
+            .entry(key)
+            .or_insert_with(|| (radical, Vec::new()))
+            .1
+            .push((digit, i));
+    }
+    for (radical, mut entries) in digit_buckets.into_values() {
+        entries.sort_unstable();
+        let first = entries[0].0;
+        // Contiguous run from 0 or 1 without duplicate (`game1.d64` + `GAME1.d64` is ambiguous: no group).
+        let contiguous = entries.windows(2).all(|w| w[1].0 == w[0].0 + 1);
+        let allowed = first == 0 || (first == 1 && ends_with_disk_word(&radical));
+        if entries.len() < 2 || entries.len() > MAX_MEDIA_IMAGES || !contiguous || !allowed {
+            continue;
+        }
+        let first_index = entries.iter().map(|(_, i)| *i).min().unwrap_or(0);
+        for (_, i) in &entries {
+            grouped[*i] = true;
+        }
+        groups.push((
+            first_index,
+            MediaGroup {
+                name: radical,
+                members: entries.iter().map(|(_, i)| files[*i].clone()).collect(),
+                playlist: None,
+                missing: Vec::new(),
             },
         ));
     }
@@ -337,6 +448,78 @@ mod tests {
     }
 
     #[test]
+    fn bare_digit_suffix_groups_floppies() {
+        let (g, s) = group_media(&[
+            p("c64/MANIACD1.D64"),
+            p("c64/Other.d64"),
+            p("c64/MANIACD0.D64"),
+        ]);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].name, "MANIACD");
+        assert_eq!(g[0].members, [p("c64/MANIACD0.D64"), p("c64/MANIACD1.D64")]);
+        assert!(g[0].missing.is_empty() && g[0].playlist.is_none());
+        assert_eq!(s, [p("c64/Other.d64")]);
+        // Starting at 1 with a disk word, separated or glued; also other floppy formats.
+        for files in [
+            ["d/Quest D1.adf", "d/Quest D2.adf"],
+            ["d/Quest_Disk1.dsk", "d/Quest_Disk2.dsk"],
+            ["d/DEMOD1.st", "d/DEMOD2.st"],
+        ] {
+            let paths: Vec<PathBuf> = files.iter().map(|f| p(f)).collect();
+            let (g, s) = group_media(&paths);
+            assert_eq!((g.len(), s.len()), (1, 0), "{files:?}");
+            assert_eq!(g[0].members, paths);
+        }
+        let (g, _) = group_media(&[
+            p("d/Quest D1.adf"),
+            p("d/Quest D2.adf"),
+            p("d/Quest D3.adf"),
+        ]);
+        assert_eq!(g[0].name, "Quest D");
+        assert_eq!(strip_group_member_name("MANIACD0"), "MANIACD");
+        assert_eq!(strip_media_marker("MANIACD0"), "MANIACD0");
+    }
+
+    #[test]
+    fn bare_digit_suffix_stays_prudent() {
+        for files in [
+            // A series, not disks.
+            vec!["d/Game1.d64", "d/Game2.d64"],
+            vec!["d/Zak1.adf", "d/Zak2.adf"],
+            vec!["d/Blood1.adf", "d/Blood2.adf"],
+            vec!["d/World1.adf", "d/World2.adf"],
+            vec!["d/Island1.d64", "d/Island2.d64"],
+            // Radical too short, two-digit endings, gap, duplicate, lone file.
+            vec!["d/AB0.d64", "d/AB1.d64"],
+            vec!["d/Game10.d64", "d/Game11.d64"],
+            vec!["d/GAMED0.d64", "d/GAMED2.d64"],
+            vec!["d/GAMED1.d64", "d/gamed1.d64"],
+            vec!["d/GAMED0.d64"],
+            vec!["d/GAMED2.d64", "d/GAMED3.d64"],
+            // Other extensions, folders or extensions mixed, not a floppy.
+            vec!["d/GAMED0.nes", "d/GAMED1.nes"],
+            vec!["a/GAMED0.d64", "b/GAMED1.d64"],
+            vec!["d/GAMED0.d64", "d/GAMED1.adf"],
+            // Different games sharing digits.
+            vec!["d/Alpha0.d64", "d/Beta1.d64"],
+        ] {
+            let paths: Vec<PathBuf> = files.iter().map(|f| p(f)).collect();
+            let (g, s) = group_media(&paths);
+            assert!(g.is_empty(), "{files:?}: {g:?}");
+            assert_eq!(s, paths);
+        }
+    }
+
+    #[test]
+    fn standard_markers_win_over_the_digit_rule() {
+        let files = [p("d/G (Disk 1 of 2).adf"), p("d/G (Disk 2 of 2).adf")];
+        let (g, s) = group_media(&files);
+        assert_eq!((g.len(), s.len(), g[0].name.as_str()), (1, 0, "G"));
+        let (g, _) = group_media(&[p("d/Quest Disk 1.st"), p("d/Quest Disk 2.st")]);
+        assert_eq!(g[0].name, "Quest");
+    }
+
+    #[test]
     fn folder_and_extension_separate_groups() {
         let files = vec![
             p("a/G (Disk 1).st"),
@@ -395,6 +578,9 @@ mod tests {
         );
         assert_eq!(strip_media_marker("Plain (1990)"), "Plain (1990)");
         assert_eq!(strip_media_marker("Quest Disk 1"), "Quest");
+        for t in ["Tekken 3", "Silent Hill 2", "Final Fantasy 7"] {
+            assert_eq!(strip_media_marker(t), t);
+        }
     }
 
     #[test]

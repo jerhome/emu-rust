@@ -32,7 +32,7 @@ mgba `c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc` ; picodr
   Sans BIOS, mgba utilise un BIOS HLE intégré : démarrage correct constaté (voir §2). Options `mgba_use_bios`, `mgba_skip_bios`.
   Le BIOS GBA est commercial : à ne jamais télécharger (ADR 0005) ; déjà listé côté Game Boy dans `docs/bios-utilisateur.md`,
   à compléter avec la ligne `gba_bios.bin` (facultatif : animation de démarrage et quelques jeux sensibles au BIOS).
-- **picodrive** : **aucun BIOS pour la 32X** (BIOS 32X M/S/G intégrés au core : symboles `p32x_bios_*`). Les `bios_CD_E/U/J.bin`
+- **picodrive** : **aucun BIOS pour la 32X** (aucune image du BIOS Sega : le core génère son propre code de démarrage ; les symboles `p32x_bios_*` sont des pointeurs nuls, vérifié par GV1 le 2026-11-25). Les `bios_CD_E/U/J.bin`
   (md5 `e66fa1dc…`, `2efd74e3…`, `278a9397…`) ne servent qu'au Mega-CD, facultatifs ici et hors périmètre.
 
 ### Callbacks d'environnement demandés (numéros libretro) et état du frontend
@@ -90,11 +90,11 @@ xvfb-run -a -s "-screen 0 1280x800x24" target/debug/emu-rust --core <core>.so --
 
 | Système | Source | Licence | Hash | Remarque |
 |---|---|---|---|---|
-| GBA | https://github.com/jsmolka/gba-tests, commit `a7113b67e63f83a9b321696ddd7042ccfad6c881`, `ppu/hello.gba` via `https://raw.githubusercontent.com/jsmolka/gba-tests/a7113b67e63f83a9b321696ddd7042ccfad6c881/ppu/hello.gba` | MIT (`LICENSE`, © 2019 Julian Smolka) | SHA256 `38aed48b67bc0f701e8aa222b0c3334bd306bd29888707bb7224d81f5576c264` (1 300 o) | **Recommandé** : URL épinglée au commit |
+| GBA | <https://github.com/jsmolka/gba-tests>, commit `a7113b67e63f83a9b321696ddd7042ccfad6c881`, `ppu/hello.gba` via `https://raw.githubusercontent.com/jsmolka/gba-tests/a7113b67e63f83a9b321696ddd7042ccfad6c881/ppu/hello.gba` | MIT (`LICENSE`, © 2019 Julian Smolka) | SHA256 `38aed48b67bc0f701e8aa222b0c3334bd306bd29888707bb7224d81f5576c264` (1 300 o) | **Recommandé** : URL épinglée au commit |
 | GBA | idem, `arm/arm.gba` | MIT | `77ee88662552bdc885c1080c0172ff119d54db791bd73b21808cf1ff1fe5b40e` (8 824 o) | « Failed test 522 » sans BIOS, voir §2 |
 | GBA | idem, `thumb/thumb.gba` | MIT | `b5cb2291df4ab314b31c598acd9bff2ccfa0b38efff29daadfe97422ce369b67` (3 680 o) | « Failed test 230 » sans BIOS |
-| 32X | **aucune ROM prête trouvée** (GitHub : aucun binaire publié). Sources libres à compiler : https://github.com/viciious/yatssd (MIT, démo tilemap/scaling 32X), https://github.com/andwn/marsdev (MIT, toolchain ; releases Linux ≈ 100 Mo) | MIT | — | Piste : construire une ROM de test dans l'image Docker avec marsdev, sortie non commitée, SHA256 de l'archive de la toolchain épinglé ; la ROM produite n'est reproductible que si la toolchain l'est |
-| 32X | https://github.com/viciious/d32xr (Doom 32X Resurrection) | « Other » : MIT pour le code original, mais code issu de Jaguar Doom sous licence non libre | — | **À écarter** (licence ambiguë, WAD à fournir) |
+| 32X | **aucune ROM prête trouvée** (GitHub : aucun binaire publié). Sources libres à compiler : <https://github.com/viciious/yatssd> (MIT, démo tilemap/scaling 32X), <https://github.com/andwn/marsdev> (MIT, toolchain ; releases Linux ≈ 100 Mo) | MIT | — | Piste : construire une ROM de test dans l'image Docker avec marsdev, sortie non commitée, SHA256 de l'archive de la toolchain épinglé ; la ROM produite n'est reproductible que si la toolchain l'est |
+| 32X | <https://github.com/viciious/d32xr> (Doom 32X Resurrection) | « Other » : MIT pour le code original, mais code issu de Jaguar Doom sous licence non libre | — | **À écarter** (licence ambiguë, WAD à fournir) |
 
 Piste complémentaire pour la 32X : ROM minimale écrite par QA (≈ en-tête MD « SEGA 32X » + code M68K/SH2) — non réalisée, coût élevé ;
 à ne lancer que si l'architecte juge un test 32X automatisé indispensable. Sans ROM, le test d'intégration 32X reste manuel (ROM de l'utilisateur).
@@ -138,7 +138,7 @@ base « Sega - Mega-CD - Sega CD ». Rendu logiciel (pas de `hw_render`).
   Les `.cue` référencent des fichiers relatifs : la bibliothèque doit conserver le dossier ; un zip n'est pas lu par le core.
 - **Sauvegardes** : RAM interne (~8 Ko) et cartouche RAM, fichiers `.brm` / `.srm` dans le dossier de sauvegarde du core ; option du core « Per-BIOS / Per-Game »
   (partager ou non la RAM interne entre jeux d'une région). Choisir **Per-Game** par défaut (la RAM interne est minuscule). Savestate plus gros qu'en cartouche (RAM PRG 512 Ko + WORD 256 Ko ; non mesuré faute de BIOS).
-- **Homebrew libre** : aucun disque Mega CD libre prêt à l'emploi trouvé. `jvisser/md-mode1-mcd-asic-test` (https://github.com/jvisser/md-mode1-mcd-asic-test, CC0-1.0,
+- **Homebrew libre** : aucun disque Mega CD libre prêt à l'emploi trouvé. `jvisser/md-mode1-mcd-asic-test` (<https://github.com/jvisser/md-mode1-mcd-asic-test>, CC0-1.0,
   commit `c2f3a38bb16678adfeaab789b6b2dda3a393e8b4`, `md-mode1-mcd-asic-test.bin` 182 572 o, SHA256 `d0d4c85ce3f4351f3c49e93f4a0048f07e25d70aa9069f18fd2dacdc2f761d8d`)
   est une ROM « mode 1 » (cartouche + matériel Mega CD) : le core réclame aussi le BIOS (`Unable to open CD BIOS`) ; essai sans BIOS sans résultat exploitable. Autres dépôts
   (matteusbeus/ModPlayer MIT, megacd-vgm-player) : sources sans binaire. **Aucun test réel possible sans BIOS** : test d'intégration manuel (BIOS et disque de l'utilisateur) ;

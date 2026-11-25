@@ -9,7 +9,7 @@
 	<key>CFBundleExecutable</key>
 	<string>emu-rust</string>
 	<key>CFBundleIconFile</key>
-	<string>icon</string>
+	<string>emu-rust</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.github.jerhome.emu-rust</string>
 	<key>CFBundleInfoDictionaryVersion</key>

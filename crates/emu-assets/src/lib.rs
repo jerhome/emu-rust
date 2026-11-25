@@ -8,7 +8,6 @@ pub mod cores;
 mod covers;
 mod dat;
 mod error;
-mod firmware_hints;
 pub mod http;
 mod image;
 /// Background jobs polled by the UI (ADR 0013).
@@ -25,7 +24,6 @@ pub use crate::dat::{
     MAX_DAT_BYTES, dat_url, download_dat,
 };
 pub use crate::error::AssetError;
-pub use crate::firmware_hints::{AdviceFile, FirmwareAdvice, firmware_advice};
 pub use crate::image::{
     CoverImage, ImageFormat, MAX_COVER_BYTES, MAX_COVER_SIDE, decode_cover, sniff_format,
 };

@@ -21,8 +21,9 @@
 mod import;
 
 pub use import::{
-    ExpectedFirmware, FirmwareCatalogue, Identification, ImportOutcome, MAX_FIRMWARE_BYTES,
-    TargetState, identify_firmware, import_firmware, import_firmware_expecting, target_state,
+    ExpectedFirmware, FirmwareAlias, FirmwareCatalogue, Identification, ImportOutcome,
+    MAX_FIRMWARE_BYTES, TargetState, identify_firmware, import_firmware, import_firmware_expecting,
+    remove_imported_firmware, target_state,
 };
 
 use std::borrow::Cow;
@@ -562,6 +563,10 @@ struct ImportedEntry {
     md5: String,
     verified: bool,
     imported_unix: u64,
+    /// Set when emu-rust made this file as a region alias of another imported file (ADR 0021 amendment): the
+    /// manifest key of that source. Absent for a file the user imported itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

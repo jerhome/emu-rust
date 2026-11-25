@@ -199,6 +199,9 @@ pub enum CoreError {
         expected: u32,
         found: u32,
     },
+    /// The zip is newer than the index it was checked against: the buildbot is rebuilding it. Nothing installed.
+    #[error("core `{0}` : le buildbot est en cours de mise à jour, réessayez plus tard")]
+    BuildbotUpdating(CoreId),
     #[error("pas encore de catalogue : vérifier les mises à jour d'abord")]
     NoCatalog,
     /// Network, HTTP status, size limit, cancellation (`AssetError::Cancelled`, added by task A1).
@@ -558,7 +561,8 @@ impl CoreManager {
         let file_name = self.platform.core_file_name(id);
         let mut remote = self.remote_core(id)?;
         let (data, crc32) = loop {
-            let zip = self.download(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
+            let (zip, last_modified) =
+                self.download_meta(&url, MAX_CORE_ZIP_BYTES, progress, cancel)?;
             let data = extract_core(&zip, &file_name, ExtractLimits::CORE)?;
             drop(zip);
             let crc32 = crc32fast::hash(&data);
@@ -569,11 +573,7 @@ impl CoreManager {
             // Never accept a file that disagrees with an index fetched after the download.
             let previous = remote.clone();
             if refreshed || !self.refresh_for_install(progress, cancel)? {
-                return Err(CoreError::CrcMismatch {
-                    id: id.clone(),
-                    expected: remote.crc32,
-                    found: crc32,
-                });
+                return Err(crc_failure(id, &remote, crc32, last_modified));
             }
             refreshed = true;
             remote = self.remote_core(id)?;
@@ -583,11 +583,7 @@ impl CoreManager {
             }
             drop(data);
             if remote.crc32 == previous.crc32 {
-                return Err(CoreError::CrcMismatch {
-                    id: id.clone(),
-                    expected: remote.crc32,
-                    found: crc32,
-                });
+                return Err(crc_failure(id, &remote, crc32, last_modified));
             }
         };
         if cancel.is_cancelled() {
@@ -968,11 +964,23 @@ impl CoreManager {
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, AssetError> {
+        self.download_meta(url, max_bytes, progress, cancel)
+            .map(|(body, _)| body)
+    }
+
+    /// [`Self::download`] also returning the response's `Last-Modified` (Unix seconds).
+    fn download_meta(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, Option<u64>), AssetError> {
         let mut attempt = 1;
         loop {
             match self
                 .http
-                .get_with_progress(url, max_bytes, progress, cancel)
+                .get_with_last_modified(url, max_bytes, progress, cancel)
             {
                 Err(e) if e.is_transient() && attempt < DOWNLOAD_ATTEMPTS => {
                     tracing::warn!(
@@ -984,6 +992,36 @@ impl CoreManager {
                 other => return other,
             }
         }
+    }
+}
+
+/// `BuildbotUpdating` when the zip was modified on a UTC day strictly after the date of its index line: on the
+/// real buildbot that date is the day the zip was built, so a later day means the zip was rebuilt after the
+/// index was published (the index lags). A same-day mismatch is not explained by that and stays an error.
+/// Depends only on the index line and the zip, hence stable across attempts. The file is never installed.
+fn crc_failure(
+    id: &CoreId,
+    remote: &RemoteCore,
+    found: u32,
+    last_modified: Option<u64>,
+) -> CoreError {
+    let d = remote.date;
+    let day_start =
+        crate::http::civil_to_unix(d.year.into(), d.month.into(), d.day.into(), 0, 0, 0);
+    if let (Some(lm), Some(next_day)) =
+        (last_modified, day_start.and_then(|s| s.checked_add(86_400)))
+        && lm >= next_day
+    {
+        tracing::warn!(
+            "buildbot en cours de mise à jour : CRC32 attendu {:08x}, trouvé {found:08x}",
+            remote.crc32
+        );
+        return CoreError::BuildbotUpdating(id.clone());
+    }
+    CoreError::CrcMismatch {
+        id: id.clone(),
+        expected: remote.crc32,
+        found,
     }
 }
 

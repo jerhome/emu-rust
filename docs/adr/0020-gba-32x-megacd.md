@@ -1,7 +1,8 @@
 # ADR 0020 — Version 6.0 : Game Boy Advance, 32X et Mega CD (rendu logiciel)
 
 Statut : **accepté** (2026-11-21, après re-validation contre le code réel : les amendements en fin de document
-(2026-11-21 ×2, 2026-11-23 multi-CD) **priment** sur le texte antérieur ; `docs/design/v6.0-gba-32x-megacd.md` §10) — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
+(2026-11-21 ×2, 2026-11-23 multi-CD, 2026-11-24 CD 32X, 2026-11-25 GV1) **priment** ; §2 réécrit le 2026-11-25 (GV1 :
+picodrive n'intègre aucun BIOS Sega) sur le texte antérieur ; `docs/design/v6.0-gba-32x-megacd.md` §10) — décisions utilisateur du 2026-11-21 intégrées (et décision du 2026-11-20 sur la suite : **7.0 =
 PlayStation + 3DO en rendu logiciel** ; Saturn, Dreamcast et rendu matériel plus tard ; revue croisée : corrections
 I2, I9, I13, M3, M4, M5, M6, M8). Remplace l'intitulé de la phase 7 de la feuille de route (« 32 bits : PS1, Saturn,
 3DO, GBA, 32X ; rendu matériel GL ») : **la 6.0 = GBA + 32X + Mega CD**. La mention initiale « PS1, Saturn et 3DO ne
@@ -16,8 +17,8 @@ notices), ainsi que les règles CD de la bibliothèque posées en 4.0 (ADR 0018 
 ## Contexte
 
 Faits vérifiés le 2026-11-20 (essais headless sous Xvfb / llvmpipe avec le binaire `wip-2.0`, `.info` de
-https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot pour `linux/x86_64`, `windows/x86_64`,
-`apple/osx/x86_64`, `dat/System.dat` et `metadat/` de https://github.com/libretro/libretro-database) :
+<https://github.com/libretro/libretro-core-info>, `.index-extended` du buildbot pour `linux/x86_64`, `windows/x86_64`,
+`apple/osx/x86_64`, `dat/System.dat` et `metadat/` de <https://github.com/libretro/libretro-database>) :
 
 | | mgba | picodrive | genesis_plus_gx (Mega CD) |
 |---|---|---|---|
@@ -26,7 +27,7 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
 | Rendu | logiciel (RGB565) | logiciel | logiciel |
 | `need_fullpath` | non | **oui** (`block_extract = 0`) | oui |
 | AV | 240×160, 59,7275 i/s, **65 536 Hz** | 320×224/240, 60 i/s, 44,1 kHz | idem MD |
-| BIOS | `gba_bios.bin` **facultatif** (BIOS HLE intégré) | **aucun** pour la 32X (BIOS 32X intégrés) | `bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin` **requis en pratique** (`.info` : `opt = true`, inexact) |
+| BIOS | `gba_bios.bin` **facultatif** (BIOS HLE intégré) | **aucun** pour la 32X (le core génère son propre code de démarrage, aucun BIOS Sega) | `bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin` **requis en pratique** (`.info` : `opt = true`, inexact) |
 | Savestate | ≈ 0,5 Mo | ≈ 0,7 Mo | quelques centaines de Ko à ~1 Mo (non mesuré, sans BIOS) |
 | Interface disque | non | oui | oui (`.m3u`) |
 
@@ -92,11 +93,12 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
   - **mgba** : BIOS HLE = réimplémentation fournie par le projet mGBA dans son source (MPL-2.0), pas une copie du
     BIOS Nintendo — **à vérifier** (fichier source et licence à citer par GV1 ; l'étude d'essais constate seulement
     « BIOS HLE intégré », `docs/essais-gba-32x-megacd.md`) ;
-  - **picodrive** : BIOS 32X (M / S / G) intégrés au binaire (symboles `p32x_bios_*`, étude d'essais) ; **origine et
-    licence non sourcées : à vérifier** par GV1 (réimplémentations libres du projet PicoDrive, ou code Sega ?). Dans
-    les deux hypothèses la règle « Builtin » couvre l'usage (comme les ROM de VICE, acceptées par l'utilisateur le
-    2026-11-21) ; si ce sont des réimplémentations libres, la notice le dira. État affiché : `Builtin` avec une
-    notice prudente tant que la vérification n'est pas faite (« BIOS 32X intégrés au core picodrive »).
+  - **picodrive** : **aucune image du BIOS 32X de Sega** (vérifié par GV1 le 2026-11-25, libretro/picodrive
+    1890c29). Les symboles `p32x_bios_*` sont des pointeurs nuls ; au démarrage, le core génère un court code de
+    remplacement 68000 + SH2 écrit par ses auteurs et fait lui-même le travail du BIOS ; le chargement d'un BIOS
+    depuis le disque est désactivé dans la version libretro (un BIOS 32X déposé dans `system/` est ignoré).
+    Licence : celle du core (licence MAME non commerciale). La règle « Builtin » s'applique telle quelle ; état
+    affiché : `Builtin`, « Démarrage 32X assuré par le core picodrive (aucun BIOS Sega) ».
 
 ### 3. Formats et médias
 
@@ -261,3 +263,18 @@ Le texte « picodrive lance le CD 32X » est une **hypothèse non vérifiée** :
 Mega CD **ou** la 32X, pas la combinaison Sega CD + 32X. La 7.4 commence donc par un essai-sonde (design 7.4 §3) ;
 le code de reconnaissance n'est écrit que si picodrive démarre le disque. Sinon : la 7.4 se réduit à documenter
 que les éditions 32X se lancent en mode Mega CD seul (genesis_plus_gx) si le disque le permet. Détail : `docs/design/v7.4-sega-cd-32x.md`.
+
+## Amendement du 2026-11-25 — GV1 (BIOS 32X de picodrive) et CD 32X après la 7.4
+
+- **GV1** (vérification du source libretro/picodrive 1890c29, faite sur la ligne PC le 2026-11-25) : picodrive
+  **n'intègre aucune image du BIOS 32X de Sega** ; il génère au démarrage un court code de remplacement (68000 et SH2)
+  écrit par ses auteurs, et ignore tout BIOS 32X déposé dans `system/`. Le §2 et le tableau du contexte sont réécrits
+  en conséquence ; ADR 0005 (tableau « Builtin ») aussi. Notice affichée (`cores.toml`, `builtin_firmware` de
+  picodrive) : « Démarrage 32X assuré par le core picodrive (aucun BIOS Sega) ». Conséquence pour la 8.1 (jgenesis) :
+  à la différence de picodrive, `s32x-core` embarque les boot ROMs de Sega (verdict `reviewer` du 2026-11-24) ; rien
+  ne change ici.
+- **CD 32X** : l'hypothèse de l'amendement du 2026-11-24 est levée pour le démarrage : picodrive, chargé par
+  emu-rust avec un CD Mega CD, **allume la 32X** quand le programme écrit ADEN (constaté sur la ligne PC avec un disque
+  et un BIOS Mega CD synthétiques, test `#[ignore]` `cd32x_real.rs`) ; la 7.4 du Mac a livré la reconnaissance
+  (sonde `32X Initial Program`, `game.needs_32x`). La compatibilité des vrais jeux (Night Trap USA Sega CD 32X) reste
+  à confirmer par l'utilisateur avec la `.app` 7.4.0. Compléments de la 7.5 : ADR 0024, amendement de fusion.

@@ -16,7 +16,7 @@ use crate::db::{
 };
 use crate::disc::{BIN_PROBE_LEN, bin_kind, disc_header, first_track, serial_keys};
 use crate::dos::DosFile;
-use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_media_marker};
+use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_group_member_name, strip_media_marker};
 use crate::systems::{Attribution, attribute, systems};
 use crate::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
@@ -1671,9 +1671,25 @@ fn probe_32x(path: &Path) -> bool {
 }
 
 /// `needs_32x` column of a game stored in `system`: `None` outside `megacd`; else the probe, then the Redump tags
-/// of its title (DAT name) or file stem.
-fn needs_32x_of(system: &str, probed: bool, title: &str, stem: &str) -> Option<bool> {
-    (system == CD_32X_SYSTEM).then(|| probed || name_needs_32x(title) || name_needs_32x(stem))
+/// of its title (DAT name), file stem or the file stem of any of its disks (a playlist whose title is untagged but
+/// one of whose entries is).
+fn needs_32x_of(
+    system: &str,
+    probed: bool,
+    title: &str,
+    stem: &str,
+    media: &[String],
+) -> Option<bool> {
+    (system == CD_32X_SYSTEM).then(|| {
+        probed
+            || name_needs_32x(title)
+            || name_needs_32x(stem)
+            || media.iter().any(|m| {
+                Path::new(m)
+                    .file_stem()
+                    .is_some_and(|s| name_needs_32x(&s.to_string_lossy()))
+            })
+    })
 }
 
 /// Redump match (DAT game name, how) and region of a disc image.
@@ -1999,7 +2015,12 @@ fn store(
         id.title
     } else {
         // The DAT names the first disk `Game (Disk 1 of 2)`: the game is the whole set.
-        strip_media_marker(&id.title)
+        // A zip `Foo 2` keeps its digit: only a group of floppies loses their number.
+        if zip_media || is_playlist(found) {
+            strip_media_marker(&id.title)
+        } else {
+            strip_group_member_name(&id.title)
+        }
     };
     let full = analysis.hashes.map(|h| h.full);
     let headerless = analysis.hashes.and_then(|h| h.headerless);
@@ -2007,7 +2028,13 @@ fn store(
         .region
         .filter(|_| crate::system(&id.system).is_some_and(|s| s.disc))
         .map(DiscRegion::key);
-    let needs_32x = needs_32x_of(&id.system, analysis.needs_32x, &title, &analysis.stem);
+    let needs_32x = needs_32x_of(
+        &id.system,
+        analysis.needs_32x,
+        &title,
+        &analysis.stem,
+        &found.media,
+    );
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
                            title, identification, pinned, is_dir, region, needs_32x)
@@ -2166,7 +2193,13 @@ pub(crate) fn run(
                 && o.system == CD_32X_SYSTEM
             {
                 let probe = f.media.first().map_or(f.path.as_path(), Path::new);
-                let flag = needs_32x_of(&o.system, probe_32x(probe), &o.title, &stem_of(&f.path));
+                let flag = needs_32x_of(
+                    &o.system,
+                    probe_32x(probe),
+                    &o.title,
+                    &stem_of(&f.path),
+                    &f.media,
+                );
                 cd_32x.extend(flag.map(|flag| (o.id, flag)));
             }
         } else {

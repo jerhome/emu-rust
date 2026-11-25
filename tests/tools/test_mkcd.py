@@ -138,6 +138,37 @@ class MegaCd(unittest.TestCase):
         self.assertEqual(read(d, "o.bin")[16:30], b"SEGADISCSYSTEM")
         self.assertEqual(read(d, "g.32x")[0x100:0x108], b"SEGA 32X")
 
+    def test_variant_32x(self):
+        d = tempfile.mkdtemp()
+        gen(d, "--variant", "32x", "--name", "Fake Trap (USA) (Sega CD 32X)", "--discs", "2")
+        for k in (1, 2):
+            b = read(d, "Fake Trap (USA) (Sega CD 32X) (Disc %d) (Track 1).bin" % k)
+            user = b[16 : 16 + 2048]
+            self.assertEqual(user[:14], b"SEGADISCSYSTEM")
+            self.assertEqual(user[0x100:0x108], b"SEGA 32X")
+            self.assertEqual(user[0x180:0x18E], b"GM T-000000 -0")
+            self.assertEqual(user[0x400:0x413], b"32X Initial Program")
+        self.assertTrue(os.path.exists(os.path.join(d, "Fake Trap (USA) (Sega CD 32X).m3u")))
+        # the default stays the plain Mega Drive header
+        self.assertEqual(mkcd.megacd_sector0()[0x100:0x110], b"SEGA MEGA DRIVE ")
+        self.assertNotIn(b"32X Initial Program", mkcd.megacd_sector0())
+        self.assertIn(b"32X Initial Program", mkcd.megacd_sector0(variant="32x"))
+        s = mkcd.megacd_sector0(variant="32x")
+        self.assertEqual(s[0x100:0x110], b"SEGA 32X        ")
+        self.assertEqual(s[:14], b"SEGADISCSYSTEM")
+        with self.assertRaises(ValueError):
+            mkcd.megacd_sector0(variant="x")
+
+    def test_bios_stub(self):
+        d = tempfile.mkdtemp()
+        subprocess.run([sys.executable, "-I", os.path.join(HERE, "mkcd.py"), "bios-stub", d + "/bios_CD_U.bin"], check=True)
+        b = read(d, "bios_CD_U.bin")
+        self.assertEqual(len(b), 131072)
+        self.assertEqual(struct.unpack(">II", b[:8]), (0x00FF0000, 0x200))
+        self.assertEqual(b[0x200:0x20A], bytes.fromhex("13FC000100A1510160FE"))
+        self.assertEqual(b[0x20A:], bytes(len(b) - 0x20A))
+        self.assertEqual(b, mkcd.bios_stub())
+
     def test_reproducible(self):
         a, b = tempfile.mkdtemp(), tempfile.mkdtemp()
         env = dict(os.environ, SOURCE_DATE_EPOCH="1700000000")

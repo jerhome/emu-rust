@@ -2,6 +2,36 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.5.0] - non publiée
+
+Finition PC : travail de la ligne PC (7.1.0-rc.1 et 7.2, jamais publiés sur `main`) réappliqué sur la 7.4 (contrat :
+`docs/design/v7.5-finition-pc.md`). Squelette : complété par les lots L1 à L6. Guide d'essai : `docs/guide-essai-7.5.md`.
+
+### Ajouté
+
+- **Journal** : page « Journal » ouverte depuis le pied de page (compteur d'erreurs et d'avertissements), lien dans
+  Réglages ; fichier `logs/emu-rust.log` (session en cours et précédente).
+- **Messages copiables** : bouton « Copier » sur les messages d'erreur et le journal (presse-papiers réellement actif).
+- **Pied de page** sur toutes les pages et dans le menu en jeu : « emu-rust 7.5.0 — dev by claude@jerhome ».
+- **Windows** : `emu-rust-cli.exe` (ligne de commande, livré à côté d'`emu-rust.exe`) remplace `emu-rust-console.exe`.
+- **Écran Cores** : fichiers d'origine facultatifs par core (BIOS GBA et Game Boy, ROM MT-32 / CM-32L), systèmes à
+  core unique sans menu de choix, recherche par système.
+- **BIOS PlayStation** : les autres révisions (SCPH-1002, SCPH-7002…) sont reconnues à l'import et copiées sous le
+  nom attendu pour leur région.
+- **CD 32X** : « Ce jeu est un CD 32X » au clic droit ou à la touche X (avec « Réinitialiser la jaquette »),
+  invitation dans la ligne d'aide, étiquettes `(Mega CD 32X)`, `(CD 32X)`… reconnues.
+
+### Modifié
+
+- Bandeau des fichiers d'origine : fichiers vérifiés par leur empreinte (« non vérifié » quand elle est inconnue).
+- Icône produite par une chaîne de génération reproductible (même dessin).
+- Notice de picodrive : il n'intègre aucun BIOS Sega (démarrage 32X assuré par le core).
+
+### Corrigé
+
+- Message « buildbot en cours de mise à jour » au lieu d'une erreur de CRC quand le serveur des cores se met à jour.
+- Disquettes numérotées par un chiffre final (`MANIACD0`, `MANIACD1`) regroupées en un seul jeu.
+
 ## [7.4.0] - non publiée (tag à valider)
 
 ### Ajouté

@@ -302,3 +302,22 @@ fn zip_of_disks_is_one_multi_disk_game() {
     assert_eq!(again.unchanged, 7, "{again:?}");
     assert_eq!(lib.games().unwrap(), games);
 }
+
+/// A floppy group without DAT title is named by its radical, not by its first member; a zip keeps its digit.
+#[test]
+fn numbered_floppies_are_titled_by_their_radical_and_zip_digits_are_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("roms");
+    write(&root.join("c64/MANIACD0.D64"), &blob(1));
+    write(&root.join("c64/MANIACD1.D64"), &blob(2));
+    zip_of(
+        &root.join("c64/Foo 2.zip"),
+        &[("a (Disk 1).d64", &blob(3)), ("a (Disk 2).d64", &blob(4))],
+    );
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan(&mut lib, &root);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let games = lib.games().unwrap();
+    assert_eq!(game_at(&games, "MANIACD0.D64").title, "MANIACD");
+    assert_eq!(game_at(&games, "Foo 2.zip").title, "Foo 2");
+}

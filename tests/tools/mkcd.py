@@ -4,7 +4,8 @@
 usage (python3 -I mkcd.py ...):
   mkcd.py megacd OUTDIR [--name N] [--region J|U|E] [--title T] [--serial S] [--sector 2048|2352]
                         [--data-sectors N] [--audio-tracks N] [--audio-seconds S] [--audio silence|sine]
-                        [--layout multi|mono] [--pregap SECTORS] [--iso] [--discs N] [--m3u]
+                        [--layout multi|mono] [--pregap SECTORS] [--iso] [--discs N] [--m3u] [--variant plain|32x]
+  mkcd.py bios-stub OUT.bin     131072-byte synthetic Mega CD BIOS (68000 vectors + "move.b #1,$A15101; bra.s *")
   mkcd.py orphan OUT.bin        data track alone (SEGADISCSYSTEM, MODE1/2352), no .cue
   mkcd.py 32x OUT.32x           fake 32X ROM header ("SEGA 32X" at 0x100); not bootable
   mkcd.py psx OUTDIR [--name N] [--region J|U|E] [--serial SLES-99901] [--mode 1|2] [--iso] [--discs N] [--m3u]
@@ -26,6 +27,7 @@ Output is deterministic; SOURCE_DATE_EPOCH (if set) only changes the ISO 9660 ti
 Sega CD sector-0 layout written (user data, offsets from the start of the 2048-byte sector):
   0x000 "SEGADISCSYSTEM  " (16)      disc header; the library probe accepts it at 0 (2048) or 0x10 (2352, after sync+header)
   0x010 volume name (11), 0x020 "SEGA MEGA DRIVE " ... only approximate, readers ignore the rest
+  0x400 "32X Initial Program" (--variant 32x only; the probe of emu-library searches the first 512 KiB)
   0x100 "SEGA MEGA DRIVE " (16)      Mega Drive style header (design v6.0 3.4: serial read at 0x180)
   0x110 copyright/date (16), 0x120 domestic title (48), 0x150 overseas title (48)
   0x180 "GM <serial>" (type + serial, e.g. "GM T-93175 -00"), 0x1F0 region field ("J", "U" or "E", then spaces)
@@ -103,17 +105,21 @@ def _field(text: str, n: int) -> bytes:
     return text.encode("ascii", "replace")[:n].ljust(n, b" ")
 
 
+CD_32X_SIGNATURE = b"32X Initial Program"
+CD_32X_SIGNATURE_AT = 0x400
 REGION_BYTE = {"E": 0x64, "J": 0xA1, "U": 0x7A}
 
 
-def megacd_sector0(region="U", title="EMU-RUST TEST DISC", serial="T-000000 -00") -> bytes:
+def megacd_sector0(region="U", title="EMU-RUST TEST DISC", serial="T-000000 -00", variant="plain") -> bytes:
     if region not in ("J", "U", "E"):
         raise ValueError("region must be J, U or E")
+    if variant not in ("plain", "32x"):
+        raise ValueError("variant must be plain or 32x")
     s = bytearray(USER)
     s[0x000:0x010] = _field("SEGADISCSYSTEM", 16)
     s[0x010:0x01B] = _field("EMURUSTTEST", 11)
     s[0x020:0x030] = _field("SEGA MEGA DRIVE", 16)
-    s[0x100:0x110] = _field("SEGA MEGA DRIVE", 16)
+    s[0x100:0x110] = _field("SEGA 32X" if variant == "32x" else "SEGA MEGA DRIVE", 16)
     s[0x110:0x120] = _field("(C)EMUR 2026.JAN", 16)
     s[0x120:0x150] = _field(title, 48)
     s[0x150:0x180] = _field(title, 48)
@@ -122,6 +128,9 @@ def megacd_sector0(region="U", title="EMU-RUST TEST DISC", serial="T-000000 -00"
     s[0x200:0x20B] = _field("FAKE", 11)
     s[0x20B] = REGION_BYTE[region]
     s[0x20C:0x300] = _field("EMU-RUST FAKE CD, NO COMMERCIAL CONTENT", 0xF4)
+    if variant == "32x":
+        # The 7.4 library probe looks for this boot-program marker in the first 512 KiB of the data track.
+        s[CD_32X_SIGNATURE_AT : CD_32X_SIGNATURE_AT + len(CD_32X_SIGNATURE)] = CD_32X_SIGNATURE
     return bytes(s)
 
 
@@ -154,7 +163,7 @@ def build_cd(a) -> dict[str, bytes]:
     if a.layout == "mono" and a.sector != RAW:
         a.layout = "multi"  # data only: a single file either way
     base = a.disc_name
-    s0 = megacd_sector0(a.region, a.title, a.serial)
+    s0 = megacd_sector0(a.region, a.title, a.serial, getattr(a, "variant", "plain"))
     data = data_track(s0, a.data_sectors, a.sector)
     asec = round(a.audio_seconds * 75)
     audios = [audio_track(a.pregap + asec, a.audio) for _ in range(a.audio_tracks)]
@@ -327,6 +336,21 @@ def fake_32x() -> bytes:
     return bytes(rom)
 
 
+BIOS_SIZE = 131072
+BIOS_CODE_ADDR = 0x200
+
+
+def bios_stub() -> bytes:
+    """Synthetic Mega CD BIOS: initial SSP, every vector (PC and exceptions) pointing at the code, which sets the
+    ADEN bit (`move.b #1,$A15101`) and loops forever (`bra.s *`). The rest is zero. Original bytes, no Sega code."""
+    rom = bytearray(BIOS_SIZE)
+    rom[0:4] = struct.pack(">I", 0x00FF0000)
+    for i in range(1, 64):
+        rom[4 * i : 4 * i + 4] = struct.pack(">I", BIOS_CODE_ADDR)
+    rom[BIOS_CODE_ADDR : BIOS_CODE_ADDR + 10] = bytes.fromhex("13FC000100A1510160FE")
+    return bytes(rom)
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -346,6 +370,8 @@ def main(argv):
     m.add_argument("--iso", action="store_true", help="also write NAME.iso (2048-byte data track)")
     m.add_argument("--discs", type=int, default=1, help="N > 1 writes 'NAME (Disc k)' images and NAME.m3u")
     m.add_argument("--m3u", action="store_true")
+    m.add_argument("--variant", choices=("plain", "32x"), default="plain",
+                   help="32x: 'SEGA 32X' at 0x100 of the data track instead of 'SEGA MEGA DRIVE' (still SEGADISCSYSTEM)")
     c = sub.add_parser("psx")
     c.add_argument("outdir")
     c.add_argument("--name", default="fakepsx")
@@ -364,6 +390,8 @@ def main(argv):
     d.add_argument("--sector", type=int, choices=(2048, 2352), default=2352)
     o = sub.add_parser("orphan")
     o.add_argument("out")
+    bs = sub.add_parser("bios-stub")
+    bs.add_argument("out")
     x = sub.add_parser("32x")
     x.add_argument("out")
     i = sub.add_parser("iso9660")
@@ -404,6 +432,9 @@ def main(argv):
     elif a.cmd == "orphan":
         with open(a.out, "wb") as f:
             f.write(data_track(megacd_sector0(), 16, RAW))
+    elif a.cmd == "bios-stub":
+        with open(a.out, "wb") as f:
+            f.write(bios_stub())
     elif a.cmd == "32x":
         with open(a.out, "wb") as f:
             f.write(fake_32x())

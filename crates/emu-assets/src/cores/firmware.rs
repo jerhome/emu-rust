@@ -309,6 +309,17 @@ fn check_one(
     known: &KnownFirmware,
     free: &[(String, [u8; 16], String)],
 ) -> FirmwareState {
+    check_one_with(system_dir, spec, known, free, super::PS1_BIOS)
+}
+
+/// [`check_one`] with the PlayStation revision table as a parameter (tests inject fake fingerprints).
+fn check_one_with(
+    system_dir: &Path,
+    spec: &FirmwareSpec,
+    known: &KnownFirmware,
+    free: &[(String, [u8; 16], String)],
+    ps1: &[super::Ps1Bios],
+) -> FirmwareState {
     // `FirmwareSpec` fields are public: re-checked here, not only at parse time.
     if !is_safe_relative_path(&spec.path) {
         return FirmwareState::Unreadable("chemin refusé".into());
@@ -338,6 +349,13 @@ fn check_one(
     if accepted.any(|h| *h == md5) {
         return FirmwareState::Ok;
     }
+    // A PlayStation dump of the same region under the canonical name is an alias made by the import (ADR 0021,
+    // amendment 2026-11-23); another region stays `WrongHash` (see `ps1_wrong_region`).
+    if let Some(region) = super::Ps1Region::from_canonical_file(&spec.path)
+        && super::ps1_lookup(ps1, &md5).is_some_and(|b| b.region == region)
+    {
+        return FirmwareState::Ok;
+    }
     if let Some((_, _, label)) = free.iter().find(|(p, h, _)| *p == spec.path && *h == md5) {
         return FirmwareState::Free {
             label: label.clone(),
@@ -359,6 +377,227 @@ fn md5_file(path: &Path) -> io::Result<[u8; 16]> {
         return Err(io::Error::other("fichier trop volumineux"));
     }
     Ok(hasher.finalize().into())
+}
+
+/// Kind of a [`FirmwareEnhancement`] (ADR 0023 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnhancementKind {
+    /// File of a `required_firmware` table that declares a `fallback`: the core runs a built-in replacement
+    /// meanwhile (PlayStation HLE / OpenBIOS, 3DO, Amiga AROS).
+    Fallback,
+    /// `optional_firmware` entry of `data/cores.toml` listed by the installed `.info`.
+    Optional,
+}
+
+/// An original file, provided by the user, that improves a core for a system. Never downloaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirmwareEnhancement {
+    /// Relative to the system directory.
+    pub file: String,
+    /// Key of the `required_firmware` table (`"europe"`, `"A500"`…); `None` for `Optional`.
+    pub variant: Option<String>,
+    pub kind: EnhancementKind,
+    /// French, shown as is. `Fallback`: « BIOS d'origine : meilleure compatibilité que le remplaçant du core ».
+    pub benefit: String,
+    /// `Ok` / `Missing` / `WrongHash` / `Unverified` (md5 from `firmware.toml`, else the `.info`).
+    pub state: FirmwareState,
+}
+
+/// Original files that improve `core` for `system`: every file of a `required_firmware` table that declares a
+/// `fallback`, then the `optional_firmware` entries that the installed `.info` lists. Nothing is downloaded.
+pub fn firmware_enhancements(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    system: &str,
+    info: Option<&CoreInfo>,
+    system_dir: &Path,
+    known: &KnownFirmware,
+) -> Result<Vec<FirmwareEnhancement>, FirmwareError> {
+    let mut found: Vec<FirmwareEnhancement> = Vec::new();
+    let info_md5 = |file: &str| {
+        info.and_then(|i| i.firmware.iter().find(|s| s.path == file))
+            .and_then(|s| s.md5)
+    };
+    let state_of = |file: &str| {
+        let spec = FirmwareSpec {
+            path: file.to_owned(),
+            description: file.to_owned(),
+            optional: true,
+            md5: info_md5(file),
+        };
+        check_one(system_dir, &spec, known, &[])
+    };
+    if let Some(req) = prefs.required_firmware(core, system)
+        && req.fallback.is_some()
+    {
+        if let Some(path) = req.files.values().find(|p| !is_safe_relative_path(p)) {
+            return Err(FirmwareError::UnsafePath(path.clone()));
+        }
+        // `files` is a BTreeMap: variants come sorted, so the variant kept for a shared file is stable.
+        for (variant, file) in &req.files {
+            if found.iter().any(|e| e.file == *file) {
+                continue;
+            }
+            found.push(FirmwareEnhancement {
+                file: file.clone(),
+                variant: Some(variant.clone()),
+                kind: EnhancementKind::Fallback,
+                benefit: FALLBACK_BENEFIT.to_owned(),
+                state: state_of(file),
+            });
+        }
+    }
+    // Inert unless the installed `.info` lists the file (an unconfirmed name is never proposed), except for
+    // entries marked `outside_info` whose name comes from the core's own documentation.
+    for opt in prefs.optional_firmware(core, system) {
+        if !is_safe_relative_path(&opt.file) {
+            return Err(FirmwareError::UnsafePath(opt.file.clone()));
+        }
+        let listed = info.is_some_and(|i| i.firmware.iter().any(|s| s.path == opt.file));
+        if !(listed || opt.outside_info) || found.iter().any(|e| e.file == opt.file) {
+            continue;
+        }
+        found.push(FirmwareEnhancement {
+            file: opt.file.clone(),
+            variant: None,
+            kind: EnhancementKind::Optional,
+            benefit: opt.benefit.clone(),
+            // Dumps of other revisions exist and only some md5 are known: never claim a wrong hash.
+            state: match state_of(&opt.file) {
+                FirmwareState::WrongHash { .. } if opt.outside_info => FirmwareState::Unverified,
+                other => other,
+            },
+        });
+    }
+    Ok(found)
+}
+
+const FALLBACK_BENEFIT: &str = "BIOS d'origine : meilleure compatibilité que le remplaçant du core";
+
+/// Why an [`AdviceFile`] is listed (ADR 0023 §5, design v7.5 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdviceNeed {
+    /// File of a `required_firmware` table without `fallback`: the game does not run without it.
+    Required,
+    /// A file that makes the core better (`firmware_enhancements`: fallback tables, `optional_firmware`).
+    Improves,
+}
+
+/// One original file shown by the firmware banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdviceFile {
+    /// Relative to the system directory.
+    pub name: String,
+    pub need: AdviceNeed,
+    /// French, shown as is.
+    pub benefit: String,
+    /// `Missing`, `WrongHash`, `Unverified`, `Unreadable` (`Ok` / `Free` files are never listed).
+    pub state: FirmwareState,
+}
+
+/// Banner data for a core: what to ask the user for, never downloaded (ADR 0005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirmwareAdvice {
+    pub core: CoreId,
+    /// `Required` files first, then `Improves`; never empty.
+    pub files: Vec<AdviceFile>,
+}
+
+const REQUIRED_BENEFIT: &str = "BIOS indispensable : sans lui, le jeu ne démarre pas";
+
+/// Banner data for `core` running a game of `system` (libretro database name) in region `variant`
+/// (`"usa"`…, `None` or a key absent from the table = unknown).
+///
+/// - `Required`: files of a `required_firmware` table **without** `fallback`. Known variant: that variant's file,
+///   listed unless it is satisfied (`Ok`, `Free`, or `Unverified`: present, no reference hash). Unknown variant:
+///   nothing when one file of the table is satisfied, else every distinct file of the table.
+/// - `Improves`: [`firmware_enhancements`] whose state is not `Ok` / `Free`.
+///
+/// `Ok(None)` when no file needs an action: nothing is listed, or only `Improves` files that are `Unverified`
+/// (present, unknown revision: nothing to ask). Those are still listed when another file is actionable.
+pub fn firmware_advice(
+    prefs: &CorePreferences,
+    core: &CoreId,
+    system: &str,
+    variant: Option<&str>,
+    info: Option<&CoreInfo>,
+    system_dir: &Path,
+    known: &KnownFirmware,
+) -> Result<Option<FirmwareAdvice>, FirmwareError> {
+    let satisfied = |s: &FirmwareState| {
+        matches!(
+            s,
+            FirmwareState::Ok | FirmwareState::Free { .. } | FirmwareState::Unverified
+        )
+    };
+    let mut files: Vec<AdviceFile> = Vec::new();
+    if let Some(req) = prefs.required_firmware(core, system)
+        && req.fallback.is_none()
+    {
+        if let Some(path) = req.files.values().find(|p| !is_safe_relative_path(p)) {
+            return Err(FirmwareError::UnsafePath(path.clone()));
+        }
+        if !req.files.contains_key(&req.default) {
+            return Err(FirmwareError::UnknownDefault(req.default.clone()));
+        }
+        let state_of = |file: &str| {
+            let md5 = info
+                .and_then(|i| i.firmware.iter().find(|s| s.path == file))
+                .and_then(|s| s.md5);
+            let spec = FirmwareSpec {
+                path: file.to_owned(),
+                description: file.to_owned(),
+                optional: false,
+                md5,
+            };
+            check_one(system_dir, &spec, known, &[])
+        };
+        let mut candidates: Vec<(&String, FirmwareState)> = Vec::new();
+        match variant.and_then(|v| req.files.get(v)) {
+            Some(file) => candidates.push((file, state_of(file))),
+            None => {
+                for file in req.files.values() {
+                    if !candidates.iter().any(|(f, _)| *f == file) {
+                        candidates.push((file, state_of(file)));
+                    }
+                }
+                if candidates.iter().any(|(_, s)| satisfied(s)) {
+                    candidates.clear();
+                }
+            }
+        }
+        files.extend(
+            candidates
+                .into_iter()
+                .filter(|(_, s)| !satisfied(s))
+                .map(|(file, state)| AdviceFile {
+                    name: file.clone(),
+                    need: AdviceNeed::Required,
+                    benefit: REQUIRED_BENEFIT.to_owned(),
+                    state,
+                }),
+        );
+    }
+    for e in firmware_enhancements(prefs, core, system, info, system_dir, known)? {
+        if matches!(e.state, FirmwareState::Ok | FirmwareState::Free { .. })
+            || files.iter().any(|f| f.name == e.file)
+        {
+            continue;
+        }
+        files.push(AdviceFile {
+            name: e.file,
+            need: AdviceNeed::Improves,
+            benefit: e.benefit,
+            state: e.state,
+        });
+    }
+    let actionable = files
+        .iter()
+        .any(|f| f.need == AdviceNeed::Required || f.state != FirmwareState::Unverified);
+    Ok(actionable.then(|| FirmwareAdvice {
+        core: core.clone(),
+        files,
+    }))
 }
 
 #[cfg(test)]
@@ -591,6 +830,75 @@ mod tests {
         assert!(known.md5_for("bass.dll").is_empty());
     }
 
+    fn fake_ps1(
+        file: &'static str,
+        region: crate::cores::Ps1Region,
+        data: &[u8],
+    ) -> crate::cores::Ps1Bios {
+        let md5: &'static str = Box::leak(hexs(md5_of(data)).into_boxed_str());
+        crate::cores::Ps1Bios {
+            file,
+            region,
+            crc32: 0,
+            md5,
+            sha1: "",
+        }
+    }
+
+    #[test]
+    fn ps1_dump_of_the_same_region_is_accepted_under_the_canonical_name() {
+        use crate::cores::Ps1Region::{Europe, Usa};
+        let dir = tempfile::tempdir().unwrap();
+        let table = [
+            fake_ps1("scph7001.bin", Usa, b"usa-7001"),
+            fake_ps1("scph7002.bin", Europe, b"eu-7002"),
+        ];
+        let known = KnownFirmware::default();
+        let spec = |path: &str| FirmwareSpec {
+            path: path.to_owned(),
+            description: String::new(),
+            optional: false,
+            md5: None,
+        };
+        let state = |path: &str| check_one_with(dir.path(), &spec(path), &known, &[], &table);
+        std::fs::write(dir.path().join("scph5501.bin"), b"usa-7001").unwrap();
+        std::fs::write(dir.path().join("scph5502.bin"), b"usa-7001").unwrap();
+        std::fs::write(dir.path().join("scph5500.bin"), b"unknown").unwrap();
+        std::fs::write(dir.path().join("other.bin"), b"usa-7001").unwrap();
+        assert_eq!(state("scph5501.bin"), FirmwareState::Ok);
+        // Other region: not accepted (the caller refines with `ps1_wrong_region`).
+        assert_eq!(state("other.bin"), FirmwareState::Unverified);
+        assert!(matches!(
+            state("scph5502.bin"),
+            FirmwareState::Unverified | FirmwareState::WrongHash { .. }
+        ));
+        assert!(matches!(
+            state("scph5500.bin"),
+            FirmwareState::Unverified | FirmwareState::WrongHash { .. }
+        ));
+    }
+
+    #[test]
+    fn wrong_region_is_told_apart() {
+        // Real table: the SCPH-5501 dump is not a Europe BIOS.
+        let usa = crate::cores::ps1_bios_for_md5("490f666e1afb15b7362b406ed1cea246").unwrap();
+        let md5 = [
+            0x49, 0x0f, 0x66, 0x6e, 0x1a, 0xfb, 0x15, 0xb7, 0x36, 0x2b, 0x40, 0x6e, 0xd1, 0xce,
+            0xa2, 0x46,
+        ];
+        assert_eq!(usa.region, crate::cores::Ps1Region::Usa);
+        assert_eq!(
+            crate::cores::ps1_wrong_region("scph5502.bin", &md5),
+            Some(crate::cores::Ps1Region::Usa)
+        );
+        assert_eq!(crate::cores::ps1_wrong_region("scph5501.bin", &md5), None);
+        assert_eq!(crate::cores::ps1_wrong_region("other.bin", &md5), None);
+        assert_eq!(
+            crate::cores::ps1_wrong_region("scph5502.bin", &[0; 16]),
+            None
+        );
+    }
+
     fn table(fallback: bool) -> RequiredFirmware {
         RequiredFirmware {
             system: "S".into(),
@@ -751,5 +1059,314 @@ mod tests {
             Some(Ok(FirmwareCheck::builtin("ROM Amstrad")))
         );
         assert_eq!(FirmwareCheck::builtin("x").wanted, None);
+    }
+
+    #[test]
+    fn playstation_fallback_files_are_enhancements() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = CorePreferences::builtin();
+        let core = CoreId::new("pcsx_rearmed").unwrap();
+        let found = firmware_enhancements(
+            &prefs,
+            &core,
+            "Sony - PlayStation",
+            None,
+            dir.path(),
+            &KnownFirmware::builtin(),
+        )
+        .unwrap();
+        assert!(!found.is_empty());
+        assert!(found.iter().all(|e| e.kind == EnhancementKind::Fallback
+            && e.state == FirmwareState::Missing
+            && e.variant.is_some()));
+    }
+
+    const GBA: &str = "Nintendo - Game Boy Advance";
+
+    fn mgba_info(with_bios: bool) -> CoreInfo {
+        let firmware = if with_bios {
+            "firmware_count = 1\nfirmware0_path = \"gba_bios.bin\"\nfirmware0_opt = \"true\"\n"
+        } else {
+            ""
+        };
+        parse_info(CoreId::new("mgba").unwrap(), firmware).unwrap()
+    }
+
+    fn enhancements(
+        core: &str,
+        system: &str,
+        info: Option<&CoreInfo>,
+        dir: &Path,
+    ) -> Vec<FirmwareEnhancement> {
+        firmware_enhancements(
+            &CorePreferences::builtin(),
+            &CoreId::new(core).unwrap(),
+            system,
+            info,
+            dir,
+            &KnownFirmware::builtin(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn optional_requires_the_info_to_list_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(enhancements("mgba", GBA, None, dir.path()).is_empty());
+        assert!(enhancements("mgba", GBA, Some(&mgba_info(false)), dir.path()).is_empty());
+        let found = enhancements("mgba", GBA, Some(&mgba_info(true)), dir.path());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, "gba_bios.bin");
+        assert_eq!(found[0].kind, EnhancementKind::Optional);
+        assert_eq!(found[0].variant, None);
+        assert_eq!(found[0].state, FirmwareState::Missing);
+        // Another system of the same core: nothing declared.
+        assert!(
+            enhancements(
+                "mgba",
+                "Nintendo - Game Boy",
+                Some(&mgba_info(true)),
+                dir.path()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn optional_state_follows_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = mgba_info(true);
+        std::fs::write(dir.path().join("gba_bios.bin"), b"not a bios").unwrap();
+        // Known md5 for gba_bios.bin in firmware.toml: other content is a wrong hash.
+        let found = enhancements("mgba", GBA, Some(&info), dir.path());
+        assert!(matches!(found[0].state, FirmwareState::WrongHash { .. }));
+        // No reference at all: Unverified.
+        let p = CorePreferences::builtin_from_text_for_tests(
+            "[systems]\n[cores.x.optional_firmware]\n\"S\" = [{ file = \"zz.bin\", benefit = \"b\" }]\n",
+        );
+        let x = CoreId::new("x").unwrap();
+        let info = parse_info(
+            x.clone(),
+            "firmware_count = 1\nfirmware0_path = \"zz.bin\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("zz.bin"), b"data").unwrap();
+        let found = firmware_enhancements(
+            &p,
+            &x,
+            "S",
+            Some(&info),
+            dir.path(),
+            &KnownFirmware::default(),
+        )
+        .unwrap();
+        assert_eq!(found[0].state, FirmwareState::Unverified);
+    }
+
+    #[test]
+    fn fallback_tables_are_deduplicated_and_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let opera = enhancements("opera", "The 3DO Company - 3DO", None, dir.path());
+        assert_eq!(opera.len(), 1);
+        assert_eq!(opera[0].file, "panafz10.bin");
+        assert_eq!(opera[0].variant.as_deref(), Some("europe"));
+        assert_eq!(
+            opera,
+            enhancements("opera", "The 3DO Company - 3DO", None, dir.path())
+        );
+        let puae = enhancements("puae", "Commodore - Amiga", None, dir.path());
+        assert!(!puae.is_empty());
+        let mut files: Vec<_> = puae.iter().map(|e| &e.file).collect();
+        let n = files.len();
+        files.sort();
+        files.dedup();
+        assert_eq!(files.len(), n);
+        assert!(puae.iter().all(|e| e.kind == EnhancementKind::Fallback));
+    }
+
+    #[test]
+    fn required_without_fallback_is_not_an_enhancement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mcd = "Sega - Mega-CD - Sega CD";
+        assert!(enhancements("genesis_plus_gx", mcd, None, dir.path()).is_empty());
+    }
+
+    #[test]
+    fn dosbox_pure_roland_roms_are_proposed_without_info_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = parse_info(CoreId::new("dosbox_pure").unwrap(), "").unwrap();
+        for info in [None, Some(&info)] {
+            let found = enhancements("dosbox_pure", "DOS", info, dir.path());
+            let files: Vec<_> = found.iter().map(|e| e.file.as_str()).collect();
+            assert_eq!(
+                files,
+                [
+                    "MT32_CONTROL.ROM",
+                    "MT32_PCM.ROM",
+                    "CM32L_CONTROL.ROM",
+                    "CM32L_PCM.ROM"
+                ]
+            );
+            assert!(
+                found
+                    .iter()
+                    .all(|e| e.kind == EnhancementKind::Optional
+                        && e.state == FirmwareState::Missing)
+            );
+        }
+        std::fs::write(dir.path().join("MT32_PCM.ROM"), b"x").unwrap();
+        let found = enhancements("dosbox_pure", "DOS", None, dir.path());
+        // Other revisions are valid: an unknown md5 is Unverified, not a wrong hash.
+        assert_eq!(found[1].state, FirmwareState::Unverified);
+    }
+
+    #[test]
+    fn shipped_optional_firmware_is_consistent() {
+        let prefs = CorePreferences::builtin();
+        let mut seen = 0;
+        for (system, cores) in prefs.systems() {
+            for core in cores {
+                for o in prefs.optional_firmware(core, system) {
+                    seen += 1;
+                    assert!(is_safe_relative_path(&o.file));
+                    assert!(!o.benefit.is_empty());
+                }
+            }
+        }
+        assert!(seen >= 7, "mgba and gambatte entries expected");
+    }
+
+    fn advice(
+        core: &str,
+        system: &str,
+        variant: Option<&str>,
+        dir: &Path,
+    ) -> Option<FirmwareAdvice> {
+        firmware_advice(
+            &CorePreferences::builtin(),
+            &CoreId::new(core).unwrap(),
+            system,
+            variant,
+            None,
+            dir,
+            &KnownFirmware::builtin(),
+        )
+        .unwrap()
+    }
+
+    const MCD: &str = "Sega - Mega-CD - Sega CD";
+    const PSX: &str = "Sony - PlayStation";
+
+    #[test]
+    fn advice_required_known_variant_lists_its_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = advice("picodrive", MCD, Some("usa"), dir.path()).unwrap();
+        assert_eq!(a.files.len(), 1);
+        assert_eq!(a.files[0].name, "bios_CD_U.bin");
+        assert_eq!(a.files[0].need, AdviceNeed::Required);
+        assert_eq!(a.files[0].state, FirmwareState::Missing);
+        // Another region present does not satisfy a known variant.
+        std::fs::write(dir.path().join("bios_CD_E.bin"), b"x").unwrap();
+        let a = advice("picodrive", MCD, Some("usa"), dir.path()).unwrap();
+        assert!(matches!(a.files[0].state, FirmwareState::Missing));
+    }
+
+    #[test]
+    fn advice_required_unknown_variant_needs_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = advice("genesis_plus_gx", MCD, None, dir.path()).unwrap();
+        assert_eq!(a.files.len(), 3);
+        assert!(a.files.iter().all(|f| f.need == AdviceNeed::Required));
+        // A file with a wrong md5 does not satisfy an unknown variant; an unlisted variant is unknown.
+        std::fs::write(dir.path().join("bios_CD_U.bin"), b"x").unwrap();
+        for v in [None, Some("brazil")] {
+            let a = advice("genesis_plus_gx", MCD, v, dir.path()).unwrap();
+            assert_eq!(a.files.len(), 3);
+            assert!(
+                a.files
+                    .iter()
+                    .any(|f| matches!(f.state, FirmwareState::WrongHash { .. }))
+            );
+        }
+        // Present without reference hash (not in firmware.toml): satisfied.
+        let p = CorePreferences::builtin_from_text_for_tests(
+            "[systems]\n[cores.x.required_firmware.\"S\"]\nvariant = \"region\"\ndefault = \"usa\"\n\
+             [cores.x.required_firmware.\"S\".files]\neurope = \"e.bin\"\nusa = \"u.bin\"\n",
+        );
+        let x = CoreId::new("x").unwrap();
+        let run = |variant| {
+            firmware_advice(
+                &p,
+                &x,
+                "S",
+                variant,
+                None,
+                dir.path(),
+                &KnownFirmware::default(),
+            )
+            .unwrap()
+        };
+        assert!(run(None).is_some());
+        std::fs::write(dir.path().join("e.bin"), b"y").unwrap();
+        assert!(run(None).is_none());
+        assert!(run(Some("usa")).is_some());
+    }
+
+    #[test]
+    fn advice_playstation_and_3do_improve_only() {
+        let dir = tempfile::tempdir().unwrap();
+        for (core, system) in [
+            ("pcsx_rearmed", PSX),
+            ("swanstation", PSX),
+            ("opera", "The 3DO Company - 3DO"),
+        ] {
+            let a = advice(core, system, None, dir.path()).unwrap();
+            assert!(!a.files.is_empty());
+            assert!(a.files.iter().all(|f| f.need == AdviceNeed::Improves));
+        }
+    }
+
+    #[test]
+    fn advice_unverified_improvement_alone_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        // dosbox_pure: other revisions of the Roland ROMs are valid, an unknown md5 is Unverified.
+        for f in [
+            "MT32_CONTROL.ROM",
+            "MT32_PCM.ROM",
+            "CM32L_CONTROL.ROM",
+            "CM32L_PCM.ROM",
+        ] {
+            std::fs::write(dir.path().join(f), b"x").unwrap();
+        }
+        assert!(advice("dosbox_pure", "DOS", None, dir.path()).is_none());
+        // One missing: the others stay listed with their state.
+        std::fs::remove_file(dir.path().join("MT32_PCM.ROM")).unwrap();
+        let a = advice("dosbox_pure", "DOS", None, dir.path()).unwrap();
+        assert_eq!(a.files.len(), 4);
+        assert_eq!(a.files[1].state, FirmwareState::Missing);
+        assert_eq!(a.files[0].state, FirmwareState::Unverified);
+    }
+
+    #[test]
+    fn advice_wrong_hash_is_reported_and_unknown_core_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = mgba_info(true);
+        std::fs::write(dir.path().join("gba_bios.bin"), b"not a bios").unwrap();
+        let a = firmware_advice(
+            &CorePreferences::builtin(),
+            &CoreId::new("mgba").unwrap(),
+            GBA,
+            None,
+            Some(&info),
+            dir.path(),
+            &KnownFirmware::builtin(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(a.core.as_str(), "mgba");
+        assert!(matches!(a.files[0].state, FirmwareState::WrongHash { .. }));
+        assert_eq!(a.files[0].need, AdviceNeed::Improves);
+        assert!(advice("nope", GBA, None, dir.path()).is_none());
+        assert!(advice("picodrive", "Sega - 32X", None, dir.path()).is_none());
     }
 }

@@ -254,12 +254,30 @@ impl HttpClient {
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, AssetError> {
+        self.get_with_last_modified(url, max_bytes, progress, cancel)
+            .map(|(body, _)| body)
+    }
+
+    /// Like [`Self::get_with_progress`], also returning the `Last-Modified` header as Unix seconds
+    /// (`None` when absent or not an IMF-fixdate).
+    pub fn get_with_last_modified(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &CancelToken,
+    ) -> Result<(Vec<u8>, Option<u64>), AssetError> {
         if cancel.is_cancelled() {
             return Err(AssetError::Cancelled);
         }
         let deadline = self.deadline();
         let mut response = self.execute(Method::Get, url, &[], None, deadline)?;
         expect_ok(&response)?;
+        let last_modified = response
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_http_date);
         let capacity = response
             .content_length()
             .unwrap_or(0)
@@ -277,7 +295,7 @@ impl HttpClient {
                 Ok(())
             },
         )?;
-        Ok(body)
+        Ok((body, last_modified))
     }
 
     fn deadline(&self) -> Instant {
@@ -514,3 +532,116 @@ pub struct Progress {
 
 #[cfg(test)]
 mod tests;
+
+/// Unix seconds of a UTC civil date-time; `None` for an impossible date or a year outside 1970..=9999.
+pub(crate) fn civil_to_unix(
+    year: u64,
+    month: u64,
+    day: u64,
+    h: u64,
+    m: u64,
+    s: u64,
+) -> Option<u64> {
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let month_days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => 28 + u64::from(leap),
+        _ => return None,
+    };
+    if !(1970..=9999).contains(&year) || day < 1 || day > month_days || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    // Days from civil date (Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = (era * 146_097 + doe).checked_sub(719_468)?;
+    days.checked_mul(86_400)?.checked_add(h * 3600 + m * 60 + s)
+}
+
+/// Exactly `len` ASCII digits (no sign, no blanks).
+fn digits(text: &str, len: usize) -> Option<u64> {
+    if text.len() != len || !text.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) into Unix seconds; anything else gives `None`.
+fn parse_http_date(text: &str) -> Option<u64> {
+    let mut parts = text.trim().split(' ');
+    let weekday = parts.next()?.strip_suffix(',')?;
+    if !["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].contains(&weekday) {
+        return None;
+    }
+    let day = digits(parts.next()?, 2)?;
+    let name = parts.next()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == name)? as u64
+        + 1;
+    let year = digits(parts.next()?, 4)?;
+    let mut hms = parts.next()?.split(':');
+    let h = digits(hms.next()?, 2)?;
+    let m = digits(hms.next()?, 2)?;
+    let sec = digits(hms.next()?, 2)?;
+    if hms.next().is_some() || parts.next()? != "GMT" || parts.next().is_some() {
+        return None;
+    }
+    civil_to_unix(year, month, day, h, m, sec)
+}
+
+#[cfg(test)]
+mod http_date_tests {
+    use super::parse_http_date;
+
+    #[test]
+    fn imf_fixdate() {
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            parse_http_date("Sun, 29 Feb 2024 00:00:00 GMT"),
+            Some(1_709_164_800)
+        );
+    }
+
+    #[test]
+    fn hostile_inputs_give_none() {
+        for bad in [
+            "",
+            "hier",
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 06 Nov 18446744073709551615 08:49:37 GMT",
+            "Sun, 06 Nov 10000 08:49:37 GMT",
+            "Sun, 06 Nov 1969 08:49:37 GMT",
+            "Sun, 06 Nov  1994 08:49:37 GMT",
+            "Sun, +6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 +8:49:37 GMT",
+            "Sun, 31 Feb 2024 00:00:00 GMT",
+            "Sun, 29 Feb 2023 00:00:00 GMT",
+            "Sun, 00 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+            "Sun, 06 Nov 1994 08:49 GMT",
+            "Sun, 06 Nov 1994 08:49:37:01 GMT",
+            "Sun, 06 Nov 1994 08:49:37 GMT extra",
+            "Sun, 06 Nov 1994 08:49:37",
+            "Sun, 06 Xxx 1994 08:49:37 GMT",
+            "Sun 06 Nov 1994 08:49:37 GMT",
+            "Xyz, 06 Nov 1994 08:49:37 GMT",
+            "Sun, 6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 94 08:49:37 GMT",
+            "Sun, 06 Nov 1994 8:49:37 GMT",
+        ] {
+            assert_eq!(parse_http_date(bad), None, "{bad:?}");
+        }
+    }
+}
