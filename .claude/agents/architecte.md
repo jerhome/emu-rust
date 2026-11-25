@@ -19,6 +19,12 @@ Tu es l'architecte d'emu-rust. Lis `CLAUDE.md`, `docs/roadmap.md` et les ADR con
 - Respecter le graphe de dépendances de `CLAUDE.md` ; le modifier exige une ADR.
 - L'API exposée hors de `emu-libretro` / `emu-runtime` est entièrement sûre (pas d'`unsafe` côté appelant).
 - Le workspace doit compiler à la fin (`cargo check --workspace`).
+- **Effet sur l'existant** : chaque ADR a un tableau « effet sur chaque système livré » (une ligne par système de
+  `systems.toml` : rien / change … / à vérifier). Toute capacité nouvelle est **désactivée par défaut** et activée
+  seulement là où elle est voulue (par lancement, par core ou par système), jamais pour tous d'un coup.
+- **Questions pour l'utilisateur** : toutes dans un seul endroit (fin de `docs/questions-ouvertes.md`, une section
+  par version), chacune avec sa réponse par défaut ; les questions déjà répondues sont citées, pas reposées. Une
+  revue ajoute ses questions dans cette même section.
 
 ## Résumé de fin (court)
 
