@@ -14,7 +14,9 @@ perso sont dans `../agents-home/docs/glossaire.md`.
 | Système | Une machine que la bibliothèque connaît (Mega Drive, Amiga, PlayStation…), avec son dossier `roms/<système>/`. |
 | Système officiel / personnalisé | Officiel : livré et essayé avec emu-rust (17 aujourd'hui). Personnalisé (8.0) : une machine que tu ajoutes toi-même depuis l'application, marquée « non testé ». |
 | Bascule | Le passage d'une machine que tu as ajoutée vers le système officiel quand emu-rust la prend en charge ; toujours proposée, jamais automatique. |
-| ROM | Le fichier d'un jeu (cartouche, disque, disquette). Tu les fournis ; emu-rust n'en télécharge que du domaine public ou homebrew. |
+| Soft | Le programme entier, jeu ou logiciel (ex. Night Trap, SimCity, System 6.0.8), quel que soit son nombre de supports. |
+| ROM | Le contenu d'un support du soft, copié dans un fichier (`.md`, `.adf`, `.cue`…). Tu les fournis ; emu-rust n'en télécharge que du domaine public ou homebrew. |
+| Support | Ce qui contenait la ROM à l'origine. Dans l'ordre chronologique : les cassettes, puis les disquettes et les cartouches, puis les CD et DVD. On désigne souvent une ROM par son support (« une ROM cartouche », « les ROMs disquette »). |
 | BIOS | Le programme d'origine d'une machine, requis par certains cores (Mega CD, PlayStation). Tu le fournis, emu-rust vérifie son empreinte et ne le télécharge jamais, sauf BIOS libres (EmuTOS). |
 | BIOS intégré (Builtin) | Un BIOS de remplacement déjà inclus dans le core (ex. HLE de la PlayStation) : utilisé si tu n'as pas le tien, avec un avertissement. |
 | Fichier d'origine | Un fichier facultatif qui améliore un core (ex. `gba_bios.bin`, ROM Roland MT-32) ; sans lui le jeu marche quand même. |
@@ -33,7 +35,7 @@ perso sont dans `../agents-home/docs/glossaire.md`.
 | Jaquette | L'image d'un jeu dans la bibliothèque, prise sur libretro-thumbnails (miroir GitHub d'abord). |
 | Rangement | Le bouton « Ranger les ROMs… » (7.1) : déplace les jeux déposés en vrac vers `roms/<système>/`, après un aperçu et ton accord ; annulable. |
 | Aperçu / rapport | Ce que le rangement compte faire (rien n'est déplacé) ; ce qu'il a fait (déplacés, laissés en place, erreurs), copiable. |
-| Unité | Ce que le rangement déplace d'un bloc : un jeu et tous ses fichiers (ex. un `.cue` et ses `.bin`). |
+| Unité | Ce que le rangement déplace d'un bloc : un soft et tous ses fichiers (ex. un `.cue` et ses `.bin`). |
 | Journal de rangement | Le fichier qui note chaque déplacement, pour annuler ou reprendre un rangement interrompu. |
 | Panneau Journal | Le panneau « Journal » de l'application : les messages, avertissements et erreurs, filtrables et copiables. |
 | Marque CD 32X | L'indication qu'un jeu Mega CD est un CD 32X (7.2) : par son nom, ou mise à la main (clic droit ou touche X) ; impose picodrive. |
@@ -43,8 +45,8 @@ perso sont dans `../agents-home/docs/glossaire.md`.
 
 | Terme | Sens |
 | --- | --- |
-| Média | Un disque, une disquette ou une cassette d'un jeu ; un jeu peut en avoir plusieurs. |
-| Jeu multi-disques | Un jeu en plusieurs médias (ex. Night Trap, deux `.chd`), regroupé en une seule vignette. |
+| Média | Une des ROMs d'un soft à plusieurs supports (un disque, une disquette, une cassette parmi d'autres) ; ils sont regroupés en une seule vignette. |
+| Jeu multi-disques | Un soft en plusieurs médias (ex. Night Trap, deux `.chd`), regroupé en une seule vignette. |
 | `.m3u` | Une liste de lecture des disques d'un jeu, donnée au core. |
 | Changement de disque (disk control) | Le passage au disque suivant pendant le jeu, par le menu en jeu ; pour certains cores, il remplace le `.m3u`. |
 | `.cue` / `.bin` / `.chd` | Formats d'image de CD : une description et ses pistes ; ou un seul fichier compressé (reconnu par son nom). |
