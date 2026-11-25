@@ -66,7 +66,7 @@ conceptions 3.0 à 6.0. `CLAUDE.md` (contraintes non négociables) porte déjà 
    | cap32 | ROM Amstrad CPC (OS, BASIC, AMSDOS) | **permission d'Amstrad** de redistribuer, mention obligatoire reproduite (ADR 0019 §2) |
    | vice_x64, vice_x64sc | KERNAL, BASIC, CHARGEN, DOS 1541 © Commodore | pas de permission connue ; **accepté par l'utilisateur le 2026-11-21** (usage personnel) |
    | mgba | BIOS HLE de la GBA | réimplémentation du projet mGBA — **à vérifier** (ADR 0020 §2) |
-   | picodrive | BIOS 32X | origine et licence **à vérifier** (ADR 0020 §2) |
+   | picodrive | remplaçant du BIOS 32X (code de démarrage 68000/SH2 généré par le core) ; aucune image du BIOS Sega | code original de picodrive, licence MAME non commerciale du core (vérifié par GV1 le 2026-11-25, ADR 0020 §2) |
 
    Un core dont les ROM intégrées n'ont ni licence libre, ni permission, ni acceptation explicite de l'utilisateur
    n'est pas proposé par défaut : la question lui est posée (comme pour le C64).

@@ -383,6 +383,13 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
 13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. Pilote graphique Intel 32.0.101.7088.
 
+### Conception 9.0 du 2026-11-25 (ADR 0026, `docs/design/v9.0-rendu-materiel.md`)
+
+- Réponses de l'utilisateur du 2026-11-25 aux questions de la revue (Q-A à Q-F) et aux 7 questions de la conception :
+  consignées dans la conception (section « Réponses de l'utilisateur du 2026-11-25 » et §11), reportées dans l'ADR.
+- **Questions restantes** (Q-G à Q-J, avec défaut) : conception, §12. À trancher avant le lot GX1 ; elles ne
+  bloquent pas le prototype (`proto-9.0`) ni l'image / CI.
+
 ## Piste capsimg / IPF (essai Hunter du 2026-11-23, remis de côté)
 
 `capsimg.dll` 64 bits (fs3) trouvée par puae dans `system/` mais `LoadLibrary` refuse (« DLOPEN: Failed to open »,

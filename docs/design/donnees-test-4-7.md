@@ -129,7 +129,7 @@ retenir qu'après un essai réel de chacune sur le core (aucune n'a été lancé
 
 ## 3. 32X (6.0, core picodrive)
 
-Sans BIOS (BIOS 32X intégrés au core). **Aucune ROM 32X libre « officielle » n'était connue** (étude) ; une est
+Sans BIOS (picodrive génère son propre code de démarrage 32X, aucune image du BIOS Sega). **Aucune ROM 32X libre « officielle » n'était connue** (étude) ; une est
 maintenant trouvée.
 
 | Fichier | URL | Licence | Octets | SHA-256 | Remarque |

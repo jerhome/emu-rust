@@ -26,7 +26,7 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
 | Rendu | logiciel (RGB565) | logiciel | logiciel |
 | `need_fullpath` | non | **oui** (`block_extract = 0`) | oui |
 | AV | 240×160, 59,7275 i/s, **65 536 Hz** | 320×224/240, 60 i/s, 44,1 kHz | idem MD |
-| BIOS | `gba_bios.bin` **facultatif** (BIOS HLE intégré) | **aucun** pour la 32X (BIOS 32X intégrés) | `bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin` **requis en pratique** (`.info` : `opt = true`, inexact) |
+| BIOS | `gba_bios.bin` **facultatif** (BIOS HLE intégré) | **aucun** pour la 32X (le core génère son propre code de démarrage, aucun BIOS Sega) | `bios_CD_E.bin`, `bios_CD_U.bin`, `bios_CD_J.bin` **requis en pratique** (`.info` : `opt = true`, inexact) |
 | Savestate | ≈ 0,5 Mo | ≈ 0,7 Mo | quelques centaines de Ko à ~1 Mo (non mesuré, sans BIOS) |
 | Interface disque | non | oui | oui (`.m3u`) |
 
@@ -92,11 +92,12 @@ https://github.com/libretro/libretro-core-info, `.index-extended` du buildbot po
   - **mgba** : BIOS HLE = réimplémentation fournie par le projet mGBA dans son source (MPL-2.0), pas une copie du
     BIOS Nintendo — **à vérifier** (fichier source et licence à citer par GV1 ; l'étude d'essais constate seulement
     « BIOS HLE intégré », `docs/essais-gba-32x-megacd.md`) ;
-  - **picodrive** : BIOS 32X (M / S / G) intégrés au binaire (symboles `p32x_bios_*`, étude d'essais) ; **origine et
-    licence non sourcées : à vérifier** par GV1 (réimplémentations libres du projet PicoDrive, ou code Sega ?). Dans
-    les deux hypothèses la règle « Builtin » couvre l'usage (comme les ROM de VICE, acceptées par l'utilisateur le
-    2026-11-21) ; si ce sont des réimplémentations libres, la notice le dira. État affiché : `Builtin` avec une
-    notice prudente tant que la vérification n'est pas faite (« BIOS 32X intégrés au core picodrive »).
+  - **picodrive** : **aucune image du BIOS 32X de Sega** (vérifié par GV1 le 2026-11-25, libretro/picodrive
+    1890c29). Les symboles `p32x_bios_*` sont des pointeurs nuls ; au démarrage, le core génère un court code de
+    remplacement 68000 + SH2 écrit par ses auteurs et fait lui-même le travail du BIOS ; le chargement d'un BIOS
+    depuis le disque est désactivé dans la version libretro (un BIOS 32X déposé dans `system/` est ignoré).
+    Licence : celle du core (licence MAME non commerciale). La règle « Builtin » s'applique telle quelle ; état
+    affiché : `Builtin`, « Démarrage 32X assuré par le core picodrive (aucun BIOS Sega) ».
 
 ### 3. Formats et médias
 

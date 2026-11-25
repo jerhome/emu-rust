@@ -88,7 +88,7 @@ japan = "bios_CD_J.bin"
 [cores.picodrive]
 media_direct = ["cue", "chd", "iso"]
 multi_disc = "disk_control"                       # same m3u limitation as genesis_plus_gx
-builtin_firmware = { label = "BIOS 32X intégrés au core picodrive", notice = "BIOS 32X fournis par le core picodrive ; origine et licence à vérifier (ADR 0020 §2)." }
+builtin_firmware = { label = "Démarrage 32X assuré par le core picodrive (aucun BIOS Sega)", notice = "picodrive n'intègre aucune image du BIOS 32X de Sega : il génère au démarrage un court code de remplacement écrit par ses auteurs et fait lui-même le travail du BIOS (licence MAME non commerciale du core). Aucun fichier à fournir ; un BIOS 32X déposé dans system/ serait ignoré." }
 
 [cores.picodrive.featured_options]
 "Sega - 32X" = ["picodrive_input1", "picodrive_drc", "picodrive_region", "picodrive_aspect"]

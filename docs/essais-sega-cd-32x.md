@@ -11,7 +11,7 @@ Ce qui est marqué **constaté** a été mesuré ici ; **lu** = relevé dans une
 
 - **Faisable, petit chantier.** Un seul core libretro fait tourner les CD 32X : **picodrive**, déjà installé pour
   la 32X (6.0) et déjà déclaré en alternative pour le Mega CD. Aucun core nouveau, aucun BIOS nouveau (les BIOS
-  Mega CD de la 6.0 suffisent ; les BIOS 32X sont intégrés au core), aucun `unsafe`, aucun code réseau.
+  Mega CD de la 6.0 suffisent ; la 32X n'a besoin d'aucun BIOS : picodrive génère son propre code de démarrage, aucune ROM Sega), aucun `unsafe`, aucun code réseau.
 - **Le core ne « détecte » rien** : un CD 32X démarre comme un CD Mega CD ordinaire ; c'est le programme du disque
   qui allume la 32X en cours de route. Tout le travail est donc **côté emu-rust** : reconnaître ces six jeux et les
   envoyer à picodrive au lieu de genesis_plus_gx (qui n'émule pas la 32X).
@@ -71,7 +71,7 @@ test) :
   `bios_CD_U.bin` / `bios_CD_E.bin` / `bios_CD_J.bin` (ou les noms `us_scd2_9306`, `eu_mcd2_9306`,
   `jp_mcd2_921222`…). **Rien, au chargement, ne distingue un CD 32X.**
 - BIOS : **Mega CD requis** (les trois fichiers de la 6.0, ADR 0020 §2 ; la table `required_firmware` de picodrive
-  pour le Mega CD existe déjà dans `cores.toml`). BIOS 32X : intégrés au core, rien à fournir (6.0).
+  pour le Mega CD existe déjà dans `cores.toml`). 32X : aucun BIOS, rien à fournir (picodrive génère son propre code de démarrage, aucune ROM Sega ; 6.0, vérifié par GV1 le 2026-11-25).
 - Sauvegardes : la RAM interne du Mega CD (8 Ko) est exposée par `RETRO_MEMORY_SAVE_RAM` ⇒ **`.srm` écrit par le
   runtime**, comme pour une cartouche (différent de genesis_plus_gx, qui écrit lui-même ses `.brm`). Avec
   `picodrive_ramcart` activé c'est la cartouche RAM qui est exposée à la place. État sauvegardé : taille maximale

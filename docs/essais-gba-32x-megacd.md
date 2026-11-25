@@ -32,7 +32,7 @@ mgba `c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc` ; picodr
   Sans BIOS, mgba utilise un BIOS HLE intégré : démarrage correct constaté (voir §2). Options `mgba_use_bios`, `mgba_skip_bios`.
   Le BIOS GBA est commercial : à ne jamais télécharger (ADR 0005) ; déjà listé côté Game Boy dans `docs/bios-utilisateur.md`,
   à compléter avec la ligne `gba_bios.bin` (facultatif : animation de démarrage et quelques jeux sensibles au BIOS).
-- **picodrive** : **aucun BIOS pour la 32X** (BIOS 32X M/S/G intégrés au core : symboles `p32x_bios_*`). Les `bios_CD_E/U/J.bin`
+- **picodrive** : **aucun BIOS pour la 32X** (aucune image du BIOS Sega : le core génère son propre code de démarrage ; les symboles `p32x_bios_*` sont des pointeurs nuls, vérifié par GV1 le 2026-11-25). Les `bios_CD_E/U/J.bin`
   (md5 `e66fa1dc…`, `2efd74e3…`, `278a9397…`) ne servent qu'au Mega-CD, facultatifs ici et hors périmètre.
 
 ### Callbacks d'environnement demandés (numéros libretro) et état du frontend

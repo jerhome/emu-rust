@@ -9,7 +9,7 @@ Mega CD Europe, puis vérifier la pastille « 32X », le marquage à la main et 
 chaque étape « OK » ou ce qui s'est passé (capture d'écran bienvenue).
 
 Rappel : emu-rust ne télécharge **aucun** jeu ni **aucun** BIOS commercial. Le BIOS Mega CD vient de **vos**
-fichiers ; les BIOS 32X sont intégrés à picodrive. Aucun fichier de votre dossier n'est modifié ni copié.
+fichiers ; la 32X n'a besoin d'aucun BIOS (picodrive démarre avec son propre code, aucune ROM Sega). Aucun fichier de votre dossier n'est modifié ni copié.
 
 ## À savoir avant de commencer
 
