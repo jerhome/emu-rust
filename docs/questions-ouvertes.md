@@ -462,3 +462,40 @@ décompresser (Claude indiquera l'outil) ; Mini vMac lit les images brutes et, a
   réel se fera avec la rc (image unique System 6.0.8 + SimCity 1.2, procédure ci-dessus).
 - Changement de disquette : **navigateur interne de minivmac accepté** (touche Y) ; rien à développer pour cela.
 - Toutes les questions Mac 68k ont une réponse.
+
+## 8.0 — systèmes personnalisés : questions restantes (ADR 0025, 2026-11-25)
+
+Conception : ADR 0025 (proposé), `docs/design/v8.0-systemes-personnalises.md`. Les réponses du questionnaire du
+2026-11-21 sont appliquées. Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne dit rien.
+
+1. **Supprimer un système ajouté.** Ses fichiers, sauvegardes, options et le core ne sont jamais touchés.
+   - a) **Défaut : la définition est archivée ; les favoris et l'historique de ses jeux disparaissent au scan
+     suivant (le recréer retrouve les sauvegardes, pas les favoris).**
+   - b) Garder les jeux masqués dans la bibliothèque, favoris compris, jusqu'à une suppression explicite.
+2. **Cores d'ordinateurs (clavier et souris) en 8.0**, alors que le clavier complet arrive en 8.2.
+   - a) **Défaut : ajout permis avec l'avertissement « clavier complet et souris : prévus en 8.2 »** (nécessaire
+     pour le MSX en cartouche du plan d'essais).
+   - b) Grisés jusqu'en 8.2.
+3. **Essai à blanc qui plante** avec un jeu.
+   - a) **Défaut : proposer « Changer de core » (recommandé) ou « Lancer quand même » (emu-rust risque de se
+     fermer).**
+   - b) Bloquer le lancement avec ce core.
+4. **Bascule vers un système officiel (Q16) quand votre core n'est pas le core recommandé.**
+   - a) **Défaut : garder votre core en premier (vos sauvegardes, rangées par core, restent visibles) ; le core
+     recommandé est proposé comme alternative.**
+   - b) Passer au core recommandé (les sauvegardes de l'ancien core ne sont pas reprises par le nouveau).
+5. **Nintendo DS (Zelda, au stylet)** : deux écrans et écran tactile sont une nouveauté d'interface.
+   - a) **Défaut : hors 8.0, palier à part en fin de 8.x (vous l'aviez dite pas urgente).**
+   - b) Dans la 8.0.
+6. **MSX (Metal Gear)** : bluemsx attend une arborescence `Machines/` et `Databases/` dans `system/`, qu'emu-rust
+   ne sait pas importer.
+   - a) **Défaut : copie à la main, expliquée dans le guide d'essai (« Ouvrir le dossier système ») ; repli sur le
+     core `fmsx` si plus simple.**
+   - b) Un import d'arborescence dans l'application (travail en plus pour la 8.0).
+7. **Message « emu-rust s'est fermé brutalement » au redémarrage.**
+   - a) **Défaut : pour tous les cores, officiels compris (la proposition de changer de core reste réservée aux
+     cores non testés).**
+   - b) Seulement pour les cores non testés.
+
+Rappel demandé par l'utilisateur : **Q15, export / import d'une définition**, est reporté ; le lui rappeler à la
+conception de la 8.1 (le format 1 le permet déjà : ni binaire, ni URL, ni chemin absolu).
