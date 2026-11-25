@@ -590,7 +590,7 @@ pub const DOS_PROGRAMS_HINT: &str = "Flèches / Tab : choisir · Entrée : valid
                                      des sous-dossiers et des images se lancent depuis le menu DOS.";
 pub const DOS_ONCE: &str = "Pour cette fois";
 pub const DOS_BY_DEFAULT: &str = "Par défaut (à chaque lancement)";
-pub const DOS_AUTOBOOT_WINS: &str = "Un programme a été choisi dans le menu DOS (→) : il reste lancé par défaut. \
+pub const DOS_AUTOBOOT_WINS: &str = "Un programme a été choisi dans le menu DOS (touche Flèche droite) : il reste lancé par défaut. \
                                      Utilisez « Changer de programme de démarrage » dans le menu du jeu.";
 pub const DOS_CLEAR_DEFAULT: &str = "Revenir au menu DOS";
 pub const DOS_DEFAULT_CLEARED: &str = "Programme par défaut retiré : le menu DOS choisira.";

@@ -13,6 +13,7 @@ use winit::window::WindowId;
 
 use super::{CoresEvent, CoresUi};
 use crate::egui_layer::EguiLayer;
+use crate::ui::log_panel::{LogEvent, LogPanel};
 use crate::{LibraryOptions, UiError};
 
 const CAPTURE_PASSES: u32 = 4;
@@ -24,6 +25,7 @@ struct CaptureApp {
     egui: Option<EguiLayer>,
     window: Option<GlWindow>,
     cores: CoresUi,
+    log: LogHost,
     options: LibraryOptions,
     passes_left: u32,
     error: Option<UiError>,
@@ -36,6 +38,7 @@ pub(crate) fn run_capture(options: LibraryOptions) -> Result<(), UiError> {
         egui: None,
         window: None,
         cores,
+        log: LogHost::default(),
         options,
         passes_left: CAPTURE_PASSES,
         error: None,
@@ -44,6 +47,35 @@ pub(crate) fn run_capture(options: LibraryOptions) -> Result<(), UiError> {
     app.teardown();
     result.map_err(|e| UiError::EventLoop(e.to_string()))?;
     app.error.map_or(Ok(()), Err)
+}
+
+/// Footer (ADR 0023 §1) and « Journal » page around the cores screen of the stand-alone window.
+#[derive(Default)]
+pub(crate) struct LogHost {
+    panel: LogPanel,
+    open: bool,
+}
+
+impl LogHost {
+    /// Draws the footer, then the cores screen or the log page. Returns `true` when the screen asks to leave.
+    pub(crate) fn draw(&mut self, cores: &mut CoresUi, ui: &mut egui::Ui) -> bool {
+        // Added first so the footer stays the lowest panel.
+        if crate::ui::footer::panel(ui) && !self.open {
+            self.panel.open();
+            self.open = true;
+        }
+        let mut back = false;
+        egui::CentralPanel::default().show(ui, |ui| {
+            if self.open {
+                if self.panel.show(ui, true) == Some(LogEvent::Close) {
+                    self.open = false;
+                }
+            } else {
+                back = cores.show(ui) == Some(CoresEvent::Back);
+            }
+        });
+        back
+    }
 }
 
 impl CaptureApp {
@@ -58,12 +90,10 @@ impl CaptureApp {
         let (Some(egui), Some(window)) = (&mut self.egui, &mut self.window) else {
             return;
         };
-        let cores = &mut self.cores;
+        let (cores, log) = (&mut self.cores, &mut self.log);
         let mut back = false;
         let delay = egui.run_ui(window.window(), |ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                back = cores.show(ui) == Some(CoresEvent::Back);
-            });
+            back = log.draw(cores, ui);
         });
         let size = window.physical_size();
         if size.width == 0 || size.height == 0 {

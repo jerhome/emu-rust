@@ -111,7 +111,7 @@ pub fn keys_capture(style: PadStyle, port: usize, button: JoypadButton) -> Strin
 
 pub fn keys_bound(style: PadStyle, key: KeyCode, port: usize, button: JoypadButton) -> String {
     format!(
-        "{} → {} {}.",
+        "{} : {} {}.",
         key_label(key),
         port_label(port),
         style.button_name(button)
@@ -294,10 +294,9 @@ pub fn sanitize_core_line(s: &str) -> String {
 
 // ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
 
-pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : ↑ ↓ puis Entrée pour lancer un programme · → : le lancer automatiquement la prochaine fois";
+pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : Flèches haut et bas puis Entrée pour lancer un programme · Flèche droite : le lancer automatiquement la prochaine fois";
 pub const DOS_CHANGE_PROGRAM: &str = "Changer de programme de démarrage";
-pub const DOS_CHANGE_PROGRAM_DONE: &str =
-    "Menu DOS : choisissez le programme (→ : le lancer automatiquement la prochaine fois)";
+pub const DOS_CHANGE_PROGRAM_DONE: &str = "Menu DOS : choisissez le programme (Flèche droite : le lancer automatiquement la prochaine fois)";
 pub const DOS_RESET: &str = "Réinitialiser les modifications du jeu…";
 pub const DOS_RESET_TITLE: &str = "Réinitialiser les modifications du jeu";
 pub const DOS_RESET_CONFIRM: &str = "Les sauvegardes de ce jeu, ses réglages (SETUP), le programme de démarrage \
@@ -974,6 +973,32 @@ pub fn log_folder_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default egui fonts have no arrows or geometric symbols: they would show as empty squares.
+    #[test]
+    fn texts_avoid_glyphs_missing_from_the_font() {
+        let sources = [
+            ("ui/text.rs", include_str!("text.rs")),
+            ("library/text.rs", include_str!("../library/text.rs")),
+            ("cores_ui/text.rs", include_str!("../cores_ui/text.rs")),
+        ];
+        for (name, src) in sources {
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if let Some(c) = line
+                    .chars()
+                    .find(|c| matches!(*c, '\u{2190}'..='\u{21FF}' | '\u{25A0}'..='\u{25FF}'))
+                {
+                    panic!(
+                        "{name}:{}: glyph {c:?} is missing from the default font",
+                        n + 1
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn core_text_drops_format_characters() {

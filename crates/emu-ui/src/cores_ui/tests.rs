@@ -374,3 +374,32 @@ fn core_choice_lists_single_core_systems_too() {
     assert_eq!(three_do.1, [id("opera")]);
     assert!(systems.iter().any(|(_, c)| c.len() > 1), "choices kept");
 }
+
+#[test]
+fn stand_alone_window_has_the_footer() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let mut cores = ui_for(&dirs);
+    let mut host = super::capture::LogHost::default();
+    let ctx = egui::Context::default();
+    let mut texts = String::new();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |root| {
+        assert!(!host.draw(&mut cores, root));
+    });
+    out.textures_delta.clear();
+    for clipped in &out.shapes {
+        if let egui::epaint::Shape::Text(t) = &clipped.shape {
+            texts.push_str(t.galley.text());
+            texts.push('\n');
+        }
+    }
+    assert!(
+        texts.contains(&crate::ui::text::footer_credit(
+            crate::VERSION,
+            crate::CREDIT
+        )),
+        "{texts}"
+    );
+    assert!(texts.contains("Journal"), "{texts}");
+}

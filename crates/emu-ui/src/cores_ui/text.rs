@@ -377,7 +377,7 @@ pub const SOUNDFONT_REPLACE_CONFIRM: &str = "Remplacer le SoundFont existant (fi
                                              modifié depuis) ? Votre fichier sera renommé en « .user-<date> », \
                                              jamais effacé. Confirmer ?";
 pub const SOUNDFONT_INSTALLING: &str = "Téléchargement du SoundFont (32 Mo)…";
-pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS ▸ MIDI » d'un jeu, \
+pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS › MIDI » d'un jeu, \
                                           ou pour tous les jeux DOS ci-dessous.";
 pub const JIFFYDOS_USE_FOR_ALL: &str = "Activer JiffyDOS pour tous les jeux C64";
 pub const JIFFYDOS_USED_FOR_ALL: &str =
