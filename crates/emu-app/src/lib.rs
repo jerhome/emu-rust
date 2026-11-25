@@ -137,6 +137,10 @@ fn prepare(
 
 fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     let (dirs, config) = prepare(cli.data_dir, cli.system_dir, cli.save_dir)?;
+    // The game's path may be one an interrupted ROM tidying moved (ADR 0023 §4.5); a capture never moves files.
+    if cli.dump_window.is_none() {
+        emu_ui::finish_pending_identities(&dirs);
+    }
     let core = match cli.core {
         cli::CoreSpec::Path(path) => path,
         cli::CoreSpec::Managed(id) => cores_cli::managed_core_path(&id, &dirs, &config)?,
@@ -318,6 +322,11 @@ pub fn run(flavor: Flavor) -> ExitCode {
         }
         Ok(cli::Command::Library(l)) => match prepare(l.data_dir, l.system_dir, l.save_dir) {
             Ok((dirs, config)) => {
+                // An interrupted ROM tidying is finished before the library opens (ADR 0023 §4.5); a capture
+                // (`--dump-window`) never moves the user's files.
+                if l.dump_window.is_none() {
+                    emu_ui::finish_pending_identities(&dirs);
+                }
                 install_signal_handler();
                 report(
                     flavor,

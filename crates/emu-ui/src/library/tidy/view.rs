@@ -35,7 +35,11 @@ impl LibraryUi {
         }
         match emu_library::create_system_folders(&self.dirs.root.join("roms")) {
             Ok(created) => self.set_status(text::folders_created(created.len()), Level::Info),
-            Err(e) => self.set_status(text::folders_failed(&e.to_string()), Level::Warn),
+            Err(e) => {
+                let msg = text::folders_failed(&e.to_string());
+                tracing::warn!("{msg}");
+                self.set_status(msg, Level::Warn);
+            }
         }
     }
 
@@ -119,8 +123,16 @@ impl LibraryUi {
 
     pub(in crate::library) fn tidy_page(&mut self, ui: &mut Ui) {
         let was_running = matches!(self.tidy.stage, Stage::Running { .. });
+        let was_analysing = matches!(self.tidy.stage, Stage::Analysing { .. });
         self.tidy.poll();
-        if was_running && matches!(self.tidy.stage, Stage::Report(_)) {
+        if was_analysing
+            && let Stage::Failed(e) = &self.tidy.stage
+            && e != text::ANALYSIS_STOPPED
+        {
+            tracing::warn!("{}", text::journal_analysis(e));
+        }
+        if was_running && let Stage::Report(outcome) = &self.tidy.stage {
+            exec::log_outcome(outcome);
             // Rows were relocated by the run: reload them, then rescan so that the library matches the disk.
             self.reload_games();
             self.start_scan(ui.ctx());
@@ -167,7 +179,7 @@ impl LibraryUi {
                     }
                 }
                 Stage::Failed(e) => {
-                    super::copyable::message(ui, WARNING, e);
+                    crate::copyable::message(ui, WARNING, e);
                     if ui.button(text::RETRY).clicked() {
                         actions.push(Action::Retry);
                     }
@@ -366,7 +378,7 @@ fn bios_section(ui: &mut Ui, p: &Preview, actions: &mut Vec<Action>) {
             }
         });
     }
-    weak(ui, text::NEVER_DOWNLOADED);
+    weak(ui, crate::cores_ui::text::NEVER_DOWNLOADED);
     ui.separator();
 }
 
@@ -513,7 +525,7 @@ fn undo_section(
 
 fn last_tidy_lines(ui: &mut Ui, last: &exec::LastTidy) {
     if let Some(e) = &last.error {
-        super::copyable::message(ui, WARNING, e);
+        crate::copyable::message(ui, WARNING, e);
     }
     if let Some(info) = last.info.as_ref().filter(|i| i.can_undo()) {
         weak(ui, text::last_tidy(info.moved, info.created_unix));
@@ -545,7 +557,7 @@ fn report(
     undo_section(ui, &out.last, confirm, actions);
     last_tidy_lines(ui, &out.last);
     for m in &out.messages {
-        super::copyable::message(ui, WARNING, m);
+        crate::copyable::message(ui, WARNING, m);
     }
     let shown = |p: &std::path::Path| exec::shown_path(out, p);
     let sel = |ui: &mut Ui, color: egui::Color32, s: String| {
@@ -590,9 +602,9 @@ fn report(
                 }
             }
             ui.add_space(6.0);
-            super::copyable::copy_button_labelled(
+            crate::copyable::copy_button_labelled(
                 ui,
-                text::COPY_REPORT,
+                crate::ui::text::COPY_REPORT,
                 &exec::report_text(out),
             );
         });

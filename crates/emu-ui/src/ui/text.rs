@@ -947,6 +947,8 @@ pub const LOG_FILE_IN_USE: &str =
 pub const LOG_HINT: &str = "PgUp / PgDn : défiler · Échap : retour";
 pub const RECENT_MESSAGES: &str = "Derniers messages";
 pub const COPY: &str = "Copier";
+/// « Ranger les ROMs… » report: the whole report as plain text.
+pub const COPY_REPORT: &str = "Copier le rapport";
 pub const COPIED: &str = "Copié";
 pub const LOG_COPY_ALL: &str = "Copier le journal";
 
@@ -994,6 +996,10 @@ mod tests {
                 include_str!("../library/wizard/text.rs"),
             ),
             ("cores_ui/text.rs", include_str!("../cores_ui/text.rs")),
+            (
+                "library/tidy/text.rs",
+                include_str!("../library/tidy/text.rs"),
+            ),
             ("bios_import.rs", include_str!("../bios_import.rs")),
             ("ps1_bios.rs", include_str!("../ps1_bios.rs")),
             ("docs/manuel.md", include_str!("../../../../docs/manuel.md")),

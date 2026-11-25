@@ -67,6 +67,19 @@ impl<P: Send + 'static, R: Send + 'static> Task<P, R> {
         self.cancel.load(Ordering::Relaxed)
     }
 
+    /// Blocks until the worker ends or `timeout` passes; `true` when it ended. Only at exit (window closed).
+    pub(crate) fn wait_end(&mut self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.rx.recv_timeout(left) {
+                Ok(Event::Progress(_)) => {}
+                Ok(Event::Done(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => return true,
+                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+            }
+        }
+    }
+
     /// Events since the last call. `Some(None)` as the second value: the worker ended without a result (panic).
     pub(crate) fn poll(&mut self) -> (Vec<P>, Option<Option<R>>) {
         let mut progress = Vec::new();

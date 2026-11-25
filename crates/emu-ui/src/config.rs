@@ -47,6 +47,8 @@ pub struct DataDirs {
     pub cores: PathBuf,
     /// Per-game options `game-options/<core_id>/<game>.toml` (ADR 0015 §8).
     pub game_options: PathBuf,
+    /// `<data>/rangement`: tidy journals and the OS lock file (ADR 0023 §4.5). Created by the first tidy run.
+    pub tidy_journals: PathBuf,
 }
 
 impl DataDirs {
@@ -67,6 +69,7 @@ impl DataDirs {
                 std::env::consts::ARCH
             )),
             game_options: root.join("game-options"),
+            tidy_journals: root.join("rangement"),
         }
     }
 

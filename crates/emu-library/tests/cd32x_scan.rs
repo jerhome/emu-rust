@@ -275,3 +275,52 @@ fn chd_group_with_the_tag_after_the_disc_marker() {
     assert_eq!(games[0].media.len(), 2);
     assert!(games[0].needs_32x);
 }
+
+/// A tagged disc moved by hand (cue folder and `.chd`) then rescanned: the moved-file check keeps the row id and
+/// the mark.
+#[test]
+fn moved_by_hand_keeps_id_and_needs_32x() {
+    let tmp = tmp_root();
+    let root = tmp.path().join("roms");
+    let r = |s: &str| root.join(s).to_string_lossy().into_owned();
+    mkcd(&[
+        "megacd",
+        &r("megacd/tagged"),
+        "--name",
+        "Fake Trap (USA) (Sega CD 32X)",
+    ]);
+    chd(&root, "megacd/Fake Chd (Europe) (32X CD).chd");
+    let mut lib = Library::open_in_memory().unwrap();
+    scan(&mut lib, &root);
+    let cue = game(&lib, "Fake Trap (USA) (Sega CD 32X).cue");
+    let chd_game = game(&lib, "Fake Chd (Europe) (32X CD).chd");
+    assert!(cue.needs_32x && chd_game.needs_32x);
+
+    fs::create_dir_all(root.join("megacd/sorted")).unwrap();
+    fs::rename(
+        root.join("megacd/tagged"),
+        root.join("megacd/sorted/tagged"),
+    )
+    .unwrap();
+    fs::rename(
+        root.join("megacd/Fake Chd (Europe) (32X CD).chd"),
+        root.join("megacd/sorted/Fake Chd (Europe) (32X CD).chd"),
+    )
+    .unwrap();
+    let report = scan(&mut lib, &root);
+    assert_eq!(report.moved, 2, "{report:?}");
+    assert_eq!(lib.games().unwrap().len(), 2);
+    for (file, id) in [
+        ("Fake Trap (USA) (Sega CD 32X).cue", cue.id),
+        ("Fake Chd (Europe) (32X CD).chd", chd_game.id),
+    ] {
+        let g = game(&lib, file);
+        assert_eq!(g.id, id, "{file}");
+        assert!(g.needs_32x, "{file}");
+        assert!(g.path.to_string_lossy().contains("sorted"), "{file}");
+    }
+}
+
+fn tmp_root() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}

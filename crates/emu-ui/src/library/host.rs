@@ -28,6 +28,9 @@ const LAUNCH_CAPTURE_FRAMES: u64 = 90;
 /// A `--screen` capture waits this long at most for cached covers to be decoded.
 const CAPTURE_COVER_WAIT: Duration = Duration::from_secs(5);
 
+/// Longest wait for the tidy analysis of `--screen library-tidy`.
+const CAPTURE_TIDY_WAIT: Duration = Duration::from_secs(8);
+
 /// Wakes the event loop from another thread.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Wake;
@@ -70,6 +73,9 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
         Some(LibraryScreen::Help) => library.open_help(None),
         Some(LibraryScreen::Journal) => library.open_journal(),
+        Some(LibraryScreen::Tidy) => library.open_tidy_on_first_frame(),
+        Some(LibraryScreen::TidyReport) => library.open_tidy_report_demo(false),
+        Some(LibraryScreen::TidyUndo) => library.open_tidy_report_demo(true),
         Some(LibraryScreen::Wizard) => library.open_wizard(),
         None if options.wizard || first_run => library.open_wizard(),
         _ => {}
@@ -118,6 +124,7 @@ impl Host {
             egui.destroy(w);
         }
         self.egui = None;
+        self.library.finish_tidy_before_exit();
         self.window = None;
     }
 
@@ -325,7 +332,9 @@ impl Host {
             if self.dump_window.is_some() && self.screen.is_some() && self.game.is_none() {
                 let waiting_covers =
                     self.library.covers_busy() && self.started.elapsed() < CAPTURE_COVER_WAIT;
-                if !waiting_covers {
+                let waiting_tidy =
+                    self.library.tidy_busy() && self.started.elapsed() < CAPTURE_TIDY_WAIT;
+                if !waiting_covers && !waiting_tidy {
                     self.passes_left = self.passes_left.saturating_sub(1);
                 }
                 if self.passes_left == 0

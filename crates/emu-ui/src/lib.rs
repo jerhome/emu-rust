@@ -83,6 +83,20 @@ pub use emu_library as library_db;
 /// Native error box before any window exists (Windows without a console; elsewhere stderr only). ADR 0023 §3.
 pub use emu_runtime::fatal_dialog;
 
+/// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
+/// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
+/// `Library::pending_tidy_identities`. Called before the library opens and before a direct launch; problems go
+/// to the journal, never fatal. Runs on the calling thread, before the window exists, on purpose.
+pub fn finish_pending_identities(dirs: &DataDirs) {
+    use crate::library::tidy::exec;
+    if !exec::recovery_needed(dirs) {
+        return;
+    }
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let out = exec::run_job(dirs, exec::Job::Recovery, &cancel, &mut |_| {});
+    exec::log_outcome(&out);
+}
+
 /// Version shown by the footer and `--version` (workspace version).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Credit line of the footer (ADR 0023 §1): `emu-rust <VERSION> — <CREDIT>`.
@@ -189,6 +203,13 @@ pub enum LibraryScreen {
     Help,
     /// « Journal » page (`--screen library-log`).
     Journal,
+    /// « Ranger les ROMs… » preview (`--screen library-tidy`): read-only analysis of `roms/`, nothing moved.
+    Tidy,
+    /// Report of a tidying with sample content (`--screen library-tidy-report`): nothing is read or moved.
+    TidyReport,
+    /// The same sample report with the « Annuler le dernier rangement » confirmation open
+    /// (`--screen library-tidy-undo`).
+    TidyUndo,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

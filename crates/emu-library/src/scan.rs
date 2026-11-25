@@ -2485,10 +2485,12 @@ pub(crate) fn run(
         }
         tx.commit().map_err(db_error)?;
     }
-    if cancelled || is_cancelled(cancel) {
-        return Err(LibraryError::Cancelled);
-    }
+    let cancelled = cancelled || is_cancelled(cancel);
 
+    // `seen` is complete before the analysis (files that fail are only removed from it as they are reached), so
+    // `gone` is exact even when the scan is cancelled. The moved-file check runs before the early return: the new
+    // rows inserted by the batches already stored must not outlive their old row (the next scan would purge it
+    // with its favourite, history and covers).
     let kept_rows = |path: &String| keep.iter().any(|k| Path::new(path).starts_with(k));
     let gone: Vec<Twin> = existing
         .iter()
@@ -2503,6 +2505,9 @@ pub(crate) fn run(
     };
     report.moved = moved.len() as u64;
     report.added = report.added.saturating_sub(report.moved);
+    if cancelled {
+        return Err(LibraryError::Cancelled);
+    }
 
     let tx = conn.transaction().map_err(db_error)?;
     for (path, old) in &existing {

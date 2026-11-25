@@ -15,6 +15,25 @@ Ouvrez emu-rust : la bibliothèque s'affiche. Au début, elle est vide.
 2. Vous pouvez aussi ajouter un autre dossier : **Réglages**, puis **Dossiers de ROMs**, puis **Ajouter**.
 3. Cliquez sur **Scanner**. Les jeux apparaissent.
 
+### Ranger les ROMs
+
+Si vos jeux sont en vrac dans `roms/`, emu-rust peut les ranger pour vous, un sous-dossier par système.
+
+- **Réglages**, section des dossiers de ROMs : **Créer les dossiers des systèmes** crée les sous-dossiers vides
+  (rien n'est déplacé) ; **Ranger les ROMs…** analyse le dossier `roms/` d'emu-rust (pas les dossiers ajoutés).
+- **Aperçu** : rien n'est encore déplacé. Les jeux sûrs sont cochés ; les suggestions ne le sont pas, avec leur
+  raison. Décochez ce que vous voulez garder en place, puis cliquez sur **Ranger**. Les fichiers sont déplacés,
+  jamais renommés, écrasés ni supprimés ; favoris, sauvegardes, historique et jaquettes suivent les jeux.
+- **Choix du système** : quand une extension sert à plusieurs systèmes (`.bin`, `.iso`…), choisissez le système
+  sur la ligne du jeu, ou pour toute l'extension d'un coup. **Autre système…** corrige un jeu mal reconnu. Un BIOS
+  trouvé dans `roms/` est signalé : utilisez **Importer ce BIOS…** plutôt que le rangement.
+- **Annulation** : **Annuler le dernier rangement…** remet les jeux à leur place d'origine, après confirmation.
+  Une annulation n'est jamais arrêtée en route.
+- **Reprise** : si l'ordinateur s'éteint pendant un rangement, emu-rust le termine au démarrage suivant, grâce au
+  journal du rangement (dossier `rangement/` des données). Les problèmes sont notés dans le **Journal**.
+- **Conseil** : faites une copie de votre dossier `roms/` avant le premier rangement, et fermez toute autre fenêtre
+  d'emu-rust. Le rangement est refusé pendant un scan, un téléchargement ou une partie.
+
 ### Les cores
 
 Un core est nécessaire pour chaque système. Ouvrez l'écran **Cores** : il propose d'installer les cores
@@ -210,7 +229,8 @@ peut le voir une fraction de seconde avant que le second bouton soit pressé.
 
 Ouvrez **Réglages** depuis la bibliothèque. On y trouve :
 
-- **Dossiers de ROMs** et scan à l'ouverture ;
+- **Dossiers de ROMs** et scan à l'ouverture ; **Créer les dossiers des systèmes** et **Ranger les ROMs…**
+  (voir « Ranger les ROMs ») ;
 - **Bases d'identification** (DAT) : elles aident à reconnaître et nommer les jeux ; bouton de mise à jour ;
 - **Jaquettes** : activation et réessai des jaquettes absentes ;
 - **Identifiants** pour les services de jaquettes facultatifs (les mots de passe ne s'affichent jamais) ;

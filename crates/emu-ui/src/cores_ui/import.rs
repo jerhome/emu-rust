@@ -117,6 +117,17 @@ impl ImportUi {
         };
     }
 
+    /// Opens the dialog on a file already found (« Importer ce BIOS… » of the tidy preview): no picker.
+    pub(crate) fn start_with_file(&mut self, src: PathBuf, ctx: &egui::Context) {
+        if self.is_active() {
+            return;
+        }
+        self.wanted = None;
+        self.installed = false;
+        self.focus = true;
+        self.identify(src, ctx);
+    }
+
     fn identify(&mut self, src: PathBuf, ctx: &egui::Context) {
         let (tx, rx) = mpsc::channel();
         let system_dir = self.system_dir.clone();

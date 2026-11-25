@@ -16,7 +16,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20                [--screen menu|keys|options|disks|computer|vkbd|journal] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad] [--wizard]\n\
                          \x20                [--screen library|library-settings|library-help|library-log|cores|\n\
-                         \x20                          library-launch|wizard]\n\
+                         \x20                          library-launch|library-tidy|library-tidy-report|\n\
+                         \x20                          library-tidy-undo|wizard]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -297,11 +298,15 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "library-help" => ScreenArg::Library(LibraryScreen::Help),
                     "library-log" => ScreenArg::Library(LibraryScreen::Journal),
                     "library-launch" => ScreenArg::Library(LibraryScreen::Launch),
+                    "library-tidy" => ScreenArg::Library(LibraryScreen::Tidy),
+                    "library-tidy-report" => ScreenArg::Library(LibraryScreen::TidyReport),
+                    "library-tidy-undo" => ScreenArg::Library(LibraryScreen::TidyUndo),
                     "wizard" => ScreenArg::Library(LibraryScreen::Wizard),
                     _ => {
                         return Err(
                             "--screen attend menu, keys, options, disks, computer, vkbd, journal, library, \
-                                    library-settings, library-help, library-log, library-launch, wizard ou cores"
+                                    library-settings, library-help, library-log, library-launch, library-tidy, \
+                                    library-tidy-report, library-tidy-undo, wizard ou cores"
                                 .into(),
                         );
                     }
@@ -453,7 +458,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
         Some(ScreenArg::Game(s)) => Some(s),
         Some(ScreenArg::Library(_)) => {
             return Err(
-                "--screen library, library-settings, cores et library-launch \
+                "--screen library, library-settings, cores, library-launch et library-tidy \
                         s'utilisent sans --core ni --rom"
                     .into(),
             );
@@ -789,6 +794,9 @@ mod tests {
         for (arg, screen) in [
             ("library-log", LibraryScreen::Journal),
             ("library-help", LibraryScreen::Help),
+            ("library-tidy", LibraryScreen::Tidy),
+            ("library-tidy-report", LibraryScreen::TidyReport),
+            ("library-tidy-undo", LibraryScreen::TidyUndo),
         ] {
             let Command::Library(l) = p(&["--screen", arg]).unwrap() else {
                 panic!()

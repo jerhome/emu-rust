@@ -404,6 +404,21 @@ pub fn extra_name(remove: &Path, keep: &Path) -> String {
 pub const ERRORS_TITLE: &str = "Erreurs :";
 pub const SKIPPED_TITLE: &str = "Sauvegardes non mises à jour :";
 
+/// A problem of a run written to the « Journal », prefixed with what was running.
+pub fn journal_line(kind: super::exec::RunKind, line: &str) -> String {
+    let what = match kind {
+        super::exec::RunKind::Tidy => "Rangement des ROMs",
+        super::exec::RunKind::Undo => "Annulation du rangement",
+        super::exec::RunKind::Recovery => "Reprise du rangement",
+    };
+    format!("{what} : {line}")
+}
+
+/// The analysis of « Ranger les ROMs… » failed (written to the « Journal »).
+pub fn journal_analysis(e: &str) -> String {
+    format!("Analyse du rangement : {e}")
+}
+
 pub fn left(p: &Path, b: &TidyBlock) -> String {
     format!("{} : {}", path(p), block(b))
 }
@@ -429,9 +444,3 @@ fn io_hint(message: &str) -> Option<&'static str> {
 
 pub const SHARING_HINT: &str = "fichier ouvert par un autre programme : fermez-le, puis relancez le rangement \
                                 (le jeu est resté à sa place)";
-// ---- Stand-ins for texts that live elsewhere on the 7.5 line (see .claude/L8-branchement.md) --------------------
-
-pub const COPY: &str = "Copier";
-pub const COPY_REPORT: &str = "Copier le rapport";
-pub const NEVER_DOWNLOADED: &str =
-    "emu-rust ne télécharge jamais ce fichier ; il doit provenir de votre propre machine.";

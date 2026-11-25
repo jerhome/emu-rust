@@ -470,7 +470,24 @@ pub(crate) fn report_text(out: &Outcome) -> String {
                 .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
         );
     }
-    super::copyable::joined(&lines)
+    crate::copyable::joined(&lines)
+}
+
+/// Problems of a run, an undo or the start-up recovery, written to the « Journal »: failures as errors, games
+/// left in place, save collisions and messages as warnings. Nothing is written for a clean run.
+pub(crate) fn log_outcome(out: &Outcome) {
+    let errors: Vec<String> = out
+        .report
+        .iter()
+        .flat_map(|r| r.errors.iter().map(|(p, m)| error_entry(out, p, m)))
+        .collect();
+    for line in recovery_log(out) {
+        if errors.contains(&line) {
+            tracing::error!("{}", text::journal_line(out.kind, &line));
+        } else if line != text::SKIPPED_TITLE {
+            tracing::warn!("{}", text::journal_line(out.kind, &line));
+        }
+    }
 }
 
 /// Lines logged after the start-up recovery: messages, what was left or failed, identity collisions.

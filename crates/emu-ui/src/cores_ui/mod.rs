@@ -258,6 +258,16 @@ impl CoresUi {
         self.in_use = id;
     }
 
+    /// Core of the game being played, if any.
+    pub(crate) fn in_use(&self) -> Option<&CoreId> {
+        self.in_use.as_ref()
+    }
+
+    /// A core install is running (a download).
+    pub(crate) fn installing(&self) -> bool {
+        !self.installs.is_empty()
+    }
+
     /// Installs that finished (or failed) since the last call, for the library launch flow.
     pub(crate) fn take_completed(&mut self) -> Vec<(CoreId, bool)> {
         std::mem::take(&mut self.completed)

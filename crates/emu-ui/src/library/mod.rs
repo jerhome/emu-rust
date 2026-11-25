@@ -13,6 +13,7 @@ mod host;
 mod pad_settings;
 mod settings;
 pub(crate) mod text;
+pub(crate) mod tidy;
 mod wizard;
 mod worker;
 
@@ -51,6 +52,8 @@ pub(crate) enum Page {
     Settings,
     Cores,
     Help,
+    /// « Ranger les ROMs… » (ADR 0023 §4): analysis, preview, run and report.
+    Tidy,
     /// « Journal »: opened by the footer button (every page) or « Ouvrir le journal » in the settings.
     Journal,
 }
@@ -293,6 +296,7 @@ pub(crate) struct LibraryUi {
     advice: Option<(GameId, Option<firmware_banner::Banner>)>,
     /// First-run wizard, drawn instead of the home grid while `Some`.
     wizard: Option<wizard::Wizard>,
+    tidy: tidy::TidyUi,
 }
 
 fn now_unix() -> i64 {
@@ -393,6 +397,7 @@ impl LibraryUi {
             dos_cache: dos::DosCache::default(),
             advice: None,
             wizard: None,
+            tidy: tidy::TidyUi::default(),
         };
         ui.reload_games();
         ui
@@ -1258,6 +1263,9 @@ impl LibraryUi {
             // The install keeps running behind the other pages; its result is still needed.
             self.cores.poll(&ctx);
         }
+        if std::mem::take(&mut self.tidy.pending) {
+            self.start_tidy(&ctx);
+        }
         self.relaunch_after_install();
         self.bios_completed();
         self.poll_folder();
@@ -1286,6 +1294,7 @@ impl LibraryUi {
             Page::Home if self.wizard.is_some() => self.wizard_page(ui),
             Page::Home => self.home(ui),
             Page::Settings => self.settings_page(ui),
+            Page::Tidy => self.tidy_page(ui),
             Page::Cores => {
                 self.cores.set_modal_open(self.dialog.is_some());
                 let mut event = None;
@@ -1880,6 +1889,28 @@ impl LibraryUi {
     /// Covers on screen still being read (captures wait for them).
     pub(crate) fn covers_busy(&self) -> bool {
         self.covers.busy()
+    }
+
+    /// `--screen library-tidy`: the analysis starts on the first frame (it needs the egui context).
+    pub(crate) fn open_tidy_on_first_frame(&mut self) {
+        self.tidy.pending = true;
+    }
+
+    /// `--screen library-tidy-report` / `library-tidy-undo`: the report screen with sample content, with the
+    /// undo confirmation open for `confirm_undo` (captures of their layout; nothing is read or moved).
+    pub(crate) fn open_tidy_report_demo(&mut self, confirm_undo: bool) {
+        let outcome = tidy::exec::demo_outcome(&self.dirs);
+        if confirm_undo && let Some(info) = &outcome.last.info {
+            self.tidy.confirm_undo = Some(tidy::UndoAsk {
+                journal: info.path.clone(),
+                moved: info.moved,
+                unix: info.created_unix,
+                focus: true,
+            });
+        }
+        self.tidy.stage = tidy::Stage::Report(Box::new(outcome));
+        self.tidy.focus_first = !confirm_undo;
+        self.set_page(Page::Tidy);
     }
 
     pub(crate) fn wants_launch_capture(&mut self) {

@@ -2,6 +2,38 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.6.0] - non publiée (tag à valider)
+
+Rangement des ROMs (ADR 0023 §4, amendée pour la fusion). Schéma de la base inchangé (v7) ; aucune migration : le
+journal du rangement est un fichier (`rangement/` dans le dossier des données).
+
+### Ajouté
+
+- **Réglages** : « Créer les dossiers des systèmes » (sous-dossiers vides de `roms/`, rien n'est déplacé) et
+  « Ranger les ROMs… ».
+- **Ranger les ROMs…** : analyse en tâche de fond du dossier `roms/` d'emu-rust, puis aperçu (jeux sûrs cochés,
+  suggestions avec leur raison, système à choisir par jeu ou par extension, « Autre système… », jeux laissés en
+  place avec la raison, BIOS connus signalés avec « Importer ce BIOS… ») ; rien n'est déplacé avant « Ranger ».
+  Fichiers déplacés sans être renommés, écrasés ni supprimés ; favoris, sauvegardes, historique, jaquettes et marque
+  CD 32X suivent les jeux.
+- **Rapport** du rangement (jeux laissés en place, erreurs, sauvegardes non mises à jour), « Copier le rapport » ;
+  les problèmes sont aussi écrits dans le Journal.
+- **Annuler le dernier rangement…** avec confirmation ; une annulation n'est jamais arrêtée en route.
+- **Reprise** au démarrage (et avant un lancement direct) d'un rangement interrompu par un arrêt brutal.
+- Captures `--screen library-tidy`, `library-tidy-report` et `library-tidy-undo` ; section « Ranger les ROMs » du
+  manuel.
+
+### Modifié
+
+- Le scan retrouve un jeu déplacé hors de l'application (même fichier) au lieu d'en créer un nouveau ; la marque
+  CD 32X est conservée.
+
+### Limites connues
+
+- Après un arrêt brutal (coupure, plantage) pendant un scan, le scan suivant peut faire perdre le favori, l'historique
+  et la jaquette d'un jeu déplacé à la main pendant ce scan. Un scan annulé normalement n'a pas ce défaut ; le
+  rangement par emu-rust non plus (il a son propre journal).
+
 ## [7.5.0] - non publiée (tag à valider)
 
 Finition PC : le travail de la ligne PC (7.1.0-rc.1 et 7.2, jamais publiés sur `main`) est réappliqué sur la 7.4

@@ -4,7 +4,6 @@
 
 pub(crate) mod exec;
 pub(super) mod text;
-mod copyable;
 mod view;
 
 use std::collections::{BTreeMap, BTreeSet};

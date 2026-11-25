@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use emu_library::{
-    Dat, DatEntry, Identification, Library, LibraryError, ScanOptions, ScanReport, hash_reader,
+    CoverKind, CoverState, Dat, DatEntry, Identification, Library, LibraryError, ScanOptions,
+    ScanReport, hash_reader,
 };
 
 fn write(path: &Path, data: &[u8]) {
@@ -447,6 +448,56 @@ fn cancellation_keeps_finished_work() {
     let r = scan(&mut lib, &options(&[&roms]));
     assert_eq!(r.unchanged as usize, partial);
     assert_eq!(lib.games().unwrap().len(), 300);
+}
+
+/// A file moved by hand, then a scan cancelled after its first batch: the next scan still recognises the move
+/// (same id, favourite, history and cover kept).
+#[test]
+fn moved_by_hand_then_cancelled_scan_keeps_the_game() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = tmp.path().join("roms");
+    write(&roms.join("a.gg"), &rom(200, 64));
+    let mut lib = Library::open_in_memory().unwrap();
+    scan(&mut lib, &options(&[&roms]));
+    let before = by_file(&lib, "a.gg");
+    lib.set_favorite(before.id, true).unwrap();
+    lib.record_played(before.id, 1_000).unwrap();
+    let cover = CoverState::Cached {
+        path: PathBuf::from("gamegear/a.png"),
+        source: "libretro".into(),
+    };
+    lib.set_cover(before.id, CoverKind::Boxart, &cover).unwrap();
+
+    // The moved file comes first in the walk (directory `aaa` before the files `z*`).
+    fs::create_dir_all(roms.join("aaa")).unwrap();
+    fs::rename(roms.join("a.gg"), roms.join("aaa/a.gg")).unwrap();
+    for i in 0..300 {
+        write(&roms.join(format!("z{i:03}.gg")), &rom(i as u8, 32));
+    }
+    let cancel = AtomicBool::new(false);
+    let result = lib.scan(&options(&[&roms]), &cancel, &mut |p| {
+        if p.files_seen >= 1 {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+    assert!(matches!(result, Err(LibraryError::Cancelled)));
+    let partial = lib.games().unwrap().len();
+    assert!(partial < 301, "{partial}");
+
+    let r = scan(&mut lib, &options(&[&roms]));
+    assert_eq!(lib.games().unwrap().len(), 301, "{r:?}");
+    let after = by_file(&lib, "a.gg");
+    assert!(after.path.ends_with("aaa/a.gg"));
+    assert_eq!(after.id, before.id, "{r:?}");
+    assert!(after.favorite);
+    assert_eq!(after.play_count, 1);
+    assert_eq!(
+        lib.cover(after.id, CoverKind::Boxart)
+            .unwrap()
+            .unwrap()
+            .state,
+        cover
+    );
 }
 
 #[cfg(unix)]
