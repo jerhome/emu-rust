@@ -10,7 +10,8 @@ recommandé partout, sauf **Q15** (export / import d'une définition : **report�
 la bascule, recommandée** ; jeux, sauvegardes et touches conservés). Essais : `docs/plan-essais-8x-9x.md`.
 Précise ADR 0001 (un core par processus), 0005 (règle « Builtin », amendement à écrire : lot PD1), 0013 (cores
 manuels, `.info`, BIOS), 0014 (catalogue, DAT, jaquettes), 0022 (pas de processus enfant par partie), 0023
-(rangement). Conception et découpage : `docs/design/v8.0-systemes-personnalises.md`.
+(rangement ; journal en version 2 pour la bascule, amendement à écrire : lot PD1). Conception et découpage :
+`docs/design/v8.0-systemes-personnalises.md`.
 **Graphe des crates inchangé. Aucune dépendance de crate nouvelle (la sérialisation de l'enfant d'essai reste dans
 `emu-ui`, qui a déjà `toml`). Schéma de `library.sqlite` inchangé (v6).** `unsafe` nouveau : `emu-libretro` (copie
 de deux structures C) et `emu-runtime` (`SetErrorMode` sous Windows, §5). Aucun hôte réseau nouveau.
@@ -33,6 +34,23 @@ Revue indépendante : `VERDICT : À AMENDER` (1 bloquant, 5 majeurs, 15 mineurs)
   modes CLI compris (§2, §13).
 - **M5** et mineurs : découpage, tests et critères corrigés dans le design ; mineurs traités dans le texte (m2, m3,
   m6-m9, m11, m12, m15 ici ; m1, m4, m5, m10, m13, m14 dans le design).
+
+Deuxième relecture (`VERDICT : OK`, 4 mineurs) et **réponses de l'utilisateur du 2026-11-25** aux 12 questions
+(`docs/questions-ouvertes.md`) ; changements :
+
+- **Noms** : `info_name` seulement nettoyé (contrôle, bidi) ; `name` proposé normalisé avant validation ; noms
+  libretro de la table hors liste blanche acceptés comme exceptions embarquées, fichier DAT local par
+  `dat_file_stem` (§2).
+- **Ids de la table réservés** à leur propre `database` ; bascule « incertaine » quand seul l'id coïncide (§3, §10).
+- **Touches à la bascule** : clé officielle déjà présente et différente ⇒ demande, défaut « garder les siennes »
+  (§10).
+- **Q1 (non défaut)** : supprimer un système **garde ses jeux masqués** ; ils réapparaissent s'il est recréé ou
+  restauré ; « Oublier ses jeux » est une action explicite séparée (§9, §13).
+- **Q5 (non défaut)** : la bascule qui exige un déplacement passe par **le rangement** de la 7.1 (aperçu, accord,
+  journal, annulation) ; précise ADR 0023 (ligne `S`, journal en version 2) (§10).
+- **Q12 (non défaut)** : la liste des ids n'est pas montrée à l'utilisateur ; l'architecte la relit seul (§3).
+- Autres réponses : défauts confirmés (Q2-Q4, Q6-Q11) ; Q8 précisée : un non-émulateur est ajoutable s'il accepte
+  un format à fichier unique (ni disque, ni arcade) (§9).
 
 ## Contexte
 
@@ -130,10 +148,18 @@ L'application en publie un nouvel **instantané** à chaque changement ; `catalo
     `cache`, `logs`, `covers`, `database`, `rangement`, `systems`, `assets`, `gameoptions`) ;
   - `name` (≤ 64) et `database` (≤ 128) : **liste blanche** — lettres, chiffres, espace, `-`, `_`, `+`, `.`, `,`,
     `'`, `&`, `!`, `(`, `)` ; jamais `/ \ : * ? " < > |`, ni `..`, ni caractère de contrôle ou bidi, ni espace ou
-    point en début ou fin (le nom `database` devient un nom de fichier local sous Windows) ;
+    point en début ou fin (le nom `database` devient un nom de fichier local sous Windows). Le `name` proposé à
+    l'ajout (tiré de `systemname` ou du `.info`, qui contiennent souvent `/` : « Sega 8/16 bit (various) ») est
+    **normalisé avant validation** (caractère interdit ⇒ `-`, espaces réduits) : l'ajout en un clic n'échoue
+    jamais pour un nom. **Exception** : un nom `database` présent dans la table du §3 (valeur embarquée de
+    confiance) est accepté même hors liste blanche (cas possible : `/` dans un nom de machine, à vérifier par PB2) ;
+    le fichier DAT local est alors nommé par `dat_file_stem` (caractère interdit ⇒ `_`), l'URL garde le vrai nom
+    (encodée). Test : chacun des ≈ 165 noms de la table passe la liste blanche ou est une exception au
+    `dat_file_stem` valide ;
   - 1 à 64 extensions `[a-z0-9]{1,8}`, jamais une extension d'archive, de liste ou de disque de la liste 8.0 (§9) ;
   - `dat` ⊂ {`no-intro`, `tosec`, `libretro`} (Redump : 8.1) ; 1 à 8 cores, `origin.core` compris, à la syntaxe
-    d'id de core ; `info_name` ≤ 128 et `created_by` ≤ 32 caractères, même nettoyage ; `ignored_firmware` ≤ 64
+    d'id de core ; `info_name` ≤ 128 et `created_by` ≤ 32 caractères, **seulement nettoyés** des caractères de
+    contrôle et bidi (texte affiché, jamais un chemin : `/` y est permis) ; `ignored_firmware` ≤ 64
     chemins relatifs sûrs (copie de la règle `is_safe_relative_path` d'`emu-assets` dans `emu-library`, égalité des
     deux vérifiée par un test d'`emu-ui`) ;
   - un id ou une `database` déjà pris par un **autre** système personnalisé ⇒ erreur ; un conflit avec un système
@@ -148,16 +174,19 @@ L'application en publie un nouvel **instantané** à chaque changement ; `catalo
 
 - `emu-library/data/libretro_ids.toml` (embarqué) associe chacun des ≈ 165 noms `database` relevés par l'étude à un
   **id** et un **palier** (`cartridge`, `disc`, `computer`, `arcade`). Les 17 systèmes officiels y ont **leur** id.
-  La table est **injective** (test), relue par l’architecte avant le tag (les ids nomment des dossiers
-  définitifs ; liste montrée à l'utilisateur, question 8.0-12) et modifiée **en ajout seulement** ; une entrée
-  n'est jamais renommée.
+  La table est **injective** (test), relue **par l'architecte seul** avant le tag (les ids nomment des dossiers
+  définitifs ; l'utilisateur ne souhaite pas voir la liste, réponse Q12) et modifiée **en ajout seulement** ; une
+  entrée n'est jamais renommée.
 - Réduction déterministe d'un nom : minuscules ASCII et chiffres de la partie après le fabricant, 24 caractères.
   **Règle d'ajout** : toute entrée ajoutée après la 8.0 a pour id la réduction **sans suffixe** de son nom
   (test : « entrée ajoutée = réduction ») ; les collisions de réduction entre les 165 noms sont tranchées dans la
   table dès la 8.0.
 - `proposed_id(database)` : l'id de la table ; à défaut la réduction, suffixée `2`, `3`… si elle est prise.
+- **Un id de la table est réservé à sa propre `database`** : `proposed_id` et `validate_custom` le traitent comme
+  pris pour tout autre système (autre `database` ou aucune). Un système sans `database` ne peut donc jamais occuper
+  le dossier promis à une machine connue.
 - Un système qui a une `database` reçoit **toujours** `proposed_id` (id non modifiable). Un système sans
-  `database` (31 cores) reçoit un id dérivé de son nom, modifiable à la création seulement.
+  `database` (31 cores) reçoit un id dérivé de son nom, hors ids réservés, modifiable à la création seulement.
 - **Règle pour les versions suivantes** : un système officiel ajouté plus tard prend l'id de la table (ou la
   réduction de son nom). Le cas normal d'une bascule est donc « même id, même `database` », sans déplacement ; les
   autres cas sont traités au §10.
@@ -212,7 +241,7 @@ l'environnement. Un plantage ⇒ ajout refusé (« ce core se ferme au chargemen
 entrée ni rythme. Mémorisé dans `<data>/cache/dry-runs.toml` (≤ 2 000 entrées, les plus anciennes retirées) par
 (système, core, SHA-256 du core, chemin du jeu) : une mise à jour du core refait l'essai. Plantage **ou délai
 dépassé** (un core incapable de 300 images en 30 s gèlerait l'interface) ⇒ même boîte : « Changer de core »
-(défaut) ou « Lancer quand même » (question 8.0-3). L'essai rapporte aussi la demande de rendu matériel et les
+(défaut) ou « Lancer quand même » (réponse Q3). L'essai rapporte aussi la demande de rendu matériel et les
 noms de boutons. Texte : « l'essai vérifie le démarrage seulement ».
 
 **Témoin de lancement** (tous les cores, officiels compris) : avant `load_game`, `emu-ui` crée
@@ -270,7 +299,8 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
 
 - **Liste** (Q3) : écran Cores → « Ajouter un système non testé… », d'après `CoreManager::infos()` et l'index de la
   plate-forme courante (téléchargés par « Vérifier les mises à jour » ; aucune requête au démarrage). Par défaut :
-  catégorie « Emulator », non expérimental ; case « Tout afficher » (question 8.0-8 pour les non-émulateurs).
+  catégorie « Emulator », non expérimental ; case « Tout afficher », qui rend aussi ajoutables les non-émulateurs
+  (jeux, moteurs) acceptant un format à fichier unique, ni disque ni arcade (réponse Q8).
 - **Extensions de la 8.0** (liste explicite, distincte de `DISC_EXTENSIONS`, testée sur des extraits réels de
   `.info`) : disque = `cue`, `chd`, `iso`, `ccd`, `toc`, `gdi`, `cdi`, `mds`, `mdf`, `nrg`, `pbp`, `cso`, `img`,
   `bin` ; archive = `zip`, `7z` ; liste = `m3u`, `m3u8`. **`bin` est gardé** quand le core n'accepte aucune autre
@@ -278,9 +308,9 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
 - **Ajoutable en 8.0** (`CoreInfo::addability`) : au moins une extension restante. Sinon grisé : rendu matériel ⇒
   « prévu en 9.0 » ; disque seulement ⇒ « prévu en 8.1 » ; arcade (palier `arcade` de la table, ou seule extension
   `zip`) ⇒ « prévu en 8.3 » ; aucune extension ⇒ non proposé. Ordinateur (`needs_kbd_mouse_focus` ou palier
-  `computer`) : ajoutable avec « clavier complet et souris : prévus en 8.2 » (question 8.0-2).
+  `computer`) : ajoutable avec « clavier complet et souris : prévus en 8.2 » (réponse Q2).
 - **Ajout en un clic** (Q4, Q5) : une case par nom `database` du core, la première cochée ; une machine de palier
-  `disc` (« PC Engine CD ») d'un core mixte est **grisée « prévu en 8.1 »** (question 8.0-6). « Ajouter » enchaîne :
+  `disc` (« PC Engine CD ») d'un core mixte est **grisée « prévu en 8.1 »** (réponse Q6). « Ajouter » enchaîne :
   avertissement du §7 si besoin, installation (gestionnaire existant), sonde, écriture des définitions, publication
   du catalogue, création de `roms/<id>/`, scan incrémental, puis « Déposez vos jeux dans `roms/<id>/` » avec
   « Ouvrir le dossier ». Une `database` d'un système officiel n'est pas proposée (« déjà pris en charge »).
@@ -295,10 +325,13 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   fichier. `SystemInfo::dats` peut être vide pour un système personnalisé.
 - **Marque « non testé »** (Q7) : étiquette permanente sur le système, ses jeux et le core ; avertissement au
   **premier lancement de chaque jeu** de la paire (système, core), au moment de l'essai à blanc, jusqu'à « Ça marche
-  chez moi » (`works_for_me`) ; l’étiquette reste (question 8.0-9). Journal et diagnostic portent la marque.
-- **Suppression** : définition dans `.retired/` ; fichiers, sauvegardes, options, core et `roms/<id>/` intacts ;
-  `Library::forget_system` retire **explicitement** les lignes de ses jeux et ses DAT (question 8.0-1). Recréer le
-  système avec le même core retrouve les sauvegardes.
+  chez moi » (`works_for_me`) ; l’étiquette reste (réponse Q9). Journal et diagnostic portent la marque.
+- **Suppression** (réponse Q1) : définition dans `.retired/` ; fichiers, sauvegardes, options, core et
+  `roms/<id>/` intacts ; **les lignes de ses jeux restent dans la bibliothèque, masquées** (favoris, historique,
+  identification, jaquettes compris), ainsi que ses DAT importés. Elles réapparaissent si le système est
+  **restauré** (Réglages → Systèmes personnalisés → « Systèmes retirés » → « Restaurer » : la définition revient de
+  `.retired/`) ou **recréé** avec le même id. Action séparée et confirmée, sur un système retiré : « Oublier ses
+  jeux » (`Library::forget_system` : lignes des jeux et DAT de cet id ; fichiers jamais touchés).
 
 ### 10. Bascule vers un système officiel (Q16)
 
@@ -306,24 +339,50 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   active**, l'officiel est **masqué** (absent du catalogue publié) et `CatalogLoad::pending_switches` le signale.
   Tant que la définition est active, **sa liste de cores prime** sur celle de `cores.toml` pour sa clé
   (`with_custom_systems` remplace la clé quand l'officiel est masqué) : rien ne change en silence avant la bascule.
-- **Proposition** dans tous les cas : bandeau de la bibliothèque et ligne des Réglages : « emu-rust prend désormais
-  en charge (système) officiellement. Basculer (recommandé) » ; jamais de bascule automatique.
-- **Bascule sans déplacement** (même id, `database` égale, différente ou absente) : (1) définition dans
-  `.retired/` ; (2) profil de touches `<core>@<id>` copié vers la clé officielle s'il n'existe pas ; (3) si le core
-  de l'utilisateur n'est pas le premier core officiel, `[cores.preferred]` le garde en tête (ses sauvegardes,
-  rangées par core, restent visibles), le core recommandé étant proposé en alternative (question 8.0-4) ;
-  (4) publication, scan. Même id ⇒ même dossier, mêmes lignes : **aucun fichier déplacé**.
-- **Bascule avec déplacement** (même `database`, id différent : suffixe, ou réduction devenue autre) : la 8.0 la
-  **reporte** avec le message « bascule impossible sans déplacer `roms/<id perso>/` ; vos jeux restent sur votre
-  définition » ; la définition reste active (question 8.0-5). La version qui rendra ce cas possible le traitera
-  par le rangement (ADR 0023).
+- **Nature du conflit** (`SwitchKind`) : **en place** = même id et même `database` (cas normal, §3) ;
+  **avec déplacement** = même `database`, id différent (suffixe, ou réduction devenue autre) ; **incertaine** = même
+  id, `database` différente ou absente (machine peut-être différente ; rendu rare par les ids réservés du §3).
+- **Proposition** : bandeau de la bibliothèque et ligne des Réglages : « emu-rust prend désormais en charge
+  (système) officiellement. Basculer (recommandé) » ; jamais de bascule automatique. Cas incertain : pas de
+  recommandation, mais « Une machine officielle porte le même nom de dossier : est-ce la même machine ? » — « Oui,
+  basculer » ou « Non » (la définition reste active, l'officiel reste masqué, le bandeau peut être fermé ;
+  supprimer la définition rend l'officiel).
+- **Étapes communes** de toute bascule : (a) **touches** : si la clé de profil officielle (`PadStyle::profile_key`)
+  n'existe pas, le profil `<core>@<id>` y est copié ; si elle existe et diffère (core partagé avec un système
+  officiel), emu-rust demande « Garder vos touches » (défaut, copie par-dessus) ou « Garder celles de (système
+  officiel) » ; (b) **core** : si le core de l'utilisateur n'est pas le premier core officiel,
+  `[cores.preferred]` le garde en tête (ses sauvegardes, rangées par core, restent visibles), le core recommandé
+  étant proposé en alternative (réponse Q4) ; (c) définition dans `.retired/` ; (d) publication, scan.
+- **Bascule en place ou incertaine acceptée** : étapes communes seules. Même id ⇒ même dossier, mêmes lignes
+  (favoris, historique, jaquettes) : **aucun fichier déplacé**.
+- **Bascule avec déplacement** (réponse Q5) : elle passe par **le rangement** de la 7.1 (ADR 0023), qu'elle
+  précise :
+  1. **Aperçu** calculé comme si la bascule était faite (catalogue où la définition est retirée et l'officiel
+     actif) : toute unité sous `roms/<id perso>/` a pour destination `roms/<id officiel>/` (même chemin relatif) et
+     pour système l'id officiel ; les fichiers qui ne sont pas des jeux restent en place (signalés). Unité bloquée,
+     doublon ou conflit (ADR 0023 §4.2, §4.4) : la bascule n'est **pas** proposée tant qu'il en reste (le rapport dit
+     lesquelles résoudre) ; une bascule partielle laisserait des jeux sur un système qui n'existe plus.
+  2. **Accord** de l'utilisateur sur l'aperçu, puis exécution avec les primitives et le verrou du rangement
+     (liens physiques, jamais d'écrasement, une transaction par unité). La ligne de bibliothèque est **conservée** :
+     `Library::relocate` réécrit les chemins **et** `game.system` (id officiel) ; favoris, historique,
+     identification et jaquettes suivent. Les DAT importés de l'ancien id sont oubliés (l'officiel a les siens).
+  3. **Journal** : l'en-tête porte une ligne `S <id perso> <id officiel> <fichier de définition>` ; le format du
+     journal passe en **version 2** (lecteurs : versions 1 et 2 ; amendement d'ADR 0023 §4.8, lot PD1). Après la
+     ligne `E` et les identités (étape 5 d'ADR 0023, inchangée : les sauvegardes sont nommées par le core et le nom
+     du fichier, qui ne changent pas), les étapes communes (a) à (d) sont faites ; la reprise au démarrage les
+     rejoue si `E` est posée et la définition encore en place (idempotent).
+  4. **Annulation** : « Annuler le dernier rangement » ramène les fichiers (ADR 0023 §4.6), remet `game.system`
+     sur l'id personnalisé, **restaure la définition** depuis `.retired/` et rend la préférence de core et le profil
+     de touches antérieurs (notés dans le journal).
+  5. Jaquettes en cache (`covers/<système>/`) : le dossier de l'ancien id est renommé vers l'id officiel s'il
+     n'existe pas, sinon les jaquettes se retéléchargent sur action.
 - **Sauvegardes d'un même core** : les propriétés par core de `cores.toml` qui fixent le chemin des sauvegardes
   (`media`, `save_scope`, `save_family`, `game_saves`) s'appliquent déjà au système personnalisé ; une bascule avec
   le même core ne les change donc pas. Le risque est qu'une **version future** les ajoute à un core déjà utilisé :
   un test d'`emu-assets` fige ces clés par core (instantané) ; le modifier impose à la version concernée une
   migration des sauvegardes (rangement ADR 0023), règle rappelée dans le design.
-- La 8.0 livre et teste ces cas avec un catalogue officiel et un `cores.toml` synthétiques ; aucune version 8.0 ne
-  déclenche de bascule réelle.
+- La 8.0 livre et teste les trois cas avec un catalogue officiel et un `cores.toml` synthétiques ; aucune version
+  8.0 ne déclenche de bascule réelle.
 
 ### 11. Touches : disposition générique, noms de boutons du core (Q13)
 
@@ -350,7 +409,8 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
 - **Aucune migration** : `game.system` et `dat_info(system, source)` sont du texte. La marque « non testé » est
   dérivée du catalogue. `SCHEMA_VERSION` reste 6.
 - **Le scan ne supprime ni ne modifie jamais les lignes dont le système est absent de l'instantané** (définition
-  en erreur, dossier illisible, système masqué) ; elles ne sont pas affichées. Seul `forget_system` les retire.
+  en erreur, dossier illisible, système masqué ou retiré) ; elles ne sont pas affichées. Seul « Oublier ses jeux »
+  (`forget_system`) les retire.
 - **Ordre de démarrage**, interface et modes ligne de commande (`library`, `cores`) : chargement et publication du
   catalogue, **puis** reprise du journal de rangement, construction des préférences de cores, scan.
 - Fichiers nouveaux sous `<data>` : `systems/` (+ `.retired/`), `cache/dry-run/`, `cache/dry-runs.toml`,

@@ -498,7 +498,8 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
    - b) Dans la 8.0.
 8. **Case « Tout afficher »** : les cores qui ne sont pas des émulateurs (jeux, moteurs, lecteurs) et qui
    acceptent des fichiers.
-   - a) **Défaut : ajoutables s'ils acceptent une extension de fichier unique, avec la marque « non testé ».**
+   - a) **Défaut : ajoutables s'ils acceptent un format à fichier unique (ni disque, ni arcade), avec la marque
+     « non testé ».**
    - b) Visibles seulement.
 9. **Fréquence de l'avertissement « non testé ».**
    - a) **Défaut : au premier lancement de chaque jeu (au moment de l'essai à blanc), jusqu'à ce que vous cliquiez
@@ -522,3 +523,22 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
 
 Rappel demandé par l'utilisateur : **Q15, export / import d'une définition**, est reporté ; le lui rappeler à la
 conception de la 8.1 (le format 1 le permet déjà : ni binaire, ni URL, ni chemin absolu).
+
+### Réponses de l'utilisateur du 2026-11-25
+
+Intégrées à l'ADR 0025 (toujours « proposé » : l'acceptation sera demandée) et au design 8.0.
+
+| Question | Réponse | Effet |
+|---|---|---|
+| Q1 supprimer un système | **autre que le défaut : garder les jeux masqués** | lignes gardées (favoris, historique), réapparues si le système est restauré ou recréé (même id) ; « Oublier ses jeux » = action explicite séparée ; fichiers et sauvegardes toujours conservés |
+| Q2 ordinateurs en 8.0 | défaut | ajoutables avec « clavier : 8.2 » |
+| Q3 essai à blanc qui plante ou dépasse 30 s | défaut | boîte « Changer de core » (recommandé) / « Lancer quand même » |
+| Q4 bascule avec un autre core | défaut | son core en tête, le recommandé en alternative |
+| Q5 bascule exigeant un déplacement | **autre que le défaut : proposer le rangement** | le rangement 7.1 déplace le dossier (aperçu, accord, journal, annulation), puis la bascule se fait ; lots PB3 et PU4 ajoutés |
+| Q6 core mixte | défaut | machine CD grisée « 8.1 » |
+| Q7 Nintendo DS | défaut | hors 8.0, palier à part en fin de 8.x |
+| Q8 non-émulateurs | défaut | ajoutables s'ils acceptent un format à fichier unique (ni disque, ni arcade) |
+| Q9 avertissement « non testé » | défaut | au premier lancement de chaque jeu, jusqu'à « Ça marche chez moi » |
+| Q10 MSX | défaut | copie à la main expliquée dans le guide, repli `fmsx` |
+| Q11 message de fermeture brutale | défaut | pour tous les cores, texte neutre |
+| Q12 liste des noms de dossiers | **autre que le défaut : ne pas la montrer** | l'architecte la relit seul (lot PC1) |
