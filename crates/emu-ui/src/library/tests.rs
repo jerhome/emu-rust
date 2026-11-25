@@ -1339,8 +1339,17 @@ fn dos_programs_dialog_by_keyboard() {
 
 #[test]
 fn footer_shows_version_and_credit() {
-    assert_eq!(text::footer_for("1.2.3"), "v1.2.3 · dev by claude@jerhome");
-    assert!(text::footer().starts_with(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+    assert_eq!(
+        crate::ui::text::footer_credit("1.2.3", crate::CREDIT),
+        "emu-rust 1.2.3 — dev by claude@jerhome"
+    );
+    assert_eq!(
+        crate::ui::text::footer_credit(crate::VERSION, crate::CREDIT),
+        format!(
+            "emu-rust {} — dev by claude@jerhome",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
 }
 
 // ---- 7.2: unrecognized pad, learning, config, core ----------------------------------------------------------
@@ -1546,9 +1555,205 @@ fn cover_status_counts_games_not_searches() {
 #[test]
 fn badge_32x_only_on_32x_discs() {
     let mut g = game(1, "megacd", "/roms/megacd/Night Trap.cue", None);
-    assert!(grid::badges(&g).is_empty());
+    assert!(grid::badges(&g, &[]).is_empty());
+    // Manual mark (`[library] cd32x`): same badge.
+    assert_eq!(
+        grid::badges(&g, &["night trap.cue".to_owned()]),
+        vec![text::BADGE_32X]
+    );
     g.needs_32x = true;
-    assert_eq!(grid::badges(&g), vec![text::BADGE_32X]);
+    assert_eq!(grid::badges(&g, &[]), vec![text::BADGE_32X]);
     let q = text::install_question_32x("PicoDrive", "Night Trap");
     assert!(q.contains("32X") && q.contains("PicoDrive"));
+}
+
+// ---- Sega CD 32X manual mark and Journal page (design v7.5 §3, §5) ------------------------------------------
+
+fn megacd_game(id: i64, path: &str, identification: Identification) -> Game {
+    let mut g = game(id, "megacd", path, None);
+    g.title = Path::new(path)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    g.identification = identification;
+    g
+}
+
+/// A harness whose library holds exactly `games`, the first one selected.
+fn harness_with(games: Vec<Game>, capture: bool) -> Harness {
+    let mut h = harness(capture);
+    h.ui.games = games;
+    h.ui.refilter(None);
+    h.frame(Vec::new());
+    h
+}
+
+fn saved_list(h: &Harness) -> Vec<String> {
+    Config::load(&h.ui.dirs.config_file).unwrap().library.cd32x
+}
+
+#[test]
+fn cd32x_key_marks_saves_and_unmarks() {
+    let mut h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.chd",
+            Identification::Name,
+        )],
+        false,
+    );
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_INVITE));
+    h.key(Key::X);
+    assert_eq!(h.ui.config.library.cd32x, ["fake trap.chd"]);
+    assert_eq!(saved_list(&h), ["fake trap.chd"], "written to config.toml");
+    let Some(Dialog::Notice(m)) = &h.ui.dialog else {
+        panic!("message expected");
+    };
+    assert!(m.contains("picodrive") && m.contains(".brm"), "{m}");
+    assert!(m.contains("autres disques"), "{m}");
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_KEY_OFF));
+    let game = h.ui.selected_game().unwrap().clone();
+    assert_eq!(
+        grid::badges(&game, &h.ui.config.library.cd32x),
+        [text::BADGE_32X]
+    );
+    h.key(Key::Escape);
+    assert!(h.ui.dialog.is_none());
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+    assert!(saved_list(&h).is_empty());
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_INVITE));
+}
+
+#[test]
+fn cd32x_message_counts_games_sharing_the_file_name() {
+    let mut h = harness_with(
+        vec![
+            megacd_game(1, "/r/megacd/a/disc1.cue", Identification::Unknown),
+            megacd_game(2, "/r/megacd/b/Disc1.cue", Identification::Unknown),
+        ],
+        false,
+    );
+    h.key(Key::X);
+    let Some(Dialog::Notice(m)) = &h.ui.dialog else {
+        panic!("message expected");
+    };
+    assert!(
+        m.contains("2 jeux Mega CD portent ce nom de fichier"),
+        "{m}"
+    );
+}
+
+#[test]
+fn cd32x_failed_write_undoes_the_mark_and_says_so() {
+    let mut h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.chd",
+            Identification::Name,
+        )],
+        false,
+    );
+    // A directory where the file should be: the write fails.
+    let _ = std::fs::remove_file(&h.ui.dirs.config_file);
+    std::fs::create_dir_all(&h.ui.dirs.config_file).unwrap();
+    h.key(Key::X);
+    assert!(
+        h.ui.config.library.cd32x.is_empty(),
+        "mark undone in memory"
+    );
+    assert!(h.ui.dialog.is_none());
+    let Some((msg, level)) = &h.ui.status else {
+        panic!("status expected");
+    };
+    assert_eq!(*level, Level::Error);
+    assert!(msg.contains("annulée"), "{msg}");
+}
+
+#[test]
+fn cd32x_is_not_offered_for_detected_games_or_other_systems() {
+    let mut detected = megacd_game(
+        1,
+        "/r/megacd/Fake Trap (USA) (Sega CD 32X).chd",
+        Identification::Name,
+    );
+    detected.needs_32x = true;
+    let mut h = harness_with(vec![detected, game(2, "gb", "/r/a.gb", None)], false);
+    assert_eq!(h.ui.cd32x_help(), None);
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+    assert!(h.ui.dialog.is_none());
+    h.key(Key::ArrowRight);
+    assert_eq!(h.ui.cd32x_help(), None);
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+}
+
+#[test]
+fn cd32x_help_is_a_plain_key_hint_once_identified_by_content() {
+    let h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.cue",
+            Identification::Crc32Size,
+        )],
+        true,
+    );
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_KEY_ON));
+}
+
+/// Launch of a game marked by hand with no core installed: picodrive is proposed, with the 32X reason; an
+/// unmarked game gets the usual core. Never a fallback on genesis_plus_gx.
+#[test]
+fn cd32x_manual_mark_routes_to_picodrive_and_unmarked_games_are_unchanged() {
+    let mut h = harness_with(
+        vec![
+            megacd_game(1, "/r/megacd/Marked.chd", Identification::Name),
+            megacd_game(2, "/r/megacd/Plain.chd", Identification::Name),
+        ],
+        true,
+    );
+    if h.ui.cores.manager().is_none() {
+        return;
+    }
+    h.ui.config.library.cd32x = vec!["MARKED.CHD".into()];
+    h.key(Key::Enter);
+    match &h.ui.dialog {
+        Some(Dialog::Install {
+            core, needs_32x, ..
+        }) => {
+            assert_eq!(core.as_str(), "picodrive");
+            assert!(*needs_32x);
+        }
+        _ => panic!("install dialog expected"),
+    }
+    h.key(Key::Escape);
+    h.key(Key::ArrowRight);
+    h.key(Key::Enter);
+    match &h.ui.dialog {
+        Some(Dialog::Install {
+            core, needs_32x, ..
+        }) => {
+            assert_eq!(core.as_str(), "genesis_plus_gx");
+            assert!(!*needs_32x);
+        }
+        _ => panic!("install dialog expected"),
+    }
+}
+
+#[test]
+fn journal_opens_from_settings_and_escape_returns() {
+    let mut h = harness(true);
+    h.ui.set_page(Page::Settings);
+    h.frame(Vec::new());
+    h.ui.open_journal();
+    h.frame(Vec::new());
+    assert_eq!(h.ui.page, Page::Journal);
+    h.key(Key::Escape);
+    assert_eq!(h.ui.page, Page::Settings, "back to the page it came from");
+    h.ui.set_page(Page::Home);
+    h.ui.open_journal();
+    h.key(Key::Escape);
+    assert_eq!(h.ui.page, Page::Home);
 }

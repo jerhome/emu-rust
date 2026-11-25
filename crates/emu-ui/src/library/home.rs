@@ -9,6 +9,7 @@ use egui::{
 };
 use emu_library::{SortOrder, systems};
 
+use super::cd32x::{self, Cd32xMark};
 use super::grid::{self, Nav};
 use super::{Focus, LibraryEvent, LibraryUi, Page, View, text};
 
@@ -136,12 +137,18 @@ impl LibraryUi {
                         .add_enabled(!dialog_open, egui::Button::new(text::FIRMWARE_IMPORT))
                         .clicked()
                     {
-                        self.cores.import.start(Some(banner.wanted));
+                        self.cores.import.start(Some(banner.wanted.clone()));
                     }
                 });
+                for line in &banner.lines {
+                    super::weak(ui, line);
+                }
             }
-            if let Some(game) = self.selected_game().filter(|g| g.needs_32x) {
-                let labels = grid::badges(game);
+            if let Some(game) = self
+                .selected_game()
+                .filter(|g| super::cd32x::effective_needs_32x(g, &self.config.library.cd32x))
+            {
+                let labels = grid::badges(game, &self.config.library.cd32x);
                 ui.horizontal_wrapped(|ui| {
                     for label in labels {
                         badge(ui, label);
@@ -172,7 +179,9 @@ impl LibraryUi {
             if self.selected_game().is_some_and(|g| g.is_dir) {
                 super::weak(ui, text::DOS_FOLDER_HINT);
             }
-            super::weak(ui, text::footer());
+            if let Some(line) = self.cd32x_help() {
+                super::weak(ui, line);
+            }
         });
 
         // Keys that work wherever the focus is (not while typing, not under a dialog).
@@ -356,7 +365,7 @@ impl LibraryUi {
         }
         if !dialog_open && (focused || nothing_focused) {
             let page = self.page_rows;
-            let (navs, enter, fav, programs, reset) = ui.input(|i| {
+            let (navs, enter, fav, programs, reset, mark) = ui.input(|i| {
                 let mut navs = Vec::new();
                 for (key, nav) in [
                     (Key::ArrowLeft, Nav::Left),
@@ -378,6 +387,7 @@ impl LibraryUi {
                     focused && i.key_pressed(Key::F) && i.modifiers.is_none(),
                     focused && i.key_pressed(Key::P) && i.modifiers.is_none(),
                     focused && i.key_pressed(Key::R) && i.modifiers.is_none(),
+                    focused && i.key_pressed(Key::X) && i.modifiers.is_none(),
                 )
             });
             if !navs.is_empty() && !focused {
@@ -400,6 +410,9 @@ impl LibraryUi {
             if reset {
                 self.reset_selected_cover();
             }
+            if mark {
+                self.toggle_cd32x();
+            }
         }
 
         let mut area = ScrollArea::vertical()
@@ -419,6 +432,7 @@ impl LibraryUi {
         let mut clicked = None;
         let mut double = false;
         let mut reset_pos = None;
+        let mut mark_pos = None;
         let mut on_screen = Vec::new();
         let out = area.show_rows(ui, CARD_H, rows, |ui, range| {
             for row in range {
@@ -443,10 +457,28 @@ impl LibraryUi {
                         clicked = Some(pos);
                         double = true;
                     }
+                    if resp.secondary_clicked() {
+                        clicked = Some(pos);
+                    }
+                    // One menu for every card (design v7.5 §3): the cover, then the CD 32X mark when offered.
+                    let manual = &self.config.library.cd32x;
+                    let toggle = cd32x::can_toggle(game, manual)
+                        .then(|| cd32x::cd32x_mark(game, manual) == Cd32xMark::Manual);
                     resp.context_menu(|ui| {
                         if ui.button(text::COVER_RESET).clicked() {
                             reset_pos = Some(pos);
                             ui.close();
+                        }
+                        if let Some(marked) = toggle {
+                            let label = if marked {
+                                text::CD32X_MENU_OFF
+                            } else {
+                                text::CD32X_MENU_ON
+                            };
+                            if ui.button(label).clicked() {
+                                mark_pos = Some(pos);
+                                ui.close();
+                            }
                         }
                     });
                     let texture = self.covers.texture(ui.ctx(), game);
@@ -454,6 +486,7 @@ impl LibraryUi {
                         ui,
                         rect,
                         game,
+                        &grid::badges(game, manual),
                         texture.as_ref(),
                         pos == self.selected,
                         focused,
@@ -471,6 +504,10 @@ impl LibraryUi {
         if let Some(pos) = reset_pos {
             self.selected = pos;
             self.reset_selected_cover();
+        }
+        if let Some(pos) = mark_pos {
+            self.selected = pos;
+            self.toggle_cd32x();
         }
         if let Some(pos) = clicked {
             self.selected = pos;
@@ -549,10 +586,29 @@ fn system_entry(
     resp
 }
 
+impl LibraryUi {
+    /// Help line about the « CD 32X » mark of the selected game: the invitation (ADR 0024 §4) or the key.
+    pub(super) fn cd32x_help(&self) -> Option<&'static str> {
+        let game = self.selected_game()?;
+        let manual = &self.config.library.cd32x;
+        if !cd32x::can_toggle(game, manual) {
+            return None;
+        }
+        Some(if cd32x::invites_marking(game, manual) {
+            text::CD32X_INVITE
+        } else if cd32x::cd32x_mark(game, manual) == Cd32xMark::Manual {
+            text::CD32X_KEY_OFF
+        } else {
+            text::CD32X_KEY_ON
+        })
+    }
+}
+
 fn paint_card(
     ui: &Ui,
     rect: Rect,
     game: &emu_library::Game,
+    badges: &[&str],
     texture: Option<&egui::TextureHandle>,
     selected: bool,
     focused: bool,
@@ -608,7 +664,7 @@ fn paint_card(
         );
     }
     let mut left = cover.left_top() + Vec2::splat(theme::SP_XS + 2.0);
-    for label in grid::badges(game) {
+    for label in badges {
         left.x += paint_badge(&painter, left, label) + theme::SP_XS;
     }
     let mut job = egui::text::LayoutJob::simple(

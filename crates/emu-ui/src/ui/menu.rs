@@ -2,7 +2,7 @@
 
 use egui::{Button, Context, RichText};
 
-use super::{Overlay, UiAction, UiData, nav, screen_window, stepper, text};
+use super::{OsdLevel, Overlay, UiAction, UiData, nav, screen_window, stepper, text};
 use crate::Screen;
 use crate::computer::eightbit::TapeAction;
 use crate::hotkeys::step_slot;
@@ -167,5 +167,30 @@ pub(super) fn show(
             actions.push(UiAction::Quit);
         }
         ui.label(RichText::new(text::NAV_HINT).small().weak());
+        recent_messages(ui, &overlay.osd);
+        ui.separator();
+        if super::footer::contents(ui) {
+            actions.push(UiAction::Open(Screen::Journal));
+        }
     });
+}
+
+/// Latest toasts, selectable, with one « Copier » for all of them; hidden when there is none.
+fn recent_messages(ui: &mut egui::Ui, osd: &super::Osd) {
+    if osd.history().next().is_none() {
+        return;
+    }
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(text::RECENT_MESSAGES).strong());
+        crate::copyable::copy_button(ui, &osd.history_text());
+    });
+    for entry in osd.history() {
+        let color = match entry.level {
+            OsdLevel::Info => crate::theme::TEXT_WEAK,
+            OsdLevel::Warn => crate::theme::WARN,
+            OsdLevel::Error => crate::theme::ERROR,
+        };
+        ui.add(egui::Label::new(RichText::new(entry.line()).small().color(color)).selectable(true));
+    }
 }

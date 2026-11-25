@@ -564,7 +564,9 @@ impl App {
             if mode == PadMode::DualShock
                 && !emulator.controller_types(0).iter().any(|t| t.id == id)
             {
-                tracing::warn!("{core_id} : manette DualShock ({id}) refusée, manette numérique");
+                tracing::warn!(
+                    "{core_id} : manette DualShock ({id}) refusée, retour à la manette numérique"
+                );
                 pad_refused = true;
                 PadMode::Digital
             } else {
@@ -1186,7 +1188,6 @@ impl App {
                 }
             }
             Err(e) => {
-                tracing::warn!("changement de disquette : {e}");
                 self.overlay.osd.error(text::disk_failed(&e), now);
             }
         }
@@ -1230,7 +1231,6 @@ impl App {
         }
         let next = toggle_joyport(if joy.port == 1 { "1" } else { "2" });
         if let Err(e) = self.emulator.set_option(JOYPORT_OPTION, next) {
-            tracing::warn!("option {JOYPORT_OPTION} refusée : {e}");
             self.overlay
                 .osd
                 .error(text::option_failed(&e), Instant::now());
@@ -1265,7 +1265,7 @@ impl App {
         };
         for port in PAD_PORTS {
             if let Err(e) = self.emulator.set_port_device(port, id) {
-                tracing::warn!("port {port} : périphérique {id} refusé : {e}");
+                tracing::debug!("port {port} : périphérique {id} refusé : {e}");
                 if port == PAD_PORTS[0] {
                     self.overlay.osd.error(text::PAD_MODE_REFUSED, now);
                     return;
@@ -1504,7 +1504,11 @@ impl App {
             }
             Screen::CoreOptions => self.refresh_options(),
             Screen::Disks => self.refresh_disks(),
-            Screen::Keys | Screen::Computer | Screen::Help | Screen::VirtualKeyboard => {}
+            Screen::Keys
+            | Screen::Computer
+            | Screen::Help
+            | Screen::Journal
+            | Screen::VirtualKeyboard => {}
         }
         self.overlay.open(screen);
         self.apply_speed();
@@ -1583,7 +1587,6 @@ impl App {
                 self.overlay.osd.info(text::state_saved(self.slot), now);
             }
             Err(e) => {
-                tracing::warn!("sauvegarde de l'état {} impossible : {e}", self.slot);
                 self.overlay
                     .osd
                     .error(text::state_save_failed(self.slot, &e), now);
@@ -1630,7 +1633,6 @@ impl App {
                 true
             }
             Err(e) => {
-                tracing::warn!("chargement de l'état {} impossible : {e}", self.slot);
                 self.overlay
                     .osd
                     .error(text::state_load_failed(self.slot, &e), now);
@@ -1663,7 +1665,6 @@ impl App {
 
     fn set_option(&mut self, key: &str, value: &str) {
         if let Err(e) = self.emulator.set_option(key, value) {
-            tracing::warn!("option {key} refusée : {e}");
             self.overlay
                 .osd
                 .error(text::option_failed(&e), Instant::now());
@@ -2109,7 +2110,10 @@ impl App {
                 LogLevel::Warn => OsdLevel::Warn,
                 _ => OsdLevel::Info,
             };
-            tracing::info!("core : {}", m.text);
+            // Warnings and errors reach the Journal through the OSD (once).
+            if level == OsdLevel::Info {
+                tracing::info!("core : {}", m.text);
+            }
             self.overlay.osd.push(m.text, level, m.duration, now);
         }
         if status.video_updated

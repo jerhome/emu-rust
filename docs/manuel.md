@@ -20,6 +20,18 @@ Ouvrez emu-rust : la bibliothèque s'affiche. Au début, elle est vide.
 Un core est nécessaire pour chaque système. Ouvrez l'écran **Cores** : il propose d'installer les cores
 recommandés. Si un core manque au lancement d'un jeu, l'application propose de l'installer.
 
+Sur l'écran **Cores** :
+
+- le champ de recherche trouve un core par son nom **ou par le système** qu'il fait tourner (tapez « 3DO » ou
+  « PlayStation ») ;
+- **Core utilisé par système** liste tous les systèmes ; ceux qui n'ont qu'un seul core l'affichent sans choix ;
+- sous un core installé, **Peut être amélioré par un fichier d'origine** liste les fichiers facultatifs (par
+  exemple `gba_bios.bin`, ou les ROM MT-32 pour le PC DOS) : absent, présent et vérifié, md5 inattendu, ou non
+  vérifiable ; le bouton **Importer** range le vôtre ;
+- **BIOS PlayStation** : un BIOS importé est reconnu par son empreinte, avec sa région. Si les cores le
+  cherchent sous un autre nom (par exemple `scph5501.bin` pour un BIOS SCPH-7001 américain), l'import en fait une
+  copie sous ce nom et l'écran l'indique (« copie de SCPH-7001 »). Un BIOS d'une autre région est signalé.
+
 ### Ce que l'application télécharge, et ce que vous fournissez
 
 L'application télécharge seulement :
@@ -43,9 +55,37 @@ fichier par son empreinte et le range au bon endroit grâce au bouton **Importer
 - **Favoris** : sélectionnez un jeu et appuyez sur `F` (ou cliquez l'étoile). L'onglet **Favoris** les regroupe.
   L'onglet **Récemment joués** garde les derniers jeux lancés.
 - **Jeux à plusieurs disquettes** : un jeu en plusieurs disquettes (fichier `.m3u`) n'apparaît qu'une fois.
+  Des disquettes numérotées par leur dernier chiffre (`MANIACD0.D64`, `MANIACD1.D64`) sont aussi regroupées.
   Vous changerez de disquette en cours de partie (voir plus bas).
+- **Clic droit sur une vignette** : un seul menu, **Réinitialiser la jaquette** (touche `R`) et, pour un jeu
+  Mega CD, **Ce jeu est un CD 32X** ou **Ce n'est pas un CD 32X** (touche `X`).
 - **Navigation** : flèches pour choisir, Entrée pour jouer, Tab pour atteindre la barre du haut, Échap pour
   effacer la recherche.
+
+### Jeux Sega CD 32X
+
+Quelques jeux Mega CD demandent aussi la 32X (par exemple Night Trap en version 32X). Ils ne tournent qu'avec
+le core **picodrive** : l'application ne les lance jamais avec genesis_plus_gx, et propose d'installer picodrive
+s'il manque. Un tel jeu porte la pastille **32X**. Il est reconnu par son disque ou par son nom (« (Sega CD
+32X) », « (Mega CD 32X) », « (CD 32X) »…). Sinon, marquez-le vous-même : sélectionnez-le, puis clic droit
+**Ce jeu est un CD 32X**, ou la touche `X`. La marque est gardée dans `config.toml` (`[library] cd32x`) ; les
+sauvegardes faites avec l'autre core ne sont pas reprises. La même touche retire la marque.
+
+### Fichiers d'origine du jeu sélectionné
+
+Quand le core qui lancera le jeu sélectionné exige ou gagne à avoir un fichier que vous devez fournir (BIOS,
+Kickstart, ROM MT-32…), un bandeau s'affiche en bas de la bibliothèque. Il dit, pour chaque fichier, s'il est
+**absent**, présent avec un **md5 inattendu** (une autre version) ou **non vérifié**, et ce qu'il apporte.
+Le bouton **Importer…** ouvre l'import ; un fichier inconnu peut être importé quand même, comme « non vérifié ».
+
+### Pied de page et journal
+
+En bas de chaque écran (bibliothèque, Réglages, Cores, Aide, assistant, et le menu en jeu) : la version
+d'emu-rust, puis le bouton **Journal**. Le bouton affiche le nombre d'erreurs et d'avertissements non lus.
+Le **Journal** liste les messages techniques de l'application et des cores, avec un filtre (**Erreurs**,
+**Avertissements**, **Tout**), **Copier le journal** et **Ouvrir le dossier des journaux**. PgUp / PgDn font
+défiler, Échap revient à l'écran précédent. Le journal est aussi écrit dans `logs/emu-rust.log` (dans le
+dossier de données) ; le fichier de la séance précédente est gardé sous `emu-rust.log.1`.
 
 ## 3. En jeu
 
@@ -53,6 +93,9 @@ fichier par son empreinte et le range au bon endroit grâce au bouton **Importer
 
 Appuyez sur **Échap** : le menu s'ouvre et le jeu s'arrête. Vous pouvez y reprendre la partie, sauvegarder,
 charger, changer de disquette, régler la manette ou quitter.
+
+En bas du menu, **Derniers messages** reprend les messages affichés pendant la partie (avec l'heure) ; **Copier**
+les copie tous. Le bouton **Journal** du pied de page ouvre le journal sans quitter le jeu ; Échap revient au menu.
 
 ### La touche hôte (systèmes « ordinateur »)
 
@@ -173,14 +216,20 @@ Ouvrez **Réglages** depuis la bibliothèque. On y trouve :
 - **Identifiants** pour les services de jaquettes facultatifs (les mots de passe ne s'affichent jamais) ;
 - **Manettes** : liste et apprentissage (à partir de la 7.2) ;
 - **Afficher le terminal** (après redémarrage) : sous Windows, la fenêtre noire est cachée par défaut ;
-  cochez la case pour la voir. Utile surtout pour dépanner ;
-- **Journal** : les derniers messages de l'application. Les avertissements et erreurs sont mis en évidence.
-  Le bouton **Copier** copie le texte : joignez-le quand vous signalez un problème.
-  Le journal est aussi écrit dans le fichier `logs/emu-rust.log`, dans le dossier de données.
+  cochez la case pour la voir (emu-rust se relance alors avec `emu-rust-cli.exe`, placé à côté). Sur Mac,
+  l'application se rouvre dans le Terminal. Utile surtout pour dépanner ;
+- **Ouvrir le journal** : la page **Journal** (voir « Pied de page et journal »).
+
+Sous Windows, les commandes en ligne (`--help`, `--install-core`…) passent par `emu-rust-cli.exe` :
+`emu-rust.exe` n'a pas de console.
 
 N'oubliez pas **Enregistrer** après une modification.
 
 ## 7. Problèmes fréquents
+
+**Copier un message d'erreur.**
+Les messages d'erreur se sélectionnent à la souris, et un bouton **Copier** les accompagne. Joignez le texte, ou
+le **Journal** entier (**Copier le journal**), quand vous signalez un problème.
 
 **Un bandeau jaune parle d'un BIOS ou d'un fichier d'origine.**
 Ce core marche mieux (ou exige) un fichier que vous devez fournir. Cliquez sur **Importer**, choisissez votre

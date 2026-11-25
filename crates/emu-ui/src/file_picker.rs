@@ -362,7 +362,7 @@ impl FileBrowser {
             submit |= ui.button(text::BROWSER_GO).clicked();
         });
         if let Some(e) = self.error() {
-            ui.colored_label(crate::theme::ERROR, e);
+            crate::copyable::message(ui, crate::theme::ERROR, e);
         }
         if !self.filter.is_empty() {
             ui.label(

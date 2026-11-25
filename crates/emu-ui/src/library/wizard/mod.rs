@@ -781,6 +781,7 @@ impl LibraryUi {
         }
         ui.add_space(theme::SP_M);
         weak(ui, text::BIOS_REMINDER);
+        weak(ui, text::JOURNAL_REMINDER);
     }
 }
 

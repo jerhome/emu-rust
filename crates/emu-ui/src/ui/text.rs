@@ -112,7 +112,7 @@ pub fn keys_capture(style: PadStyle, port: usize, button: JoypadButton) -> Strin
 
 pub fn keys_bound(style: PadStyle, key: KeyCode, port: usize, button: JoypadButton) -> String {
     format!(
-        "{} → {} {}.",
+        "{} = {} {}.",
         key_label(key),
         port_label(port),
         style.button_name(button)
@@ -258,7 +258,7 @@ pub fn format_unix_utc(secs: u64) -> String {
 const MAX_CORE_TEXT: usize = 512;
 
 /// Unicode category Cf (bidi controls, zero-width, BOM...): they can reorder or hide displayed text.
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(c,
         '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
@@ -295,10 +295,10 @@ pub fn sanitize_core_line(s: &str) -> String {
 
 // ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
 
-pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : ↑ ↓ puis Entrée pour lancer un programme · → : le lancer automatiquement la prochaine fois";
+pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : Haut / Bas puis Entrée pour lancer un programme · Droite : le lancer automatiquement la prochaine fois";
 pub const DOS_CHANGE_PROGRAM: &str = "Changer de programme de démarrage";
 pub const DOS_CHANGE_PROGRAM_DONE: &str =
-    "Menu DOS : choisissez le programme (→ : le lancer automatiquement la prochaine fois)";
+    "Menu DOS : choisissez le programme (Droite : le lancer automatiquement la prochaine fois)";
 pub const DOS_RESET: &str = "Réinitialiser les modifications du jeu…";
 pub const DOS_RESET_TITLE: &str = "Réinitialiser les modifications du jeu";
 pub const DOS_RESET_CONFIRM: &str = "Les sauvegardes de ce jeu, ses réglages (SETUP), le programme de démarrage \
@@ -493,7 +493,7 @@ pub const GAMEPAD_PAUSED: &str = "Manette déconnectée : jeu en pause.";
 
 pub fn gamepad_unrecognized(name: &str) -> String {
     format!(
-        "Manette non reconnue : {}. À configurer après la partie : Réglages → Manette → Configurer.",
+        "Manette non reconnue : {}. À configurer après la partie : Réglages > Manette > Configurer.",
         sanitize_core_text(name)
     )
 }
@@ -623,9 +623,14 @@ pub fn firmware_launch_notice(d: &crate::launch_firmware::FirmwareDecision) -> O
                 core_fallback_warning(label, wanted, others)
             )
         }),
-        D::WrongHash { wanted, .. } => Some(format!(
-            "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
-        )),
+        D::WrongHash { wanted, md5 } => {
+            Some(match crate::ps1_bios::wrong_region_text(wanted, md5) {
+                Some(region) => format!("{wanted} : {region}. Le jeu peut ne pas démarrer."),
+                None => format!(
+                    "{wanted} ne correspond à aucune version connue : le jeu peut ne pas démarrer."
+                ),
+            })
+        }
         D::Missing { wanted } => Some(format!(
             "BIOS absent : {wanted}. Le jeu peut ne pas démarrer."
         )),
@@ -928,9 +933,87 @@ pub fn disk_error(e: &emu_runtime::RuntimeError) -> String {
     }
 }
 
+// ---- Footer, « Journal » and copyable messages (ADR 0023 §1, §3) ----------------------------------------------
+
+pub const LOG_BUTTON: &str = "Journal";
+pub const LOG_TITLE: &str = "Journal";
+pub const LOG_FILTER_ERRORS: &str = "Erreurs";
+pub const LOG_FILTER_WARNINGS: &str = "Avertissements";
+pub const LOG_FILTER_ALL: &str = "Tout";
+pub const LOG_OPEN_FOLDER: &str = "Ouvrir le dossier des journaux";
+pub const LOG_EMPTY: &str = "Aucun message pour ce filtre.";
+pub const LOG_FILE_IN_USE: &str =
+    "fichier journal utilisé par une autre instance : cette session n'est pas enregistrée";
+pub const LOG_HINT: &str = "PgUp / PgDn : défiler · Échap : retour";
+pub const RECENT_MESSAGES: &str = "Derniers messages";
+pub const COPY: &str = "Copier";
+pub const COPIED: &str = "Copié";
+pub const LOG_COPY_ALL: &str = "Copier le journal";
+
+/// Footer line: `emu-rust <version> — dev by claude@jerhome`.
+pub fn footer_credit(version: &str, credit: &str) -> String {
+    format!("emu-rust {version} — {credit}")
+}
+
+/// Label of the footer button: the unread errors and warnings, when there are some.
+pub(crate) fn log_button_label(errors: u32, warnings: u32) -> String {
+    match (errors, warnings) {
+        (0, 0) => LOG_BUTTON.to_owned(),
+        (e, 0) => format!("{LOG_BUTTON} ({e} erreur{})", plural(e)),
+        (0, w) => format!("{LOG_BUTTON} ({w} avertissement{})", plural(w)),
+        (e, w) => format!(
+            "{LOG_BUTTON} ({e} erreur{}, {w} avertissement{})",
+            plural(e),
+            plural(w)
+        ),
+    }
+}
+
+fn plural(n: u32) -> &'static str {
+    if n > 1 { "s" } else { "" }
+}
+
+/// Where the log folder is when it cannot be opened (container, no file manager).
+pub fn log_folder_path(path: &str) -> String {
+    format!("Dossier des journaux : {path}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default egui fonts have no arrows nor geometric symbols: they would show as empty squares. Every text
+    /// module, the manual and the wizard are checked (comments skipped).
+    #[test]
+    fn texts_avoid_glyphs_missing_from_the_font() {
+        let sources = [
+            ("ui/text.rs", include_str!("text.rs")),
+            ("library/text.rs", include_str!("../library/text.rs")),
+            (
+                "library/wizard/text.rs",
+                include_str!("../library/wizard/text.rs"),
+            ),
+            ("cores_ui/text.rs", include_str!("../cores_ui/text.rs")),
+            ("bios_import.rs", include_str!("../bios_import.rs")),
+            ("ps1_bios.rs", include_str!("../ps1_bios.rs")),
+            ("docs/manuel.md", include_str!("../../../../docs/manuel.md")),
+        ];
+        for (name, src) in sources {
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if let Some(c) = line.chars().find(|c| {
+                    matches!(*c, '\u{2190}'..='\u{21FF}' | '\u{25A0}'..='\u{25FF}' | '\u{2700}'..='\u{27BF}')
+                }) {
+                    panic!(
+                        "{name}:{}: glyph {c:?} is missing from the default font",
+                        n + 1
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn core_text_drops_format_characters() {

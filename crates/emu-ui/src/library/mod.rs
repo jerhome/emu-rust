@@ -2,6 +2,7 @@
 //! flow towards a game played in the same window (`host`). Drawing code never blocks: scan and DAT import run
 //! in `worker` threads; only quick SQLite reads/writes (game list, favorite, last played) happen here.
 
+mod cd32x;
 mod covers;
 mod dos;
 mod firmware_banner;
@@ -50,6 +51,8 @@ pub(crate) enum Page {
     Settings,
     Cores,
     Help,
+    /// « Journal »: opened by the footer button (every page) or « Ouvrir le journal » in the settings.
+    Journal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -115,6 +118,8 @@ enum Dialog {
         game_id: GameId,
     },
     Message(String),
+    /// Information after a user action (« CD 32X » mark): title `CD32X_TITLE`, « OK ».
+    Notice(String),
     /// First scan without any DAT: offer the download (ADR 0014 design §1).
     OfferDat,
     /// 3.0 firmware check (design v3.0 §2.1): fallback warned once per game, wrong or missing file.
@@ -229,6 +234,9 @@ pub(crate) struct LibraryUi {
     /// Page to return to when the manual closes.
     help_back: Page,
     help: crate::help::HelpState,
+    /// Page to return to when the « Journal » closes.
+    journal_back: Page,
+    journal: crate::ui::log_panel::LogPanel,
     db: Option<Library>,
     /// Persistent banner: base recovered or unavailable.
     db_banner: Option<String>,
@@ -342,6 +350,8 @@ impl LibraryUi {
             page: Page::Home,
             help_back: Page::Home,
             help: crate::help::HelpState::default(),
+            journal_back: Page::Home,
+            journal: crate::ui::log_panel::LogPanel::default(),
             db,
             db_banner,
             games: Vec::new(),
@@ -422,6 +432,24 @@ impl LibraryUi {
             Page::Home
         } else {
             self.help_back
+        };
+        self.set_page(back);
+    }
+
+    /// Opens the « Journal » page (unread counters reset); Escape or « Retour » comes back here.
+    pub(crate) fn open_journal(&mut self) {
+        if self.page != Page::Journal {
+            self.journal_back = self.page;
+        }
+        self.journal.open();
+        self.set_page(Page::Journal);
+    }
+
+    fn close_journal(&mut self) {
+        let back = if self.journal_back == Page::Journal {
+            Page::Home
+        } else {
+            self.journal_back
         };
         self.set_page(back);
     }
@@ -647,13 +675,17 @@ impl LibraryUi {
         }
     }
 
-    /// Writes `config.toml` (0600, atomic). Locked file or capture: nothing written.
-    fn save_config(&mut self) {
+    /// Writes `config.toml` (0600, atomic); `false` when the write failed (status line set). Locked file or
+    /// capture: nothing written (a capture counts as written).
+    fn save_config(&mut self) -> bool {
         if self.capture {
-            return;
+            return true;
         }
         match self.config.save(&self.dirs.config_file) {
-            Ok(()) => self.set_status(text::SAVED.to_owned(), Level::Info),
+            Ok(()) => {
+                self.set_status(text::SAVED.to_owned(), Level::Info);
+                true
+            }
             Err(e) => {
                 let msg = if self.config.is_locked() {
                     text::LOCKED.to_owned()
@@ -661,8 +693,44 @@ impl LibraryUi {
                     text::save_failed(&e.to_string())
                 };
                 self.set_status(msg, Level::Warn);
+                false
             }
         }
+    }
+
+    /// « Ce jeu est un CD 32X » / « Ce n'est pas un CD 32X » for the selected game (ADR 0024 §2, §4): toggles the
+    /// manual mark and saves `config.toml`; a failed write undoes the mark in memory and says so.
+    fn toggle_cd32x(&mut self) {
+        let Some(game) = self.selected_game().cloned() else {
+            return;
+        };
+        let manual = &self.config.library.cd32x;
+        if !cd32x::can_toggle(&game, manual) {
+            return;
+        }
+        let on = cd32x::cd32x_mark(&game, manual) != cd32x::Cd32xMark::Manual;
+        let before = self.config.library.cd32x.clone();
+        if !cd32x::set_manual_mark(&mut self.config.library.cd32x, &game, on) {
+            return;
+        }
+        if !self.save_config() {
+            self.config.library.cd32x = before;
+            let reason = self
+                .status
+                .as_ref()
+                .map(|(m, _)| m.clone())
+                .unwrap_or_default();
+            self.set_status(text::cd32x_save_failed(&game.title, &reason), Level::Error);
+            return;
+        }
+        self.forget_firmware_banner();
+        let same = cd32x::manual_key(&game).map_or(1, |k| cd32x::same_key_count(&self.games, &k));
+        let message = if on {
+            text::cd32x_marked(&game.title, same)
+        } else {
+            text::cd32x_unmarked(&game.title, same)
+        };
+        self.open_dialog(Dialog::Notice(message));
     }
 
     // ---- launch flow -------------------------------------------------------------------------------------
@@ -732,7 +800,10 @@ impl LibraryUi {
         };
         let prefs = cores_ui::preferences(&self.config.cores);
         let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
-        let needs_32x = args.disc.as_ref().is_some_and(|g| g.needs_32x);
+        let needs_32x = args
+            .disc
+            .as_ref()
+            .is_some_and(|g| cd32x::effective_needs_32x(g, &self.config.library.cd32x));
         let explicit = self.explicit_core(&args.system_id);
         let needs = cores_ui::GameNeeds {
             needs_32x,
@@ -1191,10 +1262,25 @@ impl LibraryUi {
         self.bios_completed();
         self.poll_folder();
         self.help_shortcuts(ui);
+        // First bottom panel: the lowest one on every page (ADR 0023 §1).
+        if crate::ui::footer::panel(ui) && self.dialog.is_none() {
+            self.open_journal();
+        }
         match self.page {
             Page::Help => {
                 if crate::help::show(ui, crate::help::manual(), &mut self.help) {
                     self.close_help();
+                }
+            }
+            Page::Journal => {
+                let escape = self.dialog.is_none() && !self.cores.import.is_active();
+                let mut closed = false;
+                egui::CentralPanel::default().show(ui, |ui| {
+                    closed = self.journal.show(ui, escape)
+                        == Some(crate::ui::log_panel::LogEvent::Close);
+                });
+                if closed {
+                    self.close_journal();
                 }
             }
             Page::Home if self.wizard.is_some() => self.wizard_page(ui),
@@ -1240,7 +1326,7 @@ impl LibraryUi {
 
     fn status_line(&self, ui: &mut Ui) {
         if let Some(b) = &self.db_banner {
-            ui.colored_label(WARNING, b);
+            crate::copyable::message(ui, WARNING, b);
         }
         if let Some(p) = &self.dat_progress {
             ui.label(text::dat_downloading(&p.system, p.done, p.total));
@@ -1264,7 +1350,14 @@ impl LibraryUi {
                 Level::Warn => WARNING,
                 Level::Error => ERROR,
             };
-            ui.colored_label(color, msg);
+            if matches!(level, Level::Info) {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(msg.as_str()).color(color))
+                        .selectable(true),
+                );
+            } else {
+                crate::copyable::message(ui, color, msg);
+            }
         }
     }
 
@@ -1436,6 +1529,7 @@ impl LibraryUi {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
+                Dialog::Notice(m) => (text::CD32X_TITLE, m.clone()),
                 Dialog::FreeBios { .. }
                 | Dialog::Firmware3 { .. }
                 | Dialog::ChooseFolder(_)
@@ -1444,7 +1538,8 @@ impl LibraryUi {
                 Dialog::OfferDat => (text::DAT_OFFER_TITLE, text::DAT_OFFER.to_owned()),
             };
             ui.heading(title);
-            ui.label(body);
+            // Selectable: an error can be copied into a report (ADR 0023 §1).
+            ui.add(egui::Label::new(&body).selectable(true));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let first = match dialog {
@@ -1471,6 +1566,7 @@ impl LibraryUi {
                     }
                     Dialog::Firmware { .. }
                     | Dialog::Message(_)
+                    | Dialog::Notice(_)
                     | Dialog::FreeBios { .. }
                     | Dialog::Firmware3 { .. }
                     | Dialog::ChooseFolder(_)
@@ -1479,7 +1575,7 @@ impl LibraryUi {
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
                 let cancel_label = match dialog {
-                    Dialog::Message(_) => text::OK,
+                    Dialog::Message(_) | Dialog::Notice(_) => text::OK,
                     Dialog::OfferDat => text::DAT_OFFER_LATER,
                     _ => text::LAUNCH_CANCEL,
                 };
@@ -1491,6 +1587,9 @@ impl LibraryUi {
                     && ui.button(text::LAUNCH_ANYWAY).clicked()
                 {
                     choice = Some(Choice::Launch);
+                }
+                if matches!(dialog, Dialog::Message(_)) {
+                    crate::copyable::copy_button(ui, &body);
                 }
                 if focus {
                     first.unwrap_or(cancel).request_focus();

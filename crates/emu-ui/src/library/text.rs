@@ -24,9 +24,18 @@ pub const VIEW_FAVORITES: &str = "Favoris";
 pub const VIEW_RECENT: &str = "Récemment joués";
 pub const SORT_TITLE: &str = "Tri : titre";
 pub const SORT_LAST_PLAYED: &str = "Tri : dernière partie";
-pub const CREDIT: &str = "dev by claude@jerhome";
 
 pub const FIRMWARE_IMPORT: &str = "Importer…";
+pub const FIRMWARE_STATE_MISSING: &str = "absent";
+pub const FIRMWARE_STATE_WRONG: &str = "présent, md5 inattendu (autre version)";
+pub const FIRMWARE_STATE_UNVERIFIED: &str = "présent, non vérifié (md5 inconnu)";
+pub const FIRMWARE_STATE_UNREADABLE: &str = "illisible";
+pub const FIRMWARE_STATE_OK: &str = "présent";
+
+/// One file of the banner: « gba_bios.bin : absent. Écran de démarrage… ». `benefit` comes from `cores.toml`.
+pub fn firmware_advice_line(file: &str, state: &str, benefit: &str) -> String {
+    format!("{} : {state}. {}", clean(file), clean(benefit))
+}
 
 /// Banner of the selected game (design v7.1 point 5): `names` are the missing files (alternatives when several),
 /// `required`: the core cannot run the game without one of them.
@@ -47,14 +56,6 @@ pub fn firmware_advice(names: &[String], required: bool) -> String {
     )
 }
 
-/// Footer line: the version comes from the workspace (shared by all crates).
-pub fn footer() -> String {
-    footer_for(env!("CARGO_PKG_VERSION"))
-}
-
-pub fn footer_for(version: &str) -> String {
-    format!("v{version} · {CREDIT}")
-}
 pub const SCAN: &str = "Scanner";
 pub const SCAN_CANCEL: &str = "Arrêter le scan";
 pub const CORES: &str = "Cores";
@@ -721,7 +722,7 @@ pub const DOS_PROGRAMS_HINT: &str = "Flèches / Tab : choisir · Entrée : valid
                                      des sous-dossiers et des images se lancent depuis le menu DOS.";
 pub const DOS_ONCE: &str = "Pour cette fois";
 pub const DOS_BY_DEFAULT: &str = "Par défaut (à chaque lancement)";
-pub const DOS_AUTOBOOT_WINS: &str = "Un programme a été choisi dans le menu DOS (→) : il reste lancé par défaut. \
+pub const DOS_AUTOBOOT_WINS: &str = "Un programme a été choisi dans le menu DOS (touche Droite) : il reste lancé par défaut. \
                                      Utilisez « Changer de programme de démarrage » dans le menu du jeu.";
 pub const DOS_CLEAR_DEFAULT: &str = "Revenir au menu DOS";
 pub const DOS_DEFAULT_CLEARED: &str = "Programme par défaut retiré : le menu DOS choisira.";
@@ -751,12 +752,59 @@ pub fn dos_cache_failed(e: &str) -> String {
 
 pub const APP_TITLE: &str = "Application";
 pub const SHOW_TERMINAL: &str = "Afficher le terminal (après redémarrage)";
-pub const JOURNAL_TITLE: &str = "Journal";
-pub const JOURNAL_EMPTY: &str = "Aucun message pour l'instant.";
-pub const JOURNAL_COPY: &str = "Copier";
+pub const JOURNAL_LINK: &str = "Ouvrir le journal";
 
 pub const HELP_MARK: &str = "?";
 pub const HELP_HINT: &str = "Ouvrir l'aide de cette section";
+
+// ---- Sega CD 32X manual mark (ADR 0024 §2, §4, design v7.5 §3) ----------------------------------------------------
+
+pub const CD32X_TITLE: &str = "CD 32X";
+pub const CD32X_MENU_ON: &str = "Ce jeu est un CD 32X";
+pub const CD32X_MENU_OFF: &str = "Ce n'est pas un CD 32X";
+/// Help line when the selected game may be a CD 32X (unknown content, e.g. every `.chd`).
+pub const CD32X_INVITE: &str = "Jeu Sega CD 32X ? Clic droit > Ce jeu est un CD 32X (ou touche X)";
+/// Help line of a game that can be marked by hand.
+pub const CD32X_KEY_ON: &str = "X : ce jeu est un CD 32X";
+/// Help line of a game marked by hand.
+pub const CD32X_KEY_OFF: &str = "X : ce n'est pas un CD 32X";
+
+pub fn cd32x_save_failed(game: &str, e: &str) -> String {
+    format!(
+        "Marque CD 32X de « {} » annulée, réglages non enregistrés : {}",
+        clean(game),
+        clean(e)
+    )
+}
+
+/// After marking: the core change, the saves not carried over, same-name games, other discs (ADR 0024 §2, §4).
+pub fn cd32x_marked(game: &str, same_name: usize) -> String {
+    let mut msg = format!(
+        "« {} » sera lancé avec le core picodrive, et non plus avec celui du Mega CD. Ses sauvegardes faites avec \
+         genesis_plus_gx (.brm) ne sont pas reprises.",
+        clean(game)
+    );
+    if same_name > 1 {
+        msg.push_str(&format!(
+            " {same_name} jeux Mega CD portent ce nom de fichier : tous seront lancés avec picodrive."
+        ));
+    }
+    msg.push_str(" Si le jeu a d'autres disques listés à part, marquez-les aussi.");
+    msg
+}
+
+pub fn cd32x_unmarked(game: &str, same_name: usize) -> String {
+    let mut msg = format!(
+        "« {} » n'est plus marqué CD 32X : il sera lancé avec le core habituel du Mega CD.",
+        clean(game)
+    );
+    if same_name > 1 {
+        msg.push_str(&format!(
+            " {same_name} jeux Mega CD portent ce nom de fichier : tous perdent la marque."
+        ));
+    }
+    msg
+}
 
 #[cfg(test)]
 mod tests {

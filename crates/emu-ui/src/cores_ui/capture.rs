@@ -61,6 +61,8 @@ impl CaptureApp {
         let cores = &mut self.cores;
         let mut back = false;
         let delay = egui.run_ui(window.window(), |ui| {
+            // Footer on every screen outside the game, captures included (ADR 0023 §1); no Journal page here.
+            crate::ui::footer::panel(ui);
             egui::CentralPanel::default().show(ui, |ui| {
                 back = cores.show(ui) == Some(CoresEvent::Back);
             });

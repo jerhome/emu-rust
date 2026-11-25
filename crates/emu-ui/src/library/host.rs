@@ -68,6 +68,8 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
     match options.screen {
         Some(LibraryScreen::Settings) => library.set_page(Page::Settings),
         Some(LibraryScreen::Cores) => library.set_page(Page::Cores),
+        Some(LibraryScreen::Help) => library.open_help(None),
+        Some(LibraryScreen::Journal) => library.open_journal(),
         Some(LibraryScreen::Wizard) => library.open_wizard(),
         None if options.wizard || first_run => library.open_wizard(),
         _ => {}

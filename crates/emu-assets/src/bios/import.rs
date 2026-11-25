@@ -622,7 +622,8 @@ pub fn remove_imported_firmware(system_dir: &Path, name: &str) -> Result<Vec<Str
         removed.push(name.to_owned());
         forget.push(name.to_owned());
         for (alias, e) in &manifest.imported {
-            if e.alias_of.as_deref() != Some(name) {
+            // The manifest is user-writable: an invalid alias name is ignored, never joined to the folder.
+            if e.alias_of.as_deref() != Some(name) || validate_target_name(alias).is_err() {
                 continue;
             }
             if unchanged(alias, e) {
@@ -1383,6 +1384,32 @@ mod tests {
         let removed = remove_imported_firmware(system2.path(), "scph7001.bin").unwrap();
         assert_eq!(removed, ["scph7001.bin"]);
         assert!(system2.path().join("scph5501.bin").exists());
+    }
+
+    #[test]
+    fn invalid_alias_name_in_manifest_is_ignored() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let system = root.path().join("system");
+        fs::create_dir(&system).unwrap();
+        let a = write(src_dir.path(), "a.bin", b"eu-a");
+        import_ps1(&system, &a, "scph7002.bin");
+        let outside = root.path().join("outside.bin");
+        fs::write(&outside, b"eu-a").unwrap();
+        let entry = ImportedEntry {
+            source: "eu.bin".into(),
+            md5: hex(&md5_of(b"eu-a")),
+            verified: true,
+            imported_unix: 0,
+            alias_of: Some("scph7002.bin".into()),
+        };
+        update_manifest(&system, |m| {
+            m.imported.insert("../outside.bin".into(), entry);
+        })
+        .unwrap();
+        let removed = remove_imported_firmware(&system, "scph7002.bin").unwrap();
+        assert_eq!(removed, ["scph7002.bin", "scph5502.bin"]);
+        assert_eq!(fs::read(&outside).unwrap(), b"eu-a");
     }
 
     #[test]

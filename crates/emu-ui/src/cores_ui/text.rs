@@ -95,6 +95,16 @@ pub fn firmware_summary(missing: usize, wrong: usize) -> String {
     }
 }
 
+/// [`firmware_state`] of the file `path`: a wrong hash on a PlayStation region name says which region the dump is.
+pub fn firmware_state_for(path: &str, state: &FirmwareState) -> String {
+    if let FirmwareState::WrongHash { md5 } = state
+        && let Some(t) = crate::ps1_bios::wrong_region_text(path, md5)
+    {
+        return t;
+    }
+    firmware_state(state)
+}
+
 pub fn firmware_state(state: &FirmwareState) -> String {
     match state {
         FirmwareState::Ok => "présent".to_owned(),
@@ -149,12 +159,55 @@ pub fn core_fallback_files(
     text
 }
 
-pub fn required_ok(wanted: &str) -> String {
-    format!("BIOS présent ({wanted})")
+/// `seen`: region / alias of a PlayStation file (« BIOS présent (scph5501.bin, USA, copie de SCPH-7001) »).
+pub fn required_ok(wanted: &str, seen: Option<&crate::ps1_bios::Ps1Seen>) -> String {
+    let extra = seen
+        .map(crate::ps1_bios::present_suffix)
+        .unwrap_or_default();
+    format!("BIOS présent ({wanted}{extra})")
 }
 
 pub fn required_problem(wanted: &str, state: &FirmwareState) -> String {
-    format!("{wanted} : {}", firmware_state(state))
+    format!("{wanted} : {}", firmware_state_for(wanted, state))
+}
+
+/// Detail view: the state of `path`, with the region of a PlayStation file when present.
+pub fn firmware_detail_state(
+    path: &str,
+    state: &FirmwareState,
+    seen: Option<&crate::ps1_bios::Ps1Seen>,
+) -> String {
+    let mut s = firmware_state_for(path, state);
+    if matches!(state, FirmwareState::Ok | FirmwareState::Unverified)
+        && let Some(seen) = seen
+    {
+        s.push_str(&crate::ps1_bios::present_suffix(seen));
+    }
+    s
+}
+
+// ---- Original files (7.1, ADR 0023 §5) ------------------------------------------------------------------------
+
+pub const ENHANCED_BY: &str = "Peut être amélioré par un fichier d'origine :";
+pub const NEVER_DOWNLOADED: &str =
+    "emu-rust ne télécharge jamais ce fichier ; il doit provenir de votre propre machine.";
+
+/// « gba_bios.bin (Game Boy Advance) — absent · écran de démarrage… ». `file`, `system` and `benefit` come from
+/// `cores.toml` and the catalogue (trusted, embedded).
+pub fn enhancement_line(
+    file: &str,
+    system: &str,
+    state: crate::firmware_hints::HintState,
+    benefit: &str,
+) -> String {
+    use crate::firmware_hints::HintState;
+    let state = match state {
+        HintState::Present => "présent et vérifié",
+        HintState::Missing => "absent",
+        HintState::WrongHash => "présent, md5 inattendu",
+        HintState::Unverified => "présent, non vérifiable",
+    };
+    format!("{file} ({system}) — {state} · {benefit}")
 }
 
 // ---- « Importer un BIOS… » (design v3.0 §2.2) -------------------------------------------------------------
@@ -324,7 +377,7 @@ pub const SOUNDFONT_REPLACE_CONFIRM: &str = "Remplacer le SoundFont existant (fi
                                              modifié depuis) ? Votre fichier sera renommé en « .user-<date> », \
                                              jamais effacé. Confirmer ?";
 pub const SOUNDFONT_INSTALLING: &str = "Téléchargement du SoundFont (32 Mo)…";
-pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS ▸ MIDI » d'un jeu, \
+pub const SOUNDFONT_INSTALLED_OK: &str = "SoundFont installé : choisissez-le dans « Réglages DOS > MIDI » d'un jeu, \
                                           ou pour tous les jeux DOS ci-dessous.";
 pub const JIFFYDOS_USE_FOR_ALL: &str = "Activer JiffyDOS pour tous les jeux C64";
 pub const JIFFYDOS_USED_FOR_ALL: &str =
