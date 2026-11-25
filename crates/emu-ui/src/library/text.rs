@@ -651,7 +651,7 @@ pub const CD32X_TITLE: &str = "CD 32X";
 pub const CD32X_MENU_ON: &str = "Ce jeu est un CD 32X";
 pub const CD32X_MENU_OFF: &str = "Ce n'est pas un CD 32X";
 /// Help line when the selected game may be a CD 32X (unknown content, e.g. every `.chd`).
-pub const CD32X_INVITE: &str = "Jeu Sega CD 32X ? Clic droit → Ce jeu est un CD 32X (ou touche X)";
+pub const CD32X_INVITE: &str = "Jeu Sega CD 32X ? Clic droit > Ce jeu est un CD 32X (ou touche X)";
 /// Help line of a game marked by hand or identified by its content.
 pub const CD32X_KEY_ON: &str = "X : ce jeu est un CD 32X";
 pub const CD32X_KEY_OFF: &str = "X : ce n'est pas un CD 32X";

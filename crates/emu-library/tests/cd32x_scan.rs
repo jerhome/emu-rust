@@ -253,3 +253,28 @@ fn cartridge_and_ordinary_disc_are_not_marked() {
         assert!(!g.cd32x_by_name(), "{f}");
     }
 }
+
+/// The naming of the author's own files (guide 7.2): the tag comes AFTER the disc marker, in both files. They must
+/// still form one game and be marked.
+#[test]
+fn chd_group_with_the_tag_after_the_disc_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("roms");
+    for k in [1, 2] {
+        chd(
+            &root,
+            &format!("megacd/Fake Night (Europe) (Disc {k}) (Mega-CD 32X).chd"),
+        );
+    }
+    let mut lib = Library::open_in_memory().unwrap();
+    scan(&mut lib, &root);
+    let games = lib.games().unwrap();
+    assert_eq!(
+        games.len(),
+        1,
+        "{:?}",
+        games.iter().map(|g| &g.path).collect::<Vec<_>>()
+    );
+    assert_eq!(games[0].media.len(), 2);
+    assert!(games[0].cd32x_by_name());
+}

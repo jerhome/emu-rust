@@ -55,7 +55,7 @@ fichiers ; les BIOS 32X sont intégrés à picodrive. Aucun fichier de votre dos
 ## Partie 3 — Marquer à la main
 
 1. Sélectionner un jeu Mega CD **sans** étiquette (un autre CD, ou renommer une copie sans l'étiquette puis
-   rescanner) : la ligne d'aide du bas affiche **« Jeu Sega CD 32X ? Clic droit → Ce jeu est un CD 32X (ou touche
+   rescanner) : la ligne d'aide du bas affiche **« Jeu Sega CD 32X ? Clic droit > Ce jeu est un CD 32X (ou touche
    X) »**. Elle n'apparaît que pour un jeu non marqué, dont l'identification ne repose pas sur le contenu (tout
    `.chd`).
 2. **Clic droit** sur la vignette → **« Ce jeu est un CD 32X »**, ou la touche **X** (jeu sélectionné, grille
