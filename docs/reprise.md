@@ -1,33 +1,38 @@
 # Reprise — état et prochaines tâches
 
 À lire en début de session (surtout en changeant de machine : la mémoire de Claude est locale à chaque poste).
-Mis à jour à chaque fin de session.
+Mis à jour à chaque fin de session. **En début de session : `git fetch` puis lire ce fichier** (règle commune
+d'agents-home, ajoutée après la divergence du 2026-11-25).
 
-## État au 2026-11-24, 23 h (fin de session sur le Mac)
+## État au 2026-11-25, 23 h (fin de session sur le PC du bureau)
 
-- `main` = **7.4.0** : 7.1, 7.2, 7.3 et 7.4 fusionnées ; CI verte sur le code 7.4.0. CHANGELOG 7.1.0 → 7.4.0
-  « non publiée (tag à valider) ». La CI vérifie la version du workspace contre les marqueurs « ✅ vX.Y » de la
-  roadmap (`scripts/check-version-vs-roadmap.sh`).
-- **Aucun tag** : v7.3.0 et v7.4.0 attendent la validation de l'utilisateur.
-- 7.1, 7.2 et 7.3 essayées et validées par l'utilisateur sur macOS ; 7.4 (Night Trap USA Sega CD 32X en picodrive,
-  badge 32X) à confirmer avec la `.app` 7.4.0.
-- Branche `feat/7.5-7z` poussée : conception `docs/design/v7.5-archives-7z.md`, ADR 0023 proposée, décisions de
-  l'utilisateur (CD archivés : proposer l'extraction en exposant le risque ou annuler en expliquant ; cache 2 Go
-  LRU réglable ; emu-rust extrait aussi pour puae / VICE).
-- Branche distante obsolète `feat/7.4-sega-cd-32x` (avant rebase) et branches déjà fusionnées : supprimables avec
-  l'accord de l'utilisateur.
+- **Divergence réparée.** Le 2026-11-25, le PC a travaillé sans pull sur une ancienne base (sa 7.1 = rangement des
+  ROMs, sa 7.2 = CD 32X). Fusion faite sur la base du Mac : `main` = **7.5.0** (05ff67d, puis correctif CI 2ce5b3e).
+  Décisions D1-D15, plan et notes : `docs/design/v7.5-finition-pc.md` (contrat) et ADR 0023 à 0026 (amendements de
+  fusion).
+- **7.5 = finition PC** sur la 7.4 : journal (page ouverte depuis le pied de page), pied de page sur toutes les
+  pages, messages copiables (presse-papiers réel, corrige le « Copier » de la 7.3), `emu-rust-cli.exe` sous Windows,
+  icône Mac produite par `scripts/gen-icons.sh`, écran Cores, bandeau des fichiers d'origine vérifiés (md5),
+  alias BIOS PS1, message « buildbot en cours de mise à jour », disquettes `MANIACD0/1` regroupées, compléments
+  CD 32X (marque manuelle touche X / clic droit). Schéma v7 inchangé.
+- **Aucun tag** : v7.3.0, v7.4.0 et v7.5.0 attendent l'essai de l'utilisateur (guide `docs/guide-essai-7.5.md`,
+  questions F1-F4 à confirmer).
+- **7.6 = rangement des ROMs** (ligne PC) : en cours sur `wip-7.6` (rangement dans emu-library + écrans) ;
+  branchement sur la 7.5 dans la branche locale `wip-7.6-merge` (PC). Point ouvert : `TidyBusy` intermittent dans
+  les tests (verrou du journal, ~5 % sur overlayfs) en diagnostic.
+- **En avance** : conceptions 8.0 (ADR 0025 acceptée) et 9.0 (ADR 0026 acceptée) recalées sur la fusion ; 7z
+  renuméroté **7.7 / ADR 0027** sur la branche `wip-7.7` (ex-`feat/7.5-7z`, locale au PC, non poussée) ; anglais en 7.8 ;
+  8.1 jgenesis ; paliers des systèmes personnalisés 8.2 (CD), 8.3 (ordinateurs), 8.4 (arcade).
+- Branches distantes : `wip-7.1`, `wip-7.2` (ligne PC d'avant fusion, gardées pour l'historique), `wip-7.5` ;
+  `feat/7.2-manette`, `feat/7.4-sega-cd-32x`, `feat/7.5-7z` : supprimables avec l'accord de l'utilisateur.
 
-## Prochaine session (PC du bureau, Windows + WSL2) — dans cet ordre
+## Prochaine session — dans cet ordre
 
-1. Créer le cron de suivi (CLAUDE.md, « Suivi pendant un développement »).
-2. **Demander les caractéristiques du PC** et les inscrire dans CLAUDE.md (« Cibles ») : modèle exact du CPU,
-   cœurs / threads, RAM, disque libre, version de Windows, limites WSL2 (`.wslconfig`), écran utilisé
-   (définition, fréquence), sortie audio (fréquence), manettes. Déjà connu : portable Intel Iris Xe,
-   OpenGL 3.3 sous Windows, Vulkan mal supporté (PEAK sur Steam injouable en Vulkan, bon en DirectX) →
-   rendu matériel Windows par défaut en D3D11 / OpenGL, jamais Vulkan.
-3. Tags v7.3.0 / v7.4.0 à faire valider ; retour de l'utilisateur sur la 7.4.
-4. 7.5 : T0 `reviewer` (go / no-go sur `sevenz-rust2` : licence, pur Rust, `unsafe`, paniques), puis la suite du
-   design.
+1. `git fetch`, lire ce fichier, créer le cron de suivi.
+2. Retour de l'utilisateur sur l'essai de la 7.5 (Windows et Mac : terminal, Copier, icône de la `.app`, Night Trap
+   32X, manette SNES, deux instances) ; tags v7.3.0 / v7.4.0 / v7.5.0 à faire valider.
+3. 7.6 : finir le branchement, diagnostic `TidyBusy`, vérification complète, revue, push.
+4. **Demander les caractéristiques du PC** et les inscrire dans CLAUDE.md (« Cibles ») — non fait le 2026-11-25.
 5. Dettes à déléguer : `Library::clear_cover` / `clear_all_covers` + `CoverCache::remove` dans emu-library
    (remplacer le contournement de T8) ; réponse `Loaded` périmée dans `covers.rs` (génération) ; avertissement
    cargo `main.rs` dans deux binaires d'emu-app ; captures Xvfb avant / après de la 7.3 (T7, dans Docker) ;
