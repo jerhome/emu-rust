@@ -249,7 +249,7 @@ impl ImportUi {
                     action = review_ui(ui, identified, forcing, filter, choice, focus, escape);
                 }
                 State::Failed(e) => {
-                    ui.colored_label(ERROR, text::import_failed(e));
+                    crate::copyable::message(ui, ERROR, &text::import_failed(e));
                     let ok = ui.button(text::OK);
                     if focus {
                         ok.request_focus();
@@ -262,11 +262,14 @@ impl ImportUi {
                     } else {
                         ui.visuals().text_color()
                     };
-                    if report.lines.is_empty() {
+                    if report.lines.is_empty() && report.warnings.is_empty() {
                         ui.label(text::IMPORT_NOTHING);
                     }
                     for line in &report.lines {
                         ui.colored_label(color, line);
+                    }
+                    for warning in &report.warnings {
+                        crate::copyable::message(ui, WARNING, warning);
                     }
                     let ok = ui.button(text::OK);
                     if focus {

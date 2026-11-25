@@ -7,7 +7,9 @@
 
 mod computer;
 mod disks;
+pub(crate) mod footer;
 mod keys;
+pub(crate) mod log_panel;
 mod menu;
 mod options;
 mod osd;
@@ -412,6 +414,8 @@ pub struct Overlay {
     launch_edit: Option<String>,
     pub osd: Osd,
     help: crate::help::HelpState,
+    /// « Journal » screen (`Screen::Journal`).
+    log_panel: log_panel::LogPanel,
     /// Set by the app each frame: the virtual keyboard covers the bottom, the toasts move to the top.
     pub vkbd_open: bool,
     pub show_stats: bool,
@@ -436,6 +440,7 @@ impl Default for Overlay {
             launch_edit: None,
             osd: Osd::default(),
             help: crate::help::HelpState::default(),
+            log_panel: log_panel::LogPanel::without_heading(),
             vkbd_open: false,
             show_stats: false,
         }
@@ -455,6 +460,9 @@ impl Overlay {
         if screen == Screen::Help && self.screen != Some(Screen::Help) {
             // In-game: the useful sections first (keys, then saves).
             self.help.open(Some("clavier"));
+        }
+        if screen == Screen::Journal {
+            self.log_panel.open();
         }
         self.screen = Some(screen);
         self.focus_first = true;
@@ -537,7 +545,8 @@ impl Overlay {
                 | Screen::CoreOptions
                 | Screen::Disks
                 | Screen::Computer
-                | Screen::Help,
+                | Screen::Help
+                | Screen::Journal,
             ) => {
                 self.open(Screen::Menu);
             }
@@ -596,6 +605,15 @@ pub fn show(ctx: &Context, overlay: &mut Overlay, data: &UiData<'_>) -> Vec<UiAc
                 if closed {
                     overlay.open(Screen::Menu);
                 }
+            }
+            Screen::Journal => {
+                screen_window(ctx, text::LOG_TITLE, |ui, max_height| {
+                    ui.set_height(max_height.min(460.0));
+                    // Escape goes through `Overlay::back` (menu key), like every sub-screen.
+                    if overlay.log_panel.show(ui, false) == Some(log_panel::LogEvent::Close) {
+                        overlay.open(Screen::Menu);
+                    }
+                });
             }
             Screen::VirtualKeyboard => {}
         }

@@ -75,24 +75,29 @@ Pas de système à part (Q10). Un jeu du système `megacd` porte la marque si **
 
 | # | Critère | Mécanisme |
 |---|---|---|
-| a | **Empreinte de la piste 01** (taille + CRC32) trouvée dans le DAT Redump, sur une entrée étiquetée | identification 6.0 : `game.title` prend le nom DAT, qui porte l'étiquette ⇒ cas (b). `.cue` / `.iso` seulement. **La borne de CRC du Mega CD passe de 512 à 800 Mio** (comme la 3DO), sans quoi quatre des disques ne sont jamais identifiés |
-| b | **Étiquette du nom** : groupe entre parenthèses, casse et tiret indifférents, égal à `Sega CD 32X`, `Mega-CD 32X`, `Mega CD 32X`, `32X CD`, `CD 32X` ou `32X`, dans `game.title`, dans le nom du fichier `game.path` ou dans celui d'un des disques `game.media` | fonction pure `emu_library::cd32x_tag` ; seul critère automatique pour un `.chd` |
+| a | **Empreinte de la piste 01** (taille + CRC32) trouvée dans le DAT Redump, sur une entrée étiquetée | identification 6.0 : `game.title` prend le nom DAT, qui porte l'étiquette ⇒ cas (b). `.cue` / `.iso` seulement. **La borne de CRC du Mega CD passe de 512 à 800 Mio** (comme la 3DO), sans quoi quatre des disques ne sont jamais identifiés. *(Remplacé par l'amendement de fusion (D8 : 512 Mio) ; ces disques sont reconnus par la sonde `32X Initial Program`.)* |
+| b | **Étiquette du nom** : groupe entre parenthèses, casse et tiret indifférents, égal à `Sega CD 32X`, `Mega-CD 32X`, `Mega CD 32X`, `32X CD`, `CD 32X` ou `32X` *(Remplacé par l'amendement de fusion (D9 : `(32X)` refusé))*, dans `game.title`, dans le nom du fichier `game.path` ou dans celui d'un des disques `game.media` | fonction pure `emu_library::cd32x_tag` ; seul critère automatique pour un `.chd` *(Remplacé par l'amendement de fusion : `name_needs_32x`)* |
 | c | **Marquage manuel** par l'utilisateur | §2, §4 |
 
 - La règle « un disque suffit » (titre, fichier **ou** un média) couvre les `.m3u` et les groupes `(Disc N)`.
 - L'étiquette nue `(32X)` est acceptée parce que la fonction n'est appliquée qu'aux jeux `megacd`. Un faux positif
-  est sans gravité : picodrive fait aussi tourner les CD Mega CD.
+  est sans gravité : picodrive fait aussi tourner les CD Mega CD. *(Remplacé par l'amendement de fusion (D9 :
+  refusé).)*
 - **Faux négatifs connus, renvoyés au marquage manuel** : étiquette entre crochets (TOSEC `[32X]`), nom sans
   étiquette (un `.chd` nommé comme l'édition Mega CD est même *identifié* par son nom comme l'édition Mega CD),
-  `.cue` dont la piste dépasse 800 Mio ou n'est pas au DAT.
+  `.cue` dont la piste dépasse 800 Mio ou n'est pas au DAT. *(Remplacé par l'amendement de fusion (D8 : 512 Mio) ;
+  la sonde `32X Initial Program` reconnaît aussi ces `.cue` / `.iso`.)*
 - **Ligne déjà scannée** : une ligne inchangée n'est pas ré-analysée par le scan. Un `.cue` scanné avant la 7.2 ne
   bénéficie de la nouvelle borne qu'après un **rescan complet** (ou le marquage manuel) ; le guide d'essai le dit.
+  *(Remplacé par l'amendement de fusion : pas de nouvelle borne (D8) ; le scan réévalue la règle du nom sur les
+  lignes déjà marquées « non 32X ».)*
 - **Numéro de série : aucun rôle en 7.2.** `by_serial` ne tranche pas quand deux disques partagent le numéro (cas
   de Night Trap), et le motif `T-1620xF` n'est pas codé (numéros de boîte, en-tête réel non vérifié, trois jeux y
   échappent). À rouvrir après relevé de l'en-tête d'un vrai disque.
 - **Pas de sonde d'en-tête nouvelle** (champ console « SEGA 32X ») : non vérifiée. Un test unitaire fixe seulement
   l'ordre de `bin_kind` : une piste `SEGADISCSYSTEM` dont le champ à `0x100` dirait `SEGA 32X` reste une piste
-  Mega CD, jamais une cartouche `32x`.
+  Mega CD, jamais une cartouche `32x`. *(Remplacé par l'amendement de fusion : sonde du programme de démarrage
+  `32X Initial Program` (`disc_needs_32x`) de la 7.4.)*
 - Pas de liste des six titres en dur : le marquage manuel est le filet.
 
 ### 2. Stockage de la marque : dérivation, **pas de migration**
@@ -107,7 +112,8 @@ Pas de système à part (Q10). Un jeu du système `megacd` porte la marque si **
   hors application garde le nom : la clé survit là où une clé par chemin se perdrait ; (2) un `config.toml` 7.2
   relu par une version antérieure conserve la clé inconnue (`extra`) ; (3) **le retour à la 7.1, à la 7.0 ou à la
   6.0 stable reste possible sur le même dossier de données** — une base v7 serait refusée (`NewerSchema`) par ces
-  versions, alors que la 7.2 est une pré-release dont l'essai réel décide de la suite (Q12).
+  versions, alors que la 7.2 est une pré-release dont l'essai réel décide de la suite (Q12). *(Remplacé : le
+  schéma v7 de la 7.4 est gardé ; voir l'amendement de fusion.)*
 - **Collision de clé** (rips nommés `image.cue`, `disc1.cue`…) : la clé est gardée, mais au marquage emu-rust
   **compte les jeux `megacd` de même clé** et le dit dans le message (« 3 jeux Mega CD portent ce nom de fichier :
   tous seront lancés avec picodrive »).
@@ -116,9 +122,12 @@ Pas de système à part (Q10). Un jeu du système `megacd` porte la marque si **
 - Si l'écriture de `config.toml` échoue (fichier verrouillé, disque) : la marque est **annulée en mémoire** et
   l'échec affiché — jamais de marque qui disparaîtrait au redémarrage sans le dire.
 - Une colonne `game.cd32x` (schéma v7) reste la solution de repli si une version ultérieure migre pour une autre
-  raison ; elle n'est pas justifiée seule.
+  raison ; elle n'est pas justifiée seule. *(Remplacé : colonne `game.needs_32x`, schéma v7 de la 7.4.)*
 
 ### 3. Choix du core : picodrive imposé par `cd32x_cores`
+
+*(Remplacé par l'amendement de fusion : `choose_game_core` / `GameNeeds::needs_32x`, cores de la liste
+« Sega - 32X » ; `cd32x_cores` et `choose_cd32x_core` abandonnés.)*
 
 ```toml
 [systems."Sega - Mega-CD - Sega CD"]
@@ -192,7 +201,7 @@ un seul jeu et une seule marque ; sinon l'invitation (§4) s'affiche sur chacun 
 
 - Sans core : étiquette, marque dérivée, borne de CRC, `choose_cd32x_core`, marque manuelle, et **le routage** —
   c'est le test d'interface (jeu marqué ⇒ picodrive demandé ou installé, contrôle du BIOS sur picodrive) qui le
-  prouve.
+  prouve. *(Remplacé par l'amendement de fusion : `name_needs_32x`, sonde, `choose_game_core` ; borne inchangée.)*
 - Un seul test `#[ignore]` avec le vrai picodrive : disque de `tests/tools/mkcd.py` + **BIOS synthétique** qui écrit
   ADEN, écrit par le test dans un dossier temporaire (jamais distribué, jamais dans `system/`). La ligne
   `32X startup` prouve que picodrive, chargé par emu-rust avec un CD, allume la 32X — **ni le routage, ni
@@ -216,10 +225,14 @@ un seul jeu et une seule marque ; sinon l'invitation (§4) s'affiche sur chacun 
 
 - Interfaces ajoutées (`docs/design/v7.2-sega-cd-32x.md` §2) : `emu_library::cd32x_tag`, `Game::cd32x_by_name` ;
   `emu_assets::cores::{CorePreferences::cd32x_cores, choose_cd32x_core}` ; `LibraryConfig::cd32x`.
-  `emu-runtime`, `emu-libretro`, `emu-app` : inchangés.
+  `emu-runtime`, `emu-libretro`, `emu-app` : inchangés. *(Remplacé par l'amendement de fusion : ces interfaces
+  sont abandonnées au profit de `name_needs_32x`, `choose_game_core` et `effective_needs_32x` ; `LibraryConfig::cd32x`
+  gardé.)*
 - Le scan lit jusqu'à 800 Mio d'une piste 01 Mega CD **quand le DAT liste sa taille** (une fois par fichier).
+  *(Remplacé par l'amendement de fusion (D8 : 512 Mio).)*
 - Un `config.toml` et une base de la 7.1 sont repris sans changement ; les jeux Mega CD non marqués se comportent
-  comme en 6.0 / 7.1.
+  comme en 6.0 / 7.1. *(Remplacé : la base passe en schéma v7 depuis la 7.4 ; les jeux non marqués se lancent comme
+  en 7.4.)*
 - Les deux éditions d'un même titre (Mega CD seul, CD 32X) sont deux jeux distincts ; marquer à la main un jeu déjà
   joué avec genesis_plus_gx le fait repartir sans ses `.brm` (dit dans le message).
 - **Risque principal** : compatibilité réelle des six jeux avec picodrive (fonction ancienne, peu exercée),

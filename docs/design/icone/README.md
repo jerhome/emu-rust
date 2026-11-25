@@ -1,6 +1,6 @@
 # Variantes d'icône (7.1, ADR 0023 §2)
 
-> **Fusion (2026-11-25)** : document de la ligne PC, gardé pour mémoire. Variantes proposées sur la ligne PC ; l'utilisateur a retenu le **dessin Mac** (`assets/icon.svg`, D2), produit par la chaîne PC.
+> **Fusion (2026-11-25)** : document de la ligne PC, gardé pour mémoire. Variantes proposées sur la ligne PC ; l'utilisateur a retenu le **dessin Mac** (`packaging/icon/emu-rust.svg`, D2), produit par la chaîne PC.
 
 Quatre propositions, formes pleines sans dégradé, aux couleurs de l'interface (fond sombre `#1B1B1F`, accent
 `#285AA0`, focus `#96C8FF`, ambre `#FFBE50`). Aucune marque, aucune manette d'un fabricant.

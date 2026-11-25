@@ -19,6 +19,10 @@ pub struct LibraryConfig {
     /// One-shot purge generation of the `Missing` cover records (2: records written by sources that
     /// answered 404 for everything are forgotten).
     pub covers_missing_reset: u32,
+    /// File names (with extension) of `megacd` games marked « CD 32X » by hand (ADR 0024 §2); compared in
+    /// Unicode lower case on both sides.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cd32x: Vec<String>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -29,6 +33,7 @@ impl Default for LibraryConfig {
             roots: Vec::new(),
             scan_on_start: true,
             covers_missing_reset: 0,
+            cd32x: Vec::new(),
             extra: toml::Table::new(),
         }
     }

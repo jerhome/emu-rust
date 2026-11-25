@@ -2,35 +2,51 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
-## [7.5.0] - non publiée
+## [7.5.0] - non publiée (tag à valider)
 
-Finition PC : travail de la ligne PC (7.1.0-rc.1 et 7.2, jamais publiés sur `main`) réappliqué sur la 7.4 (contrat :
-`docs/design/v7.5-finition-pc.md`). Squelette : complété par les lots L1 à L6. Guide d'essai : `docs/guide-essai-7.5.md`.
+Finition PC : le travail de la ligne PC (7.1.0-rc.1 et 7.2, jamais publiés sur `main`) est réappliqué sur la 7.4
+(contrat : `docs/design/v7.5-finition-pc.md`). Guide d'essai : `docs/guide-essai-7.5.md`. Schéma de la base
+inchangé (v7) ; aucune migration.
 
 ### Ajouté
 
-- **Journal** : page « Journal » ouverte depuis le pied de page (compteur d'erreurs et d'avertissements), lien dans
-  Réglages ; fichier `logs/emu-rust.log` (session en cours et précédente).
-- **Messages copiables** : bouton « Copier » sur les messages d'erreur et le journal (presse-papiers réellement actif).
-- **Pied de page** sur toutes les pages et dans le menu en jeu : « emu-rust 7.5.0 — dev by claude@jerhome ».
-- **Windows** : `emu-rust-cli.exe` (ligne de commande, livré à côté d'`emu-rust.exe`) remplace `emu-rust-console.exe`.
-- **Écran Cores** : fichiers d'origine facultatifs par core (BIOS GBA et Game Boy, ROM MT-32 / CM-32L), systèmes à
-  core unique sans menu de choix, recherche par système.
-- **BIOS PlayStation** : les autres révisions (SCPH-1002, SCPH-7002…) sont reconnues à l'import et copiées sous le
+- **Journal** : page « Journal » ouverte depuis le pied de page (compteur des erreurs et avertissements non lus) ou
+  par le lien des Réglages ; filtres, lignes des cores, copie de tout le journal ; fichier `logs/emu-rust.log`
+  (session en cours et précédente, nettoyage des données sensibles, taille bornée, trace d'un plantage, verrou entre
+  deux instances).
+- **Pied de page** sur toutes les pages et dans le menu en jeu : « emu-rust 7.5.0 — dev by claude@jerhome », bouton
+  « Journal » à droite.
+- **Messages copiables** : texte sélectionnable et bouton « Copier » sur les messages d'erreur, le journal et les
+  derniers messages du menu en jeu ; le presse-papiers est réellement actif (il ne l'était pas en 7.4).
+- **Windows** : `emu-rust-cli.exe` (ligne de commande, livré à côté d'`emu-rust.exe`) remplace
+  `emu-rust-console.exe` ; boîte de message Windows pour une erreur fatale.
+- **Réglage « Afficher le terminal (après redémarrage) »** (`[app] show_terminal`) : sous Windows, relance par
+  `emu-rust-cli.exe` ; sous macOS, relance dans Terminal.app (inchangé). L'ancienne clé `[interface] console` de la
+  7.1.0-rc.1 est lue puis retirée du fichier.
+- **Écran Cores** : fichiers d'origine facultatifs par core (BIOS GBA et Game Boy, ROM Roland MT-32 / CM-32L de
+  dosbox_pure), états vérifiés par empreinte md5, systèmes à core unique sans menu de choix, recherche.
+- **BIOS PlayStation** : les autres révisions (SCPH-1001, 1002, 7002…) sont reconnues à l'import et copiées sous le
   nom attendu pour leur région.
-- **CD 32X** : « Ce jeu est un CD 32X » au clic droit ou à la touche X (avec « Réinitialiser la jaquette »),
-  invitation dans la ligne d'aide, étiquettes `(Mega CD 32X)`, `(CD 32X)`… reconnues.
+- **CD 32X** : « Ce jeu est un CD 32X » / « Ce n'est pas un CD 32X » au clic droit ou à la touche X (menu unique
+  avec « Réinitialiser la jaquette »), mémorisé dans `[library] cd32x` ; invitation dans la ligne d'aide ; étiquettes
+  `(Sega CD 32X)`, `(Mega CD 32X)`, `(32X CD)`, `(CD 32X)` reconnues, casse et tiret indifférents.
+- Tests : `mkcd.py --variant 32x`, aller-retour de `config.toml` des deux lignes, relecture des étiquettes 32X sur
+  une base 7.4 ou v6.
 
 ### Modifié
 
-- Bandeau des fichiers d'origine : fichiers vérifiés par leur empreinte (« non vérifié » quand elle est inconnue).
-- Icône produite par une chaîne de génération reproductible (même dessin).
+- Bandeau du jeu sélectionné : fichiers vérifiés par leur empreinte (« présent, non vérifié » quand elle est
+  inconnue, import forcé possible) ; PlayStation et 3DO « fonctionnent mieux avec » le fichier, le Mega CD l'« exige ».
+- Icône (dessin 7.4) produite par une chaîne de génération reproductible (`packaging/icon/`, empreinte du dessin).
 - Notice de picodrive : il n'intègre aucun BIOS Sega (démarrage 32X assuré par le core).
+- Une étiquette `(32X)` seule n'est plus reconnue comme CD 32X (marque manuelle).
+- Un CD 32X ne se lance jamais avec `genesis_plus_gx` : le dialogue propose d'installer picodrive.
 
 ### Corrigé
 
 - Message « buildbot en cours de mise à jour » au lieu d'une erreur de CRC quand le serveur des cores se met à jour.
-- Disquettes numérotées par un chiffre final (`MANIACD0`, `MANIACD1`) regroupées en un seul jeu.
+- Disquettes numérotées par un chiffre final (`MANIACD0`, `MANIACD1`) regroupées en un seul jeu, pour tous les
+  ordinateurs.
 
 ## [7.4.0] - non publiée (tag à valider)
 

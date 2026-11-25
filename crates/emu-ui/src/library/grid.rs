@@ -72,10 +72,11 @@ pub(crate) fn system_counts(games: &[Game], catalog: &[SystemInfo]) -> Vec<(Stri
         .collect()
 }
 
-/// Short badges of a game, shown on its card and in the status bar of the selected game.
-pub(crate) fn badges(game: &Game) -> Vec<&'static str> {
+/// Short badges of a game, shown on its card and in the status bar of the selected game. `manual`: the manual
+/// CD 32X marks (`[library] cd32x`).
+pub(crate) fn badges(game: &Game, manual: &[String]) -> Vec<&'static str> {
     let mut out = Vec::new();
-    if game.needs_32x {
+    if super::cd32x::effective_needs_32x(game, manual) {
         out.push(super::text::BADGE_32X);
     }
     out

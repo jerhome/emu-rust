@@ -376,8 +376,27 @@ impl Config {
         let text = String::from_utf8(bytes)
             .map_err(|_| ConfigError::Parse("le fichier n'est pas en UTF-8".into()))?;
         let mut config: Self = toml::from_str(&text).map_err(|e| parse_error(&text, &e))?;
+        config.apply_legacy_aliases();
         config.sanitize();
         Ok(config)
+    }
+
+    /// Keys of the 7.1.0-rc.1 (PC line) read as their 7.5 equivalent (design v7.5 §4): `[interface] console = true`
+    /// sets `app.show_terminal`; the `console` key is then removed from `extra["interface"]` (and the table when it
+    /// becomes empty), so unchecking the setting cannot be undone by the alias. Other `[interface]` keys
+    /// (`firmware_hints_seen`) stay untouched.
+    fn apply_legacy_aliases(&mut self) {
+        let Some(toml::Value::Table(interface)) = self.extra.get_mut("interface") else {
+            return;
+        };
+        if let Some(console) = interface.remove("console")
+            && console.as_bool() == Some(true)
+        {
+            self.app.show_terminal = true;
+        }
+        if interface.is_empty() {
+            self.extra.remove("interface");
+        }
     }
 
     /// Like `load`, but a bad file is logged and yields locked defaults: `save` will not touch the file.
@@ -937,5 +956,58 @@ button = "a"
         DataDirs::under(&existing).create_all().unwrap();
         let mode = std::fs::metadata(&existing).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
+    }
+
+    /// A `config.toml` written by the 7.4 (Mac line) loads and saves without losing anything.
+    #[test]
+    fn config_from_7_4_round_trips() {
+        let text = "[app]\nshow_terminal = true\n\n[ui]\nwizard_done = true\n\n[library]\nroots = [\"/roms\"]\n\n[cores.preferred]\nmegacd = \"picodrive\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        let c = Config::load(&path).unwrap();
+        assert!(c.app.show_terminal && c.ui.wizard_done);
+        assert_eq!(c.library.roots, [PathBuf::from("/roms")]);
+        assert!(c.library.cd32x.is_empty());
+        c.save(&path).unwrap();
+        let back = Config::load(&path).unwrap();
+        assert_eq!(back, c);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("cd32x") && !written.contains("[interface]"),
+            "{written}"
+        );
+    }
+
+    /// A `config.toml` written by the 7.1.0-rc.1 (PC line): `console` becomes `show_terminal` and is not written
+    /// back; `firmware_hints_seen` and the manual CD 32X marks are kept.
+    #[test]
+    fn config_from_7_1_rc1_converts_console_and_keeps_the_rest() {
+        let text = "[interface]\nconsole = true\nfirmware_hints_seen = [\"swanstation/scph5501.bin\"]\n\n[library]\ncd32x = [\"night trap (disc 1).chd\"]\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        let c = Config::load(&path).unwrap();
+        assert!(c.app.show_terminal);
+        assert_eq!(c.library.cd32x, ["night trap (disc 1).chd"]);
+        c.save(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("console"), "{written}");
+        assert!(written.contains("show_terminal = true"), "{written}");
+        assert!(written.contains("swanstation/scph5501.bin"), "{written}");
+        assert!(written.contains("night trap (disc 1).chd"), "{written}");
+        // Unchecking the setting sticks: the alias is gone from the file.
+        let mut c = Config::load(&path).unwrap();
+        c.app.show_terminal = false;
+        c.save(&path).unwrap();
+        assert!(!Config::load(&path).unwrap().app.show_terminal);
+    }
+
+    #[test]
+    fn console_false_is_dropped_and_an_empty_interface_table_goes() {
+        let mut c: Config = toml::from_str("[interface]\nconsole = false\n").unwrap();
+        c.apply_legacy_aliases();
+        assert!(!c.app.show_terminal);
+        assert!(!c.extra.contains_key("interface"));
     }
 }

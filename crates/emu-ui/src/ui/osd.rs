@@ -8,6 +8,8 @@ use egui::{Align2, Color32, Context, Frame, Id, Order, RichText};
 use super::{StatsView, text};
 
 const MAX_ITEMS: usize = 5;
+/// Messages kept for the in-game menu (« Derniers messages »).
+const MAX_HISTORY: usize = 10;
 pub const DEFAULT_DURATION: Duration = Duration::from_secs(3);
 const MIN_DURATION: Duration = Duration::from_secs(1);
 const MAX_DURATION: Duration = Duration::from_secs(10);
@@ -26,9 +28,27 @@ struct Item {
     until: Instant,
 }
 
+/// A past message, kept after its toast has expired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// Local `HH:MM:SS`.
+    pub time: String,
+    pub level: OsdLevel,
+    pub text: String,
+}
+
+impl HistoryEntry {
+    /// Plain line used for the clipboard.
+    pub fn line(&self) -> String {
+        format!("{} {}", self.time, self.text)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Osd {
     items: VecDeque<Item>,
+    /// Oldest first, bounded by `MAX_HISTORY`.
+    history: VecDeque<HistoryEntry>,
 }
 
 impl Osd {
@@ -41,14 +61,48 @@ impl Osd {
         now: Instant,
     ) {
         let duration = duration.clamp(MIN_DURATION, MAX_DURATION);
+        let text = text::sanitize_core_text(&text.into());
+        // Warnings and errors reach the Journal here, once: their callers do not log them again. Infos are
+        // routine and logged by their callers when useful.
+        match level {
+            OsdLevel::Warn => tracing::warn!(target: "emu_ui::osd", "{text}"),
+            OsdLevel::Error => tracing::error!(target: "emu_ui::osd", "{text}"),
+            OsdLevel::Info => {}
+        }
+        self.record(
+            &text,
+            level,
+            chrono::Local::now().format("%H:%M:%S").to_string(),
+        );
         self.items.push_back(Item {
-            text: text::sanitize_core_text(&text.into()),
+            text,
             level,
             until: now + duration,
         });
         while self.items.len() > MAX_ITEMS {
             self.items.pop_front();
         }
+    }
+
+    fn record(&mut self, text: &str, level: OsdLevel, time: String) {
+        self.history.push_back(HistoryEntry {
+            time,
+            level,
+            text: text.to_owned(),
+        });
+        while self.history.len() > MAX_HISTORY {
+            self.history.pop_front();
+        }
+    }
+
+    /// Latest messages of the session, most recent first.
+    pub fn history(&self) -> impl Iterator<Item = &HistoryEntry> {
+        self.history.iter().rev()
+    }
+
+    /// All the history as plain text, most recent first, one message per line.
+    pub fn history_text(&self) -> String {
+        crate::copyable::joined(self.history().map(HistoryEntry::line))
     }
 
     pub fn info(&mut self, text: impl Into<String>, now: Instant) {

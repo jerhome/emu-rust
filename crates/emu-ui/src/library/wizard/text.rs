@@ -125,5 +125,7 @@ pub const PAD_NONE: &str = "Aucune manette détectée. Branchez-la maintenant, o
 pub const PAD_NOTE: &str = "Une DualShock 4 fonctionne sans réglage. « Configurer » apprend les boutons d'une \
                             autre manette.";
 pub const PAD_CONFIGURE: &str = "Configurer";
+pub const JOURNAL_REMINDER: &str = "En bas de chaque écran, le bouton « Journal » montre les messages techniques, \
+                                    à copier pour signaler un problème.";
 pub const BIOS_REMINDER: &str = "Certains systèmes demandent un BIOS que vous fournissez : la bibliothèque le \
                                  signale sur le jeu concerné, avec la marche à suivre.";

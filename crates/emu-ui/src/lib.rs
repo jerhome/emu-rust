@@ -9,10 +9,12 @@ mod config_computer;
 mod config_gamepad;
 mod config_library;
 mod content;
+mod copyable;
 mod cores_ui;
 mod dos_launch;
 mod egui_layer;
 mod file_picker;
+mod firmware_hints;
 mod game_identity;
 mod game_options;
 mod gamepad;
@@ -21,9 +23,11 @@ mod hotkeys;
 mod keyboard;
 mod launch_firmware;
 mod library;
-mod log_buffer;
+/// Log capture for the « Journal » page and `logs/emu-rust.log` (ADR 0023 §3).
+pub mod log;
 mod pad_mode;
 mod platform;
+mod ps1_bios;
 mod shutdown;
 mod theme;
 mod ui;
@@ -68,7 +72,6 @@ pub use crate::gamepad::{
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
-pub use crate::log_buffer::{LOG_CAPACITY, LogBuffer, LogBufferLayer, LogLine};
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 pub use crate::ui::text::sanitize_core_line;
@@ -77,6 +80,13 @@ pub use crate::window_icon::window_icon;
 pub use emu_assets as assets;
 /// The library crate, re-exported so `emu-app` reaches it through `emu-ui`.
 pub use emu_library as library_db;
+/// Native error box before any window exists (Windows without a console; elsewhere stderr only). ADR 0023 §3.
+pub use emu_runtime::fatal_dialog;
+
+/// Version shown by the footer and `--version` (workspace version).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Credit line of the footer (ADR 0023 §1): `emu-rust <VERSION> — <CREDIT>`.
+pub const CREDIT: &str = "dev by claude@jerhome";
 
 /// Screen to open for a deterministic capture (`--screen`); rendered by the egui layer (task U2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +100,8 @@ pub enum Screen {
     Computer,
     /// Built-in manual, opened from the menu.
     Help,
+    /// « Journal » panel, opened from the footer of the menu (game paused).
+    Journal,
     /// Not a menu screen: the virtual keyboard over the running game (`--screen vkbd` captures).
     VirtualKeyboard,
 }
@@ -173,6 +185,10 @@ pub enum LibraryScreen {
     Settings,
     /// Core manager screen (`--screen cores`, no network).
     Cores,
+    /// Built-in manual (`--screen library-help`).
+    Help,
+    /// « Journal » page (`--screen library-log`).
+    Journal,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

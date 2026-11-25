@@ -13,9 +13,10 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20                [--no-audio] [--no-gamepad] [--frames N] [--dump-frame sortie.png]\n\
                          \x20                [--launch <commande|programme>] [--no-auto-fast-load]\n\
                          \x20                [--pad-device digital|dualshock]\n\
-                         \x20                [--screen menu|keys|options|disks|computer|vkbd] [--dump-window sortie.png]\n\
+                         \x20                [--screen menu|keys|options|disks|computer|vkbd|journal] [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad] [--wizard]\n\
-                         \x20                [--screen library|library-settings|cores|library-launch|wizard]\n\
+                         \x20                [--screen library|library-settings|library-help|library-log|cores|\n\
+                         \x20                          library-launch|wizard]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -26,6 +27,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] --import-bios <fichier> [--bios-name <nom> --unverified]\n\
                          \x20                [--replace-user-bios]\n\
                          \x20      emu-rust --version | --help\n\
+                         Windows : les commandes en ligne passent par emu-rust-cli.exe (console) ; emu-rust.exe est\n\
+                         l'interface sans console. Ex. : emu-rust-cli --install-core recommended\n\
                          --core accepte l'identifiant d'un core installé (ex. gambatte, puae, puae2021) ou le\n\
                          chemin d'un fichier.\n\
                          --import-bios copie un BIOS que vous possédez (Kickstart, TOS…) sous le nom attendu, après\n\
@@ -287,15 +290,18 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "disks" => ScreenArg::Game(Screen::Disks),
                     "computer" => ScreenArg::Game(Screen::Computer),
                     "vkbd" => ScreenArg::Game(Screen::VirtualKeyboard),
+                    "journal" => ScreenArg::Game(Screen::Journal),
                     "library" => ScreenArg::Library(LibraryScreen::Home),
                     "library-settings" => ScreenArg::Library(LibraryScreen::Settings),
                     "cores" => ScreenArg::Library(LibraryScreen::Cores),
+                    "library-help" => ScreenArg::Library(LibraryScreen::Help),
+                    "library-log" => ScreenArg::Library(LibraryScreen::Journal),
                     "library-launch" => ScreenArg::Library(LibraryScreen::Launch),
                     "wizard" => ScreenArg::Library(LibraryScreen::Wizard),
                     _ => {
                         return Err(
-                            "--screen attend menu, keys, options, disks, computer, vkbd, library, \
-                                    library-settings, library-launch, wizard ou cores"
+                            "--screen attend menu, keys, options, disks, computer, vkbd, journal, library, \
+                                    library-settings, library-help, library-log, library-launch, wizard ou cores"
                                 .into(),
                         );
                     }
@@ -674,6 +680,7 @@ mod tests {
         assert!(p(&["--core", "cap32", "--rom", "r", "--launch", " "]).is_err());
         assert!(p(&["--launch", "RUN"]).is_err());
         assert!(p(&["--check-bios", "--no-auto-fast-load"]).is_err());
+        assert!(USAGE.contains("emu-rust-cli --install-core recommended"));
         assert!(USAGE.contains("--launch") && USAGE.contains("--no-auto-fast-load"));
     }
 
@@ -779,6 +786,15 @@ mod tests {
             panic!()
         };
         assert_eq!(l.screen, Some(LibraryScreen::Wizard));
+        for (arg, screen) in [
+            ("library-log", LibraryScreen::Journal),
+            ("library-help", LibraryScreen::Help),
+        ] {
+            let Command::Library(l) = p(&["--screen", arg]).unwrap() else {
+                panic!()
+            };
+            assert_eq!(l.screen, Some(screen));
+        }
         assert!(p(&["--core", "c", "--rom", "r", "--wizard"]).is_err());
         assert!(p(&["--list-cores", "--wizard"]).is_err());
         let Command::Library(l) = p(&["--screen", "cores"]).unwrap() else {

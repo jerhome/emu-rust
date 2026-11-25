@@ -109,9 +109,9 @@ fn find_marker(stem: &str) -> Option<Marker> {
 /// Floppy formats for which a bare trailing digit (`MANIACD0.D64`, `MANIACD1.D64`) may number the disks.
 const DIGIT_SUFFIX_EXTENSIONS: &[&str] = &["d64", "g64", "d71", "d81", "adf", "dsk", "st", "msa"];
 /// Shortest radical (name without the final digit) accepted by the bare-digit rule.
-const MIN_RADICAL_CHARS: usize = 3;
-/// Words that may end the radical of a group starting at 1 (`Quest D1`, `Quest_Disk2`): without one, `Game1` /
-/// `Game2` is more likely two games of a series than two disks.
+const MIN_RADICAL_CHARS: usize = 4;
+/// Words that must end the radical of a group (`Quest D1`, `Quest_Disk2`, `MANIACD0`): without one, `Game1` /
+/// `Game2` or `Level0` / `Level1` is more likely a series than disks (decision F4).
 const DISK_WORDS: &[&str] = &["d", "disk", "disc", "dsk", "diskette", "side"];
 
 /// `Name3` -> (`Name`, 3): a single final digit after a non-digit, radical of at least [`MIN_RADICAL_CHARS`].
@@ -187,10 +187,10 @@ fn ext_lower(path: &Path) -> String {
 /// `playlist` (and is not returned among the others). A group is cut at [`MAX_MEDIA_IMAGES`] members.
 ///
 /// Second rule, floppies only (`.d64 .g64 .d71 .d81 .adf .dsk .st .msa`, files without a marker above): same
-/// folder, same extension, same radical of 3 characters or more, and a single final digit (`MANIACD0`,
-/// `MANIACD1`). The digits must form a contiguous run without duplicate, starting at 0 (always accepted) or at 1
-/// (accepted only when the radical ends with a disk word such as `D`, `Disk`, `Side`: bare `Game1` / `Game2`
-/// stay two games; a start at 0 needs no such word, so `Level0` / `Level1` do group, an accepted risk, since a series is far more common than a two-disk game with that naming). Two-digit endings
+/// folder, same extension, same radical of 4 characters or more ending with a disk word (`D`, `Disk`, `Side`...),
+/// and a single final digit (`MANIACD0`, `MANIACD1`; decision F4, `docs/questions-ouvertes.md`). The digits
+/// must form a contiguous run without duplicate, starting at 0 or 1: `Game1` / `Game2` and `Level0` / `Level1`
+/// stay separate games. Two-digit endings
 /// (`Game10`) never match; a gap (`G0`, `G1`, `G3`) cancels the group; a group never has a playlist nor reports
 /// missing disks. The group name is the radical as written (`MANIACD`).
 pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
@@ -296,7 +296,7 @@ pub fn group_media(files: &[PathBuf]) -> (Vec<MediaGroup>, Vec<PathBuf>) {
         let first = entries[0].0;
         // Contiguous run from 0 or 1 without duplicate (`game1.d64` + `GAME1.d64` is ambiguous: no group).
         let contiguous = entries.windows(2).all(|w| w[1].0 == w[0].0 + 1);
-        let allowed = first == 0 || (first == 1 && ends_with_disk_word(&radical));
+        let allowed = (first == 0 || first == 1) && ends_with_disk_word(&radical);
         if entries.len() < 2 || entries.len() > MAX_MEDIA_IMAGES || !contiguous || !allowed {
             continue;
         }
@@ -486,6 +486,9 @@ mod tests {
             // A series, not disks.
             vec!["d/Game1.d64", "d/Game2.d64"],
             vec!["d/Zak1.adf", "d/Zak2.adf"],
+            vec!["d/Level0.adf", "d/Level1.adf"],
+            // Radical shorter than 4 characters, even with a disk word.
+            vec!["d/GAD0.adf", "d/GAD1.adf"],
             vec!["d/Blood1.adf", "d/Blood2.adf"],
             vec!["d/World1.adf", "d/World2.adf"],
             vec!["d/Island1.d64", "d/Island2.d64"],

@@ -2154,7 +2154,8 @@ pub(crate) fn run(
     let discs = DiscIndex::load(conn)?;
     // (row id, region key) of unchanged rows of a disc system whose region was never computed (v5 rows).
     let mut regions: Vec<(i64, &'static str)> = Vec::new();
-    // (row id, flag) of unchanged `megacd` rows whose `needs_32x` was never computed (v6 rows).
+    // (row id, flag) of unchanged `megacd` rows whose `needs_32x` was never computed (v6 rows) or is `false`
+    // while the name rule says `true` (7.4 bases).
     let mut cd_32x: Vec<(i64, bool)> = Vec::new();
     let mut names = NameIndex::default();
     let mut state = ScanProgress::default();
@@ -2189,18 +2190,18 @@ pub(crate) fn run(
                 }
             }
             if let Some(o) = old
-                && o.needs_32x.is_none()
+                && o.needs_32x != Some(true)
                 && o.system == CD_32X_SYSTEM
             {
                 let probe = f.media.first().map_or(f.path.as_path(), Path::new);
-                let flag = needs_32x_of(
-                    &o.system,
-                    probe_32x(probe),
-                    &o.title,
-                    &stem_of(&f.path),
-                    &f.media,
+                // A stored `false` (7.4 bases) was decided without the name rule: re-evaluate the name only,
+                // the disc is not probed again. A stored `true` is never downgraded.
+                let probed = o.needs_32x.is_none() && probe_32x(probe);
+                let flag = needs_32x_of(&o.system, probed, &o.title, &stem_of(&f.path), &f.media);
+                cd_32x.extend(
+                    flag.filter(|flag| *flag || o.needs_32x.is_none())
+                        .map(|flag| (o.id, flag)),
                 );
-                cd_32x.extend(flag.map(|flag| (o.id, flag)));
             }
         } else {
             // No transaction is open here: a slow read never holds the write lock.
@@ -2272,7 +2273,8 @@ pub(crate) fn run(
         }
         for (id, flag) in &cd_32x {
             tx.execute(
-                "UPDATE game SET needs_32x = ?2 WHERE id = ?1 AND needs_32x IS NULL",
+                "UPDATE game SET needs_32x = ?2
+                 WHERE id = ?1 AND (needs_32x IS NULL OR (needs_32x = 0 AND ?2 = 1))",
                 params![id, flag],
             )
             .map_err(db_error)?;
@@ -2987,6 +2989,39 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(nulls, 0);
+        }
+
+        #[test]
+        fn stored_false_is_reevaluated_by_name_without_probing() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("roms");
+            let dir = root.join("megacd");
+            write(&dir.join("Night Trap (USA) (Sega CD 32X).chd"), b"not read");
+            write(&dir.join("Plain (Europe).chd"), b"not read");
+            // Probes true by content, but its name carries no tag: a stored `false` must not be touched.
+            write(&dir.join("Probe Only.iso"), &sega_cd_user(Some(SIG_AT)));
+            let mut lib = Library::open_in_memory().unwrap();
+            scan(&mut lib, &root);
+            // A 7.4 row: the flag was stored as 0 before the name rule existed.
+            lib.conn
+                .execute("UPDATE game SET needs_32x = 0", [])
+                .unwrap();
+            let (report, _) = scan(&mut lib, &root);
+            assert_eq!(report.unchanged, 3);
+            assert_eq!(
+                flags(&lib),
+                [
+                    ("Night Trap (USA) (Sega CD 32X).chd".to_owned(), true, 0),
+                    ("Plain (Europe).chd".to_owned(), false, 0),
+                    ("Probe Only.iso".to_owned(), false, 0),
+                ]
+            );
+            // A stored `true` is kept.
+            lib.conn
+                .execute("UPDATE game SET needs_32x = 1", [])
+                .unwrap();
+            scan(&mut lib, &root);
+            assert!(flags(&lib).iter().all(|(_, flag, _)| *flag));
         }
 
         #[test]

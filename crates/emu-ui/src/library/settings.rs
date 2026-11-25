@@ -219,6 +219,10 @@ impl LibraryUi {
                     self.leave_settings();
                     self.set_page(Page::Cores);
                 }
+                if ui.button(text::JOURNAL_LINK).clicked() {
+                    self.leave_settings();
+                    self.open_journal();
+                }
                 ui.heading(text::SETTINGS_TITLE);
             });
             if self.config.is_locked() {
@@ -243,8 +247,6 @@ impl LibraryUi {
                     self.dos_cache_section(ui);
                     ui.separator();
                     self.app_section(ui);
-                    ui.separator();
-                    journal_section(ui);
                 });
         });
         if escape {
@@ -655,49 +657,6 @@ fn plain_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
             .changed()
     })
     .inner
-}
-
-/// « Journal » pane: the latest log lines, warnings and errors highlighted, keyboard-reachable copy button.
-fn journal_section(ui: &mut Ui) {
-    let lines = crate::LogBuffer::global().snapshot();
-    egui::CollapsingHeader::new(RichText::new(text::JOURNAL_TITLE).strong())
-        .id_salt("journal")
-        .show(ui, |ui| {
-            if ui.button(text::JOURNAL_COPY).clicked() {
-                let all = lines
-                    .iter()
-                    .map(|l| format!("{} {} {}", l.level, l.target, l.message))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                ui.ctx().copy_text(all);
-            }
-            if lines.is_empty() {
-                weak(ui, text::JOURNAL_EMPTY);
-                return;
-            }
-            ScrollArea::vertical()
-                .id_salt("journal-lines")
-                .max_height(240.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for l in &lines {
-                        let line =
-                            format!("{:<5} {}", l.level, crate::sanitize_core_line(&l.message));
-                        let rich = RichText::new(line).monospace();
-                        match l.level {
-                            tracing::Level::ERROR => {
-                                ui.label(rich.color(egui::Color32::LIGHT_RED));
-                            }
-                            tracing::Level::WARN => {
-                                ui.label(rich.color(super::WARNING));
-                            }
-                            _ => {
-                                ui.label(rich);
-                            }
-                        }
-                    }
-                });
-        });
 }
 
 #[cfg(test)]

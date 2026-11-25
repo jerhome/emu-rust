@@ -516,9 +516,18 @@ impl CoresUi {
                 None => {}
             }
         }
+        let infos = manager.infos();
+        let ids: Vec<CoreId> = installed.iter().map(|c| c.id.clone()).collect();
+        checks.enhancements = crate::firmware_hints::installed_enhancements(
+            &ids,
+            &infos,
+            &self.prefs,
+            &self.system_dir,
+        );
+        checks.ps1 = crate::ps1_bios::scan(&self.system_dir);
         self.snapshot = Some(Snapshot {
             installed,
-            infos: manager.infos(),
+            infos,
             catalog: manager.catalog(),
             checks,
         });
@@ -725,7 +734,7 @@ impl CoresUi {
             }
         }
         if let Some(e) = &self.refresh_error {
-            ui.colored_label(ERROR, e);
+            crate::copyable::message(ui, ERROR, e);
         }
     }
 
@@ -740,10 +749,19 @@ impl CoresUi {
         files: &[String],
     ) {
         let wanted = check.wanted.as_deref().unwrap_or_default();
+        let seen = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.checks.ps1.get(wanted))
+            .cloned();
         ui.horizontal_wrapped(|ui| {
             let importable = match &check.state {
                 FirmwareState::Ok | FirmwareState::Free { .. } | FirmwareState::Unverified => {
-                    ui.label(RichText::new(text::required_ok(wanted)).small().weak());
+                    ui.label(
+                        RichText::new(text::required_ok(wanted, seen.as_ref()))
+                            .small()
+                            .weak(),
+                    );
                     false
                 }
                 FirmwareState::Builtin { label } => {
@@ -793,15 +811,67 @@ impl CoresUi {
         });
     }
 
+    /// `Optional` original files of an installed core (ADR 0023 §5): state, benefit and « Importer un BIOS… » when
+    /// the file is not verified. `Fallback` files are already on the 3.0 line (`required_line`).
+    fn enhancement_lines(&mut self, ui: &mut Ui, id: &CoreId) {
+        use crate::firmware_hints::{HintState, hint_state, system_name};
+        use emu_assets::cores::EnhancementKind;
+        let Some(list) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.checks.enhancements.get(id))
+        else {
+            return;
+        };
+        let lines: Vec<(String, String, HintState)> = list
+            .iter()
+            .filter(|e| e.enhancement.kind == EnhancementKind::Optional)
+            .map(|e| {
+                let f = &e.enhancement;
+                (
+                    f.file.clone(),
+                    text::enhancement_line(
+                        &f.file,
+                        &system_name(&e.database),
+                        hint_state(&f.state),
+                        &f.benefit,
+                    ),
+                    hint_state(&f.state),
+                )
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        ui.label(RichText::new(text::ENHANCED_BY).small());
+        let mut import = None;
+        for (file, line, state) in &lines {
+            ui.horizontal_wrapped(|ui| {
+                let label = RichText::new(line).small();
+                if *state == HintState::Present {
+                    ui.label(label.weak());
+                } else {
+                    ui.colored_label(INFO, label);
+                    if ui.small_button(text::IMPORT_BUTTON).clicked() {
+                        import = Some(file.clone());
+                    }
+                }
+            });
+        }
+        if lines.iter().any(|(_, _, s)| *s != HintState::Present) {
+            ui.label(RichText::new(text::NEVER_DOWNLOADED).small().weak());
+        }
+        if let Some(file) = import {
+            self.import.start(Some(file));
+        }
+    }
+
     /// « Core utilisé » for each system with several cores (design v3.0 §3.3). Writes nothing itself: the library
     /// saves `[cores.preferred]`. A core that is not installed can be chosen; its row offers « Installer ».
     fn core_choice(&mut self, ui: &mut Ui) -> Option<CoresEvent> {
-        let systems: Vec<(String, Vec<CoreId>)> = self
-            .prefs
-            .systems()
-            .filter(|(_, cores)| cores.len() > 1)
-            .map(|(s, c)| (s.to_owned(), c.to_vec()))
-            .collect();
+        // Single-core systems are listed too (« 3DO : Opera »), without a choice: the user sees which core runs
+        // each system and whether it is installed.
+        let systems = choice_systems(&self.prefs);
         if systems.is_empty() {
             return None;
         }
@@ -857,7 +927,10 @@ impl CoresUi {
                                 rich = rich.strong();
                             }
                             let selected = current.as_ref() == Some(&core);
-                            if ui.selectable_label(selected, rich).clicked() && !selected {
+                            if cores.len() == 1 {
+                                // Nothing to choose: shown, not focusable.
+                                ui.label(rich);
+                            } else if ui.selectable_label(selected, rich).clicked() && !selected {
                                 event = Some(CoresEvent::PreferCore {
                                     system: system.clone(),
                                     core: core.clone(),
@@ -962,8 +1035,9 @@ impl CoresUi {
                 let files = region_files(&self.prefs, &row.id);
                 self.required_line(ui, check, notice.as_deref(), &files);
             }
+            self.enhancement_lines(ui, &row.id);
             if let Some(e) = self.errors.get(&row.id) {
-                ui.colored_label(ERROR, e);
+                crate::copyable::message(ui, ERROR, e);
             }
             let op = self.ops.get(&row.id).map(|o| o.kind);
             if op.is_none()
@@ -1127,7 +1201,14 @@ impl CoresUi {
                     .small()
                     .weak(),
                 );
-                ui.colored_label(color, text::firmware_state(&f.state));
+                let seen = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.checks.ps1.get(&f.spec.path));
+                ui.colored_label(
+                    color,
+                    text::firmware_detail_state(&f.spec.path, &f.state, seen),
+                );
                 if !matches!(f.state, FirmwareState::Ok)
                     && ui.small_button(text::IMPORT_ONE).clicked()
                 {
@@ -1186,6 +1267,15 @@ pub(crate) fn region_files(prefs: &CorePreferences, core: &CoreId) -> Vec<String
         }
     }
     if out.len() > 1 { out } else { Vec::new() }
+}
+
+/// Systems of « Core utilisé par système », in the order of `cores.toml`, single-core ones included.
+pub(crate) fn choice_systems(prefs: &CorePreferences) -> Vec<(String, Vec<CoreId>)> {
+    prefs
+        .systems()
+        .filter(|(_, cores)| !cores.is_empty())
+        .map(|(s, c)| (s.to_owned(), c.to_vec()))
+        .collect()
 }
 
 #[cfg(test)]
