@@ -2,6 +2,37 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [7.1.0-rc.1] - 2026-11-25
+
+Pré-release de la 7.1 : **finition de l'interface** et **rangement des ROMs**. Guide d'essai :
+`docs/guide-essai-7.1.md`.
+
+### Ajouté
+
+- **Rangement des ROMs** (Réglages) : « Créer les dossiers des systèmes » puis « Ranger les ROMs… ». Un aperçu liste
+  ce qui sera déplacé vers `roms/<système>/` (sûr, suggéré, ambigu avec choix du système, bloqué, inconnu) ; le
+  rangement est journalisé, s'annule (« Annuler le dernier rangement… ») et reprend après un arrêt brutal.
+  Sauvegardes, états, favoris, historique et jaquettes suivent les jeux déplacés ; le scan reconnaît un fichier
+  déplacé. Les disquettes numérotées (`MANIACD0`, `MANIACD1`) forment un seul jeu.
+- **Journal** : panneau « Journal » (compteur d'erreurs et d'avertissements), fichier `logs/emu-rust.log` avec
+  rotation, bouton « Copier le journal ». Messages d'erreur sélectionnables avec bouton « Copier » ; « Derniers
+  messages » copiables dans le menu en jeu.
+- **Windows** : `emu-rust.exe` ne montre plus de console ; `emu-rust-cli.exe` (livré à côté) sert à la ligne de
+  commande ; réglage « Afficher la console (après redémarrage) » ; nom et version dans les deux exécutables.
+- **Icône** « B » : exécutable Windows, `.app` macOS, fenêtre, paquet Linux (hicolor, `.desktop`).
+- **Pied de page** sur tous les écrans : version et « dev by claude@jerhome ».
+- **Écran Cores** : cores améliorés par un fichier d'origine facultatif (`mgba`, `gambatte`, MT-32 / CM-32L de
+  `dosbox_pure`), avertissement une seule fois par core et par fichier ; systèmes à core unique sans menu de choix ;
+  recherche par système.
+- **BIOS PlayStation** : les autres révisions (SCPH-1002, SCPH-7002…) sont reconnues à l'import et copiées sous le
+  nom attendu pour leur région (alias), avec contrôle par région.
+
+### Corrigé
+
+- Message « buildbot en cours de mise à jour » au lieu d'une erreur de CRC quand le serveur des cores se met à jour.
+- Textes sans caractères absents de la police (flèches affichées en carré vide).
+- Plus de doublons au Journal entre les messages à l'écran et les traces techniques.
+
 ## [7.0.2] - 2026-11-23
 
 ### Corrigé
