@@ -19,7 +19,11 @@ Tu es l'agent qualité d'emu-rust. Lis `CLAUDE.md` et l'ADR 0007 avant toute cho
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace`
 4. Si la fonctionnalité touche l'émulation : `scripts/fetch-test-assets.sh` puis `cargo test --workspace -- --ignored`
-5. Si elle touche l'interface : capture sous Xvfb, regarde l'image et décris ce qui est visible.
+5. Si elle touche l'interface : capture sous Xvfb, regarde l'image et décris ce qui est visible. Écrans hors jeu
+   (bibliothèque, réglages, cores…) : `emu-rust --no-audio --no-gamepad --screen <écran> --dump-window <png>` sous
+   Xvfb, avec `EMU_DATA_DIR` temporaire et `LIBGL_ALWAYS_SOFTWARE=1` (`scripts/xvfb-capture.sh` ne fait que les jeux).
+6. Cible Windows : `cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings`. S'il
+   finit en moins de 15 s, il n'a probablement rien vérifié : `touch` des `lib.rs` des crates, puis relancer.
 
 ROMs de test : homebrews à licence libre uniquement, URL + SHA256 épinglés.
 
