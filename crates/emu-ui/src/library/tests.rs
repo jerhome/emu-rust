@@ -1335,3 +1335,202 @@ fn dos_programs_dialog_by_keyboard() {
     h.key(Key::Escape);
     assert!(!h.ui.programs_open());
 }
+
+// ---- Sega CD 32X (ADR 0024, design v7.2 §4) ---------------------------------------------------------------
+
+fn megacd_game(id: i64, path: &str, identification: Identification) -> Game {
+    let mut g = game(id, "megacd", path, None);
+    g.title = Path::new(path)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    g.identification = identification;
+    g
+}
+
+/// A harness whose library holds exactly `games`, the first one selected.
+fn harness_with(games: Vec<Game>, capture: bool) -> Harness {
+    let mut h = harness(capture);
+    h.ui.games = games;
+    h.ui.refilter(None);
+    h.frame(Vec::new());
+    h
+}
+
+fn saved_list(h: &Harness) -> Vec<String> {
+    Config::load(&h.ui.dirs.config_file).unwrap().library.cd32x
+}
+
+#[test]
+fn cd32x_key_marks_saves_and_unmarks() {
+    let mut h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.chd",
+            Identification::Name,
+        )],
+        false,
+    );
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_INVITE));
+    h.key(Key::X);
+    assert_eq!(h.ui.config.library.cd32x, ["fake trap.chd"]);
+    assert_eq!(saved_list(&h), ["fake trap.chd"], "written to config.toml");
+    let Some(Dialog::Notice(m)) = &h.ui.dialog else {
+        panic!("message expected");
+    };
+    assert!(m.contains("picodrive") && m.contains(".brm"), "{m}");
+    assert!(m.contains("autres disques"), "{m}");
+    assert_eq!(
+        h.ui.cd32x_help(),
+        Some(text::CD32X_KEY_OFF),
+        "no more invitation"
+    );
+    h.key(Key::Escape);
+    assert!(h.ui.dialog.is_none());
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+    assert!(saved_list(&h).is_empty());
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_INVITE));
+}
+
+#[test]
+fn cd32x_message_counts_games_sharing_the_file_name() {
+    let mut h = harness_with(
+        vec![
+            megacd_game(1, "/r/megacd/a/disc1.cue", Identification::Unknown),
+            megacd_game(2, "/r/megacd/b/Disc1.cue", Identification::Unknown),
+        ],
+        false,
+    );
+    h.key(Key::X);
+    let Some(Dialog::Notice(m)) = &h.ui.dialog else {
+        panic!("message expected");
+    };
+    assert!(
+        m.contains("2 jeux Mega CD portent ce nom de fichier"),
+        "{m}"
+    );
+}
+
+#[test]
+fn cd32x_failed_write_undoes_the_mark_and_says_so() {
+    let mut h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.chd",
+            Identification::Name,
+        )],
+        false,
+    );
+    // A directory where the file should be: the write fails.
+    let _ = std::fs::remove_file(&h.ui.dirs.config_file);
+    std::fs::create_dir_all(&h.ui.dirs.config_file).unwrap();
+    h.key(Key::X);
+    assert!(
+        h.ui.config.library.cd32x.is_empty(),
+        "mark undone in memory"
+    );
+    assert!(h.ui.dialog.is_none());
+    let Some((msg, level)) = &h.ui.status else {
+        panic!("status expected");
+    };
+    assert_eq!(*level, Level::Error);
+    assert!(msg.contains("annulée"), "{msg}");
+}
+
+#[test]
+fn cd32x_is_not_offered_by_name_tag_or_for_other_systems() {
+    let mut h = harness_with(
+        vec![
+            megacd_game(
+                1,
+                "/r/megacd/Fake Trap (USA) (Sega CD 32X).chd",
+                Identification::Name,
+            ),
+            game(2, "gb", "/r/a.gb", None),
+        ],
+        false,
+    );
+    assert_eq!(h.ui.cd32x_help(), None);
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+    assert!(h.ui.dialog.is_none());
+    h.key(Key::ArrowRight);
+    assert_eq!(h.ui.cd32x_help(), None);
+    h.key(Key::X);
+    assert!(h.ui.config.library.cd32x.is_empty());
+}
+
+#[test]
+fn cd32x_help_is_a_plain_key_hint_once_identified_by_content() {
+    let h = harness_with(
+        vec![megacd_game(
+            1,
+            "/r/megacd/Fake Trap.cue",
+            Identification::Crc32Size,
+        )],
+        true,
+    );
+    assert_eq!(h.ui.cd32x_help(), Some(text::CD32X_KEY_ON));
+}
+
+/// Launch of a marked game with no core installed: picodrive is proposed, with the 32X reason; an unmarked
+/// game gets the usual core. Never a fallback on genesis_plus_gx.
+#[test]
+fn cd32x_routing_asks_for_picodrive_and_unmarked_games_are_unchanged() {
+    let mut h = harness_with(
+        vec![
+            megacd_game(1, "/r/megacd/Marked.chd", Identification::Name),
+            megacd_game(2, "/r/megacd/Plain.chd", Identification::Name),
+        ],
+        true,
+    );
+    if h.ui.cores.manager().is_none() {
+        return;
+    }
+    h.ui.config.library.cd32x = vec!["MARKED.CHD".into()];
+    h.key(Key::Enter);
+    match &h.ui.dialog {
+        Some(Dialog::Install { core, cd32x, .. }) => {
+            assert_eq!(core.as_str(), "picodrive");
+            assert!(*cd32x);
+        }
+        _ => panic!("install dialog expected"),
+    }
+    assert!(text::install_question_cd32x("picodrive", "Marked").contains("n'émule pas la 32X"));
+    h.key(Key::Escape);
+    h.key(Key::ArrowRight);
+    h.key(Key::Enter);
+    match &h.ui.dialog {
+        Some(Dialog::Install { core, cd32x, .. }) => {
+            assert_eq!(core.as_str(), "genesis_plus_gx");
+            assert!(!*cd32x);
+        }
+        _ => panic!("install dialog expected"),
+    }
+}
+
+/// The BIOS check runs on picodrive with the Mega CD table of the game's region (design v7.2 §1).
+#[test]
+fn cd32x_game_is_checked_for_the_mega_cd_bios_on_picodrive() {
+    let h = harness(true);
+    let mut args = megacd_args(
+        &h,
+        "Fake Trap (USA) (Sega CD 32X).chd",
+        Some(DiscRegion::Usa),
+    );
+    args.cd32x = true;
+    let prefs = cores_ui::preferences(&h.ui.config.cores);
+    let core = CoreId::new("picodrive").unwrap();
+    let gated =
+        h.ui.firmware_decision(&prefs, &core, &args, None)
+            .expect("picodrive has a Mega CD table");
+    assert_ne!(gated.decision, FirmwareDecision::Launch, "no BIOS yet");
+    assert_eq!(
+        gated.info.system.as_deref(),
+        Some("Mega CD / Sega CD"),
+        "{:?}",
+        gated.info
+    );
+}

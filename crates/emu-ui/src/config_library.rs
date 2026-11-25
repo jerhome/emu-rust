@@ -19,6 +19,10 @@ pub struct LibraryConfig {
     /// One-shot purge generation of the `Missing` cover records (2: records written by sources that
     /// answered 404 for everything are forgotten).
     pub covers_missing_reset: u32,
+    /// File names (with extension) of `megacd` games marked « CD 32X » by hand (ADR 0024 §2); compared in
+    /// Unicode lower case on both sides.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cd32x: Vec<String>,
     #[serde(flatten)]
     pub extra: toml::Table,
 }
@@ -29,6 +33,7 @@ impl Default for LibraryConfig {
             roots: Vec::new(),
             scan_on_start: true,
             covers_missing_reset: 0,
+            cd32x: Vec::new(),
             extra: toml::Table::new(),
         }
     }
@@ -177,6 +182,22 @@ gb = "sameboy"
         assert_eq!(cfg.cores, CoresConfig::default());
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert!(!text.contains("credentials.screenscraper"));
+    }
+
+    #[test]
+    fn cd32x_list_round_trips_and_is_omitted_when_empty() {
+        let cfg: Config =
+            toml::from_str("[library]\ncd32x = [\"night trap (disc 1).chd\"]\n").unwrap();
+        assert_eq!(cfg.library.cd32x, ["night trap (disc 1).chd"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        cfg.save(&path).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().library.cd32x,
+            cfg.library.cd32x
+        );
+        let empty = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!empty.contains("cd32x"), "{empty}");
     }
 
     #[test]

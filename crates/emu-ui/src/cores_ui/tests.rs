@@ -99,6 +99,7 @@ fn plan_launch_picks_installed_proposes_or_gives_up() {
         manager,
         &prefs,
         Some("Sega - Mega Drive - Genesis"),
+        false,
         Some("md"),
     );
     let LaunchCheck::NeedsInstall(core) = check else {
@@ -106,11 +107,17 @@ fn plan_launch_picks_installed_proposes_or_gives_up() {
     };
     assert_eq!(core.as_str(), "genesis_plus_gx");
     // Unknown system and extension.
-    let check = plan_launch(manager, &prefs, Some("Nowhere"), Some("zzz"));
+    let check = plan_launch(manager, &prefs, Some("Nowhere"), false, Some("zzz"));
     assert!(matches!(check, LaunchCheck::NoCore));
     assert!(check.blocking_message().unwrap().contains("Aucun core"));
     // Game Boy: gambatte is installed but altered → refused, never silently replaced by another core.
-    let check = plan_launch(manager, &prefs, Some("Nintendo - Game Boy"), Some("gb"));
+    let check = plan_launch(
+        manager,
+        &prefs,
+        Some("Nintendo - Game Boy"),
+        false,
+        Some("gb"),
+    );
     assert!(matches!(
         check,
         LaunchCheck::Failed(CoreError::Tampered { .. })
@@ -373,4 +380,42 @@ fn core_choice_lists_single_core_systems_too() {
         .expect("3DO listed");
     assert_eq!(three_do.1, [id("opera")]);
     assert!(systems.iter().any(|(_, c)| c.len() > 1), "choices kept");
+}
+
+#[test]
+fn plan_launch_routes_a_cd32x_game_to_picodrive_whatever_the_preference() {
+    let Some((_tmp, dirs)) = fixture() else {
+        return;
+    };
+    let ui = ui_for(&dirs);
+    let manager = ui.manager().unwrap();
+    let mut cores = CoresConfig::default();
+    cores
+        .preferred
+        .insert("megacd".into(), "genesis_plus_gx".into());
+    let prefs = preferences(&cores);
+    let mega_cd = Some("Sega - Mega-CD - Sega CD");
+    // Nothing installed: a marked game asks for picodrive, an unmarked one for the usual core.
+    let marked = plan_launch(manager, &prefs, mega_cd, true, Some("chd"));
+    let LaunchCheck::NeedsInstall(core) = marked else {
+        panic!("{marked:?}");
+    };
+    assert_eq!(core.as_str(), "picodrive");
+    let plain = plan_launch(manager, &prefs, mega_cd, false, Some("chd"));
+    let LaunchCheck::NeedsInstall(core) = plain else {
+        panic!("{plain:?}");
+    };
+    assert_eq!(core.as_str(), "genesis_plus_gx");
+    // A system without a `cd32x_cores` list keeps the usual choice.
+    let gb = plan_launch(
+        manager,
+        &prefs,
+        Some("Nintendo - Game Boy"),
+        true,
+        Some("gb"),
+    );
+    assert!(matches!(
+        gb,
+        LaunchCheck::Failed(CoreError::Tampered { .. })
+    ));
 }

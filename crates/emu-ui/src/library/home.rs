@@ -8,6 +8,7 @@ use egui::{
 };
 use emu_library::{SortOrder, systems};
 
+use super::cd32x::{self, Cd32xMark};
 use super::grid::{self, Nav};
 use super::{Focus, LibraryEvent, LibraryUi, Page, View, text};
 
@@ -172,6 +173,9 @@ impl LibraryUi {
             if self.selected_game().is_some_and(|g| g.is_dir) {
                 super::weak(ui, text::DOS_FOLDER_HINT);
             }
+            if let Some(line) = self.cd32x_help() {
+                super::weak(ui, line);
+            }
         });
 
         // Keys that work wherever the focus is (not while typing, not under a dialog).
@@ -246,7 +250,7 @@ impl LibraryUi {
         }
         if !dialog_open && (focused || nothing_focused) {
             let page = self.page_rows;
-            let (navs, enter, fav, programs) = ui.input(|i| {
+            let (navs, enter, fav, programs, mark) = ui.input(|i| {
                 let mut navs = Vec::new();
                 for (key, nav) in [
                     (Key::ArrowLeft, Nav::Left),
@@ -267,6 +271,7 @@ impl LibraryUi {
                     focused && (i.key_pressed(Key::Enter) || i.key_pressed(Key::Space)),
                     focused && i.key_pressed(Key::F) && i.modifiers.is_none(),
                     focused && i.key_pressed(Key::P) && i.modifiers.is_none(),
+                    focused && i.key_pressed(Key::X) && i.modifiers.is_none(),
                 )
             });
             if !navs.is_empty() && !focused {
@@ -286,6 +291,9 @@ impl LibraryUi {
             if programs {
                 self.open_programs();
             }
+            if mark {
+                self.toggle_cd32x();
+            }
         }
 
         let mut area = ScrollArea::vertical()
@@ -304,6 +312,7 @@ impl LibraryUi {
         }
         let mut clicked = None;
         let mut double = false;
+        let mut mark_pos = None;
         let mut on_screen = Vec::new();
         let out = area.show_rows(ui, CARD_H, rows, |ui, range| {
             for row in range {
@@ -328,6 +337,23 @@ impl LibraryUi {
                         clicked = Some(pos);
                         double = true;
                     }
+                    let mark = cd32x::cd32x_mark(game, &self.config.library.cd32x);
+                    if resp.secondary_clicked() {
+                        clicked = Some(pos);
+                    }
+                    if cd32x::can_toggle(game, &self.config.library.cd32x) {
+                        resp.context_menu(|ui| {
+                            let label = if mark == Cd32xMark::Manual {
+                                text::CD32X_MENU_OFF
+                            } else {
+                                text::CD32X_MENU_ON
+                            };
+                            if ui.button(label).clicked() {
+                                mark_pos = Some(pos);
+                                ui.close();
+                            }
+                        });
+                    }
                     let texture = self.covers.texture(ui.ctx(), game);
                     paint_card(
                         ui,
@@ -336,6 +362,7 @@ impl LibraryUi {
                         texture.as_ref(),
                         pos == self.selected,
                         focused,
+                        mark.is_marked(),
                     );
                 }
             }
@@ -354,6 +381,26 @@ impl LibraryUi {
                 self.launch_selected();
             }
         }
+        if let Some(pos) = mark_pos {
+            self.selected = pos;
+            self.toggle_cd32x();
+        }
+    }
+
+    /// Help line about the « CD 32X » mark of the selected game: the invitation (ADR 0024 §4) or the key.
+    pub(super) fn cd32x_help(&self) -> Option<&'static str> {
+        let game = self.selected_game()?;
+        let marked = &self.config.library.cd32x;
+        if !cd32x::can_toggle(game, marked) {
+            return None;
+        }
+        Some(if cd32x::invites_marking(game, marked) {
+            text::CD32X_INVITE
+        } else if cd32x::cd32x_mark(game, marked) == Cd32xMark::Manual {
+            text::CD32X_KEY_OFF
+        } else {
+            text::CD32X_KEY_ON
+        })
     }
 }
 
@@ -364,6 +411,7 @@ fn paint_card(
     texture: Option<&egui::TextureHandle>,
     selected: bool,
     focused: bool,
+    cd32x: bool,
 ) {
     let painter = ui.painter_at(rect.expand(4.0));
     let cover = Rect::from_min_size(rect.min, vec2(rect.width(), COVER_H));
@@ -401,6 +449,13 @@ fn paint_card(
             Color32::from_rgb(255, 210, 80),
         );
     }
+    if cd32x {
+        paint_badge(
+            &painter,
+            cover.left_top() + Vec2::new(6.0, 6.0),
+            text::CD32X_BADGE,
+        );
+    }
     let mut job = egui::text::LayoutJob::simple(
         text::game_title(&game.title),
         FontId::proportional(13.0),
@@ -423,6 +478,15 @@ fn paint_card(
         };
         painter.rect_stroke(rect.expand(2.0), radius, stroke, StrokeKind::Outside);
     }
+}
+
+/// « 32X » pill at `pos` (top-left corner).
+fn paint_badge(painter: &egui::Painter, pos: egui::Pos2, label: &str) {
+    let galley =
+        painter.layout_no_wrap(label.to_owned(), FontId::proportional(13.0), Color32::WHITE);
+    let rect = Rect::from_min_size(pos, galley.size() + vec2(10.0, 4.0));
+    painter.rect_filled(rect, CornerRadius::same(8), Color32::from_rgb(170, 40, 60));
+    painter.galley(pos + vec2(5.0, 2.0), galley, Color32::WHITE);
 }
 
 /// Largest rectangle of `size`'s aspect ratio centred in `frame`.

@@ -225,6 +225,14 @@ pub fn tampered(core: &str) -> String {
     )
 }
 
+pub fn install_question_cd32x(core: &str, game: &str) -> String {
+    let (core, game) = (clean(core), clean(game));
+    format!(
+        "« {game} » est un CD 32X : il lui faut le core {core} ; genesis_plus_gx n'émule pas la 32X. \
+         Installer {core} ? L'écran Cores affiche la progression ; le jeu se lance ensuite."
+    )
+}
+
 pub fn game_failed(game: &str, e: &str) -> String {
     format!("« {} » : {}", clean(game), clean(e))
 }
@@ -635,3 +643,52 @@ pub const INTERFACE_SECTION: &str = "Interface";
 pub const CONSOLE_SETTING: &str = "Afficher la console (après redémarrage)";
 pub const CONSOLE_NOTE: &str = "Ouvre une fenêtre de console avec les messages techniques au prochain démarrage \
                                 d'emu-rust. Le panneau « Journal » (en bas de l'écran) les montre aussi.";
+
+// ---- Sega CD 32X (ADR 0024 §4, design v7.2 §2.3) ----
+
+pub const CD32X_BADGE: &str = "32X";
+pub const CD32X_TITLE: &str = "CD 32X";
+pub const CD32X_MENU_ON: &str = "Ce jeu est un CD 32X";
+pub const CD32X_MENU_OFF: &str = "Ce n'est pas un CD 32X";
+/// Help line when the selected game may be a CD 32X (unknown content, e.g. every `.chd`).
+pub const CD32X_INVITE: &str = "Jeu Sega CD 32X ? Clic droit → Ce jeu est un CD 32X (ou touche X)";
+/// Help line of a game marked by hand or identified by its content.
+pub const CD32X_KEY_ON: &str = "X : ce jeu est un CD 32X";
+pub const CD32X_KEY_OFF: &str = "X : ce n'est pas un CD 32X";
+
+pub fn cd32x_save_failed(game: &str, e: &str) -> String {
+    format!(
+        "Marque CD 32X de « {} » annulée, réglages non enregistrés : {}",
+        clean(game),
+        clean(e)
+    )
+}
+
+/// After marking: the core change, the saves not carried over, same-name games, other discs (ADR 0024 §2, §4).
+pub fn cd32x_marked(game: &str, same_name: usize) -> String {
+    let mut msg = format!(
+        "« {} » sera lancé avec le core picodrive, et non plus avec celui du Mega CD. Ses sauvegardes faites avec \
+         genesis_plus_gx (.brm) ne sont pas reprises.",
+        clean(game)
+    );
+    if same_name > 1 {
+        msg.push_str(&format!(
+            " {same_name} jeux Mega CD portent ce nom de fichier : tous seront lancés avec picodrive."
+        ));
+    }
+    msg.push_str(" Si le jeu a d'autres disques listés à part, marquez-les aussi.");
+    msg
+}
+
+pub fn cd32x_unmarked(game: &str, same_name: usize) -> String {
+    let mut msg = format!(
+        "« {} » n'est plus marqué CD 32X : il sera lancé avec le core habituel du Mega CD.",
+        clean(game)
+    );
+    if same_name > 1 {
+        msg.push_str(&format!(
+            " {same_name} jeux Mega CD portent ce nom de fichier : tous perdent la marque."
+        ));
+    }
+    msg
+}

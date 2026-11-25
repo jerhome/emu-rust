@@ -2,6 +2,7 @@
 //! flow towards a game played in the same window (`host`). Drawing code never blocks: scan and DAT import run
 //! in `worker` threads; only quick SQLite reads/writes (game list, favorite, last played) happen here.
 
+mod cd32x;
 mod covers;
 mod dos;
 pub(crate) mod firmware_gate;
@@ -97,6 +98,8 @@ enum Dialog {
         core: CoreId,
         game: String,
         game_id: GameId,
+        /// The game is a Sega CD 32X: the question says why this core (ADR 0024 §5).
+        cd32x: bool,
     },
     Firmware {
         request: LaunchRequest,
@@ -114,6 +117,8 @@ enum Dialog {
         game_id: GameId,
     },
     Message(String),
+    /// Information after a user action (« CD 32X » mark): title `CD32X_TITLE`, « OK ».
+    Notice(String),
     /// First scan without any DAT: offer the download (ADR 0014 design §1).
     OfferDat,
     /// 3.0 firmware check (design v3.0 §2.1): fallback warned once per game, wrong or missing file.
@@ -155,6 +160,8 @@ pub(crate) struct LaunchArgs {
     ext: Option<String>,
     content: GameContent,
     computer: bool,
+    /// Sega CD 32X game (mark by name or by hand): picodrive is imposed (ADR 0024 §3).
+    cd32x: bool,
     /// `Game::region`.
     region: Option<DiscRegion>,
     /// The library entry of a `disc = true` system: its content is planned by `plan_disc_launch` once the core
@@ -178,6 +185,7 @@ impl LaunchArgs {
             ext: ext.map(str::to_owned),
             content,
             computer,
+            cd32x: false,
             region: None,
             disc: None,
         }
@@ -692,12 +700,16 @@ impl LibraryUi {
         }
     }
 
-    fn save_config(&mut self) {
+    /// Writes `config.toml`; `false` when the write failed (status line set). Capture mode writes nothing.
+    fn save_config(&mut self) -> bool {
         if self.capture {
-            return;
+            return true;
         }
         match self.config.save(&self.dirs.config_file) {
-            Ok(()) => self.set_status(text::SAVED.to_owned(), Level::Info),
+            Ok(()) => {
+                self.set_status(text::SAVED.to_owned(), Level::Info);
+                true
+            }
             Err(e) => {
                 let msg = if self.config.is_locked() {
                     text::LOCKED.to_owned()
@@ -705,6 +717,7 @@ impl LibraryUi {
                     text::save_failed(&e.to_string())
                 };
                 self.set_status(msg, Level::Warn);
+                false
             }
         }
     }
@@ -738,6 +751,7 @@ impl LibraryUi {
             computer,
         );
         args.region = game.region;
+        args.cd32x = cd32x::cd32x_mark(&game, &self.config.library.cd32x).is_marked();
         if system.is_some_and(|s| s.disc) {
             args.disc = Some(Box::new(game));
         }
@@ -767,8 +781,13 @@ impl LibraryUi {
         };
         let prefs = cores_ui::preferences(&self.config.cores);
         let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
-        let check =
-            cores_ui::plan_launch(&manager, &prefs, database.as_deref(), args.ext.as_deref());
+        let check = cores_ui::plan_launch(
+            &manager,
+            &prefs,
+            database.as_deref(),
+            args.cd32x,
+            args.ext.as_deref(),
+        );
         // Disc systems (design v6.0 §2.1): the discs of the game for this core, a zip refused before anything.
         let core = match &check {
             LaunchCheck::Ready { id, .. }
@@ -825,6 +844,7 @@ impl LibraryUi {
                     core,
                     game: title.clone(),
                     game_id,
+                    cd32x: args.cd32x,
                 }),
                 // The desktop is not a library game: the core is installed from the cores screen.
                 None => self.open_dialog(Dialog::Message(text::desktop_needs_core(core.as_str()))),
@@ -1190,6 +1210,39 @@ impl LibraryUi {
         self.covers.configure(&self.config);
     }
 
+    /// « Ce jeu est un CD 32X » / « Ce n'est pas un CD 32X » for the selected game (ADR 0024 §2, §4): toggles the
+    /// manual mark, saves `config.toml`; a failed write undoes the mark in memory and says so.
+    fn toggle_cd32x(&mut self) {
+        let Some(game) = self.selected_game().cloned() else {
+            return;
+        };
+        let marked = &self.config.library.cd32x;
+        if !cd32x::can_toggle(&game, marked) {
+            return;
+        }
+        let on = cd32x::cd32x_mark(&game, marked) != cd32x::Cd32xMark::Manual;
+        let before = self.config.library.cd32x.clone();
+        if !cd32x::set_manual_mark(&mut self.config.library.cd32x, &game, on) {
+            return;
+        }
+        if !self.save_config() {
+            self.config.library.cd32x = before;
+            let reason = match &self.status {
+                Some((m, _)) => m.clone(),
+                None => String::new(),
+            };
+            self.set_status(text::cd32x_save_failed(&game.title, &reason), Level::Error);
+            return;
+        }
+        let same = cd32x::same_key_count(&self.games, &game);
+        let message = if on {
+            text::cd32x_marked(&game.title, same)
+        } else {
+            text::cd32x_unmarked(&game.title, same)
+        };
+        self.open_dialog(Dialog::Notice(message));
+    }
+
     fn toggle_favorite(&mut self) {
         let Some(game) = self.selected_game() else {
             return;
@@ -1458,15 +1511,19 @@ impl LibraryUi {
         egui::Modal::new(egui::Id::unique("library-dialog")).show(ctx, |ui| {
             ui.set_max_width(520.0);
             let (title, body) = match dialog {
-                Dialog::Install { core, game, .. } => {
+                Dialog::Install {
+                    core, game, cd32x, ..
+                } => {
                     let name = manager
                         .as_ref()
                         .and_then(|m| m.info(core))
                         .map_or_else(|| core.to_string(), |i| i.display_name);
-                    (
-                        text::LAUNCH_INSTALL_TITLE,
-                        text::install_question(&name, game),
-                    )
+                    let question = if *cd32x {
+                        text::install_question_cd32x(&name, game)
+                    } else {
+                        text::install_question(&name, game)
+                    };
+                    (text::LAUNCH_INSTALL_TITLE, question)
                 }
                 Dialog::Firmware { request, missing } => (
                     text::LAUNCH_FIRMWARE_TITLE,
@@ -1480,6 +1537,7 @@ impl LibraryUi {
                     (text::LAUNCH_FAILED_TITLE, text::tampered(core.as_str()))
                 }
                 Dialog::Message(m) => (text::LAUNCH_FAILED_TITLE, m.clone()),
+                Dialog::Notice(m) => (text::CD32X_TITLE, m.clone()),
                 Dialog::FreeBios { .. }
                 | Dialog::Firmware3 { .. }
                 | Dialog::ChooseFolder(_)
@@ -1515,6 +1573,7 @@ impl LibraryUi {
                     }
                     Dialog::Firmware { .. }
                     | Dialog::Message(_)
+                    | Dialog::Notice(_)
                     | Dialog::FreeBios { .. }
                     | Dialog::Firmware3 { .. }
                     | Dialog::ChooseFolder(_)
@@ -1523,7 +1582,7 @@ impl LibraryUi {
                 };
                 // Safe default first: « Annuler » / « OK » gets the focus, never the launch.
                 let cancel_label = match dialog {
-                    Dialog::Message(_) => text::OK,
+                    Dialog::Message(_) | Dialog::Notice(_) => text::OK,
                     Dialog::OfferDat => text::DAT_OFFER_LATER,
                     _ => text::LAUNCH_CANCEL,
                 };
