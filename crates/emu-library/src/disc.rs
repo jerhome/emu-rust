@@ -687,6 +687,31 @@ pub fn region_from_name(stem: &str) -> Option<DiscRegion> {
     None
 }
 
+/// `true` when `name` (a title or a file stem) carries a parenthesised Sega CD 32X tag: `Sega CD 32X`,
+/// `Mega-CD 32X`, `Mega CD 32X`, `32X CD`, `CD 32X` or `32X` (ASCII case-insensitive, `-` read as a space,
+/// inner spaces collapsed). Pure. Only meaningful for a game of system `megacd` (ADR 0024 §1).
+pub fn cd32x_tag(name: &str) -> bool {
+    const TAGS: [&str; 5] = ["sega cd 32x", "mega cd 32x", "32x cd", "cd 32x", "32x"];
+    let mut rest = name;
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(')') else {
+            break;
+        };
+        let group = after[..close]
+            .to_ascii_lowercase()
+            .replace('-', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if TAGS.contains(&group.as_str()) {
+            return true;
+        }
+        rest = &after[close + 1..];
+    }
+    false
+}
+
 /// What a `.bin` holds, from its first bytes (design v6.0 §3.4; scan of `.bin` files).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinKind {
@@ -1586,5 +1611,41 @@ mod tests {
         );
         let p = write(tmp.path(), "real.pbp", &psx_iso(None, Some(CNF)));
         assert_eq!(disc_info(&p).unwrap(), None);
+    }
+
+    #[test]
+    fn cd32x_tag_forms() {
+        for name in [
+            "Night Trap (USA) (Sega CD 32X)",
+            "A (Mega-CD 32X)",
+            "A (Mega CD 32X)",
+            "A (32X CD)",
+            "A (CD 32X)",
+            "A (32X)",
+            "A (usa) (SEGA-CD  32x)",
+            "A (Europe) (32X CD)",
+            "A (mega-cd 32x) (Disc 1)",
+        ] {
+            assert!(cd32x_tag(name), "{name}");
+        }
+        for name in [
+            "A 32X",
+            "A [32X]",
+            "A (32X Edition)",
+            "A (Sega CD)",
+            "A (32X",
+            "32X Game",
+            "",
+        ] {
+            assert!(!cd32x_tag(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn bin_kind_cd32x_header_is_a_cd_track() {
+        let mut head = vec![0u8; 0x200];
+        head[..16].copy_from_slice(b"SEGADISCSYSTEM  ");
+        head[0x100..0x108].copy_from_slice(b"SEGA 32X");
+        assert_eq!(bin_kind(&head), BinKind::SegaCdTrack);
     }
 }

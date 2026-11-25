@@ -31,8 +31,8 @@ pub struct ScanOptions {
     pub roots: Vec<PathBuf>,
     pub max_depth: usize,
     /// Files (or zip entries) above this size are recorded but not hashed. Data tracks of a disc are checked
-    /// against a Redump DAT (size + CRC32) up to this size too, except 3DO tracks: the default bound is raised to
-    /// 800 MiB for them (design v7.0 §3.4); PlayStation tracks never are (serial, then name).
+    /// against a Redump DAT (size + CRC32) up to this size too, except 3DO and Mega CD tracks: the default bound is
+    /// raised to 800 MiB for them (design v7.0 §3.4, v7.2 §2.1); PlayStation tracks never are (serial, then name).
     pub max_file_size: u64,
 }
 
@@ -810,15 +810,18 @@ fn format_of_system(id: &str) -> Option<DiscFormat> {
         .find(|f| f.system_id() == id)
 }
 
-/// 3DO data tracks are CRC-checked up to this size when the default bound applies (Redump tracks reach ~770 MB).
-const MAX_OPERA_TRACK: u64 = 800 * 1024 * 1024;
+/// 3DO and Mega CD data tracks are CRC-checked up to this size when the default bound applies (Redump tracks
+/// reach ~770 MB; ADR 0024 §1 raises the Mega CD bound for the CD 32X discs).
+const MAX_DISC_TRACK: u64 = 800 * 1024 * 1024;
 
 /// Largest data track whose CRC32 is computed for a Redump match (design v7.0 §3.4): `max` (512 MiB by default),
-/// 800 MiB for a 3DO track unless a smaller bound was asked, never for a PlayStation disc (serial, then name).
+/// 800 MiB for a 3DO or Mega CD track unless a smaller bound was asked, never for a PlayStation disc (serial, then name).
 fn crc_limit(system: &SystemInfo, max: u64) -> Option<u64> {
     match format_of_system(&system.id) {
         Some(DiscFormat::Psx) => None,
-        Some(DiscFormat::Opera) if max >= MAX_HASH_SIZE => Some(max.max(MAX_OPERA_TRACK)),
+        Some(DiscFormat::Opera | DiscFormat::SegaCd) if max >= MAX_HASH_SIZE => {
+            Some(max.max(MAX_DISC_TRACK))
+        }
         _ => Some(max),
     }
 }
@@ -3133,7 +3136,8 @@ mod tests {
             assert_eq!(crc_limit(psx, MAX_HASH_SIZE), None);
             assert_eq!(crc_limit(tdo, MAX_HASH_SIZE), Some(800 * 1024 * 1024));
             assert_eq!(crc_limit(tdo, 1000), Some(1000));
-            assert_eq!(crc_limit(cd, MAX_HASH_SIZE), Some(MAX_HASH_SIZE));
+            assert_eq!(crc_limit(cd, MAX_HASH_SIZE), Some(800 * 1024 * 1024));
+            assert_eq!(crc_limit(cd, 1000), Some(1000));
             // A PlayStation disc whose track size is listed: a set cancel flag would fail any whole read.
             let tmp = tempfile::tempdir().unwrap();
             let track = tmp.path().join("t.bin");

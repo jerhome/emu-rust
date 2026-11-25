@@ -64,6 +64,22 @@ pub struct Game {
     pub region: Option<DiscRegion>,
 }
 
+impl Game {
+    /// Sega CD 32X game recognised by its names (ADR 0024 §1): system `megacd` and [`crate::cd32x_tag`] on
+    /// `title`, on the file stem of `path` or on the stem of any of `media`. No I/O.
+    pub fn cd32x_by_name(&self) -> bool {
+        let stem_tagged = |p: &Path| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(crate::cd32x_tag)
+        };
+        self.system == "megacd"
+            && (crate::cd32x_tag(&self.title)
+                || stem_tagged(&self.path)
+                || self.media.iter().any(|m| stem_tagged(m)))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoverKind {
     Boxart,
@@ -1650,5 +1666,40 @@ mod tests {
         migrate(&mut a, 1).unwrap();
         migrate(&mut b, 1).unwrap();
         assert_eq!(user_version(&b).ok(), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn cd32x_by_name_sources() {
+        let mut g = Game {
+            id: GameId(1),
+            system: "megacd".into(),
+            path: PathBuf::from("/r/megacd/Fake Trap.chd"),
+            entry: None,
+            title: "Fake Trap".into(),
+            identification: Identification::Name,
+            size: 1,
+            crc32: None,
+            sha1: None,
+            favorite: false,
+            last_played_unix: None,
+            play_count: 0,
+            media: Vec::new(),
+            is_dir: false,
+            region: None,
+        };
+        assert!(!g.cd32x_by_name());
+        g.title = "Fake Trap (USA) (Sega CD 32X)".into();
+        assert!(g.cd32x_by_name());
+        g.title = "Fake Trap".into();
+        g.path = PathBuf::from("/r/megacd/Fake Trap (32X CD).chd");
+        assert!(g.cd32x_by_name());
+        g.path = PathBuf::from("/r/megacd/Fake Trap.m3u");
+        g.media = vec![
+            PathBuf::from("/r/megacd/Fake Trap (Disc 1).chd"),
+            PathBuf::from("/r/megacd/Fake Trap (Disc 2) (CD 32X).chd"),
+        ];
+        assert!(g.cd32x_by_name());
+        g.system = "genesis".into();
+        assert!(!g.cd32x_by_name());
     }
 }
