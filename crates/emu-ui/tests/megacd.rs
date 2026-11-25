@@ -96,13 +96,15 @@ fn tree_hash(dir: &Path) -> BTreeMap<String, u64> {
     out
 }
 
-/// Files under `dir`, ignoring the game-identity registry the runtime keeps (`.emu-rust-games` and its lock).
+/// Files under `dir`, ignoring the game-identity registry the runtime keeps (`.emu-rust-games` and its lock) and
+/// the 7.1 log folder.
 fn files_under(dir: &Path) -> Vec<String> {
     tree_hash(dir)
         .into_keys()
         .filter(|f| {
             let name = f.rsplit(['/', '\\']).next().unwrap_or(f);
-            name != ".emu-rust-games" && name != ".emu-rust-games.lock"
+            // `logs/` (7.1, ADR 0023 §3): the application journal is written by every launch, even a refused one.
+            name != ".emu-rust-games" && name != ".emu-rust-games.lock" && !f.starts_with("logs/")
         })
         .collect()
 }
