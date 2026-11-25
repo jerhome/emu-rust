@@ -12,6 +12,7 @@ mod hash;
 mod media;
 mod scan;
 mod systems;
+mod tidy;
 
 pub use crate::dat::{Dat, DatEntry, MAX_DAT_SIZE, load_dat_file, parse_clrmamepro};
 pub use crate::db::{
@@ -22,7 +23,7 @@ pub use crate::disc::{
     BinKind, CD_32X_PROBE_LEN, DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references,
     disc_info, disc_needs_32x, disc_serial, name_needs_32x, probe_bin, region_from_name,
 };
-pub use crate::error::LibraryError;
+pub use crate::error::{LibraryError, TidyRefusal};
 pub use crate::filter::{GameFilter, SortOrder, filter_games, normalize_title};
 pub use crate::hash::{Hashes, MAX_HASH_SIZE, RomHashes, hash_reader};
 pub use crate::media::{MAX_MEDIA_IMAGES, MediaGroup, group_media};
@@ -30,4 +31,9 @@ pub use crate::scan::{MAX_UNCLASSIFIED_PATHS, ScanOptions, ScanProgress, ScanRep
 pub use crate::systems::{
     DatSource, HeaderRule, InputDefault, SystemInfo, SystemKind, system, systems,
     systems_for_extension,
+};
+pub use crate::tidy::{
+    AbsoluteMoves, MAX_IGNORED_PATHS, TidyBlock, TidyExtraName, TidyJournalInfo, TidyMove,
+    TidyOptions, TidyPlan, TidyProgress, TidyReason, TidyReport, TidySection, TidyStatus, TidyUnit,
+    create_system_folders, last_tidy,
 };
