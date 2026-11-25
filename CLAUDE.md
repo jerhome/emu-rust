@@ -29,6 +29,11 @@ dédié (service `dind`, `DOCKER_HOST` déjà réglé), séparé de celui de l'h
 - Docker : les images se construisent et se testent en headless ici (dind) ; l'essai réel (WSLg, son, clavier)
   est fait par **l'utilisateur** sur son hôte (Windows + WSL2). Disque limité : `docker image prune` après usage.
 - Pas de build macOS possible ici ; Windows plus tard par cross-compilation.
+- **Avant toute commande cargo** : `. ~/.local/udev/env.sh; export CARGO_INCREMENTAL=0` (sinon `libudev-sys` échoue :
+  `libudev.pc` introuvable), et `CARGO_TARGET_DIR=<racine du worktree>/target` : on travaille dans le worktree
+  indiqué par la consigne, jamais dans un autre.
+- **Disque** : `df -h /workspace` avant un build. Jamais de nouveau dossier `target` (ni d'autre `CARGO_TARGET_DIR`).
+  Sous 15 Go libres : ne pas lancer le build, le signaler dans le rapport.
 
 ## Architecture (workspace Cargo)
 
