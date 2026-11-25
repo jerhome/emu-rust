@@ -453,3 +453,12 @@ décompresser (Claude indiquera l'outil) ; Mini vMac lit les images brutes et, a
    d'amender l'ADR 0001 (décision de l'utilisateur, après étude par l'architecte).
 4. Question 5 (navigateur de disquettes interne de minivmac) : sans objet tant que le choix minivmac / Snow n'est
    pas fait ; l'image unique la rend secondaire.
+
+### Décision finale du 2026-11-25
+
+- **minivmac retenu** ; **Snow laissé pour plus tard** (non écarté définitivement ; toute intégration passerait par
+  un amendement de l'ADR 0001, avec l'accord de l'utilisateur).
+- **Pas d'essai préalable** dans RetroArch : le Mac 68k entre directement au palier ordinateurs de la 8.x ; l'essai
+  réel se fera avec la rc (image unique System 6.0.8 + SimCity 1.2, procédure ci-dessus).
+- Changement de disquette : **navigateur interne de minivmac accepté** (touche Y) ; rien à développer pour cela.
+- Toutes les questions Mac 68k ont une réponse.
