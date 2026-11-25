@@ -412,3 +412,44 @@ savestates, sans changement de disque libretro, et **sans `RETRO_DEVICE_MOUSE`**
 5. Changement de disquette : acceptes-tu le navigateur de fichiers interne du core (manette Y) plutôt que notre menu « Changer de média » ?
 6. Veux-tu un essai préalable du core hors emu-rust (RetroArch ou essai simple) avant tout développement ?
 7. Snow (Rust, MIT, Mac 128K à LC III, très actif) n'est pas un core libretro : une exception à l'ADR 0001 (« pas de core maison ») est hors de question sans ton accord explicite. Veux-tu que je l'écarte définitivement ?
+
+### Recommandations du 2026-11-25 (acceptées par l'utilisateur)
+
+- **Système** : **System 6.0.8** (léger, sûr sur le Mac II du core, tient sur une disquette 800 Ko) ; repli :
+  System 7.0.1 (plus lourd, RAM du core non vérifiée). Apple a distribué gratuitement les System 6.0.x à 7.5.3 ;
+  emu-rust ne les télécharge pas : l'utilisateur fournit l'image.
+- **Jeu** : **SimCity Classic 1.2 couleur** (le Mac II affiche 640×480 en 256 couleurs). SimCity 2000 déconseillé
+  (System 7, 4 Mo de RAM, souris précise indispensable alors qu'elle passe par le stick émulé).
+- **Un seul disque** : le core n'ouvre qu'un disque au démarrage. Préparer une seule image qui contient le System
+  6.0.8 et SimCity ; elle sert aussi de disque de sauvegarde des villes (copie de travail, jamais l'original).
+
+### Comment préparer l'image (à rappeler à l'utilisateur au moment de l'essai)
+
+Sous Windows, avec Mini vMac autonome (<https://www.gryphel.com/c/minivmac/>), pas avec emu-rust :
+
+1. Télécharger la **variante Mac II** de Mini vMac pour Windows x64 (page « Variations » du site ; la version par
+   défaut émule un Mac Plus et refuserait `MacII.ROM`).
+2. Placer `MacII.ROM` à côté de l'exécutable (ou la glisser sur la fenêtre). C'est la même ROM que celle du core :
+   l'essai la vérifie au passage.
+3. Récupérer une image vierge de 20 Mo dans le paquet « Blanks » du même site.
+4. Lancer Mini vMac, glisser la disquette de démarrage System 6.0.8 (« System Startup » ou « System Tools »), puis
+   l'image vierge : le Mac propose de l'initialiser, accepter (nom du volume : `SimCity`).
+5. Lancer l'**Installer** du System 6.0.8 (il demandera les autres disquettes, à glisser sur la fenêtre) et choisir
+   le volume `SimCity` comme destination.
+6. Glisser la disquette de SimCity sur la fenêtre, puis copier son icône (ou son dossier) sur le volume `SimCity`.
+7. Menu Special → Shut Down, fermer Mini vMac, puis redémarrer sur la seule image pour vérifier qu'elle démarre
+   et que SimCity se lance.
+8. Renommer l'image `SimCity (System 6.0.8).dsk` et la garder de côté jusqu'au palier ordinateurs de la 8.x.
+
+Points à vérifier le moment venu : si les disquettes Apple sont en `.sea`, `.hqx` ou `.bin`, il faudra d'abord les
+décompresser (Claude indiquera l'outil) ; Mini vMac lit les images brutes et, a priori, les images DiskCopy 4.2.
+
+### Réponses de l'utilisateur du 2026-11-25 (questionnaire)
+
+1. ROM Mac II : **oui**, l'utilisateur l'a (md5 à vérifier à l'essai).
+2. Souris → stick gauche : **oui, à essayer** (l'essai dira si SimCity reste jouable).
+3. Essai préalable et Snow : « Peut-on essayer avec Snow direct ? Je ne suis pas attaché à minivmac. » Snow n'est
+   donc **pas écarté** : essai de Snow autonome possible tout de suite ; son intégration dans emu-rust demanderait
+   d'amender l'ADR 0001 (décision de l'utilisateur, après étude par l'architecte).
+4. Question 5 (navigateur de disquettes interne de minivmac) : sans objet tant que le choix minivmac / Snow n'est
+   pas fait ; l'image unique la rend secondaire.
