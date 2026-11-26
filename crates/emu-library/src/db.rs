@@ -1371,6 +1371,25 @@ impl Library {
         .map_err(db_error)
     }
 
+    /// Forgets the record of one cover (cached or missing): the game is then "never checked" for `kind`.
+    /// Returns whether a record existed; unknown game or absent record is not an error. The cached file is not
+    /// touched (see `CoverCache::remove` in `emu-assets`).
+    pub fn clear_cover(&mut self, id: GameId, kind: CoverKind) -> Result<bool, LibraryError> {
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM cover WHERE game = ?1 AND kind = ?2",
+                params![id.0, kind_name(kind)],
+            )
+            .map_err(db_error)?;
+        Ok(n > 0)
+    }
+
+    /// Forgets every cover record (all games, all kinds, cached or missing); returns how many were deleted.
+    pub fn clear_all_covers(&mut self) -> Result<usize, LibraryError> {
+        self.conn.execute("DELETE FROM cover", []).map_err(db_error)
+    }
+
     /// Forgets every `Missing` record (user action "search covers again").
     pub fn clear_missing_covers(&mut self) -> Result<(), LibraryError> {
         self.conn

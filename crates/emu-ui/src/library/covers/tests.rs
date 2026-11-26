@@ -138,13 +138,13 @@ impl Rig {
 fn loaded(replies: &[Reply], id: GameId) -> bool {
     replies
         .iter()
-        .any(|r| matches!(r, Reply::Loaded(g, img) if *g == id && img.size == [4, 4]))
+        .any(|r| matches!(r, Reply::Loaded(g, img, _) if *g == id && img.size == [4, 4]))
 }
 
 fn absent(replies: &[Reply], id: GameId) -> bool {
     replies
         .iter()
-        .any(|r| matches!(r, Reply::Absent(g) if *g == id))
+        .any(|r| matches!(r, Reply::Absent(g, _) if *g == id))
 }
 
 #[test]
@@ -299,6 +299,7 @@ fn ui_side() -> (Covers, Sender<Reply>, Receiver<Command>) {
         textures: 0,
         sent_visible: Vec::new(),
         status: WorkerStatus::default(),
+        generation: 0,
         settings: Default::default(),
         capture: false,
         alive: true,
@@ -328,6 +329,7 @@ fn textures_only_for_visible_cards_and_bounded() {
         tx.send(Reply::Loaded(
             id,
             ColorImage::filled([2, 2], egui::Color32::RED),
+            0,
         ))
         .unwrap();
     }
@@ -352,6 +354,7 @@ fn textures_only_for_visible_cards_and_bounded() {
     tx.send(Reply::Loaded(
         GameId(9999),
         ColorImage::filled([2, 2], egui::Color32::RED),
+        0,
     ))
     .unwrap();
     covers.poll(&ctx);
@@ -360,7 +363,7 @@ fn textures_only_for_visible_cards_and_bounded() {
     // Absent cards stay placeholders and are not asked again until a retry.
     let _ = cmds.try_iter().count();
     covers.visible(&[GameId(5000)]);
-    tx.send(Reply::Absent(GameId(5000))).unwrap();
+    tx.send(Reply::Absent(GameId(5000), 0)).unwrap();
     covers.poll(&ctx);
     let _ = cmds.try_iter().count();
     covers.visible(&[GameId(5000)]);
@@ -580,10 +583,61 @@ fn worker_reset_removes_record_and_file_then_downloads_again() {
     assert!(file.is_file());
     rig.worker.handle(Command::Reset(Some(game.id)));
     assert!(!file.is_file());
-    assert_eq!(
-        rig.state(game.id),
-        Some(CoverState::Missing { checked_unix: 0 })
-    );
+    assert_eq!(rig.state(game.id), None);
     rig.answer(Ok(Some(found())));
     assert!(loaded(&rig.show(game.id), game.id));
+}
+
+#[test]
+fn stale_reply_from_an_older_generation_is_ignored() {
+    let ctx = egui::Context::default();
+    let (mut covers, tx, cmds) = ui_side();
+    covers.visible(&[GameId(7)]);
+    // The worker answered, then the user reset covers before the UI polled: the answer is stale.
+    tx.send(Reply::Loaded(
+        GameId(7),
+        ColorImage::filled([2, 2], egui::Color32::RED),
+        0,
+    ))
+    .unwrap();
+    covers.reset(None);
+    assert!(cmds.try_iter().any(|c| matches!(c, Command::Generation(1))));
+    covers.visible(&[GameId(7)]);
+    covers.poll(&ctx);
+    assert!(matches!(
+        covers.slots.get(&GameId(7)),
+        Some(Slot::Requested)
+    ));
+    // Same for an "absent" answer, and a current-generation answer is still taken.
+    tx.send(Reply::Absent(GameId(7), 0)).unwrap();
+    covers.poll(&ctx);
+    assert!(matches!(
+        covers.slots.get(&GameId(7)),
+        Some(Slot::Requested)
+    ));
+    tx.send(Reply::Loaded(
+        GameId(7),
+        ColorImage::filled([2, 2], egui::Color32::RED),
+        1,
+    ))
+    .unwrap();
+    covers.poll(&ctx);
+    assert!(matches!(
+        covers.slots.get(&GameId(7)),
+        Some(Slot::Decoded(_))
+    ));
+}
+
+#[test]
+fn worker_stamps_replies_with_the_generation_it_was_given() {
+    let mut rig = rig(true);
+    let game = rig.first_game();
+    rig.answer(Ok(Some(found())));
+    rig.worker.handle(Command::Generation(3));
+    let replies = rig.show(game.id);
+    assert!(
+        replies
+            .iter()
+            .any(|r| matches!(r, Reply::Loaded(g, _, 3) if *g == game.id))
+    );
 }

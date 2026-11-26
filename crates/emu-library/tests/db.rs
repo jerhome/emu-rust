@@ -275,6 +275,53 @@ fn user_data_persists() {
 }
 
 #[test]
+fn covers_can_be_cleared_one_by_one_or_all() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = populated(tmp.path());
+    let (mut lib, _) = Library::open(&db).unwrap();
+    let games = lib.games().unwrap();
+    let (a, b, c) = (games[0].id, games[1].id, games[2].id);
+    let cached = CoverState::Cached {
+        path: "megadrive/boxart/x.png".into(),
+        source: "libretro".into(),
+    };
+    lib.set_cover(a, CoverKind::Boxart, &cached).unwrap();
+    lib.set_cover(
+        b,
+        CoverKind::Boxart,
+        &CoverState::Missing { checked_unix: 5 },
+    )
+    .unwrap();
+    lib.set_cover(c, CoverKind::Boxart, &cached).unwrap();
+
+    assert!(lib.clear_cover(a, CoverKind::Boxart).unwrap());
+    assert!(lib.cover(a, CoverKind::Boxart).unwrap().is_none());
+    // Never checked again: eligible whatever the retry bound.
+    assert!(
+        lib.games_needing_cover(CoverKind::Boxart, 0)
+            .unwrap()
+            .contains(&a)
+    );
+    // Absent record and unknown game: no-op, `false`.
+    assert!(!lib.clear_cover(a, CoverKind::Boxart).unwrap());
+    assert!(
+        !lib.clear_cover(emu_library::GameId(999_999), CoverKind::Boxart)
+            .unwrap()
+    );
+    // Other games untouched.
+    assert!(lib.cover(c, CoverKind::Boxart).unwrap().is_some());
+
+    assert_eq!(lib.clear_all_covers().unwrap(), 2);
+    assert!(lib.cover(b, CoverKind::Boxart).unwrap().is_none());
+    assert!(lib.cover(c, CoverKind::Boxart).unwrap().is_none());
+    assert_eq!(lib.clear_all_covers().unwrap(), 0);
+    assert_eq!(
+        lib.games_needing_cover(CoverKind::Boxart, 0).unwrap().len(),
+        200
+    );
+}
+
+#[test]
 fn two_connections_share_the_base() {
     let tmp = tempfile::tempdir().unwrap();
     let db = populated(tmp.path());
