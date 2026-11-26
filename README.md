@@ -21,8 +21,21 @@ des BIOS libres. Usage personnel.
 | PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 |
 | Sega CD 32X (CD Mega CD + 32X, détection au scan ou marque manuelle ; aucun BIOS Sega 32X requis) | picodrive | 7.4 |
 
-Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1, manettes USB type SNES apprises depuis la 7.2. Les jeux
-se rangent dans `roms/<système>/`. Sous Windows, `emu-rust.exe` s'ouvre sans console ; `emu-rust-cli.exe` sert à la
+## Manettes
+
+Le clavier marche partout. Manettes :
+
+| Manette | Prise en charge | Essayée |
+|---|---|---|
+| PlayStation 4 (DualShock 4), USB | reconnue d'office (base SDL) depuis la 2.1 ; **PS** = touche de raccourci | Windows, macOS |
+| Super Famicom USB (081f:e401) et pads USB type SNES | boutons devinés, puis apprentissage dans l'application (« appuyez sur A… »), mémorisé par manette ; **Select** = touche de raccourci | macOS (7.2) ; sous Windows, gauche / droite inopérants avant l'apprentissage (à corriger) |
+| Autres manettes de la base SDL GameControllerDB (Xbox, 8BitDo…) | reconnues d'office | non essayées |
+
+Détails des touches : [docs/manuel.md](docs/manuel.md).
+
+## Utilisation
+
+Les jeux se rangent dans `roms/<système>/`. Sous Windows, `emu-rust.exe` s'ouvre sans console ; `emu-rust-cli.exe` sert à la
 ligne de commande (depuis PowerShell : `.\emu-rust-cli.exe --help`).
 
 ## Feuille de route
