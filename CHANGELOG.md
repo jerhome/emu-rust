@@ -2,10 +2,11 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
-## [7.6.0] - non publiée (tag à valider)
+## [7.6.0] - à venir
 
-Rangement des ROMs (ADR 0023 §4, amendée pour la fusion). Schéma de la base inchangé (v7) ; aucune migration : le
-journal du rangement est un fichier (`rangement/` dans le dossier des données).
+Rangement des ROMs (ADR 0023 §4, amendée pour la fusion). Guide d'essai : `docs/guide-essai-7.6.md`. Schéma de la
+base inchangé (v7) ; aucune migration : le journal du rangement est un fichier (`rangement/` dans le dossier des
+données).
 
 ### Ajouté
 
@@ -27,12 +28,19 @@ journal du rangement est un fichier (`rangement/` dans le dossier des données).
 
 - Le scan retrouve un jeu déplacé hors de l'application (même fichier) au lieu d'en créer un nouveau ; la marque
   CD 32X est conservée.
+- Un scan annulé en cours ne fait perdre aucun favori, historique ni jaquette.
+- **Marqueur « scan en cours »** : le scan écrit un marqueur au début et le retire à sa fin normale. S'il en trouve
+  un (arrêt brutal pendant le scan précédent), il ne retire aucun jeu de la bibliothèque et l'interface l'indique :
+  « Le scan précédent avait été interrompu : les jeux dont le fichier est absent sont conservés jusqu'au prochain
+  scan. » Le scan d'après, sans marqueur, retire les jeux dont le fichier a vraiment disparu.
 
 ### Limites connues
 
-- Après un arrêt brutal (coupure, plantage) pendant un scan, le scan suivant peut faire perdre le favori, l'historique
-  et la jaquette d'un jeu déplacé à la main pendant ce scan. Un scan annulé normalement n'a pas ce défaut ; le
-  rangement par emu-rust non plus (il a son propre journal).
+- **Deux scans après un arrêt brutal** : si l'application s'arrête brutalement (coupure, plantage) pendant un scan,
+  un jeu supprimé du disque reste affiché dans la bibliothèque après le scan suivant (message d'avertissement) ; il
+  n'est retiré qu'au scan d'après. Choix voulu : mieux vaut un jeu fantôme provisoire que la perte du favori, de
+  l'historique et de la jaquette d'un jeu déplacé à la main. Le rangement par emu-rust a son propre journal et n'est
+  pas concerné. Une marque en base (migration) est prévue en version 8.
 
 ## [7.5.0] - non publiée (tag à valider)
 

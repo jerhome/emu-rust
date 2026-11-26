@@ -82,6 +82,12 @@ pub struct ScanReport {
     /// 7.1 (ADR 0023 §4.5): files moved since the last scan whose row was kept (same `id`, favourite, history,
     /// covers) instead of being removed and added again.
     pub moved: u64,
+    /// 7.6: the previous scan was killed between two batches (its marker was left), so this one purged nothing:
+    /// games whose file is missing stay listed until the next scan.
+    pub cautious: bool,
+    /// 7.6: the scan marker could not be written or removed. A marker that stays makes every later scan cautious
+    /// (nothing purged): the user should be told to check the folder of the database.
+    pub marker_failed: bool,
 }
 
 /// Bound of [`ScanReport::unclassified_paths`] (the count itself is not bounded).
@@ -2221,12 +2227,12 @@ fn load_twins(conn: &Connection, keys: &[String]) -> Result<Vec<Twin>, LibraryEr
 /// Moved-file check (ADR 0023 §4.5): a row whose file disappeared (`gone`, never a `keep` row) and a row inserted
 /// by this scan (`fresh`) that are each other's only twin are one game. The fresh row is deleted first (`path` and
 /// `game_media.path` are UNIQUE), then its fields and disks are carried over to the old row, which keeps its `id`
-/// (favourite, history, covers). Returns the ids of the old rows kept this way.
+/// (favourite, history, covers). Returns the kept old row id -> the id of the fresh row it absorbed.
 fn merge_moved(
     conn: &mut Connection,
     gone: &[Twin],
     fresh: &[Twin],
-) -> Result<HashSet<i64>, LibraryError> {
+) -> Result<HashMap<i64, i64>, LibraryError> {
     let mut pairs = Vec::new();
     for old in gone {
         let mut hits = fresh.iter().filter(|new| old.same_game(new));
@@ -2237,7 +2243,7 @@ fn merge_moved(
             pairs.push((old.id, new.id));
         }
     }
-    let mut kept = HashSet::new();
+    let mut kept = HashMap::new();
     if pairs.is_empty() {
         return Ok(kept);
     }
@@ -2323,19 +2329,69 @@ fn merge_moved(
             )
             .map_err(db_error)?;
         }
-        kept.insert(old);
+        kept.insert(old, new);
     }
     tx.commit().map_err(db_error)?;
     Ok(kept)
 }
 
+/// Name of the "scan in progress" marker: a file next to the database, so the schema does not change.
+fn marker_path(conn: &Connection) -> Option<PathBuf> {
+    let db = conn.path().filter(|p| !p.is_empty())?;
+    let mut name = std::ffi::OsString::from(db);
+    name.push(".scanning");
+    Some(PathBuf::from(name))
+}
+
+/// A marker is written before the first batch and removed when the scan ends normally or is cancelled. One that
+/// is still there at the start means the previous scan died between two batches: rows it stored may be the new
+/// side of a file moved by hand whose old row is not merged yet, so this scan only merges and never purges
+/// (the next one purges again). A failed marker write is not fatal: the scan is as safe as before 7.6.
 pub(crate) fn run(
     conn: &mut Connection,
     options: &ScanOptions,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport, LibraryError> {
-    let mut report = ScanReport::default();
+    let marker = marker_path(conn);
+    let prudent = marker.as_deref().is_some_and(Path::exists);
+    let mut marker_failed = false;
+    if let Some(m) = &marker
+        && let Err(e) = std::fs::write(m, b"scan in progress\n")
+    {
+        tracing::warn!("cannot write the scan marker {}: {e}", m.display());
+        marker_failed = true;
+    }
+    let mut result = run_scan(conn, options, cancel, progress, prudent);
+    // Any other error keeps the marker: the scan did not reach its end.
+    if matches!(result, Ok(_) | Err(LibraryError::Cancelled))
+        && let Some(m) = &marker
+        && let Err(e) = std::fs::remove_file(m)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            "cannot remove the scan marker {}: {e}; the next scan will be cautious",
+            m.display()
+        );
+        marker_failed = true;
+    }
+    if let Ok(report) = &mut result {
+        report.marker_failed = marker_failed;
+    }
+    result
+}
+
+fn run_scan(
+    conn: &mut Connection,
+    options: &ScanOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&ScanProgress),
+    prudent: bool,
+) -> Result<ScanReport, LibraryError> {
+    let mut report = ScanReport {
+        cautious: prudent,
+        ..ScanReport::default()
+    };
     clear_probes();
     let mut keep = Vec::new();
     let mut seen = HashSet::new();
@@ -2497,21 +2553,48 @@ pub(crate) fn run(
         .filter(|(path, _)| !seen.contains(*path) && !kept_rows(path))
         .map(|(path, old)| Twin::of_existing(path, old))
         .collect();
+    // Rows stored by this scan: the only ones counted in `report.added`.
+    let mut own_ids = HashSet::new();
+    if prudent {
+        own_ids.extend(load_twins(conn, &inserted)?.iter().map(|t| t.id));
+        // Rows stored by the interrupted scan are not in `inserted`: they are candidates too, but only pristine
+        // ones, because a merge deletes the fresh row without carrying its favourite, history or covers.
+        let mut pristine = conn
+            .prepare_cached(
+                "SELECT 1 FROM game g WHERE path = ?1 AND favorite = 0 AND play_count = 0
+                 AND last_played_unix IS NULL AND NOT EXISTS (SELECT 1 FROM cover WHERE game = g.id)",
+            )
+            .map_err(db_error)?;
+        let mut extra = Vec::new();
+        for path in existing.keys().filter(|p| seen.contains(*p)) {
+            if pristine.exists([path]).map_err(db_error)? {
+                extra.push(path.clone());
+            }
+        }
+        drop(pristine);
+        inserted.extend(extra);
+    }
     let moved = if gone.is_empty() || inserted.is_empty() {
-        HashSet::new()
+        HashMap::new()
     } else {
         let fresh = load_twins(conn, &inserted)?;
         merge_moved(conn, &gone, &fresh)?
     };
     report.moved = moved.len() as u64;
-    report.added = report.added.saturating_sub(report.moved);
+    // A cautious scan also absorbs rows of the interrupted one, which this report never counted as added.
+    let absorbed = if prudent {
+        moved.values().filter(|n| own_ids.contains(n)).count() as u64
+    } else {
+        report.moved
+    };
+    report.added = report.added.saturating_sub(absorbed);
     if cancelled {
         return Err(LibraryError::Cancelled);
     }
 
     let tx = conn.transaction().map_err(db_error)?;
-    for (path, old) in &existing {
-        if seen.contains(path) || kept_rows(path) || moved.contains(&old.id) {
+    for (path, old) in existing.iter().filter(|_| !prudent) {
+        if seen.contains(path) || kept_rows(path) || moved.contains_key(&old.id) {
             continue;
         }
         report.removed += tx

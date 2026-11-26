@@ -598,6 +598,12 @@ impl LibraryUi {
                         for (path, e) in &report.errors {
                             tracing::info!("scan : {} : {e}", path.display());
                         }
+                        if report.cautious {
+                            tracing::info!("{}", text::SCAN_CAUTIOUS);
+                        }
+                        if report.marker_failed {
+                            tracing::info!("{}", text::SCAN_MARKER_FAILED);
+                        }
                         self.set_status(text::scan_done(&report), Level::Info);
                         self.unclassified = report.unclassified_paths.clone();
                         if report.unclassified > 0 {

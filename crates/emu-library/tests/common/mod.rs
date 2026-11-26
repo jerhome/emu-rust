@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
 use emu_library::{
@@ -43,6 +44,8 @@ pub struct Fx {
 
 impl Fx {
     pub fn new() -> Self {
+        // Generate the shared python tree (the only fork) before this test can take any lock.
+        let _ = template();
         let tmp = tempfile::tempdir().unwrap();
         let roms = tmp.path().join("roms");
         fs::create_dir(&roms).unwrap();
@@ -225,10 +228,93 @@ pub fn assert_rows_exist(library: &Library) {
 }
 
 pub fn python3_available() -> bool {
-    Command::new("python3")
-        .args(["-I", "-c", "pass"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("python3")
+            .args(["-I", "-c", "pass"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// The pristine tree of `mktidy.py`, generated ONCE per test binary (the only subprocess of these tests: a child
+/// forked while another test thread holds an OS lock inherits it until its `exec`, a spurious `TidyBusy`).
+/// `Fx::new` forces it too, so it is done before any test of the binary takes a lock. Every test gets a copy.
+fn template() -> Option<&'static Path> {
+    static TEMPLATE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    TEMPLATE
+        .get_or_init(|| {
+            if !python3_available() {
+                return None;
+            }
+            let exe = std::env::current_exe().unwrap();
+            let name = exe.file_stem().unwrap().to_string_lossy().into_owned();
+            // One folder per process (the same binary may run twice at once); leftovers of old runs are swept.
+            let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+            fs::create_dir_all(base).unwrap();
+            let old = std::time::Duration::from_secs(3600);
+            for e in fs::read_dir(base).unwrap().flatten() {
+                let stale = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > old));
+                if stale && e.file_name().to_string_lossy().starts_with("mktidy-") {
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+            let root = base.join(format!("mktidy-{name}-{}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            let out = root.join("gen");
+            let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/tools/mktidy.py");
+            let status = Command::new("python3")
+                .arg("-I")
+                .arg(script)
+                .arg(&out)
+                .status()
+                .expect("python3 runs");
+            assert!(status.success(), "mktidy.py failed");
+            Some(out)
+        })
+        .as_deref()
+}
+
+/// Recursive copy keeping symlinks (as they are), file contents and modification times.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let kind = e.file_type().unwrap();
+        if kind.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(fs::read_link(&src).unwrap(), &dst).unwrap();
+        } else if kind.is_dir() {
+            copy_tree(&src, &dst);
+        } else {
+            fs::copy(&src, &dst).unwrap();
+            let mtime = fs::metadata(&src).unwrap().modified().unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&dst)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        }
+    }
+    let mtime = fs::metadata(from).unwrap().modified().unwrap();
+    fs::File::open(to).unwrap().set_modified(mtime).unwrap();
+}
+
+/// A private copy of the generated tree in a new temporary folder (`<tmp>/gen`); `None` without python3.
+pub fn generated_copy() -> Option<(tempfile::TempDir, PathBuf)> {
+    let Some(template) = template() else {
+        eprintln!("python3 not found: generated-tree test skipped");
+        return None;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("gen");
+    copy_tree(template, &out);
+    Some((tmp, out))
 }
 
 /// The big generated tree of `tests/tools/mktidy.py`; `None` (with a message) when python3 is missing.
@@ -240,20 +326,7 @@ pub struct Generated {
 }
 
 pub fn generate() -> Option<Generated> {
-    if !python3_available() {
-        eprintln!("python3 not found: generated-tree test skipped");
-        return None;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let out = tmp.path().join("gen");
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/tools/mktidy.py");
-    let status = Command::new("python3")
-        .arg("-I")
-        .arg(script)
-        .arg(&out)
-        .status()
-        .expect("python3 runs");
-    assert!(status.success(), "mktidy.py failed");
+    let (tmp, out) = generated_copy()?;
     Some(Generated {
         roms: out.join("roms"),
         journals: tmp.path().join("rangement"),

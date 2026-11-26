@@ -920,6 +920,10 @@ impl<'a> Exec<'a> {
             self.write(writer, block, Op::MoveDone(f.n))?;
         }
         if let Some(w) = &spec.whole {
+            // Invariant: the check-then-rename window below is accepted. The journal line is written between
+            // `free` and `rename`, and `rename` of a directory replaces an empty directory created by someone else in
+            // that window (never one holding files); the tidy lock keeps this app out, so only a foreign process
+            // can hit it, and it loses nothing but an empty folder.
             free(&root, &w.to, &mut Listings::new())
                 .map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
             self.write(writer, block, whole_op(w))?;
@@ -939,6 +943,8 @@ impl<'a> Exec<'a> {
         dest_dirs.extend(made_in);
         self.sync_dirs(dest_dirs)?;
         if let (Some(p), Some(d)) = (&part, &spec.assembly) {
+            // Same accepted window as for `whole` above: an empty folder made by a foreign process between `free`
+            // and `rename` is replaced, nothing with content is.
             free(&root, d, &mut Listings::new())
                 .map_err(|existing| Step::Left(TidyBlock::Conflict { existing }))?;
             let (from, to) = (root.join(p), root.join(d));

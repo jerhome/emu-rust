@@ -2,10 +2,11 @@
 //! by unit with its manifest, plus the cases the generator does not write (links, non-UTF-8, `..`, known games).
 //! Python 3 is needed to generate the tree: the manifest tests are skipped (with a message) when it is missing.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use emu_library::{
@@ -220,17 +221,6 @@ impl Parser<'_> {
 
 // ------------------------------------------------------------------------------------------------ helpers
 
-fn python3_available() -> bool {
-    Command::new("python3")
-        .args(["-I", "-c", "pass"])
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-fn mktidy() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/tools/mktidy.py")
-}
-
 /// Generated tree + manifest in a temporary folder; `None` (with a message) when python3 is missing.
 struct Generated {
     _tmp: tempfile::TempDir,
@@ -240,19 +230,7 @@ struct Generated {
 }
 
 fn generate() -> Option<Generated> {
-    if !python3_available() {
-        eprintln!("python3 not found: tidy manifest test skipped");
-        return None;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let out = tmp.path().join("gen");
-    let status = Command::new("python3")
-        .arg("-I")
-        .arg(mktidy())
-        .arg(&out)
-        .status()
-        .expect("python3 runs");
-    assert!(status.success(), "mktidy.py failed");
+    let (tmp, out) = common::generated_copy()?;
     let text = fs::read_to_string(out.join("manifest.json")).unwrap();
     Some(Generated {
         roms: out.join("roms"),

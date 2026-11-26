@@ -218,8 +218,22 @@ pub fn scan_done(r: &ScanReport) -> String {
             roots.join(", ")
         ));
     }
+    if r.cautious {
+        s.push_str(" · ");
+        s.push_str(SCAN_CAUTIOUS);
+    }
+    if r.marker_failed {
+        s.push_str(" · ");
+        s.push_str(SCAN_MARKER_FAILED);
+    }
     s
 }
+
+/// Shown when the "scan in progress" marker could not be written or removed.
+pub const SCAN_MARKER_FAILED: &str = "Le fichier de suivi du scan n'a pas pu être écrit ou retiré (<base>.scanning, à côté de la bibliothèque) : vérifiez les droits du dossier, sinon les scans suivants resteront prudents.";
+
+/// Shown after a scan that followed an abrupt stop: nothing was purged.
+pub const SCAN_CAUTIOUS: &str = "Le scan précédent avait été interrompu : les jeux dont le fichier est absent sont conservés jusqu'au prochain scan.";
 
 pub fn scan_failed(e: &str) -> String {
     format!(
@@ -809,6 +823,22 @@ pub fn cd32x_unmarked(game: &str, same_name: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_done_mentions_cautious_scan_only_when_set() {
+        let mut r = ScanReport::default();
+        assert!(!scan_done(&r).contains(SCAN_CAUTIOUS));
+        r.cautious = true;
+        assert!(scan_done(&r).contains(SCAN_CAUTIOUS));
+    }
+
+    #[test]
+    fn scan_done_mentions_marker_failure_only_when_set() {
+        let mut r = ScanReport::default();
+        assert!(!scan_done(&r).contains(SCAN_MARKER_FAILED));
+        r.marker_failed = true;
+        assert!(scan_done(&r).contains(SCAN_MARKER_FAILED));
+    }
 
     #[test]
     fn empty_states_say_what_to_do() {
