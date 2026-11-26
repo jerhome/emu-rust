@@ -38,8 +38,12 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 5. Dettes plus anciennes : réponse `Loaded` (fait), avertissement cargo `main.rs` dans deux binaires d'emu-app ; page
    Réglages (défilement), barre d'outils sur deux lignes à 1280 px, focus initial de la bibliothèque ; idée : ligne
    « Infos » au clic droit.
-6. Demander les caractéristiques du PC et les inscrire dans CLAUDE.md (« Cibles »).
-7. Branches distantes supprimables avec l'accord de l'utilisateur : `feat/7.2-manette`, `feat/7.4-sega-cd-32x`,
+6. Rétro n° 4 (2026-11-26), lots décidés : (a) commit court dans le pied de page et `--version` (`7.6.0+8476e54`,
+   platform-build + ui) ; (b) étude : lancer les tests Windows en local avant de pousser (cible windows-gnu + wine) ;
+   (c) qa-systems : nommer puis corriger le test instable (priorité basse). Règles écrites dans CLAUDE.md (tests
+   portables, guide d'essai avec cas particuliers, reviewer opus pour les données, défaut d'essai → x.y.1).
+7. Demander les caractéristiques du PC et les inscrire dans CLAUDE.md (« Cibles »).
+8. Branches distantes supprimables avec l'accord de l'utilisateur : `feat/7.2-manette`, `feat/7.4-sega-cd-32x`,
    `feat/7.5-7z`.
 
 ## Budget

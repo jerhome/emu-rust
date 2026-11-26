@@ -111,6 +111,21 @@ qu'il n'existe pas déjà (les crons meurent avec la session).
 `fmt`, `clippy -D warnings` et `test` passent sur tout le workspace ; aucun test n'appelle un vrai service réseau
 (mocks `wiremock`) hors tests `#[ignore]` explicites ; `reviewer` a validé tout `unsafe` ou code réseau nouveau.
 
+### Tests portables (rétro n° 4, 2026-11-26)
+
+Les tests passent aussi sous Windows et macOS, que la vérification locale ne lance pas : chemins construits composant
+par composant (jamais `join("a/b")`), racines temporaires canonicalisées (`/var` → `/private/var` sous macOS),
+aucun chemin absolu Unix en dur, cas propres à un OS (noms non UTF-8 refusés par APFS, liens symboliques, droits)
+sous `cfg` ou sautés proprement. `qa-systems` et les agents de crate appliquent cette règle à tout test écrit.
+
+### Essais réels et livraison (rétro n° 4)
+
+- Le guide d'essai d'une version inclut toujours les jeux à cas particuliers touchés par la version (jeu
+  multi-disquette tiré d'une archive, CD 32X, disquettes MANIACD, sauvegardes d'état).
+- Relecture par `reviewer` **opus** pour tout code de sauvegardes, de données de l'utilisateur ou de déplacement de
+  fichiers ; sonnet ailleurs.
+- Défaut trouvé à l'essai réel d'une version : on tague la version essayée, puis on corrige en **x.y.1**.
+
 ### Boucle d'échec (orchestrée par la session principale)
 
 Un sous-agent ne peut pas en lancer un autre : c'est la session principale qui enchaîne les étapes.
