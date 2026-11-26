@@ -230,8 +230,8 @@ fn orphan_track_is_ignored_and_cartridges_still_hashed() {
     let root = tmp.path().join("roms");
     fs::create_dir_all(root.join("md")).unwrap();
     mkcd(&["orphan", root.join("Lost Track 01.bin").to_str().unwrap()]);
-    fs::write(root.join("md/Sonic.bin"), cartridge()).unwrap();
-    fs::write(root.join("md/Other.md"), cartridge()).unwrap();
+    fs::write(root.join("md").join("Sonic.bin"), cartridge()).unwrap();
+    fs::write(root.join("md").join("Other.md"), cartridge()).unwrap();
 
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);

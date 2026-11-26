@@ -39,7 +39,7 @@ fn interrupted_move() -> (Fx, Library) {
     let roms = tmp.path().join("roms");
     fs::create_dir_all(roms.join("vrac")).unwrap();
     fs::write(roms.join("Hero.sfc"), noise(4096)).unwrap();
-    fs::write(roms.join("vrac/Hero.sfc"), noise(4096)).unwrap();
+    fs::write(roms.join("vrac").join("Hero.sfc"), noise(4096)).unwrap();
     let db = tmp.path().join("library.db");
     let (mut lib, _) = Library::open(&db).unwrap();
     scan(&mut lib, &roms);
@@ -80,14 +80,14 @@ fn a_leftover_marker_merges_the_moved_file_and_keeps_the_favourite() {
     let games = lib.games().unwrap();
     assert_eq!(games.len(), 1);
     assert!(games[0].favorite);
-    assert_eq!(games[0].path, fx.roms.join("vrac/Hero.sfc"));
+    assert_eq!(games[0].path, fx.roms.join("vrac").join("Hero.sfc"));
     assert!(!marker(&fx.db).exists(), "removed at the normal end");
 }
 
 #[test]
 fn a_leftover_marker_purges_nothing_and_the_next_scan_does() {
     let (fx, mut lib) = interrupted_move();
-    fs::remove_file(fx.roms.join("vrac/Hero.sfc")).unwrap();
+    fs::remove_file(fx.roms.join("vrac").join("Hero.sfc")).unwrap();
     fs::write(marker(&fx.db), b"left by a killed scan").unwrap();
     let report = scan(&mut lib, &fx.roms);
     assert!(report.cautious);
@@ -135,7 +135,7 @@ fn a_cautious_scan_never_absorbs_a_row_that_has_a_favourite_or_covers() {
         .games()
         .unwrap()
         .into_iter()
-        .find(|g| g.path == fx.roms.join("vrac/Hero.sfc"))
+        .find(|g| g.path == fx.roms.join("vrac").join("Hero.sfc"))
         .unwrap();
     lib.set_favorite(keeper.id, true).unwrap();
     lib.set_cover(
@@ -157,7 +157,7 @@ fn keeper_of(fx: &Fx, lib: &Library) -> emu_library::GameId {
     lib.games()
         .unwrap()
         .into_iter()
-        .find(|g| g.path == fx.roms.join("vrac/Hero.sfc"))
+        .find(|g| g.path == fx.roms.join("vrac").join("Hero.sfc"))
         .unwrap()
         .id
 }
@@ -201,7 +201,7 @@ fn a_cautious_scan_leaves_two_pristine_identical_copies_alone() {
     let roms = tmp.path().join("roms");
     fs::create_dir_all(roms.join("vrac")).unwrap();
     fs::write(roms.join("X.sfc"), noise(4096)).unwrap();
-    fs::write(roms.join("vrac/X.sfc"), noise(4096)).unwrap();
+    fs::write(roms.join("vrac").join("X.sfc"), noise(4096)).unwrap();
     let db = tmp.path().join("library.db");
     let (mut lib, _) = Library::open(&db).unwrap();
     scan(&mut lib, &roms);

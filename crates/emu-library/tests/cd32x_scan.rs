@@ -192,7 +192,7 @@ fn chd_disc_group_is_one_game() {
 fn m3u_with_a_single_tagged_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");
-    let dir = root.join("megacd/m3u");
+    let dir = root.join("megacd").join("m3u");
     let d = dir.to_string_lossy().into_owned();
     for name in [
         "Mixed (USA) (Disc 1)",
@@ -296,15 +296,17 @@ fn moved_by_hand_keeps_id_and_needs_32x() {
     let chd_game = game(&lib, "Fake Chd (Europe) (32X CD).chd");
     assert!(cue.needs_32x && chd_game.needs_32x);
 
-    fs::create_dir_all(root.join("megacd/sorted")).unwrap();
+    fs::create_dir_all(root.join("megacd").join("sorted")).unwrap();
     fs::rename(
-        root.join("megacd/tagged"),
-        root.join("megacd/sorted/tagged"),
+        root.join("megacd").join("tagged"),
+        root.join("megacd").join("sorted").join("tagged"),
     )
     .unwrap();
     fs::rename(
-        root.join("megacd/Fake Chd (Europe) (32X CD).chd"),
-        root.join("megacd/sorted/Fake Chd (Europe) (32X CD).chd"),
+        root.join("megacd").join("Fake Chd (Europe) (32X CD).chd"),
+        root.join("megacd")
+            .join("sorted")
+            .join("Fake Chd (Europe) (32X CD).chd"),
     )
     .unwrap();
     let report = scan(&mut lib, &root);

@@ -138,7 +138,7 @@ fn gba_and_32x_cartridges_and_bins_by_header() {
     );
     fs::write(root.join("Zipped 32X.zip"), zip_of("game.bin", &x)).unwrap();
     fs::write(root.join("Sonic.bin"), cartridge()).unwrap();
-    fs::write(root.join("32x/Cart In 32X Folder.bin"), cartridge()).unwrap();
+    fs::write(root.join("32x").join("Cart In 32X Folder.bin"), cartridge()).unwrap();
 
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);
@@ -250,11 +250,11 @@ fn redump_identification_and_region() {
     fs::write(root.join("Chd Game (Europe).chd"), b"not read").unwrap();
     fs::write(root.join("Unknown (USA).chd"), b"not read").unwrap();
     fs::create_dir_all(root.join("megacd")).unwrap();
-    fs::write(root.join("megacd/Bare.chd"), b"not read").unwrap();
-    fs::write(root.join("megacd/Tagged (Japan).chd"), b"not read").unwrap();
+    fs::write(root.join("megacd").join("Bare.chd"), b"not read").unwrap();
+    fs::write(root.join("megacd").join("Tagged (Japan).chd"), b"not read").unwrap();
     assert_eq!(
         disc_serial(
-            &root.join("megacd/serial/Serial Disc.cue"),
+            &root.join("megacd").join("serial").join("Serial Disc.cue"),
             DiscFormat::SegaCd
         )
         .unwrap()
@@ -273,7 +273,12 @@ fn redump_identification_and_region() {
     assert_eq!(region(&lib, "Bare.chd"), None);
     assert_eq!(region(&lib, "Tagged (Japan).chd"), Some(DiscRegion::Japan));
 
-    let track = fs::read(root.join("megacd/crc/Crc Disc (Track 1).bin")).unwrap();
+    let track = fs::read(
+        root.join("megacd")
+            .join("crc")
+            .join("Crc Disc (Track 1).bin"),
+    )
+    .unwrap();
     let dat = Dat {
         name: "Sega - Mega-CD - Sega CD".into(),
         version: Some("20261121".into()),
@@ -391,7 +396,12 @@ fn multi_cd_playlists_and_disc_groups() {
         "--discs",
         "2",
     ]);
-    fs::remove_file(root.join("megacd/group/Grouped (Japan).m3u")).unwrap();
+    fs::remove_file(
+        root.join("megacd")
+            .join("group")
+            .join("Grouped (Japan).m3u"),
+    )
+    .unwrap();
 
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);

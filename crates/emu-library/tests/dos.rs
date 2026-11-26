@@ -110,7 +110,7 @@ fn game_folders_and_loose_executables() {
     // Loose programs in the root are not games; elsewhere they are not ours (not even reported).
     write(&dos.join("LOOSE.EXE"), b"MZ-loose");
     write(&dos.join("TOOL.COM"), b"tool");
-    write(&root.join("misc/stray.exe"), b"MZ-stray");
+    write(&root.join("misc").join("stray.exe"), b"MZ-stray");
 
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);
@@ -144,7 +144,10 @@ fn game_folders_and_loose_executables() {
     );
     assert_eq!(again.ignored_loose_executables, 2);
     // A changed file in the root of a game folder is noticed.
-    write(&dos.join("multi/README.TXT"), b"changed and longer\r\n");
+    write(
+        &dos.join("multi").join("README.TXT"),
+        b"changed and longer\r\n",
+    );
     let third = scan(&mut lib, &root);
     assert_eq!((third.updated, third.unchanged), (1, 3), "{third:?}");
     // Removing the folder removes the game.
@@ -157,7 +160,7 @@ fn game_folders_and_loose_executables() {
 fn a_scan_rooted_at_the_dos_folder_works_the_same() {
     let tmp = tempfile::tempdir().unwrap();
     let dos = tmp.path().join("dos");
-    write(&dos.join("Game One/GAME.EXE"), b"MZ1");
+    write(&dos.join("Game One").join("GAME.EXE"), b"MZ1");
     write(&dos.join("LOOSE.EXE"), b"MZ2");
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &dos);
@@ -167,7 +170,7 @@ fn a_scan_rooted_at_the_dos_folder_works_the_same() {
         BTreeSet::from([item("dos", "Game One", true)])
     );
     // A folder name with a dot keeps it whole.
-    write(&dos.join("v1.5 Deluxe/RUN.BAT"), b"echo");
+    write(&dos.join("v1.5 Deluxe").join("RUN.BAT"), b"echo");
     scan(&mut lib, &dos);
     let titles: Vec<String> = lib.games().unwrap().into_iter().map(|g| g.title).collect();
     assert!(titles.contains(&"v1.5 Deluxe".to_owned()), "{titles:?}");
@@ -181,10 +184,10 @@ fn dat_identification_of_folders_and_zips_and_reidentification_after_import() {
     let game = b"MZ-game-exe-bytes".as_slice();
     let data = b"level data".as_slice();
     let tool = b"MZ-shared-install".as_slice();
-    write(&dos.join("Alpha/GAME.EXE"), game);
-    write(&dos.join("Alpha/INSTALL.EXE"), tool);
-    write(&dos.join("Beta/INSTALL.EXE"), tool);
-    write(&dos.join("Gamma/other.exe"), b"MZ-unknown");
+    write(&dos.join("Alpha").join("GAME.EXE"), game);
+    write(&dos.join("Alpha").join("INSTALL.EXE"), tool);
+    write(&dos.join("Beta").join("INSTALL.EXE"), tool);
+    write(&dos.join("Gamma").join("other.exe"), b"MZ-unknown");
     zip_of(
         &dos.join("alpha-zipped.zip"),
         &[("game.exe", game), ("level.dat", data)],
@@ -251,19 +254,22 @@ fn dos_zips_and_discs() {
     let iso = vec![0x20u8; 4096];
     // Under `dos/`: always a DOS game, a CD inside is fine; nothing is read (no hash).
     zip_of(
-        &root.join("dos/withcd.zip"),
+        &root.join("dos").join("withcd.zip"),
         &[("GAME.EXE", b"MZ"), ("game.iso", &iso)],
     );
-    zip_of(&root.join("dos/onlyiso.zip"), &[("disc.iso", &iso)]);
+    zip_of(&root.join("dos").join("onlyiso.zip"), &[("disc.iso", &iso)]);
     // Elsewhere: a program inside makes it a DOS game, otherwise the 2.1 refusal stays.
     zip_of(
-        &root.join("games/exe-and-cd.zip"),
+        &root.join("games").join("exe-and-cd.zip"),
         &[("RUN.EXE", b"MZ"), ("d.cue", b"FILE")],
     );
-    zip_of(&root.join("games/plain-cd.zip"), &[("d.iso", &iso)]);
-    zip_of(&root.join("games/text.zip"), &[("readme.txt", b"hi")]);
+    zip_of(&root.join("games").join("plain-cd.zip"), &[("d.iso", &iso)]);
+    zip_of(
+        &root.join("games").join("text.zip"),
+        &[("readme.txt", b"hi")],
+    );
     write(
-        &root.join("games/pack.dosz"),
+        &root.join("games").join("pack.dosz"),
         b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     );
     let mut lib = Library::open_in_memory().unwrap();
@@ -326,8 +332,11 @@ fn cds_under_dos_are_classified_by_folder_and_their_tracks_are_hidden() {
     write(&dos.join("Install.ins"), b"x");
     write(&dos.join("disk.vhd"), &vec![4u8; 1024]);
     // Outside any system folder: nothing to probe, tracks are still hidden, the disc is unclassified.
-    write(&root.join("other/Music.cue"), b"FILE \"m.bin\" BINARY\r\n");
-    write(&root.join("other/m.bin"), &vec![5u8; 4096]);
+    write(
+        &root.join("other").join("Music.cue"),
+        b"FILE \"m.bin\" BINARY\r\n",
+    );
+    write(&root.join("other").join("m.bin"), &vec![5u8; 4096]);
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);
     assert!(report.errors.is_empty(), "{report:?}");
@@ -366,13 +375,16 @@ fn small_images_are_matched_on_crc_and_playlists_group_them() {
     let root = tmp.path().join("roms");
     let d1 = vec![7u8; 2048];
     let d2 = vec![8u8; 2048];
-    write(&root.join("dos/Quest (Disk 1 of 2).ima"), &d1);
-    write(&root.join("dos/Quest (Disk 2 of 2).ima"), &d2);
-    write(&root.join("dos/Solo.ima"), &d1);
+    write(&root.join("dos").join("Quest (Disk 1 of 2).ima"), &d1);
+    write(&root.join("dos").join("Quest (Disk 2 of 2).ima"), &d2);
+    write(&root.join("dos").join("Solo.ima"), &d1);
     // A playlist of any spelling: the entries are hidden, the playlist is the game.
-    write(&root.join("dos/Saga.m3u8"), b"Saga 1.img\nSaga 2.img\n");
-    write(&root.join("dos/Saga 1.img"), &d1);
-    write(&root.join("dos/Saga 2.img"), &d2);
+    write(
+        &root.join("dos").join("Saga.m3u8"),
+        b"Saga 1.img\nSaga 2.img\n",
+    );
+    write(&root.join("dos").join("Saga 1.img"), &d1);
+    write(&root.join("dos").join("Saga 2.img"), &d2);
     let dat = Dat {
         name: "DOS".into(),
         version: None,
@@ -423,10 +435,10 @@ fn small_images_are_matched_on_crc_and_playlists_group_them() {
 fn a_playlist_of_a_dos_image_outside_the_folder_is_still_dos() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");
-    write(&root.join("pc/a.ima"), &vec![1u8; 512]);
-    write(&root.join("pc/list.m3u8"), b"a.ima\n");
+    write(&root.join("pc").join("a.ima"), &vec![1u8; 512]);
+    write(&root.join("pc").join("list.m3u8"), b"a.ima\n");
     // `.m3u` alone is shared by three computers: classified by its entries, here a DOS image.
-    write(&root.join("pc/old.m3u"), b"a.ima\n");
+    write(&root.join("pc").join("old.m3u"), b"a.ima\n");
     let mut lib = Library::open_in_memory().unwrap();
     scan(&mut lib, &root);
     let systems: BTreeSet<String> = lib.games().unwrap().into_iter().map(|g| g.system).collect();
@@ -440,9 +452,13 @@ fn symlinked_executable_does_not_make_a_game_folder() {
     let root = tmp.path().join("roms");
     let dos = root.join("dos");
     write(&tmp.path().join("real.exe"), b"MZ-real");
-    write(&dos.join("linked/DATA.DAT"), b"data");
-    std::os::unix::fs::symlink(tmp.path().join("real.exe"), dos.join("linked/GAME.EXE")).unwrap();
-    write(&dos.join("plain/GAME.EXE"), b"MZ-plain");
+    write(&dos.join("linked").join("DATA.DAT"), b"data");
+    std::os::unix::fs::symlink(
+        tmp.path().join("real.exe"),
+        dos.join("linked").join("GAME.EXE"),
+    )
+    .unwrap();
+    write(&dos.join("plain").join("GAME.EXE"), b"MZ-plain");
 
     let mut lib = Library::open_in_memory().unwrap();
     scan(&mut lib, &root);

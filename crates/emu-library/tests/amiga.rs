@@ -75,8 +75,8 @@ fn ipf_outside_folders_needs_a_dat() {
     write(&root.join("loose.ipf"), &disk(1));
     write(&root.join("st-dat.ipf"), &disk(2));
     write(&root.join("amiga-dat.ipf"), &disk(3));
-    write(&root.join("amiga/in-folder.ipf"), &disk(4));
-    write(&root.join("atarist/in-folder-st.ipf"), &disk(5));
+    write(&root.join("amiga").join("in-folder.ipf"), &disk(4));
+    write(&root.join("atarist").join("in-folder-st.ipf"), &disk(5));
     let mut lib = Library::open_in_memory().unwrap();
     lib.import_dat(
         "atarist",
@@ -171,9 +171,12 @@ fn folder_only_extensions() {
     let root = tmp.path().join("roms");
     write(&root.join("Game.lha"), &disk(1));
     write(&root.join("disk.hdf"), &disk(2));
-    write(&root.join("amiga/whdload/Game.lha"), &disk(3));
-    write(&root.join("amiga/system.hdf"), &disk(4));
-    write(&root.join("atarist/other.hdz"), &disk(5));
+    write(
+        &root.join("amiga").join("whdload").join("Game.lha"),
+        &disk(3),
+    );
+    write(&root.join("amiga").join("system.hdf"), &disk(4));
+    write(&root.join("atarist").join("other.hdz"), &disk(5));
     write(&root.join("Plain.adf"), &disk(6));
     write(&root.join("Plain.st"), &disk(7));
     write(&root.join("Plain.gb"), &disk(8));
@@ -217,19 +220,22 @@ fn folder_only_extensions() {
 fn m3u_takes_the_system_of_its_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");
-    write(&root.join("a/d1.adf"), &disk(1));
-    write(&root.join("a/d2.adf"), &disk(2));
-    write(&root.join("a/Amiga Saga.m3u"), b"d1.adf\nd2.adf\n");
-    write(&root.join("s/d1.st"), &disk(3));
-    write(&root.join("s/ST Saga.m3u"), b"d1.st\n");
-    write(&root.join("i/x.ipf"), &disk(4));
-    write(&root.join("i/Loose.m3u"), b"x.ipf\n");
-    write(&root.join("m/x.adf"), &disk(5));
-    write(&root.join("m/y.st"), &disk(6));
-    write(&root.join("m/Mixed.m3u"), b"x.adf\ny.st\n");
-    write(&root.join("atarist/x.adf"), &disk(7));
-    write(&root.join("atarist/y.st"), &disk(8));
-    write(&root.join("atarist/Mixed in ST.m3u"), b"x.adf\ny.st\n");
+    write(&root.join("a").join("d1.adf"), &disk(1));
+    write(&root.join("a").join("d2.adf"), &disk(2));
+    write(&root.join("a").join("Amiga Saga.m3u"), b"d1.adf\nd2.adf\n");
+    write(&root.join("s").join("d1.st"), &disk(3));
+    write(&root.join("s").join("ST Saga.m3u"), b"d1.st\n");
+    write(&root.join("i").join("x.ipf"), &disk(4));
+    write(&root.join("i").join("Loose.m3u"), b"x.ipf\n");
+    write(&root.join("m").join("x.adf"), &disk(5));
+    write(&root.join("m").join("y.st"), &disk(6));
+    write(&root.join("m").join("Mixed.m3u"), b"x.adf\ny.st\n");
+    write(&root.join("atarist").join("x.adf"), &disk(7));
+    write(&root.join("atarist").join("y.st"), &disk(8));
+    write(
+        &root.join("atarist").join("Mixed in ST.m3u"),
+        b"x.adf\ny.st\n",
+    );
     let mut lib = Library::open_in_memory().unwrap();
     let report = scan(&mut lib, &root);
     assert!(report.errors.is_empty(), "{report:?}");
@@ -260,8 +266,8 @@ fn m3u_takes_the_system_of_its_entries() {
 fn two_dat_sources_of_one_system() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");
-    write(&root.join("amiga/both.adf"), &disk(1));
-    write(&root.join("amiga/whd.lha"), &disk(2));
+    write(&root.join("amiga").join("both.adf"), &disk(1));
+    write(&root.join("amiga").join("whd.lha"), &disk(2));
     let mut lib = Library::open_in_memory().unwrap();
     scan(&mut lib, &root);
     lib.import_dat_source(

@@ -52,8 +52,8 @@ fn applying_keeps_ids_favorites_counters_and_covers() {
     assert!(!report.cancelled);
 
     let root = fx.roms.canonicalize().unwrap();
-    assert!(root.join("snes/Alpha.sfc").is_file());
-    assert!(root.join("nes/Beta.nes").is_file());
+    assert!(root.join("snes").join("Alpha.sfc").is_file());
+    assert!(root.join("nes").join("Beta.nes").is_file());
     assert!(!root.join("Alpha.sfc").exists());
     assert_eq!(report.moved.len(), 3);
     for (from, to) in &report.moved {
@@ -149,8 +149,8 @@ fn maniacd_disks_are_grouped_into_one_c64_game() {
         report.left.is_empty() && report.errors.is_empty(),
         "{report:?}"
     );
-    assert!(root.join("c64/MANIACD0.D64").is_file());
-    assert!(root.join("c64/MANIACD1.D64").is_file());
+    assert!(root.join("c64").join("MANIACD0.D64").is_file());
+    assert!(root.join("c64").join("MANIACD1.D64").is_file());
     assert!(!root.join("MANIACD0.D64").exists() && !root.join("MANIACD1.D64").exists());
 
     let after = rows(&library, &root);
@@ -222,7 +222,7 @@ fn only_the_selected_units_move() {
     let nes = unit(&plan, "Beta.nes").id;
     let report = apply(&mut library, &fx, &plan, &[nes]);
     assert_eq!(report.moved.len(), 1);
-    assert!(fx.roms.join("nes/Beta.nes").is_file());
+    assert!(fx.roms.join("nes").join("Beta.nes").is_file());
     assert!(fx.roms.join("Alpha.sfc").is_file());
     assert!(fx.roms.join("Gamma.gba").is_file());
 }
@@ -245,7 +245,7 @@ fn nothing_selected_writes_nothing() {
 fn a_blocked_unit_selected_by_mistake_stays_and_is_reported() {
     let fx = Fx::new();
     write(&fx.roms.join("Alpha.sfc"), &noise(4096, 1));
-    write(&fx.roms.join("snes/Alpha.sfc"), &noise(4096, 9)); // a different file already there
+    write(&fx.roms.join("snes").join("Alpha.sfc"), &noise(4096, 9)); // a different file already there
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
     let u = unit(&plan, "Alpha.sfc");
@@ -270,15 +270,18 @@ fn a_destination_taken_after_the_plan_is_never_overwritten() {
     let plan = fx.plan(&library);
     // A different file appears at the destination of Alpha, a folder at the destination of Beta.
     let intruder = noise(100, 77);
-    write(&fx.roms.join("snes/Alpha.sfc"), &intruder);
-    fs::create_dir_all(fx.roms.join("nes/Beta.nes")).unwrap();
+    write(&fx.roms.join("snes").join("Alpha.sfc"), &intruder);
+    fs::create_dir_all(fx.roms.join("nes").join("Beta.nes")).unwrap();
     let report = apply(&mut library, &fx, &plan, &sure_ids(&plan));
-    assert_eq!(fs::read(fx.roms.join("snes/Alpha.sfc")).unwrap(), intruder);
+    assert_eq!(
+        fs::read(fx.roms.join("snes").join("Alpha.sfc")).unwrap(),
+        intruder
+    );
     assert!(fx.roms.join("Alpha.sfc").is_file(), "source kept");
-    assert!(fx.roms.join("nes/Beta.nes").is_dir());
+    assert!(fx.roms.join("nes").join("Beta.nes").is_dir());
     assert!(fx.roms.join("Beta.nes").is_file(), "source kept");
     assert!(
-        fx.roms.join("gba/Gamma.gba").is_file(),
+        fx.roms.join("gba").join("Gamma.gba").is_file(),
         "the free unit moved"
     );
     assert_eq!(report.left.len(), 2, "{report:?}");
@@ -299,9 +302,12 @@ fn a_file_changed_after_the_plan_stays() {
         fx.roms.join("Alpha.sfc").is_file(),
         "changed file untouched"
     );
-    assert!(!fx.roms.join("snes/Alpha.sfc").exists());
-    assert!(!fx.roms.join("nes/Beta.nes").exists(), "nothing invented");
-    assert!(fx.roms.join("gba/Gamma.gba").is_file());
+    assert!(!fx.roms.join("snes").join("Alpha.sfc").exists());
+    assert!(
+        !fx.roms.join("nes").join("Beta.nes").exists(),
+        "nothing invented"
+    );
+    assert!(fx.roms.join("gba").join("Gamma.gba").is_file());
     assert!(
         report
             .left
@@ -521,7 +527,7 @@ fn the_journal_names_the_canonical_root_and_a_link_root_gives_canonical_paths() 
         "the journal holds the canonical root: {root_line}"
     );
     // The row (spelled through the link by the scan) follows the file.
-    assert!(real.join("snes/Alpha.sfc").is_file());
+    assert!(real.join("snes").join("Alpha.sfc").is_file());
     let games = library.games().unwrap();
     assert_eq!(games.len(), 1);
     assert!(
@@ -600,14 +606,20 @@ mod rights {
         chmod(&fx.roms, 0o755);
         // The data is intact at the source; any second name is accounted for by extra_names, never lost.
         assert_eq!(fs::read(fx.roms.join("Alpha.sfc")).unwrap(), data);
-        let second = fx.roms.join("snes/Alpha.sfc");
+        let second = fx.roms.join("snes").join("Alpha.sfc");
         if second.exists() {
             assert!(
                 report
                     .extra_names
                     .iter()
                     .any(|e| e.remove == second.canonicalize().unwrap()
-                        || e.remove == fx.roms.canonicalize().unwrap().join("snes/Alpha.sfc")),
+                        || e.remove
+                            == fx
+                                .roms
+                                .canonicalize()
+                                .unwrap()
+                                .join("snes")
+                                .join("Alpha.sfc")),
                 "a leftover second name must be listed: {report:?}"
             );
         }
@@ -649,7 +661,7 @@ mod windows_rights {
         let report = apply(&mut library, &fx, &plan, &[u.id]);
         assert!(report.moved.is_empty());
         assert!(source.is_file());
-        assert!(!fx.roms.join("snes/Alpha.sfc").exists());
+        assert!(!fx.roms.join("snes").join("Alpha.sfc").exists());
         assert!(fs::metadata(&source).unwrap().permissions().readonly());
         let mut perms = fs::metadata(&source).unwrap().permissions();
         // Windows only: clears the read-only attribute; the Unix world-writable warning does not apply.

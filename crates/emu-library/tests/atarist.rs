@@ -173,8 +173,8 @@ fn a_disk_appearing_later_regroups_without_losing_the_game() {
 fn an_m3u_is_the_game_and_hides_its_files() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("atarist");
-    write(&root.join("disks/a.st"), &disk(1));
-    write(&root.join("disks/b.msa"), &disk(2));
+    write(&root.join("disks").join("a.st"), &disk(1));
+    write(&root.join("disks").join("b.msa"), &disk(2));
     write(
         &root.join("Saga.m3u"),
         b"#EXTM3U\ndisks/a.st\r\ndisks\\b.msa\nmissing.st\n",

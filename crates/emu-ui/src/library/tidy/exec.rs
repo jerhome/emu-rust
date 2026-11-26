@@ -356,11 +356,41 @@ pub(crate) fn run_job(
 /// `roms/…` or `saves/…` when `p` is under one of them, otherwise `p`.
 pub(crate) fn shown_path(out: &Outcome, p: &Path) -> PathBuf {
     for (base, name) in [(&out.root, "roms"), (&out.saves, "saves")] {
-        if let Some(rel) = base.as_deref().and_then(|b| p.strip_prefix(b).ok()) {
+        if let Some(rel) = base.as_deref().and_then(|b| strip_root(p, b)) {
             return Path::new(name).join(rel);
         }
     }
     p.to_path_buf()
+}
+
+/// `p` relative to `base`. Falls back to a textual comparison that ignores the Windows verbatim prefix
+/// (`\\?\C:\…`, as `fs::canonicalize` returns it) and the separator kind, because an I/O error text
+/// carries the plain form of a path whose root may be verbatim (or the opposite).
+fn strip_root(p: &Path, base: &Path) -> Option<PathBuf> {
+    if let Ok(rel) = p.strip_prefix(base) {
+        return Some(rel.to_path_buf());
+    }
+    let plain = |x: &Path| {
+        let s = x.to_string_lossy().replace('\\', "/");
+        // `\\?\UNC\srv\share` is the verbatim form of `\\srv\share`; test it before the plain `\\?\` prefix.
+        if let Some(unc) = s.strip_prefix("//?/UNC/") {
+            format!("//{unc}")
+        } else {
+            s.strip_prefix("//?/").map_or(s.clone(), str::to_owned)
+        }
+    };
+    let (p, base) = (plain(p), plain(base));
+    let base = base.trim_end_matches('/');
+    let rest = if cfg!(windows) && p.len() >= base.len() && p.is_char_boundary(base.len()) {
+        // Windows paths are case-insensitive (drive letter `c:` / `C:`).
+        p[base.len()..]
+            .strip_prefix('/')
+            .filter(|_| p[..base.len()].eq_ignore_ascii_case(base))
+    } else {
+        p.strip_prefix(base)?.strip_prefix('/')
+    }?;
+    // Non-ASCII case differences are not folded (only noted: file systems fold them differently).
+    (!base.is_empty()).then(|| rest.split('/').filter(|c| !c.is_empty()).collect())
 }
 
 /// One line of `TidyReport::errors`. A `LibraryError::Io` text starts with the absolute path it is about
@@ -908,32 +938,84 @@ mod tests {
         assert_eq!(out.messages, [text::IDENTITIES_DEFERRED]);
     }
 
+    /// An absolute path of the platform (a drive letter on Windows) from a `/` path.
+    fn abs(p: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{}", p.replace('/', "\\")))
+        } else {
+            PathBuf::from(p)
+        }
+    }
+
+    #[test]
+    fn strip_root_ignores_the_verbatim_prefix_and_separator_kind() {
+        let rel = |p: &str, b: &str| strip_root(Path::new(p), Path::new(b));
+        assert_eq!(
+            rel("//?/C:/r/roms/a.bin", "C:/r/roms"),
+            Some(PathBuf::from("a.bin"))
+        );
+        assert_eq!(
+            rel("C:/r/roms/a.bin", "//?/C:/r/roms"),
+            Some(PathBuf::from("a.bin"))
+        );
+        assert_eq!(
+            rel(r"C:\r\roms\sub\a.bin", r"\\?\C:\r\roms"),
+            Some(["sub", "a.bin"].iter().collect())
+        );
+        assert_eq!(
+            rel(r"\\?\UNC\srv\share\roms\a.bin", r"\\srv\share\roms"),
+            Some(PathBuf::from("a.bin"))
+        );
+        assert_eq!(
+            rel(r"\\srv\share\roms\sub\a.bin", r"\\?\UNC\srv\share\roms"),
+            Some(["sub", "a.bin"].iter().collect())
+        );
+        assert_eq!(rel("C:/r/romsX/a.bin", "C:/r/roms"), None);
+        assert_eq!(rel("C:/other/a.bin", "//?/C:/r/roms"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_root_with_plain_io_text_does_not_leak_the_absolute_path() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(PathBuf::from(r"\\?\C:\data\roms"));
+        let entry = Path::new(r"\\?\C:\data\roms\Myst.iso");
+        let line = error_entry(
+            &out,
+            entry,
+            r"C:\data\roms\Myst.bin : accès refusé (os error 5)",
+        );
+        assert_eq!(
+            line,
+            "roms/Myst.iso : roms/Myst.bin : accès refusé (os error 5)"
+        );
+    }
+
     #[test]
     fn saves_override_is_detected_against_the_data_folder() {
-        let mut dirs = DataDirs::under(Path::new("/data"));
+        let mut dirs = DataDirs::under(&abs("/data"));
         assert!(!saves_overridden(&dirs));
-        dirs.saves = PathBuf::from("/elsewhere/saves");
+        dirs.saves = abs("/elsewhere/saves");
         assert!(saves_overridden(&dirs));
     }
 
     #[test]
     fn error_entries_drop_the_absolute_path_of_the_io_text() {
         let mut out = Outcome::new(RunKind::Tidy);
-        out.root = Some(PathBuf::from("/home/u/data/roms"));
-        let entry = Path::new("/home/u/data/roms/Myst.iso");
+        let root = abs("/home/u/data/roms");
+        out.root = Some(root.clone());
+        let entry = root.join("Myst.iso");
+        let entry = entry.as_path();
+        let io = |name: &str, cause: &str| format!("{} : {cause}", root.join(name).display());
         let line = error_entry(
             &out,
             entry,
-            "/home/u/data/roms/Myst.iso : fichier utilisé (os error 32)",
+            &io("Myst.iso", "fichier utilisé (os error 32)"),
         );
         assert!(line.starts_with("roms/Myst.iso : fichier utilisé (os error 32)"));
         assert!(line.contains(text::SHARING_HINT));
-        assert!(!line.contains("/home/u"));
-        let line = error_entry(
-            &out,
-            entry,
-            "/home/u/data/roms/Myst.bin : accès refusé (os error 13)",
-        );
+        assert!(!line.contains("home/u"));
+        let line = error_entry(&out, entry, &io("Myst.bin", "accès refusé (os error 13)"));
         assert_eq!(
             line,
             "roms/Myst.iso : roms/Myst.bin : accès refusé (os error 13)"
@@ -947,13 +1029,14 @@ mod tests {
 
     #[test]
     fn demo_report_shows_a_text_the_library_produces() {
-        let dirs = DataDirs::under(Path::new("/data"));
+        let dirs = DataDirs::under(&abs("/data"));
         let out = demo_outcome(&dirs);
         let r = out.report.as_ref().unwrap();
         let (p, m) = &r.errors[0];
         let line = error_entry(&out, p, m);
         assert!(line.contains(text::SHARING_HINT));
-        assert!(!line.contains("/data"));
+        assert!(!line.contains("data/"));
+        assert!(!line.contains("data\\"));
     }
 
     #[test]

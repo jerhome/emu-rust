@@ -302,8 +302,12 @@ fn copy_tree(from: &Path, to: &Path) {
                 .unwrap();
         }
     }
-    let mtime = fs::metadata(from).unwrap().modified().unwrap();
-    fs::File::open(to).unwrap().set_modified(mtime).unwrap();
+    // Windows refuses `set_modified` on a folder opened for reading (PermissionDenied): unix only.
+    #[cfg(unix)]
+    {
+        let mtime = fs::metadata(from).unwrap().modified().unwrap();
+        fs::File::open(to).unwrap().set_modified(mtime).unwrap();
+    }
 }
 
 /// A private copy of the generated tree in a new temporary folder (`<tmp>/gen`); `None` without python3.

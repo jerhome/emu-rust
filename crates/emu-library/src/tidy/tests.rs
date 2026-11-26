@@ -201,9 +201,16 @@ fn messy_tree(roms: &Path) {
     write(&roms.join("Dungeon (Disk 1 of 2).st"), &noise(1000, 7));
     write(&roms.join("Dungeon (Disk 2 of 2).st"), &noise(1000, 8));
     write(&roms.join("Worms.adf"), &noise(1000, 9));
-    write(&roms.join("Jeux/Commander Keen/KEEN.EXE"), &noise(700, 10));
     write(
-        &roms.join("Jeux/Commander Keen/data/LEVEL1.DAT"),
+        &roms.join("Jeux").join("Commander Keen").join("KEEN.EXE"),
+        &noise(700, 10),
+    );
+    write(
+        &roms
+            .join("Jeux")
+            .join("Commander Keen")
+            .join("data")
+            .join("LEVEL1.DAT"),
         &noise(700, 11),
     );
     write(&roms.join("scph5501.bin"), &noise(512 * 1024, 12));
@@ -211,7 +218,7 @@ fn messy_tree(roms: &Path) {
     write(&roms.join("notes.txt"), b"hello");
     write(&roms.join("Vagrant.chd"), &noise(3000, 14));
     write(&roms.join("Vagrant.sbi"), &noise(30, 15));
-    write(&roms.join("snes/Old.sfc"), &noise(100, 16));
+    write(&roms.join("snes").join("Old.sfc"), &noise(100, 16));
     fs::create_dir(roms.join("gb")).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(roms.join("Super Game (Europe).sfc"), roms.join("link.sfc"))
@@ -431,19 +438,25 @@ fn a_known_game_keeps_its_system_and_a_change_is_flagged() {
 fn cue_references_are_checked() {
     let f = fixture();
     write(
-        &f.roms.join("a/Missing.cue"),
+        &f.roms.join("a").join("Missing.cue"),
         &cue(&["Missing (Track 1).bin"]),
     );
-    write(&f.roms.join("b/Abs.cue"), b"FILE \"/etc/passwd\" BINARY\n");
-    write(&f.roms.join("c/Up.cue"), b"FILE \"../x.bin\" BINARY\n");
-    write(&f.roms.join("d/One.cue"), &cue(&["shared.bin"]));
-    write(&f.roms.join("d/Two.cue"), &cue(&["shared.bin"]));
-    write(&f.roms.join("d/shared.bin"), &psx_track());
+    write(
+        &f.roms.join("b").join("Abs.cue"),
+        b"FILE \"/etc/passwd\" BINARY\n",
+    );
+    write(
+        &f.roms.join("c").join("Up.cue"),
+        b"FILE \"../x.bin\" BINARY\n",
+    );
+    write(&f.roms.join("d").join("One.cue"), &cue(&["shared.bin"]));
+    write(&f.roms.join("d").join("Two.cue"), &cue(&["shared.bin"]));
+    write(&f.roms.join("d").join("shared.bin"), &psx_track());
     // Two games whose tracks have the same name, each in its own folder: no sharing.
-    write(&f.roms.join("e/G1.cue"), &cue(&["track.bin"]));
-    write(&f.roms.join("e/track.bin"), &psx_track());
-    write(&f.roms.join("g/G2.cue"), &cue(&["track.bin"]));
-    write(&f.roms.join("g/track.bin"), &psx_track());
+    write(&f.roms.join("e").join("G1.cue"), &cue(&["track.bin"]));
+    write(&f.roms.join("e").join("track.bin"), &psx_track());
+    write(&f.roms.join("g").join("G2.cue"), &cue(&["track.bin"]));
+    write(&f.roms.join("g").join("track.bin"), &psx_track());
     let library = Library::open_in_memory().unwrap();
     let plan = f.plan(&library);
     assert_eq!(
@@ -523,13 +536,13 @@ fn collisions_and_duplicates_ignore_case() {
     let f = fixture();
     let rom = noise(4096, 1);
     write(&f.roms.join("Same.sfc"), &rom);
-    write(&f.roms.join("snes/SAME.sfc"), &rom);
+    write(&f.roms.join("snes").join("SAME.sfc"), &rom);
     write(&f.roms.join("Other.sfc"), &noise(4096, 2));
-    write(&f.roms.join("snes/other.SFC"), &noise(4096, 3));
-    write(&f.roms.join("a/Twice.nes"), &noise(64, 4));
-    write(&f.roms.join("b/TWICE.nes"), &noise(64, 5));
-    write(&f.roms.join("c/Copy.nes"), &noise(64, 6));
-    write(&f.roms.join("d/Copy.nes"), &noise(64, 6));
+    write(&f.roms.join("snes").join("other.SFC"), &noise(4096, 3));
+    write(&f.roms.join("a").join("Twice.nes"), &noise(64, 4));
+    write(&f.roms.join("b").join("TWICE.nes"), &noise(64, 5));
+    write(&f.roms.join("c").join("Copy.nes"), &noise(64, 6));
+    write(&f.roms.join("d").join("Copy.nes"), &noise(64, 6));
     let library = Library::open_in_memory().unwrap();
     let plan = f.plan(&library);
     assert_eq!(
@@ -563,7 +576,7 @@ fn collisions_and_duplicates_ignore_case() {
 #[test]
 fn a_folder_named_like_a_system_is_never_created() {
     let f = fixture();
-    cd(&f.roms.join("x/gb"), "Game", 0, psx_track);
+    cd(&f.roms.join("x").join("gb"), "Game", 0, psx_track);
     let library = Library::open_in_memory().unwrap();
     let plan = f.plan(&library);
     assert_eq!(
@@ -608,9 +621,9 @@ fn links_and_non_utf8_names_are_blocked() {
 #[test]
 fn a_game_folder_is_one_unit_even_with_discs_inside() {
     let f = fixture();
-    write(&f.roms.join("Quake/QUAKE.EXE"), &noise(500, 1));
+    write(&f.roms.join("Quake").join("QUAKE.EXE"), &noise(500, 1));
     cd(&f.roms.join("Quake"), "Quake CD", 1, psx_track);
-    write(&f.roms.join("Quake/README.TXT"), b"x");
+    write(&f.roms.join("Quake").join("README.TXT"), b"x");
     let library = Library::open_in_memory().unwrap();
     let plan = f.plan(&library);
     assert_eq!(plan.units.len(), 1);
@@ -638,7 +651,7 @@ fn system_folders_are_created_once() {
     assert!(f.roms.join("psx").is_dir());
     assert!(f.roms.join("snes").is_file());
     assert!(create_system_folders(&f.roms).unwrap().is_empty());
-    let fresh = f._tmp.path().join("new/roms");
+    let fresh = f._tmp.path().join("new").join("roms");
     assert_eq!(
         create_system_folders(&fresh).unwrap().len(),
         crate::systems().len()
@@ -743,7 +756,7 @@ fn relocate_keeps_the_row_and_builds_keys_like_the_scan() {
         )
         .unwrap();
 
-    write(&f.roms.join("snes/Hero.sfc"), &noise(4096, 1));
+    write(&f.roms.join("snes").join("Hero.sfc"), &noise(4096, 1));
     let hero_mtime = fs::metadata(f.roms.join("Hero.sfc"))
         .unwrap()
         .modified()
@@ -751,7 +764,7 @@ fn relocate_keeps_the_row_and_builds_keys_like_the_scan() {
     fs::remove_file(f.roms.join("Hero.sfc")).unwrap();
     fs::File::options()
         .write(true)
-        .open(f.roms.join("snes/Hero.sfc"))
+        .open(f.roms.join("snes").join("Hero.sfc"))
         .unwrap()
         .set_modified(hero_mtime)
         .unwrap();
@@ -798,13 +811,13 @@ fn relocate_keeps_the_row_and_builds_keys_like_the_scan() {
 #[test]
 fn relocate_follows_a_moved_folder_and_handles_rows_at_the_destination() {
     let f = fixture();
-    write(&f.roms.join("Keen/KEEN.EXE"), &noise(100, 1));
+    write(&f.roms.join("Keen").join("KEEN.EXE"), &noise(100, 1));
     let mut library = Library::open_in_memory().unwrap();
     let keen = insert_game(&library, &f.roms.join("Keen"), "dos", "Keen");
     // A stale row where the folder lands (its file is gone).
     let stale = insert_game(&library, &f.roms.join("dos").join("Keen"), "dos", "Old");
     fs::create_dir(f.roms.join("dos")).unwrap();
-    fs::rename(f.roms.join("Keen"), f.roms.join("dos/Keen")).unwrap();
+    fs::rename(f.roms.join("Keen"), f.roms.join("dos").join("Keen")).unwrap();
     assert_eq!(
         library
             .relocate(&f.roms, &[(rel("Keen"), rel("dos/Keen"))])
@@ -818,9 +831,9 @@ fn relocate_follows_a_moved_folder_and_handles_rows_at_the_destination() {
 
     // Both the source and the destination exist: the call does not match the disk.
     write(&f.roms.join("a.sfc"), &noise(10, 1));
-    write(&f.roms.join("snes/a.sfc"), &noise(10, 2));
+    write(&f.roms.join("snes").join("a.sfc"), &noise(10, 2));
     let a = insert_game(&library, &f.roms.join("a.sfc"), "snes", "A");
-    let live = insert_game(&library, &f.roms.join("snes/a.sfc"), "snes", "A2");
+    let live = insert_game(&library, &f.roms.join("snes").join("a.sfc"), "snes", "A2");
     let err = library
         .relocate(&f.roms, &[(rel("a.sfc"), rel("snes/a.sfc"))])
         .unwrap_err();
@@ -857,14 +870,18 @@ fn scan_recognises_a_file_moved_by_hand() {
         )
         .unwrap();
     fs::create_dir(f.roms.join("vrac")).unwrap();
-    fs::rename(f.roms.join("Hero.sfc"), f.roms.join("vrac/Hero.sfc")).unwrap();
+    fs::rename(
+        f.roms.join("Hero.sfc"),
+        f.roms.join("vrac").join("Hero.sfc"),
+    )
+    .unwrap();
     let report = scan(&mut library, &f.roms);
     assert_eq!((report.moved, report.added, report.removed), (1, 0, 0));
     let games = library.games().unwrap();
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].id, hero);
     assert!(games[0].favorite);
-    assert_eq!(games[0].path, f.roms.join("vrac/Hero.sfc"));
+    assert_eq!(games[0].path, f.roms.join("vrac").join("Hero.sfc"));
     assert!(library.cover(hero, CoverKind::Boxart).unwrap().is_some());
 }
 
@@ -877,8 +894,8 @@ fn scan_does_not_merge_two_twins_nor_a_kept_row() {
     scan(&mut library, &f.roms);
     let hero = library.games().unwrap()[0].id;
     fs::remove_file(f.roms.join("Hero.sfc")).unwrap();
-    write(&f.roms.join("a/Hero.sfc"), &rom);
-    write(&f.roms.join("b/Hero.sfc"), &rom);
+    write(&f.roms.join("a").join("Hero.sfc"), &rom);
+    write(&f.roms.join("b").join("Hero.sfc"), &rom);
     let report = scan(&mut library, &f.roms);
     assert_eq!((report.moved, report.added, report.removed), (0, 2, 1));
     assert!(library.game(hero).unwrap().is_none());
@@ -897,7 +914,7 @@ fn scan_does_not_merge_two_twins_nor_a_kept_row() {
     let other = by_title(&library.games().unwrap(), "Other").id;
     let unplugged = ext.roms.with_file_name("unplugged");
     fs::rename(&ext.roms, &unplugged).unwrap();
-    write(&f.roms.join("c/Other.sfc"), &noise(4096, 9));
+    write(&f.roms.join("c").join("Other.sfc"), &noise(4096, 9));
     let report = library
         .scan(&options, &AtomicBool::new(false), &mut |_| {})
         .unwrap();
@@ -925,11 +942,11 @@ fn scan_recognises_a_moved_unhashed_disc_by_name_size_and_date() {
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].sha1, None);
     let id = games[0].id;
-    fs::create_dir(f.roms.join("psx/Disc")).unwrap();
+    fs::create_dir(f.roms.join("psx").join("Disc")).unwrap();
     for name in ["Disc.cue", "Disc (Track 1).bin"] {
         fs::rename(
             f.roms.join("psx").join(name),
-            f.roms.join("psx/Disc").join(name),
+            f.roms.join("psx").join("Disc").join(name),
         )
         .unwrap();
     }
@@ -938,14 +955,17 @@ fn scan_recognises_a_moved_unhashed_disc_by_name_size_and_date() {
     let games = library.games().unwrap();
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].id, id);
-    assert_eq!(games[0].path, f.roms.join("psx/Disc/Disc.cue"));
+    assert_eq!(
+        games[0].path,
+        f.roms.join("psx").join("Disc").join("Disc.cue")
+    );
 }
 
 #[test]
 fn files_named_like_a_known_bios_stay_in_place() {
     let f = fixture();
     write(&f.roms.join("SCPH1001.BIN"), &noise(512 * 1024, 1));
-    write(&f.roms.join("x/gba_bios.bin"), &noise(16 * 1024, 2));
+    write(&f.roms.join("x").join("gba_bios.bin"), &noise(16 * 1024, 2));
     write(&f.roms.join("Hero.sfc"), &noise(64, 3));
     let library = Library::open_in_memory().unwrap();
     let options = f.options().with_firmware_names([

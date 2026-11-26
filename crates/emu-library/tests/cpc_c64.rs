@@ -82,8 +82,8 @@ fn extensions_and_folder_rules() {
     write(&root.join("c.d64"), &blob(3));
     write(&root.join("d.prg"), &blob(4));
     write(&root.join("e.tap"), &blob(5));
-    write(&root.join("cpc/f.tap"), &blob(6));
-    write(&root.join("cpc/g.sna"), &blob(7));
+    write(&root.join("cpc").join("f.tap"), &blob(6));
+    write(&root.join("cpc").join("g.sna"), &blob(7));
     write(&root.join("h.sna"), &blob(8));
     write(&root.join("i.voc"), &blob(9));
     let mut lib = Library::open_in_memory().unwrap();
@@ -308,10 +308,10 @@ fn zip_of_disks_is_one_multi_disk_game() {
 fn numbered_floppies_are_titled_by_their_radical_and_zip_digits_are_kept() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("roms");
-    write(&root.join("c64/MANIACD0.D64"), &blob(1));
-    write(&root.join("c64/MANIACD1.D64"), &blob(2));
+    write(&root.join("c64").join("MANIACD0.D64"), &blob(1));
+    write(&root.join("c64").join("MANIACD1.D64"), &blob(2));
     zip_of(
-        &root.join("c64/Foo 2.zip"),
+        &root.join("c64").join("Foo 2.zip"),
         &[("a (Disk 1).d64", &blob(3)), ("a (Disk 2).d64", &blob(4))],
     );
     let mut lib = Library::open_in_memory().unwrap();

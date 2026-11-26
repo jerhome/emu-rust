@@ -117,15 +117,15 @@ fn identifies_by_sha1_crc_headerless_and_name() {
     let roms = tmp.path().join("roms");
     let gb_a = rom(1, 4096);
     let gb_b = rom(2, 4096);
-    write(&roms.join("gb/a.gb"), &gb_a);
-    write(&roms.join("gb/b.gb"), &gb_b);
-    write(&roms.join("gb/Gamma Land (World).gb"), &rom(3, 100));
-    write(&roms.join("gb/unknown.gb"), &rom(4, 100));
+    write(&roms.join("gb").join("a.gb"), &gb_a);
+    write(&roms.join("gb").join("b.gb"), &gb_b);
+    write(&roms.join("gb").join("Gamma Land (World).gb"), &rom(3, 100));
+    write(&roms.join("gb").join("unknown.gb"), &rom(4, 100));
     let nes_body = rom(5, 8192);
     let mut nes = b"NES\x1A".to_vec();
     nes.extend_from_slice(&[0u8; 12]);
     nes.extend_from_slice(&nes_body);
-    write(&roms.join("nes/c.nes"), &nes);
+    write(&roms.join("nes").join("c.nes"), &nes);
     let snes_body = rom(6, 2048);
     let mut snes = vec![0u8; 512];
     snes.extend_from_slice(&snes_body);
@@ -268,11 +268,11 @@ fn folder_and_dat_choose_between_gb_and_gbc() {
     let tmp = tempfile::tempdir().unwrap();
     let roms = tmp.path().join("roms");
     let color = rom(7, 256);
-    write(&roms.join("gbc/in-gbc-folder.gb"), &rom(1, 256));
-    write(&roms.join("gb/plain.gb"), &rom(2, 256));
-    write(&roms.join("misc/loose.gb"), &rom(3, 256));
-    write(&roms.join("misc/color-by-dat.gb"), &color);
-    write(&roms.join("gb/named.gbc"), &rom(4, 256));
+    write(&roms.join("gbc").join("in-gbc-folder.gb"), &rom(1, 256));
+    write(&roms.join("gb").join("plain.gb"), &rom(2, 256));
+    write(&roms.join("misc").join("loose.gb"), &rom(3, 256));
+    write(&roms.join("misc").join("color-by-dat.gb"), &color);
+    write(&roms.join("gb").join("named.gbc"), &rom(4, 256));
     let mut lib = Library::open_in_memory().unwrap();
     lib.import_dat(
         "gbc",
@@ -294,8 +294,8 @@ fn dat_import_after_scan_reidentifies() {
     let tmp = tempfile::tempdir().unwrap();
     let roms = tmp.path().join("roms");
     let data = rom(1, 300);
-    write(&roms.join("misc/late.gb"), &data);
-    write(&roms.join("gb/pinned.gb"), &data);
+    write(&roms.join("misc").join("late.gb"), &data);
+    write(&roms.join("gb").join("pinned.gb"), &data);
     let mut lib = Library::open_in_memory().unwrap();
     scan(&mut lib, &options(&[&roms]));
     assert_eq!(
@@ -403,7 +403,7 @@ fn depth_limit_and_ignored_files() {
         deep.push(format!("d{i}"));
     }
     write(&deep.join("deep.gg"), b"x");
-    write(&roms.join("d0/shallow.gg"), b"x");
+    write(&roms.join("d0").join("shallow.gg"), b"x");
     write(&roms.join("notes.txt"), b"x");
     write(&roms.join("noext"), b"x");
     let mut lib = Library::open_in_memory().unwrap();
@@ -470,7 +470,7 @@ fn moved_by_hand_then_cancelled_scan_keeps_the_game() {
 
     // The moved file comes first in the walk (directory `aaa` before the files `z*`).
     fs::create_dir_all(roms.join("aaa")).unwrap();
-    fs::rename(roms.join("a.gg"), roms.join("aaa/a.gg")).unwrap();
+    fs::rename(roms.join("a.gg"), roms.join("aaa").join("a.gg")).unwrap();
     for i in 0..300 {
         write(&roms.join(format!("z{i:03}.gg")), &rom(i as u8, 32));
     }
@@ -588,10 +588,10 @@ fn other_connections_write_while_files_are_hashed() {
 fn dat_import_uses_the_folder_rule_of_the_scan() {
     let tmp = tempfile::tempdir().unwrap();
     // `gb` is above the root's parent: the scan ignores it.
-    let roms = tmp.path().join("gb/media/roms");
+    let roms = tmp.path().join("gb").join("media").join("roms");
     let data = rom(9, 300);
     write(&roms.join("color.gb"), &data);
-    write(&roms.join("gb/pinned.gb"), &data);
+    write(&roms.join("gb").join("pinned.gb"), &data);
     let opts = options(&[&roms]);
     let mut lib = Library::open_in_memory().unwrap();
     scan(&mut lib, &opts);
@@ -623,7 +623,10 @@ fn dat_import_uses_the_folder_rule_of_the_scan() {
 #[test]
 fn root_spelling_does_not_change_the_stored_paths() {
     let tmp = tempfile::tempdir().unwrap();
-    write(&tmp.path().join("x/roms/a.gb"), &rom(9, 300));
+    write(
+        &tmp.path().join("x").join("roms").join("a.gb"),
+        &rom(9, 300),
+    );
     let mut lib = Library::open_in_memory().unwrap();
     let r = scan(&mut lib, &options(&[&tmp.path().join("x/./roms/")]));
     assert_eq!(r.added, 1, "{r:?}");

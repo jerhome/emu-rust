@@ -131,7 +131,7 @@ fn only_the_newest_journal_can_be_undone() {
     // The newest one comes back, then the older one is the newest and can be undone in turn.
     undo(&mut library, &fx, &j2);
     assert!(
-        fx.roms.join("snes/Alpha.sfc").is_file(),
+        fx.roms.join("snes").join("Alpha.sfc").is_file(),
         "the first run is still tidied"
     );
     assert!(fx.roms.join("Beta.nes").is_file());
@@ -172,16 +172,16 @@ fn a_file_modified_or_deleted_after_the_tidy_keeps_its_unit_where_it_is() {
     let journal = tidy_all(&mut library, &fx);
     // Alpha edited (other size), Beta deleted, Gamma untouched.
     let edited = noise(41 * 1024, 99);
-    fs::write(fx.roms.join("snes/Alpha.sfc"), &edited).unwrap();
-    fs::remove_file(fx.roms.join("nes/Beta.nes")).unwrap();
+    fs::write(fx.roms.join("snes").join("Alpha.sfc"), &edited).unwrap();
+    fs::remove_file(fx.roms.join("nes").join("Beta.nes")).unwrap();
     let report = undo(&mut library, &fx, &journal);
     assert_eq!(
-        fs::read(fx.roms.join("snes/Alpha.sfc")).unwrap(),
+        fs::read(fx.roms.join("snes").join("Alpha.sfc")).unwrap(),
         edited,
         "edited file untouched"
     );
     assert!(!fx.roms.join("Alpha.sfc").exists());
-    assert!(!fx.roms.join("Beta.nes").exists() && !fx.roms.join("nes/Beta.nes").exists());
+    assert!(!fx.roms.join("Beta.nes").exists() && !fx.roms.join("nes").join("Beta.nes").exists());
     assert!(
         fx.roms.join("Gamma.gba").is_file(),
         "the intact unit came back"
@@ -190,7 +190,7 @@ fn a_file_modified_or_deleted_after_the_tidy_keeps_its_unit_where_it_is() {
     assert!(
         report
             .moved
-            .contains(&(root.join("gba/Gamma.gba"), root.join("Gamma.gba"))),
+            .contains(&(root.join("gba").join("Gamma.gba"), root.join("Gamma.gba"))),
         "the way back of the intact unit is listed: {report:?}"
     );
     assert_eq!(report.left.len(), 2, "both reported: {report:?}");
@@ -219,9 +219,9 @@ fn an_original_place_taken_again_keeps_the_unit_tidied_and_overwrites_nothing() 
     fs::create_dir(fx.roms.join("Beta.nes")).unwrap(); // and a folder where Beta was
     let report = undo(&mut library, &fx, &journal);
     assert_eq!(fs::read(fx.roms.join("Alpha.sfc")).unwrap(), squatter);
-    assert!(fx.roms.join("snes/Alpha.sfc").is_file());
+    assert!(fx.roms.join("snes").join("Alpha.sfc").is_file());
     assert!(fx.roms.join("Beta.nes").is_dir());
-    assert!(fx.roms.join("nes/Beta.nes").is_file());
+    assert!(fx.roms.join("nes").join("Beta.nes").is_file());
     assert!(fx.roms.join("Gamma.gba").is_file());
     assert_eq!(report.left.len(), 2, "{report:?}");
     assert_rows_exist(&library);
@@ -451,7 +451,7 @@ fn recovery_with_nothing_in_progress_returns_none() {
 fn recovery_removes_an_orphan_assembly_folder_and_closes_the_journal() {
     let fx = Fx::new();
     write(&fx.roms.join("Keep.sfc"), &noise(1024, 1));
-    fs::create_dir_all(fx.roms.join("psx/Game.emu-rust-part")).unwrap();
+    fs::create_dir_all(fx.roms.join("psx").join("Game.emu-rust-part")).unwrap();
     let journal = write_journal(
         &fx,
         "journal-1700000000.txt",
@@ -461,7 +461,7 @@ fn recovery_removes_an_orphan_assembly_folder_and_closes_the_journal() {
     let report = library.recover_tidy(&fx.options()).unwrap().unwrap();
     assert_eq!(report.closed, vec![(journal, TidySection::Tidy)]);
     assert!(
-        !fx.roms.join("psx/Game.emu-rust-part").exists(),
+        !fx.roms.join("psx").join("Game.emu-rust-part").exists(),
         "orphan (empty) assembly folder removed"
     );
     assert!(fx.roms.join("Keep.sfc").is_file(), "user data untouched");
@@ -502,9 +502,14 @@ fn an_interrupted_journal_of_another_root_is_not_replayed() {
     let fx = Fx::new();
     three(&fx);
     fs::create_dir_all(&fx.journals).unwrap();
+    // A sibling folder of the real root: absolute on every platform (`/somewhere` is not on Windows).
+    let foreign = fx.roms.parent().unwrap().join("elsewhere").join("roms");
     fs::write(
         fx.journals.join("journal-5.txt"),
-        "emu-rust tidy 1\nR /somewhere/else/roms\nB 1\nM 0 3 1700000000 a.sfc snes/a.sfc\n",
+        format!(
+            "emu-rust tidy 1\nR {}\nB 1\nM 0 3 1700000000 a.sfc snes/a.sfc\n",
+            foreign.display()
+        ),
     )
     .unwrap();
     let mut library = Library::open_in_memory().unwrap();
@@ -540,7 +545,7 @@ fn the_identity_step_is_offered_until_it_is_marked_done() {
     assert!(
         pending[0]
             .1
-            .contains(&(root.join("Alpha.sfc"), root.join("snes/Alpha.sfc")))
+            .contains(&(root.join("Alpha.sfc"), root.join("snes").join("Alpha.sfc")))
     );
     // Idempotent until marked.
     assert_eq!(

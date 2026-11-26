@@ -118,24 +118,24 @@ fn has_part_folder(root: &Path) -> bool {
 /// absent), CD folder moved whole, DOS game folder, a stray file.
 fn tree(roms: &Path) {
     write(&roms.join("Hero.sfc"), &noise(4096, 1));
-    write(&roms.join("sub/Hero2.sfc"), &noise(4096, 9));
+    write(&roms.join("sub").join("Hero2.sfc"), &noise(4096, 9));
     write(&roms.join("Quest (Disk 1 of 2).st"), &noise(900, 2));
     write(&roms.join("Quest (Disk 2 of 2).st"), &noise(900, 3));
     deep_cd(roms);
     cd(
-        &roms.join("cds/Other (Europe)"),
+        &roms.join("cds").join("Other (Europe)"),
         "Other (Europe)",
         1,
         psx_track,
     );
-    write(&roms.join("Doom/DOOM.EXE"), &noise(500, 4));
-    write(&roms.join("Doom/DOOM.WAD"), &noise(700, 5));
+    write(&roms.join("Doom").join("DOOM.EXE"), &noise(500, 4));
+    write(&roms.join("Doom").join("DOOM.WAD"), &noise(700, 5));
 }
 
 /// A `.cue` and its tracks next to a file that is not part of it (assembled, not moved whole).
 fn deep_cd(roms: &Path) {
     cd(&roms.join("vrac"), "Deep (Europe)", 1, psx_track);
-    write(&roms.join("vrac/readme.txt"), b"x");
+    write(&roms.join("vrac").join("readme.txt"), b"x");
 }
 
 /// Units that may be selected (sure, suggested or resolved).
@@ -356,10 +356,12 @@ fn a_full_run_moves_every_selected_unit_and_keeps_the_rows() {
     assert!(!fx.roms.join("sub").exists());
     assert!(!fx.roms.join("cds").exists());
     assert!(!fx.roms.join("Doom").exists());
-    assert!(fx.roms.join("vrac/readme.txt").is_file());
+    assert!(fx.roms.join("vrac").join("readme.txt").is_file());
     assert!(
         fx.roms
-            .join("psx/Deep (Europe)/Deep (Europe) (Track 1).bin")
+            .join("psx")
+            .join("Deep (Europe)")
+            .join("Deep (Europe) (Track 1).bin")
             .is_file()
     );
     let j = fx.only_journal();
@@ -658,7 +660,11 @@ fn undo_leaves_a_changed_unit_and_a_taken_place_entire() {
     let options = fx.options();
     apply_with(&fast(), &mut library, &options, &plan).unwrap();
     // After the run: one disk of the group changes (size), the original place of the flat file is taken.
-    fs::write(fx.roms.join("atarist/Quest (Disk 2 of 2).st"), b"changed").unwrap();
+    fs::write(
+        fx.roms.join("atarist").join("Quest (Disk 2 of 2).st"),
+        b"changed",
+    )
+    .unwrap();
     fs::write(fx.roms.join("Hero.sfc"), b"new file").unwrap();
     let journal = fx.journals()[0].clone();
     let report = undo_with(&fast(), &mut library, &options, &journal).unwrap();
@@ -676,15 +682,20 @@ fn undo_leaves_a_changed_unit_and_a_taken_place_entire() {
             .any(|(_, b)| matches!(b, TidyBlock::Conflict { .. }))
     );
     // Both stay entirely tidied, nothing overwritten.
-    assert!(fx.roms.join("atarist/Quest (Disk 1 of 2).st").is_file());
+    assert!(
+        fx.roms
+            .join("atarist")
+            .join("Quest (Disk 1 of 2).st")
+            .is_file()
+    );
     assert!(!fx.roms.join("Quest (Disk 1 of 2).st").exists());
     assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), b"new file");
     assert_eq!(
-        fs::read(fx.roms.join("snes/Hero.sfc")).unwrap(),
+        fs::read(fx.roms.join("snes").join("Hero.sfc")).unwrap(),
         initial[&rel("Hero.sfc")]
     );
     // The others came back.
-    assert!(fx.roms.join("Doom/DOOM.EXE").is_file());
+    assert!(fx.roms.join("Doom").join("DOOM.EXE").is_file());
     assert_eq!(
         journal::read(&journal).unwrap().unwrap().state,
         State::Undone
@@ -701,13 +712,13 @@ fn undo_refuses_a_file_with_another_hard_link() {
     let options = fx.options();
     apply_with(&fast(), &mut library, &options, &plan).unwrap();
     fs::hard_link(
-        fx.roms.join("snes/Hero.sfc"),
+        fx.roms.join("snes").join("Hero.sfc"),
         fx.tmp.path().join("elsewhere"),
     )
     .unwrap();
     let report = undo_with(&fast(), &mut library, &options, &fx.journals()[0]).unwrap();
     assert_eq!(report.left.len(), 1);
-    assert!(fx.roms.join("snes/Hero.sfc").is_file());
+    assert!(fx.roms.join("snes").join("Hero.sfc").is_file());
 }
 
 #[test]
@@ -827,7 +838,10 @@ fn a_run_that_starts_nothing_has_no_journal() {
     write(&fx.roms.join("Hero.sfc"), &noise(4096, 1));
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
-    write(&fx.roms.join("snes/Hero.sfc"), b"taken since the plan");
+    write(
+        &fx.roms.join("snes").join("Hero.sfc"),
+        b"taken since the plan",
+    );
     let all: Vec<u32> = plan.units.iter().map(|u| u.id).collect();
     let report = library
         .apply_tidy(
@@ -855,15 +869,18 @@ fn a_unit_changed_since_the_plan_is_left() {
     assert_eq!(report.left.len(), 1);
     assert_eq!(report.left[0].1, TidyBlock::ChangedSincePlan);
     assert!(fx.roms.join("Hero.sfc").is_file());
-    assert!(fx.roms.join("snes/Other.sfc").is_file());
+    assert!(fx.roms.join("snes").join("Other.sfc").is_file());
     // A destination taken since the plan, in another case: left, never overwritten.
     let fx = Fx::new();
     write(&fx.roms.join("Hero.sfc"), &noise(4096, 1));
     let plan = fx.plan(&library);
-    write(&fx.roms.join("snes/HERO.SFC"), b"other");
+    write(&fx.roms.join("snes").join("HERO.SFC"), b"other");
     let report = apply_with(&fast(), &mut library, &fx.options(), &plan).unwrap();
     assert!(matches!(report.left[0].1, TidyBlock::Conflict { .. }));
-    assert_eq!(fs::read(fx.roms.join("snes/HERO.SFC")).unwrap(), b"other");
+    assert_eq!(
+        fs::read(fx.roms.join("snes").join("HERO.SFC")).unwrap(),
+        b"other"
+    );
     assert!(fx.roms.join("Hero.sfc").is_file());
 }
 
@@ -957,16 +974,16 @@ fn the_purge_keeps_twenty_and_never_an_unfinished_journal() {
 fn recovery_keeps_the_original_row_when_the_database_was_not_rewritten() {
     let fx = Fx::new();
     write(&fx.roms.join("a.sfc"), &noise(4096, 1));
-    write(&fx.roms.join("snes/a.sfc"), &noise(4096, 2));
+    write(&fx.roms.join("snes").join("a.sfc"), &noise(4096, 2));
     let mut library = Library::open_in_memory().unwrap();
     fx.scan(&mut library);
     let rows = game_ids(&library);
     assert_eq!(rows.len(), 2);
     // A stale row stays at `snes/a.sfc` (its file is gone); the run moved `a.sfc` there and stopped before the
     // database transaction.
-    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
+    fs::remove_file(fx.roms.join("snes").join("a.sfc")).unwrap();
     let meta = fs::metadata(fx.roms.join("a.sfc")).unwrap();
-    fs::rename(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    fs::rename(fx.roms.join("a.sfc"), fx.roms.join("snes").join("a.sfc")).unwrap();
     let options = fx.options();
     fs::create_dir_all(&fx.journals).unwrap();
     let mut w = JournalWriter::create(&RealSys, &fx.journals, options.roms_root(), 5).unwrap();
@@ -1000,7 +1017,7 @@ fn recovery_removes_a_destination_only_when_it_is_a_second_link() {
     let fx = Fx::new();
     let data = noise(4096, 1);
     write(&fx.roms.join("a.sfc"), &data);
-    write(&fx.roms.join("snes/a.sfc"), &data);
+    write(&fx.roms.join("snes").join("a.sfc"), &data);
     let options = fx.options();
     fs::create_dir_all(&fx.journals).unwrap();
     let journal_at = |unix: i64| {
@@ -1024,13 +1041,19 @@ fn recovery_removes_a_destination_only_when_it_is_a_second_link() {
     journal_at(5);
     let mut library = Library::open_in_memory().unwrap();
     let report = library.recover_tidy(&options).unwrap().unwrap();
-    assert!(fx.roms.join("snes/a.sfc").is_file(), "single link kept");
+    assert!(
+        fx.roms.join("snes").join("a.sfc").is_file(),
+        "single link kept"
+    );
     assert_eq!(report.errors.len(), 1, "{report:?}");
-    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
-    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    fs::remove_file(fx.roms.join("snes").join("a.sfc")).unwrap();
+    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes").join("a.sfc")).unwrap();
     journal_at(6);
     library.recover_tidy(&options).unwrap().unwrap();
-    assert!(!fx.roms.join("snes/a.sfc").exists(), "second link removed");
+    assert!(
+        !fx.roms.join("snes").join("a.sfc").exists(),
+        "second link removed"
+    );
     assert_eq!(fs::read(fx.roms.join("a.sfc")).unwrap(), data);
 }
 
@@ -1038,7 +1061,7 @@ fn recovery_removes_a_destination_only_when_it_is_a_second_link() {
 #[test]
 fn a_case_only_move_is_never_run() {
     let fx = Fx::new();
-    write(&fx.roms.join("SNES/Case.sfc"), &noise(300, 6));
+    write(&fx.roms.join("SNES").join("Case.sfc"), &noise(300, 6));
     let mut library = Library::open_in_memory().unwrap();
     let plan = fx.plan(&library);
     assert!(matches!(plan.units[0].status, TidyStatus::Blocked(_)));
@@ -1053,7 +1076,7 @@ fn a_case_only_move_is_never_run() {
         )
         .unwrap();
     assert_eq!(report.journal, None);
-    assert!(fx.roms.join("SNES/Case.sfc").is_file());
+    assert!(fx.roms.join("SNES").join("Case.sfc").is_file());
 }
 
 /// RV1 I3: an assembly cut anywhere is cleaned up: created folders deepest first at both
@@ -1086,9 +1109,14 @@ fn an_interrupted_assembly_is_cleaned_up() {
         recover_with(&fast(), &mut library, &fx.options()).unwrap();
         let context = format!("assembly crash at {at}");
         check_invariant(&fx.roms, &initial, &units, &context);
-        let done = fx.roms.join("psx/Deep (Europe)/Deep (Europe).cue").exists();
+        let done = fx
+            .roms
+            .join("psx")
+            .join("Deep (Europe)")
+            .join("Deep (Europe).cue")
+            .exists();
         assert!(
-            done || !fx.roms.join("psx/Deep (Europe)").exists(),
+            done || !fx.roms.join("psx").join("Deep (Europe)").exists(),
             "{context}"
         );
     }
@@ -1194,18 +1222,24 @@ fn recovery_proves_a_second_link_of_a_big_file_and_keeps_a_copy() {
         )
         .unwrap();
     };
-    write(&fx.roms.join("snes/a.sfc"), &data);
+    write(&fx.roms.join("snes").join("a.sfc"), &data);
     journal_at(5);
     let mut library = Library::open_in_memory().unwrap();
     let report = library.recover_tidy(&options).unwrap().unwrap();
-    assert!(fx.roms.join("snes/a.sfc").is_file(), "equal copy kept");
+    assert!(
+        fx.roms.join("snes").join("a.sfc").is_file(),
+        "equal copy kept"
+    );
     assert_eq!(report.errors.len(), 1, "{report:?}");
-    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
-    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    fs::remove_file(fx.roms.join("snes").join("a.sfc")).unwrap();
+    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes").join("a.sfc")).unwrap();
     journal_at(6);
     let report = library.recover_tidy(&options).unwrap().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
-    assert!(!fx.roms.join("snes/a.sfc").exists(), "second link removed");
+    assert!(
+        !fx.roms.join("snes").join("a.sfc").exists(),
+        "second link removed"
+    );
     assert_eq!(fs::read(fx.roms.join("a.sfc")).unwrap(), data);
 }
 
@@ -1384,9 +1418,9 @@ fn the_same_file_branch_syncs_the_kept_name_before_removing_the_other() {
     let fx = Fx::new();
     let data = noise(4096, 1);
     write(&fx.roms.join("a.sfc"), &data);
-    write(&fx.roms.join("snes/a.sfc"), &data);
-    fs::remove_file(fx.roms.join("snes/a.sfc")).unwrap();
-    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes/a.sfc")).unwrap();
+    write(&fx.roms.join("snes").join("a.sfc"), &data);
+    fs::remove_file(fx.roms.join("snes").join("a.sfc")).unwrap();
+    fs::hard_link(fx.roms.join("a.sfc"), fx.roms.join("snes").join("a.sfc")).unwrap();
     let options = fx.options();
     let root = options.roms_root().to_path_buf();
     fs::create_dir_all(&fx.journals).unwrap();
@@ -1543,12 +1577,15 @@ fn a_refused_removal_leaves_two_names_listed_and_closes_the_journal() {
     assert_eq!(
         report.extra_names,
         vec![TidyExtraName {
-            remove: root.join("snes/Hero.sfc"),
+            remove: root.join("snes").join("Hero.sfc"),
             keep: root.join("Hero.sfc"),
         }]
     );
     assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
-    assert_eq!(fs::read(fx.roms.join("snes/Hero.sfc")).unwrap(), data);
+    assert_eq!(
+        fs::read(fx.roms.join("snes").join("Hero.sfc")).unwrap(),
+        data
+    );
     assert_eq!(
         fx.only_journal().state,
         State::Ended,
@@ -1570,7 +1607,7 @@ fn a_refused_source_removal_undoes_the_unit_without_extra_name() {
     assert!(matches!(report.left[0].1, TidyBlock::NotWritable { .. }));
     assert!(report.extra_names.is_empty());
     assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
-    assert!(!fx.roms.join("snes/Hero.sfc").exists());
+    assert!(!fx.roms.join("snes").join("Hero.sfc").exists());
     assert!(
         !fx.roms.join("snes").exists(),
         "folder created by the block removed"
@@ -1608,11 +1645,14 @@ fn a_refused_removal_in_the_undo_lists_the_extra_name() {
         report.extra_names,
         vec![TidyExtraName {
             remove: root.join("Hero.sfc"),
-            keep: root.join("snes/Hero.sfc"),
+            keep: root.join("snes").join("Hero.sfc"),
         }]
     );
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert_eq!(fs::read(fx.roms.join("snes/Hero.sfc")).unwrap(), data);
+    assert_eq!(
+        fs::read(fx.roms.join("snes").join("Hero.sfc")).unwrap(),
+        data
+    );
     assert_eq!(fs::read(fx.roms.join("Hero.sfc")).unwrap(), data);
     assert_eq!(fx.only_journal().state, State::Undone);
 }
@@ -1843,7 +1883,7 @@ fn a_read_only_tidied_name_is_left_by_the_undo() {
     let (fx, mut library, plan, _) = one_unit();
     let options = fx.options();
     apply_with(&fast(), &mut library, &options, &plan).unwrap();
-    let path = fx.roms.join("snes/Hero.sfc");
+    let path = fx.roms.join("snes").join("Hero.sfc");
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions.clone()).unwrap();
@@ -1971,7 +2011,7 @@ fn a_refused_assembly_never_names_the_part_folder() {
 #[test]
 fn a_refused_removal_of_the_emptied_folder_is_not_fatal() {
     let fx = Fx::new();
-    write(&fx.roms.join("sub/Hero2.sfc"), &noise(4096, 9));
+    write(&fx.roms.join("sub").join("Hero2.sfc"), &noise(4096, 9));
     let mut library = Library::open_in_memory().unwrap();
     fx.scan(&mut library);
     let plan = fx.plan(&library);
@@ -1984,7 +2024,7 @@ fn a_refused_removal_of_the_emptied_folder_is_not_fatal() {
     assert!(report.left.is_empty(), "{report:?}");
     assert!(!report.moved.is_empty(), "{report:?}");
     assert!(fx.roms.join("sub").is_dir());
-    assert!(!fx.roms.join("sub/Hero2.sfc").exists());
+    assert!(!fx.roms.join("sub").join("Hero2.sfc").exists());
     assert!(
         report.errors.iter().any(|(p, _)| p.ends_with("sub")),
         "{report:?}"
