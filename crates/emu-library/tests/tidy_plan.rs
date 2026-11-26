@@ -397,8 +397,22 @@ fn plan_matches_the_manifest_unit_by_unit() {
         };
         let id = m.get("id").str().unwrap();
         let (status, reason) = status_names(&u.status);
-        let want_status = m.get("status").str().unwrap();
-        let want_reason = m.get("reason").str().map(str::to_owned);
+        // The manifest carries the Windows-only outcome (e.g. PathTooLong) under "windows".
+        let over = if cfg!(windows) && matches!(m, Json::Obj(_)) {
+            m.get("windows")
+        } else {
+            &Json::Null
+        };
+        let (want_status, want_reason) = match over {
+            Json::Obj(_) => (
+                over.get("status").str().unwrap(),
+                over.get("reason").str().map(str::to_owned),
+            ),
+            _ => (
+                m.get("status").str().unwrap(),
+                m.get("reason").str().map(str::to_owned),
+            ),
+        };
         if (status, &reason) != (want_status, &want_reason) {
             problems.push(format!(
                 "{id}: status {status}/{reason:?}, manifest {want_status}/{want_reason:?}"

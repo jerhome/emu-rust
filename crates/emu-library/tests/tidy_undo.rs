@@ -504,12 +504,21 @@ fn an_interrupted_journal_of_another_root_is_not_replayed() {
     fs::create_dir_all(&fx.journals).unwrap();
     // A sibling folder of the real root: absolute on every platform (`/somewhere` is not on Windows).
     let foreign = fx.roms.parent().unwrap().join("elsewhere").join("roms");
+    // Same escaping as the journal header: bytes outside the safe set become %XX, separators and `:` stay.
+    let root: String = foreign
+        .to_string_lossy()
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~()[]!,+&'/\\:".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
     fs::write(
         fx.journals.join("journal-5.txt"),
-        format!(
-            "emu-rust tidy 1\nR {}\nB 1\nM 0 3 1700000000 a.sfc snes/a.sfc\n",
-            foreign.display()
-        ),
+        format!("emu-rust tidy 1\nR {root}\nB 1\nM 0 3 1700000000 a.sfc snes/a.sfc\n"),
     )
     .unwrap();
     let mut library = Library::open_in_memory().unwrap();
