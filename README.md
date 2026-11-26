@@ -1,10 +1,11 @@
 # emu-rust
 
 Frontend [libretro](https://www.libretro.com/) écrit en Rust. L'émulation est faite par des cores libretro existants ;
-emu-rust fournit l'image, le son, le clavier et la manette PS4, la bibliothèque de jeux avec jaquettes, le
-téléchargement des cores et des BIOS libres. Usage personnel.
+emu-rust fournit l'image, le son, le clavier et les manettes (PS4, USB type SNES), la bibliothèque de jeux avec
+jaquettes (thème sombre, manuel intégré, assistant de premier lancement), le Journal, le téléchargement des cores et
+des BIOS libres. Usage personnel.
 
-**Version stable : 7.0.0** ([releases](../../releases))
+**Version stable : 7.5.0** ([releases](../../releases))
 
 ## Systèmes pris en charge
 
@@ -18,17 +19,19 @@ téléchargement des cores et des BIOS libres. Usage personnel.
 | Amstrad CPC, Commodore 64 | cap32, vice_x64 | 5.0 |
 | Game Boy Advance, 32X | mgba, picodrive | 6.0 |
 | PlayStation, 3DO (démarrent sans BIOS ; BIOS de l'utilisateur préférés) | pcsx_rearmed, opera | 7.0 |
+| Sega CD 32X (CD Mega CD + 32X, détection au scan ou marque manuelle ; aucun BIOS Sega 32X requis) | picodrive | 7.4 |
 
-Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1. Les jeux se rangent dans `roms/<système>/`.
+Clavier par défaut, manette PS4 (DualShock 4) depuis la 2.1, manettes USB type SNES apprises depuis la 7.2. Les jeux
+se rangent dans `roms/<système>/`. Sous Windows, `emu-rust.exe` s'ouvre sans console ; `emu-rust-cli.exe` sert à la
+ligne de commande (depuis PowerShell : `.\emu-rust-cli.exe --help`).
 
 ## Feuille de route
 
 | Version | Contenu | État |
 |---|---|---|
-| 7.1 | Finition de l'interface : pied de page (version, crédit), icône identique sur les 3 OS, terminal caché sous Windows avec panneau Journal, bouton « Ranger les ROMs » (aperçu et annulation), indication des BIOS d'origine qui améliorent un core | en développement |
-| 7.2 | Sega CD 32X (Night Trap 32X…), par picodrive | conçue |
-| 7.2.1 | Glisser-déposer de jeux dans la fenêtre depuis le gestionnaire de fichiers | étudiée |
-| 8.0 → 8.3 | Systèmes libretro non testés, ajoutés depuis l'application : consoles à cartouche (8.0), CD (8.1), ordinateurs (8.2), arcade (8.3) | étudiée |
+| 7.1 → 7.5 | Finition (pied de page, icône, Journal, messages copiables, terminal caché, `emu-rust-cli.exe`), manette USB type SNES (7.2), refonte visuelle (7.3), Sega CD 32X (7.4), fusion des travaux Mac et PC (7.5) | livrées (7.5.0) |
+| 7.6 | Rangement des ROMs : « Ranger les ROMs… » (aperçu, choix du système, annulation, reprise après arrêt brutal) | en développement |
+| 8.x | Systèmes libretro non testés ajoutés depuis l'application (8.0 cartouches, dont Atari Lynx ; puis CD, ordinateurs, arcade), core jgenesis au choix, archives .7z et interface en anglais (numéros à fixer) | conçue |
 | 9.0 | Rendu matériel : OpenGL d'abord, puis DirectX ; Vulkan au second plan | prévue |
 
 Détails : [docs/roadmap.md](docs/roadmap.md). Décisions d'architecture : [docs/adr/](docs/adr/).

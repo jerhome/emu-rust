@@ -9,8 +9,12 @@ mod logging;
 mod terminal_macos;
 mod text;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+/// Exit code of a command-line usage error (unknown option, missing value...), in both flavors.
+const USAGE_ERROR_CODE: u8 = 2;
 
 /// Variable set on the `emu-rust-cli.exe` relaunched by `emu-rust.exe` for `[app] show_terminal = true`: the
 /// child never relaunches itself (ADR 0023 §3).
@@ -247,6 +251,7 @@ fn report(flavor: Flavor, result: Result<(), emu_ui::UiError>) -> ExitCode {
 fn relaunch_for_terminal(
     flavor: Flavor,
     command: Option<&cli::Command>,
+    args: &[OsString],
     show_terminal: bool,
 ) -> Result<bool, String> {
     let window_mode = matches!(
@@ -265,9 +270,11 @@ fn relaunch_for_terminal(
             .map(|()| true)
             .map_err(|e| format!("console non ouverte, démarrage sans console : {e}"));
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = args;
     // Only an argument-less launch (Finder, Dock) may move to Terminal.app: `open` cannot forward arguments.
     #[cfg(target_os = "macos")]
-    if std::env::args_os().len() <= 1 {
+    if terminal_macos::is_restart_candidate(command, args) {
         return terminal_macos::restart_in_terminal(show_terminal);
     }
     Ok(false)
@@ -276,7 +283,8 @@ fn relaunch_for_terminal(
 /// The whole program; `flavor` says which executable runs it.
 pub fn run(flavor: Flavor) -> ExitCode {
     emu_ui::log::install_panic_hook();
-    let parsed = cli::parse(std::env::args_os().skip(1));
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let parsed = cli::parse(args.clone());
     let root = parsed.as_ref().ok().and_then(early_root);
     // Read again by `prepare`; a broken file is reported there, once tracing is up. The 7.1.0-rc.1 key
     // `[interface] console` is read as `show_terminal` by `Config::load`.
@@ -285,7 +293,7 @@ pub fn run(flavor: Flavor) -> ExitCode {
             .app
             .show_terminal
     });
-    let relaunch = relaunch_for_terminal(flavor, parsed.as_ref().ok(), show_terminal);
+    let relaunch = relaunch_for_terminal(flavor, parsed.as_ref().ok(), &args, show_terminal);
     if relaunch == Ok(true) {
         return ExitCode::SUCCESS;
     }
@@ -352,7 +360,7 @@ pub fn run(flavor: Flavor) -> ExitCode {
         },
         Err(e) => {
             eprintln!("erreur : {e}\n\n{}", cli::USAGE);
-            cli_refused(flavor, ExitCode::from(2))
+            cli_refused(flavor, ExitCode::from(USAGE_ERROR_CODE))
         }
     }
 }
@@ -384,11 +392,32 @@ mod tests {
     }
 
     #[test]
+    fn unknown_option_is_a_usage_error_with_code_2() {
+        assert!(cli::parse(["--no-such-option"].map(OsString::from)).is_err());
+        assert_eq!(USAGE_ERROR_CODE, 2);
+        // Console flavor, and a Gui one with a stdout (tests): the code goes through untouched.
+        for flavor in [Flavor::Console, Flavor::Gui] {
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    cli_refused(flavor, ExitCode::from(USAGE_ERROR_CODE))
+                ),
+                format!("{:?}", ExitCode::from(2))
+            );
+        }
+    }
+
+    #[test]
     fn subcommands_never_relaunch() {
         let cores = cli::parse(["--list-cores"].map(std::ffi::OsString::from)).unwrap();
         // Console flavor or a stdout present (tests): never a relaunch, whatever the setting.
         assert_eq!(
-            relaunch_for_terminal(Flavor::Console, Some(&cores), true),
+            relaunch_for_terminal(
+                Flavor::Console,
+                Some(&cores),
+                &[OsString::from("--list-cores")],
+                true
+            ),
             Ok(false)
         );
     }

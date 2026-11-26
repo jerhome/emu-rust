@@ -234,8 +234,15 @@ jobs:
           Write-Output $out
           if (-not (($out | Out-String) -match [regex]::Escape($env:VERSION))) { Write-Error "version mismatch"; exit 1 }
           # An unknown argument must give a usage error (code 2), seen by PowerShell because the exe is a console one.
+          # GitHub runs pwsh with $ErrorActionPreference = 'stop' and ends the script with exit $LASTEXITCODE:
+          # the expected stderr and exit code 2 must not fail the step.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           & target/x86_64-pc-windows-msvc/release/emu-rust-cli.exe --no-such-option 2>$null
-          if ($LASTEXITCODE -ne 2) { Write-Error "unknown argument: expected exit code 2, got $LASTEXITCODE"; exit 1 }
+          $code = $LASTEXITCODE
+          if ($code -ne 2) { Write-Error "unknown argument: expected exit code 2, got $code"; exit 1 }
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: PE subsystems (GUI = 2, console = 3)
         run: |
@@ -243,7 +250,7 @@ jobs:
           function Get-Subsystem([string]$path) {
             $b = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
             $pe = [BitConverter]::ToInt32($b, 0x3C)
-            if ([BitConverter]::ToUInt32($b, $pe) -ne 0x00004550) { throw "$path: no PE signature" }
+            if ([BitConverter]::ToUInt32($b, $pe) -ne 0x00004550) { throw "${path}: no PE signature" }
             # Optional header starts 24 bytes after the PE signature; Subsystem is at offset 68 (PE32 and PE32+).
             [int][BitConverter]::ToUInt16($b, $pe + 24 + 68)
           }

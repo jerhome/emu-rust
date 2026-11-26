@@ -2371,8 +2371,8 @@ impl ApplicationHandler for App {
         let size = LogicalSize::new(width, height);
         let attrs = WindowAttributes::default()
             .with_title("emu-rust")
-            .with_inner_size(size)
-            .with_window_icon(crate::window_icon());
+            .with_inner_size(size);
+        let attrs = crate::window_icon::with_icons(attrs);
         let fps = av.timing.fps;
         let window = match GlWindow::new(event_loop, attrs) {
             Ok(w) => w,
