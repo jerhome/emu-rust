@@ -6,6 +6,12 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 
 ## État au 2026-11-26, 21 h 20 (PC du bureau)
 
+- **8.0 démarrée** : branche `wip-8.0` (poussée, ea52451) dans le worktree `../emu-rust-wt80` : lot **PX0 fait**
+  (contrat : types et signatures, corps `todo!("lot …")`, design §0.7) + commit court dans la version (rétro n° 4,
+  pied de page et `--version` : `7.6.0+<commit>`). Prochain : vague 2 — PB0 (marque de scan en base, schéma v8,
+  library-assets), PA1 (`.info` étendus, library-assets 2e instance), PQ1 puis PF1 (libretro-ffi).
+- **Version 10 = mobile**, méthode mattpocock ; grill tour 1 fait : `docs/specs/v10-mobile-grill.md`.
+
 - **7.6.0 taguée** (v7.6.0 → 8476e54) après l'essai Windows de l'utilisateur (6/6 puis re-test Maniac Mansion OK ;
   fiche <https://claude.ai/artifact/W6aEFUVhcKgz4D5h1nNSA5>). Défaut trouvé à l'essai et corrigé : sauvegarde d'un jeu
   multi-disquette d'une même archive (`plan_moves`, emu-runtime), chemins complets dans le rapport sous Windows.
@@ -20,8 +26,8 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 
 1. `git fetch`, lire ce fichier, créer le cron de suivi.
 2. Rétro n° 4 si pas faite le 2026-11-26.
-3. 8.0 : branche `wip-8.0` depuis `main`, lot PX0 (design 8.0 §0.6). Essais 8.0 : sauvegarder le dossier de données
-   avant (migration v8).
+3. 8.0 : vague 2 sur `wip-8.0` (worktree `../emu-rust-wt80`) — PB0, PA1, PQ1 → PF1 (design 8.0 §0.7 et lots). Essais 8.0 :
+   sauvegarder le dossier de données avant (migration v8). Grill v10 tour 2 si l'utilisateur le demande.
 4. Dettes notées à l'essai 7.6 :
    - manette « Super Famicom Controller » (Windows, GUID 030000001f08000001e4000000000000) : gauche / droite inopérants
      avec le mappage par défaut → impossible d'atteindre la configuration de la manette (déjà vu avant) ;
