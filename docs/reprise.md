@@ -24,7 +24,8 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 
 ## Prochaine session — dans cet ordre
 
-0. **Intégration progressive des skills mattpocock** (décisions de l'utilisateur, 2026-11-26) :
+0. **Intégration progressive des skills mattpocock** — plan version par version : `docs/skills-mattpocock.md` (validé le
+   2026-11-26, chaque rétro valide skill par skill) :
    - adapter maintenant en copies locales dans `.claude/skills/` d'emu-rust les 6 skills du flux (grill-with-docs,
      to-spec, to-tickets, implement, code-review, retro) : français, sans PR, délégation aux agents de crate, push par
      lots ; efficacité jugée à la rétro ;
