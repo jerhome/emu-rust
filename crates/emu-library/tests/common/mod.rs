@@ -47,7 +47,8 @@ impl Fx {
         // Generate the shared python tree (the only fork) before this test can take any lock.
         let _ = template();
         let tmp = tempfile::tempdir().unwrap();
-        let roms = tmp.path().join("roms");
+        // Canonical root: macOS temp dirs sit behind the /var -> /private/var link.
+        let roms = fs::canonicalize(tmp.path()).unwrap().join("roms");
         fs::create_dir(&roms).unwrap();
         let journals = tmp.path().join("rangement");
         Fx {
@@ -312,7 +313,7 @@ pub fn generated_copy() -> Option<(tempfile::TempDir, PathBuf)> {
         return None;
     };
     let tmp = tempfile::tempdir().unwrap();
-    let out = tmp.path().join("gen");
+    let out = fs::canonicalize(tmp.path()).unwrap().join("gen");
     copy_tree(template, &out);
     Some((tmp, out))
 }

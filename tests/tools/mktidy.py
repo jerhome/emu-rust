@@ -279,7 +279,10 @@ class Tree:
                     f.write(d)
         for rel in sorted(self.files):
             path = os.path.join(roms, *rel.split("/"))
-            os.utime(path, (EPOCH, EPOCH), follow_symlinks=False)
+            if os.utime in os.supports_follow_symlinks:
+                os.utime(path, (EPOCH, EPOCH), follow_symlinks=False)
+            else:  # Windows: no symlink is generated there, so following is harmless
+                os.utime(path, (EPOCH, EPOCH))
         # Directories: fixed mtime too (deepest first).
         for dirpath, _dirs, _files in sorted(os.walk(roms), key=lambda t: -len(t[0])):
             os.utime(dirpath, (EPOCH, EPOCH))

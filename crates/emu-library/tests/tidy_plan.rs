@@ -548,10 +548,12 @@ fn a_linked_system_folder_and_non_utf8_names_are_blocked_and_nothing_is_written(
     fs::create_dir(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, roms.join("snes")).unwrap();
     write(&roms.join("Game.sfc"), &noise(32 * 1024, 1));
-    write(
-        &roms.join(std::ffi::OsStr::from_bytes(b"caf\xe9.sfc")),
-        &noise(32 * 1024, 2),
-    );
+    // APFS (macOS) refuses names that are not valid UTF-8: only check them where they can exist.
+    let non_utf8 = fs::write(
+        roms.join(std::ffi::OsStr::from_bytes(b"caf\xe9.sfc")),
+        noise(32 * 1024, 2),
+    )
+    .is_ok();
     let before = snapshot(tmp.path());
     let library = Library::open_in_memory().unwrap();
     let plan = plan_of(&library, &roms, &[]);
@@ -561,9 +563,11 @@ fn a_linked_system_folder_and_non_utf8_names_are_blocked_and_nothing_is_written(
         TidyStatus::Blocked(TidyBlock::DestinationNotPlainDir { .. })
     ));
     assert!(
-        plan.units
-            .iter()
-            .any(|u| u.status == TidyStatus::Blocked(TidyBlock::NonUtf8Path))
+        !non_utf8
+            || plan
+                .units
+                .iter()
+                .any(|u| u.status == TidyStatus::Blocked(TidyBlock::NonUtf8Path))
     );
     assert_eq!(plan.already_tidy, 0, "a linked roms/snes is not walked");
 }

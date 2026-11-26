@@ -583,7 +583,8 @@ fn links_and_non_utf8_names_are_blocked() {
     std::os::unix::fs::symlink(&elsewhere, f.roms.join("linked dir")).unwrap();
     write(&f.roms.join("Lone (Track 1).bin"), &psx_track());
     let name = std::ffi::OsStr::from_bytes(b"caf\xe9.sfc");
-    write(&f.roms.join(name), &noise(64, 1));
+    // APFS (macOS) refuses names that are not valid UTF-8: only check them where they can exist.
+    let non_utf8 = fs::write(f.roms.join(name), noise(64, 1)).is_ok();
     let library = Library::open_in_memory().unwrap();
     let plan = f.plan(&library);
     assert_eq!(
@@ -595,9 +596,11 @@ fn links_and_non_utf8_names_are_blocked() {
         TidyStatus::Blocked(TidyBlock::Symlink)
     );
     assert!(
-        plan.units
-            .iter()
-            .any(|u| u.status == TidyStatus::Blocked(TidyBlock::NonUtf8Path))
+        !non_utf8
+            || plan
+                .units
+                .iter()
+                .any(|u| u.status == TidyStatus::Blocked(TidyBlock::NonUtf8Path))
     );
     assert_eq!(plan.already_tidy, 0, "a linked roms/psx is not walked");
 }
@@ -799,7 +802,7 @@ fn relocate_follows_a_moved_folder_and_handles_rows_at_the_destination() {
     let mut library = Library::open_in_memory().unwrap();
     let keen = insert_game(&library, &f.roms.join("Keen"), "dos", "Keen");
     // A stale row where the folder lands (its file is gone).
-    let stale = insert_game(&library, &f.roms.join("dos/Keen"), "dos", "Old");
+    let stale = insert_game(&library, &f.roms.join("dos").join("Keen"), "dos", "Old");
     fs::create_dir(f.roms.join("dos")).unwrap();
     fs::rename(f.roms.join("Keen"), f.roms.join("dos/Keen")).unwrap();
     assert_eq!(
@@ -810,7 +813,7 @@ fn relocate_follows_a_moved_folder_and_handles_rows_at_the_destination() {
     );
     assert_eq!(library.game(stale).unwrap(), None);
     let moved = library.game(keen).unwrap().unwrap();
-    assert_eq!(moved.path, f.roms.join("dos/Keen"));
+    assert_eq!(moved.path, f.roms.join("dos").join("Keen"));
     assert!(pinned(&library, keen));
 
     // Both the source and the destination exist: the call does not match the disk.
