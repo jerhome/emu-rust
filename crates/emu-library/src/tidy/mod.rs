@@ -6,6 +6,7 @@ mod exec;
 mod journal;
 mod plan;
 mod relocate;
+mod switch;
 mod sys;
 
 use std::path::{Path, PathBuf};
@@ -342,7 +343,11 @@ pub struct TidyJournalInfo {
     pub complete: bool,
     /// Last line `I`: identity registries rewritten since the last closing line.
     pub identities_done: bool,
+    /// `Some` for a switch journal (version 2): the UI words its undo differently.
+    pub switch: Option<SwitchMove>,
 }
+
+pub use switch::{KeysChoice, PendingSwitch, SwitchChoices, SwitchDirection, SwitchMove};
 
 impl TidyJournalInfo {
     /// « Annuler le dernier rangement » may be offered for it (closed run, not undone).

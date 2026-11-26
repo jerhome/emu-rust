@@ -3,6 +3,9 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RuntimeError {
+    /// The core asks for hardware rendering (design 8.0 §2.4, ADR 0025 §8); the software frontend refuses it.
+    #[error("the core needs hardware rendering ({0:?}), planned for 9.0")]
+    HardwareRenderRequired(emu_libretro::HwRenderRequest),
     #[error(transparent)]
     Libretro(#[from] emu_libretro::LibretroError),
     #[error("I/O error on {path}: {source}")]

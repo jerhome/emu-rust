@@ -19,7 +19,35 @@ use crate::{
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
 /// v5 (4.0): `game.is_dir` (unpacked DOS game folders). v6 (6.0): `game.region` (disc systems), and the Redump
 /// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs).
+///
+/// Design 8.0: PB0 raises it to **8** (`game.scan_pending`, one migration) together with its tests; PX0 leaves
+/// it at 7 so the migration tests and the existing databases keep working until then.
 pub const SCHEMA_VERSION: u32 = 7;
+
+/// What `Library::forget_system` does with the DAT rows of the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ForgetDats {
+    /// Uncertain conflict: the DAT rows are the official's (ADR 0025 §9).
+    Keep,
+    Remove,
+}
+
+/// Contract stubs of design 8.0 §2.1 (PX0); bodies belong to lots PB1 / PB3.
+#[allow(unused_variables)]
+impl Library {
+    /// « Oublier ses jeux »: deletes the game rows (and with [`ForgetDats::Remove`] the DAT rows) of a system
+    /// `id`; `Keep` for an uncertain conflict. Explicit action only: removing a system keeps its rows hidden.
+    pub fn forget_system(&mut self, id: &str, dats: ForgetDats) -> Result<(), LibraryError> {
+        todo!("lot PB1")
+    }
+
+    /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to` for **every** row of `from`, one
+    /// transaction, same scope forward and undo. Idempotent. Returns the number of rows changed.
+    pub fn reassign_system(&mut self, from: &str, to: &str) -> Result<usize, LibraryError> {
+        todo!("lot PB3")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);

@@ -35,6 +35,41 @@ pub(crate) enum LaunchCheck {
     NoCore,
     /// The core cannot be loaded (altered file, missing…). Never in use.
     Failed(CoreError),
+    /// Custom system whose core needs hardware rendering (planned for 9.0; design 8.0 §0.2). Built by PU2.
+    #[allow(dead_code)]
+    HardwareRender { id: CoreId },
+    /// Custom system: the user has not accepted the unverified content of this core. Built by PU2.
+    #[allow(dead_code)]
+    ContentNotAccepted { id: CoreId },
+}
+
+/// Steps before the game of a custom system starts, in order (design 8.0 §2.5, ADR 0025 §6, §7). Built by PU2.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CustomStep {
+    AcceptContent,
+    UntestedWarning,
+    DryRun,
+    Launch,
+}
+
+/// What the user and the cache already know about a (core, system) pair. Built by PU2.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CustomLaunchState {
+    pub content_accepted: bool,
+    pub works_for_me: bool,
+    pub dry_run_passed: bool,
+}
+
+/// Steps to run for `system` played with `core`; empty for an official system.
+#[allow(dead_code, unused_variables)]
+pub(crate) fn custom_launch_steps(
+    system: &emu_library::SystemInfo,
+    core: &CoreId,
+    state: &CustomLaunchState,
+) -> Vec<CustomStep> {
+    todo!("lot PU2")
 }
 
 impl LaunchCheck {

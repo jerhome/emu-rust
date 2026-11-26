@@ -174,6 +174,21 @@ pub struct CorePreferences {
 }
 
 impl CorePreferences {
+    /// Custom systems `(core key, cores)`. A key also in `cores.toml` is replaced only when listed in `masked`
+    /// (official system hidden by an active definition, ADR 0025 §10); otherwise left untouched.
+    // Contract stub (PX0): the body belongs to lot PA1.
+    #[allow(unused_variables)]
+    pub fn with_custom_systems(self, systems: &[(String, Vec<CoreId>)], masked: &[String]) -> Self {
+        todo!("lot PA1")
+    }
+
+    /// Whether `core` is listed in `cores.toml` (examined: no « unverified content » warning).
+    // Contract stub (PX0): the body belongs to lot PA1.
+    #[allow(unused_variables)]
+    pub fn is_examined(&self, core: &CoreId) -> bool {
+        todo!("lot PA1")
+    }
+
     /// Parses the embedded `data/cores.toml`; a parse error is a bug caught by a unit test.
     pub fn builtin() -> Self {
         match Self::parse(BUILTIN) {

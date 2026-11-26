@@ -6,7 +6,7 @@ use egui::{RichText, Ui};
 
 use super::text;
 use crate::log::LogBuffer;
-use crate::{CREDIT, VERSION};
+use crate::{CREDIT, full_version};
 
 /// Content of the footer: credit line (left) and the « Journal » button (right). Returns `true` when the button
 /// was activated (click, or Enter / Space while focused).
@@ -15,7 +15,7 @@ pub(crate) fn contents(ui: &mut Ui) -> bool {
     let mut open = false;
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(text::footer_credit(VERSION, CREDIT))
+            RichText::new(text::footer_credit(&full_version(), CREDIT))
                 .small()
                 .weak(),
         );

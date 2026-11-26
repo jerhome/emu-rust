@@ -111,7 +111,7 @@ fn early_root(command: &cli::Command) -> Option<PathBuf> {
         cli::Command::Cores(c) => c.data_dir.clone(),
         cli::Command::Library(l) => l.data_dir.clone(),
         cli::Command::Run(c) => c.data_dir.clone(),
-        cli::Command::Help | cli::Command::Version => return None,
+        cli::Command::Help | cli::Command::Version | cli::Command::DryRunChild(_) => return None,
     };
     cli::resolve_root(data_dir, std::env::var_os("EMU_DATA_DIR"), standard_root()).ok()
 }
@@ -307,6 +307,11 @@ pub fn run(flavor: Flavor) -> ExitCode {
         tracing::warn!("{e}");
     }
     match parsed {
+        // Placeholder (PX0): lot PU1 moves the child to the head of `run`, before `install_panic_hook`.
+        Ok(cli::Command::DryRunChild(file)) => {
+            let _ = emu_ui::dry_run_child_main(&file);
+            ExitCode::FAILURE
+        }
         Ok(cli::Command::Help) => {
             println!("{}", cli::USAGE);
             cli_refused(flavor, ExitCode::SUCCESS)

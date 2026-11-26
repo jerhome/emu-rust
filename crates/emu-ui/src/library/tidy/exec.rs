@@ -676,6 +676,7 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         undone: false,
         complete: true,
         identities_done: true,
+        switch: None,
     })));
     out.root = Some(root);
     out.saves = Some(dirs.saves.clone());
@@ -754,6 +755,7 @@ mod tests {
             undone,
             complete,
             identities_done: false,
+            switch: None,
         }
     }
 

@@ -106,6 +106,17 @@ pub struct SystemInfo {
     /// `group_discs`, default `true`; `3do`: `false`, opera has neither disk interface nor `.m3u`; design v7.0
     /// §3.4). Only meaningful when `disc` is set.
     pub group_discs: bool,
+    /// Where the system comes from (design 8.0 §2.1): the embedded catalog or a user definition.
+    pub origin: SystemOrigin,
+}
+
+/// Official (embedded `systems.toml`) or custom (`<data>/systems/<id>.toml`, ADR 0025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum SystemOrigin {
+    #[default]
+    Official,
+    Custom,
 }
 
 /// `systems.toml` `default_input` (user decision of 2026-11-21: Joystick for CPC and C64).
@@ -292,6 +303,7 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
             },
             disc: s.disc,
             group_discs: s.group_discs,
+            origin: SystemOrigin::Official,
         });
     }
     Ok(out)
@@ -314,6 +326,21 @@ pub fn system(id: &str) -> Option<&'static SystemInfo> {
 }
 
 impl SystemInfo {
+    pub fn is_custom(&self) -> bool {
+        self.origin == SystemOrigin::Custom
+    }
+
+    /// libretro name: DAT file, thumbnails folder. `None` for a custom system without one (empty `database`
+    /// until lot PB4 makes the field private, design 8.0 A10).
+    pub fn libretro_name(&self) -> Option<&str> {
+        Some(self.database.as_str()).filter(|d| !d.is_empty())
+    }
+
+    /// Key of `CorePreferences`: the libretro name, else the id (ids never contain « - »).
+    pub fn core_key(&self) -> &str {
+        self.libretro_name().unwrap_or(&self.id)
+    }
+
     /// `extension` (lower case) is accepted by this system only under a folder named after its id.
     pub(crate) fn is_folder_only(&self, extension: &str) -> bool {
         self.folder_extensions.iter().any(|e| e == extension)

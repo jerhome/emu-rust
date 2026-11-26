@@ -11,7 +11,10 @@ mod config_library;
 mod content;
 mod copyable;
 mod cores_ui;
+mod crash_guard;
+mod custom;
 mod dos_launch;
+mod dry_run;
 mod egui_layer;
 mod file_picker;
 mod firmware_hints;
@@ -40,8 +43,8 @@ pub use crate::bios_import::{
     identify_bios, import_bios, import_error, known_import_items, unverified_item,
 };
 pub use crate::config::{
-    AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
-    MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
+    AudioSettings, Config, ConfigError, CustomSystemsConfig, DEFAULT_PROFILE, DataDirs, Hotkeys,
+    InputConfig, MAX_SCALE, MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
 pub use crate::config_app::{AppConfig, UiConfig};
 pub use crate::config_computer::{
@@ -56,9 +59,13 @@ pub use crate::content::{
     GameContent, LaunchRefusal, content_spec, media_set_name, plan_disc_launch,
 };
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::custom::{AddWarning, Addability, addability};
 pub use crate::dos_launch::{
     clear_dos_cache, dos_cli_content, invalidate_core_caches, prepare_dos_snapshot,
     system_cache_names,
+};
+pub use crate::dry_run::{
+    DryRunCommand, DryRunVerdict, SkipReason, dry_run_child_main, run_dry_run,
 };
 pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
@@ -70,7 +77,7 @@ pub use crate::gamepad::{
     RawTranslator, ScriptedPadSource, UnrecognizedPad, retropad_from_name, retropad_name,
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
-pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile, profile_key_for};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
@@ -99,6 +106,21 @@ pub fn finish_pending_identities(dirs: &DataDirs) {
 
 /// Version shown by the footer and `--version` (workspace version).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Short commit of the build (build.rs); `None` without git.
+pub const COMMIT: Option<&str> = option_env!("EMU_GIT_SHA");
+
+/// `<version>+<commit>` (semver build metadata), or the bare version without commit.
+pub fn format_version(version: &str, commit: Option<&str>) -> String {
+    match commit.filter(|c| !c.is_empty()) {
+        Some(c) => format!("{version}+{c}"),
+        None => version.to_owned(),
+    }
+}
+
+/// Version of this build with its commit: shown by the footer and `--version`.
+pub fn full_version() -> String {
+    format_version(VERSION, COMMIT)
+}
 /// Credit line of the footer (ADR 0023 §1): `emu-rust <VERSION> — <CREDIT>`.
 pub const CREDIT: &str = "dev by claude@jerhome";
 

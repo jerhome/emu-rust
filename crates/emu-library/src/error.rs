@@ -62,6 +62,10 @@ pub enum TidyRefusal {
     NotClosed,
     /// `mark_tidy_identities`: not a journal of this folder, or an empty one.
     UnknownJournal,
+    /// A switch end is due: finish it first (`complete_switch`, design 8.0 §2.1).
+    SwitchPending,
+    /// The undo of this switch journal cannot bring everything back (ADR 0025 §10.5).
+    SwitchNotReversible,
 }
 
 impl std::fmt::Display for TidyRefusal {
@@ -73,6 +77,8 @@ impl std::fmt::Display for TidyRefusal {
             Self::AlreadyUndone => "ce rangement est déjà annulé",
             Self::NotClosed => "rangement non terminé",
             Self::UnknownJournal => "journal de rangement inconnu",
+            Self::SwitchPending => "une bascule de système doit d'abord être terminée",
+            Self::SwitchNotReversible => "cette bascule ne peut pas être entièrement annulée",
         })
     }
 }

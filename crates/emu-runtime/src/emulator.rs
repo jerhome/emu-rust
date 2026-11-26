@@ -491,6 +491,11 @@ impl Emulator {
         &self.av_info
     }
 
+    /// Input descriptors of the running core (design 8.0 §2.4; `Core::input_descriptors`).
+    pub fn input_descriptors(&self) -> &[emu_libretro::InputDescriptor] {
+        self.core.input_descriptors()
+    }
+
     /// Polls `input` (state cleared first), runs one `retro_run`, converts video into `frame()`, forwards audio
     /// to `audio`. No allocation per frame once the frame size is stable.
     pub fn run_frame(

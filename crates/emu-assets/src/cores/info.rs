@@ -26,6 +26,55 @@ pub struct CoreInfo {
     pub databases: Vec<String>,
     pub firmware: Vec<FirmwareSpec>,
     pub description: Option<String>,
+    /// `systemname`, ≤ 128 chars, cleaned (design 8.0 §2.2; filled by lot PA1, `None` until then).
+    pub system_name: Option<String>,
+    /// `categories` split on `|`, ≤ 8 × 32 chars.
+    pub categories: Vec<String>,
+    /// `is_experimental`.
+    pub experimental: bool,
+    /// Rendering the core asks for (`hw_render`, `required_hw_api`).
+    pub render: RenderNeed,
+    pub supports_no_game: Option<bool>,
+    pub needs_fullpath: Option<bool>,
+    /// `needs_kbd_mouse_focus`.
+    pub keyboard_focus: Option<bool>,
+    pub savestate: Option<bool>,
+}
+
+/// `Hardware(vec![])` when `hw_render = true` without `required_hw_api`; `Unknown` when `hw_render` is absent.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum RenderNeed {
+    Software,
+    Hardware(Vec<HwApi>),
+    #[default]
+    Unknown,
+}
+
+/// One entry of `required_hw_api` (`OpenGL Core >= 3.3`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HwApi {
+    pub kind: HwApiKind,
+    pub min_version: Option<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HwApiKind {
+    OpenGl,
+    OpenGlCore,
+    OpenGlEs,
+    Vulkan,
+    Direct3D,
+    /// Unrecognised name, ≤ 64 chars.
+    Other(String),
+}
+
+/// Parses a `required_hw_api` value (`|`-separated, ≤ 8 entries). Contract of lot PA1.
+// Contract stub (PX0): the body belongs to lot PA1.
+#[allow(unused_variables)]
+pub fn parse_required_hw_api(text: &str) -> Vec<HwApi> {
+    todo!("lot PA1")
 }
 
 /// One `firmwareN_*` group, with the md5 found for the same file name in `notes` (`(!) <path> (md5): <hex>`).
@@ -115,6 +164,14 @@ pub fn parse_info(id: CoreId, text: &str) -> Result<CoreInfo, InfoError> {
             .collect(),
         firmware,
         description: get("description"),
+        system_name: None,
+        categories: Vec::new(),
+        experimental: false,
+        render: RenderNeed::Unknown,
+        supports_no_game: None,
+        needs_fullpath: None,
+        keyboard_focus: None,
+        savestate: None,
         id,
     })
 }

@@ -1344,12 +1344,24 @@ fn footer_shows_version_and_credit() {
         "emu-rust 1.2.3 — dev by claude@jerhome"
     );
     assert_eq!(
-        crate::ui::text::footer_credit(crate::VERSION, crate::CREDIT),
-        format!(
-            "emu-rust {} — dev by claude@jerhome",
-            env!("CARGO_PKG_VERSION")
-        )
+        crate::ui::text::footer_credit(&crate::full_version(), crate::CREDIT),
+        format!("emu-rust {} — dev by claude@jerhome", crate::full_version())
     );
+}
+
+#[test]
+fn version_string_with_and_without_commit() {
+    assert_eq!(
+        crate::format_version("7.6.0", Some("abc1234")),
+        "7.6.0+abc1234"
+    );
+    assert_eq!(
+        crate::format_version("8.0.0-dev", Some("abc1234")),
+        "8.0.0-dev+abc1234"
+    );
+    assert_eq!(crate::format_version("7.6.0", None), "7.6.0");
+    assert_eq!(crate::format_version("7.6.0", Some("")), "7.6.0");
+    assert!(crate::full_version().starts_with(env!("CARGO_PKG_VERSION")));
 }
 
 // ---- 7.2: unrecognized pad, learning, config, core ----------------------------------------------------------

@@ -1,6 +1,6 @@
 //! `config.toml` and data directories (ADR 0011). Credentials (ScreenScraper, IGDB) are `Secret`s: file kept 0600, never logged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -49,6 +49,8 @@ pub struct DataDirs {
     pub game_options: PathBuf,
     /// `<data>/rangement`: tidy journals and the OS lock file (ADR 0023 §4.5). Created by the first tidy run.
     pub tidy_journals: PathBuf,
+    /// `<data>/systems/`: custom system definitions (ADR 0025 §1). Created by the first definition.
+    pub custom_systems: PathBuf,
 }
 
 impl DataDirs {
@@ -70,6 +72,7 @@ impl DataDirs {
             )),
             game_options: root.join("game-options"),
             tidy_journals: root.join("rangement"),
+            custom_systems: root.join("systems"),
         }
     }
 
@@ -270,6 +273,24 @@ pub struct InputConfig {
     pub extra: toml::Table,
 }
 
+/// `[custom_systems]` (ADR 0025 §6, §7): the user's own state, not exportable. Not written while default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomSystemsConfig {
+    /// Cores whose unverified content the user accepted (`<core>`).
+    pub content_accepted: BTreeSet<String>,
+    /// « Ça marche chez moi » : `<core>@<system id>`.
+    pub works_for_me: BTreeSet<String>,
+    #[serde(flatten)]
+    pub extra: toml::Table,
+}
+
+impl CustomSystemsConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -291,6 +312,9 @@ pub struct Config {
     /// `[ui]` (first-run wizard). Not written while default.
     #[serde(skip_serializing_if = "UiConfig::is_default")]
     pub ui: UiConfig,
+    /// `[custom_systems]` (8.0). Not written while default.
+    #[serde(skip_serializing_if = "CustomSystemsConfig::is_default")]
+    pub custom_systems: CustomSystemsConfig,
     /// `core_id` → option key → value.
     pub core_options: BTreeMap<String, BTreeMap<String, String>>,
     /// Unknown top-level keys and tables, written back unchanged.

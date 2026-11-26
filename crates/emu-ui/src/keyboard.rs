@@ -94,6 +94,12 @@ impl PadStyle {
         }
     }
 
+    /// Style of `system` played with `core_id` (design 8.0 §2.5). A custom system takes the core's main style.
+    #[allow(unused_variables)]
+    pub fn for_system(system: &emu_library::SystemInfo, core_id: &str) -> Self {
+        todo!("lot PU2")
+    }
+
     fn slug(self) -> &'static str {
         match self {
             Self::MegaDrive => "md",
@@ -303,6 +309,14 @@ fn zip_entry_names(path: &Path) -> Vec<String> {
         Some(names)
     }
     read(path).unwrap_or_default()
+}
+
+/// Key of the keyboard profile and of the learned gamepad bindings (`[input.gamepad.bindings.<key>]`, 7.2) for
+/// `system` played with `core_id` (design 8.0 §2.5, A5): a custom system gives `<core>@<id>`; an official one
+/// gives exactly `PadStyle::profile_key`. Replaces the three calls of `profile_key` (lot PU2).
+#[allow(unused_variables)]
+pub fn profile_key_for(system: &emu_library::SystemInfo, style: PadStyle, core_id: &str) -> String {
+    todo!("lot PU2")
 }
 
 /// Profiles of computer cores (Atari ST, Amiga, PC, CPC, C64): the keyboard belongs to the emulated machine, so their joystick

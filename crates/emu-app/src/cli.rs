@@ -159,13 +159,17 @@ pub enum Command {
     Run(Box<Cli>),
     Library(Box<LibraryCli>),
     Cores(Box<CoresCli>),
+    /// Hidden sub-command: dry run of a core in a child process; the argument is the request file
+    /// (design 8.0 §2.5). Recognised first in `run`, before any initialisation. Parsed by lot PU1.
+    #[allow(dead_code)] // built by lot PU1 (`cli::parse`)
+    DryRunChild(PathBuf),
     Help,
     Version,
 }
 
-/// `emu-rust <version>`, from the crate version.
+/// `emu-rust <version>[+<commit>]`.
 pub fn version_line() -> String {
-    format!("emu-rust {}", env!("CARGO_PKG_VERSION"))
+    format!("emu-rust {}", emu_ui::full_version())
 }
 
 enum ScreenArg {

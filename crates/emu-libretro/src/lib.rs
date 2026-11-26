@@ -8,6 +8,7 @@ mod controllers;
 mod core;
 mod disk;
 mod error;
+mod hw;
 mod keyboard;
 mod log;
 mod options;
@@ -19,6 +20,9 @@ mod vfs;
 pub use crate::core::{Core, CoreConfig, FrontendHandler, RunEvents};
 pub use crate::disk::{DiskControl, DiskControlKind};
 pub use crate::error::LibretroError;
+pub use crate::hw::{
+    FrameKind, HwContextKind, HwRenderRequest, InputDescriptor, MAX_INPUT_DESCRIPTORS,
+};
 pub use crate::keyboard::{KeyEvent, KeyModifiers, RetroKey, mouse_id};
 pub use crate::types::{
     AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue,

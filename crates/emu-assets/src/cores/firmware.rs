@@ -505,6 +505,22 @@ pub struct FirmwareAdvice {
 
 const REQUIRED_BENEFIT: &str = "BIOS indispensable : sans lui, le jeu ne démarre pas";
 
+/// Banner of a core that `cores.toml` does not list (custom system, design 8.0 §2.2, ADR 0025 §6): files of
+/// `info.firmware` minus `ignored` (`CustomSystem::ignored_firmware`); `optional = false` ⇒
+/// [`AdviceNeed::Required`] (never blocking), otherwise `Improves`; md5 of the `notes` and `KnownFirmware` for
+/// the state. `Ok(None)` when every file is `Ok` or `Unverified`. Unsafe paths ⇒ `Err`.
+// Contract stub (PX0): the body belongs to lot PA1.
+#[allow(unused_variables)]
+pub fn firmware_advice_from_info(
+    core: &CoreId,
+    info: &CoreInfo,
+    ignored: &[String],
+    system_dir: &Path,
+    known: &KnownFirmware,
+) -> Result<Option<FirmwareAdvice>, FirmwareError> {
+    todo!("lot PA1")
+}
+
 /// Banner data for `core` running a game of `system` (libretro database name) in region `variant`
 /// (`"usa"`…, `None` or a key absent from the table = unknown).
 ///

@@ -919,6 +919,7 @@ impl Journal {
             undone: matches!(self.state, State::Undone | State::UndoneMarked),
             complete: !self.state.in_progress(),
             identities_done: matches!(self.state, State::EndedMarked | State::UndoneMarked),
+            switch: None,
         }
     }
 
