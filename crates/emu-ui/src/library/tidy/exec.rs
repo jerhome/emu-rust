@@ -428,7 +428,26 @@ fn replace_root(m: &str, base: &Path, name: &str) -> String {
         out.push_str(&m[at..start]);
         out.push_str(name);
         out.push('/');
-        at = end + 1;
+        // The rest of the recognised path is shown with `/` too; it ends at a quote, a line break or « : ».
+        let tail = &m[end + 1..];
+        let stop = tail
+            .find(['\n', '"', '\''])
+            .into_iter()
+            .chain(tail.find(" : "))
+            .min();
+        let next_root = forms
+            .iter()
+            .filter_map(|f| hay[end + 1..].find(f.as_str()))
+            .min();
+        let stop = end
+            + 1
+            + stop
+                .into_iter()
+                .chain(next_root)
+                .min()
+                .unwrap_or(tail.len());
+        out.push_str(&m[end + 1..stop].replace('\\', "/"));
+        at = stop;
     }
     out.push_str(&m[at..]);
     out
