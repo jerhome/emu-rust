@@ -940,9 +940,15 @@ pub fn relocate_identities(
     let mut report = RelocateReport::default();
     let table: Vec<Relocation> = moves
         .iter()
-        .map(|(from, to)| Relocation {
-            from: components_keys(&canonical_or_ancestor(from)),
-            to: canonical_or_ancestor(to),
+        .map(|(from, to)| {
+            let to = canonical_or_ancestor(to);
+            Relocation {
+                from: components_keys(&canonical_or_ancestor(from)),
+                to_keys: components_keys(&to),
+                landed: matches!(fs::symlink_metadata(from), Err(e) if e.kind() == io::ErrorKind::NotFound)
+                    && fs::symlink_metadata(&to).is_ok(),
+                to,
+            }
         })
         .collect();
     let cores = match fs::read_dir(saves_dir) {
@@ -969,6 +975,11 @@ pub fn relocate_identities(
 struct Relocation {
     from: Vec<Vec<u8>>,
     to: PathBuf,
+    /// `to` split like `from`.
+    to_keys: Vec<Vec<u8>>,
+    /// The move really happened: `from` is gone and `to` exists. A tidying never overwrites, so nothing existed
+    /// at `to` (or under it) before.
+    landed: bool,
 }
 
 /// Canonical form of a path that may be gone: the nearest existing ancestor is canonicalized, the rest appended.
@@ -1018,28 +1029,56 @@ fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
     (key != raw).then_some(key)
 }
 
+/// The stored source `raw` designates `to` (or a path under it) of a move that landed: a file that did not exist
+/// before the move, so a record of it can only be a stale one of the moved file (a tidying of an older build that
+/// moved only some entries of a shared source).
+fn on_landed_target(raw: &[u8], table: &[Relocation]) -> bool {
+    if raw.is_empty() {
+        return false;
+    }
+    let comps = components_keys(&path_from_key(raw));
+    table
+        .iter()
+        .any(|m| m.landed && !m.to_keys.is_empty() && comps.starts_with(&m.to_keys))
+}
+
+/// Holder of a key while planning moves.
+enum Holder {
+    /// Entries that stay on the key (their source is the key itself).
+    Stayers(Vec<usize>),
+    /// An accepted move from this (folded) source.
+    Source(Vec<u8>),
+}
+
 /// Decides which of the moves `olds[i] -> news[i]` (`None` = stays) are applied. The old keys of the entries that
 /// move are released, so chains (A->B, B->C), swaps and case-only changes work. Several entries may share one source
 /// (the disks of one zip, each from its own member): they follow it together onto the same key, which is no
-/// collision. A move onto a key held by a different source (an entry that stays, or an earlier accepted move from
-/// another source) is refused. A refused entry keeps its old key, which is therefore held again: moves accepted onto
-/// it are re-examined, until a fixed point (at most one pass per entry). Invariant: two entries end on the same key
-/// if and only if they started from the same source. Deterministic: depends only on entry order. `fold` is the
-/// comparison key.
+/// collision. Staying entries already on the target are no collision either when every one of them is a stale record
+/// of the moved file (`stale(holder, mover)`: target that did not exist before the move, same recorded content), as
+/// left by a build that moved only some entries of a shared source: the mover joins them. Any other move onto a key
+/// held by a different source (an entry that stays, or an earlier accepted move from another source) is refused. A
+/// refused entry keeps its old key, which is therefore held again: moves accepted onto it are re-examined, until a
+/// fixed point (at most one pass per entry). Invariant: two entries end on the same key if and only if they started
+/// from the same source, or one of them is a stale record of the other's moved file. Deterministic: depends only on
+/// entry order. `fold` is the comparison key.
 fn plan_moves(
     olds: &[&[u8]],
     news: &[Option<Vec<u8>>],
     fold: impl Fn(&[u8]) -> Vec<u8>,
+    stale: impl Fn(usize, usize) -> bool,
 ) -> Vec<bool> {
     let mut applied: Vec<bool> = news.iter().map(Option::is_some).collect();
     loop {
-        // Held key -> (folded) source holding it.
-        let mut taken: HashMap<Vec<u8>, Vec<u8>> = olds
-            .iter()
-            .zip(&applied)
-            .filter(|(_, a)| !**a)
-            .map(|(o, _)| (fold(o), fold(o)))
-            .collect();
+        let mut taken: HashMap<Vec<u8>, Holder> = HashMap::new();
+        for (i, o) in olds.iter().enumerate().filter(|(i, _)| !applied[*i]) {
+            match taken
+                .entry(fold(o))
+                .or_insert_with(|| Holder::Stayers(Vec::new()))
+            {
+                Holder::Stayers(v) => v.push(i),
+                Holder::Source(_) => unreachable!("only stayers are inserted here"),
+            }
+        }
         let mut refused = false;
         for (i, new) in news.iter().enumerate() {
             let (true, Some(new)) = (applied[i], new) else {
@@ -1048,12 +1087,21 @@ fn plan_moves(
             let source = fold(olds[i]);
             match taken.entry(fold(new)) {
                 hash_map::Entry::Vacant(slot) => {
-                    slot.insert(source);
+                    slot.insert(Holder::Source(source));
                 }
-                hash_map::Entry::Occupied(slot) if *slot.get() == source => {}
-                hash_map::Entry::Occupied(_) => {
-                    applied[i] = false;
-                    refused = true;
+                hash_map::Entry::Occupied(mut slot) => {
+                    let joins = match slot.get() {
+                        Holder::Source(s) => *s == source,
+                        Holder::Stayers(v) => {
+                            *slot.key() == source || v.iter().all(|&h| stale(h, i))
+                        }
+                    };
+                    if joins {
+                        slot.insert(Holder::Source(source));
+                    } else {
+                        applied[i] = false;
+                        refused = true;
+                    }
                 }
             }
         }
@@ -1108,7 +1156,9 @@ fn relocate_core_dir(
                 let news: Vec<Option<Vec<u8>>> =
                     entries.iter().map(|e| moved_key(&e.path, table)).collect();
                 let olds: Vec<&[u8]> = entries.iter().map(|e| e.path.as_slice()).collect();
-                let ok = plan_moves(&olds, &news, registry_key);
+                // Never joined: an entry holding the target is another game (another save name), even with
+                // the same content (identical copies, one deleted by the user before the tidying).
+                let ok = plan_moves(&olds, &news, registry_key, |_, _| false);
                 for ((e, new), ok) in entries.iter_mut().zip(news).zip(ok) {
                     if let Some(key) = new {
                         if ok {
@@ -1138,7 +1188,10 @@ fn relocate_core_dir(
                     .map(|e| moved_key(e.source_key(), table))
                     .collect();
                 let olds: Vec<&[u8]> = entries.iter().map(|e| e.source_key()).collect();
-                let ok = plan_moves(&olds, &news, registry_key);
+                let ok = plan_moves(&olds, &news, registry_key, |h, m| {
+                    on_landed_target(olds[h], table)
+                        && entries[h].source_size_crc() == entries[m].source_size_crc()
+                });
                 for ((e, new), ok) in entries.iter_mut().zip(news).zip(ok) {
                     if let Some(key) = new {
                         if ok {

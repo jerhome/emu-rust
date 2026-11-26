@@ -1107,6 +1107,135 @@ fn a_target_held_by_another_source_is_still_refused_without_absolute_path() {
     }
 }
 
+/// Manifest written straight from raw source keys (paths that may not exist), each with the CRC32 of its source.
+fn keys_manifest(work: &Path, sources: &[(&str, &[u8], u32)]) {
+    fs::create_dir_all(work).unwrap();
+    let mut text = b"emu-rust working copies 1\n".to_vec();
+    for (copy, key, crc) in sources {
+        text.extend_from_slice(format!("set\t{copy}\t{copy}\t3\t-\t{crc:08x}\t").as_bytes());
+        escape(key, &mut text);
+        text.push(b'\n');
+        fs::write(work.join(copy), b"progress").unwrap();
+    }
+    fs::write(work.join(workcopy::MANIFEST_NAME), &text).unwrap();
+}
+
+fn key_entry(save_name: &str, key: &[u8], crc: u32) -> Entry {
+    Entry {
+        save_name: save_name.to_owned(),
+        base: save_name.to_owned(),
+        index: 1,
+        legacy: false,
+        size: 3,
+        mtime: None,
+        crc,
+        path: key.to_vec(),
+    }
+}
+
+/// State left by the tidying of a build without the shared-source fix: one disk of the zip already recorded on
+/// the destination, the other still on the source.
+fn damaged_maniac(fx: &Fx, first: &[u8], second: &[u8]) -> PathBuf {
+    let work = fx.saves().join("MANIACD0_04577_01.disks");
+    let crc = crc32fast::hash(b"zip");
+    keys_manifest(
+        &work,
+        &[("MANIACD0.d64", first, crc), ("MANIACD1.d64", second, crc)],
+    );
+    work
+}
+
+#[test]
+fn a_stale_entry_already_on_the_destination_joins_the_moved_zip() {
+    let fx = Fx::new();
+    let zip = fx.rom("Maniac Mansion.zip", b"zip");
+    let roms = fs::canonicalize(fx.tmp.path().join("roms")).unwrap();
+    let src = path_key(&roms.join("Maniac Mansion.zip"));
+    let dest = path_key(&roms.join("c64/Maniac Mansion.zip"));
+    let work = damaged_maniac(&fx, &dest, &src);
+    let to = move_rom(&fx, &zip, "c64/Maniac Mansion.zip");
+    let report = relocate_identities(&top_saves(&fx), &[(zip, to)]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (0, 0, 1)
+    );
+    assert_eq!(manifest_sources(&work), vec![dest.clone(); 2]);
+}
+
+#[test]
+fn undoing_from_the_damaged_state_rejoins_the_stale_entry() {
+    let fx = Fx::new();
+    let zip = fx.rom("c64/Maniac Mansion.zip", b"zip");
+    let roms = fs::canonicalize(fx.tmp.path().join("roms")).unwrap();
+    let src = path_key(&roms.join("Maniac Mansion.zip"));
+    let dest = path_key(&roms.join("c64/Maniac Mansion.zip"));
+    // The undo moves the file back from c64/ while the second disk was never moved there.
+    let work = damaged_maniac(&fx, &dest, &src);
+    let back = move_rom(&fx, &zip, "Maniac Mansion.zip");
+    let report = relocate_identities(&top_saves(&fx), &[(zip, back)]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (0, 0, 1)
+    );
+    assert_eq!(manifest_sources(&work), vec![src.clone(); 2]);
+}
+
+#[test]
+fn the_registry_never_joins_two_identities_of_the_same_content() {
+    // Two identical copies: Sonic on md/Sonic.md, Sonic (2) on roms/Sonic.md; md/Sonic.md then deleted by the
+    // user, and the tidying moves roms/Sonic.md there. The entry on md/ is another game, not a stale record.
+    let fx = Fx::new();
+    let rom = fx.rom("Sonic.md", b"sonic");
+    let roms = fs::canonicalize(fx.tmp.path().join("roms")).unwrap();
+    let (src, dest) = (
+        path_key(&roms.join("Sonic.md")),
+        path_key(&roms.join("md/Sonic.md")),
+    );
+    write_registry(
+        &fx.saves().join(REGISTRY_NAME),
+        &[
+            key_entry("Sonic", &dest, 7),
+            key_entry("Sonic (2)", &src, 7),
+        ],
+    )
+    .unwrap();
+    let before = fx.registry();
+    let to = move_rom(&fx, &rom, "md/Sonic.md");
+    let report = relocate_identities(&top_saves(&fx), &[(rom, to)]).unwrap();
+    assert_eq!((report.registries, report.entries), (0, 0));
+    assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
+    assert_eq!(fx.registry(), before, "Sonic (2) keeps its own path");
+}
+
+#[test]
+fn an_entry_on_the_destination_with_another_content_is_still_refused() {
+    let fx = Fx::new();
+    let zip = fx.rom("a.zip", b"zip");
+    let roms = fs::canonicalize(fx.tmp.path().join("roms")).unwrap();
+    let src = path_key(&roms.join("a.zip"));
+    let dest = path_key(&roms.join("c64/a.zip"));
+    let work = fx.saves().join("Set.disks");
+    let crc = crc32fast::hash(b"zip");
+    keys_manifest(&work, &[("D0.d64", &dest, crc ^ 1), ("D1.d64", &src, crc)]);
+    write_registry(
+        &fx.saves().join(REGISTRY_NAME),
+        &[key_entry("A", &dest, 8), key_entry("B", &src, 7)],
+    )
+    .unwrap();
+    let (manifest_before, registry_before) = (manifest_sources(&work), fx.registry());
+    let to = move_rom(&fx, &zip, "c64/a.zip");
+    let report = relocate_identities(&top_saves(&fx), &[(zip, to)]).unwrap();
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (0, 0, 0)
+    );
+    assert_eq!(report.skipped.len(), 2, "{:?}", report.skipped);
+    assert_eq!(manifest_sources(&work), manifest_before);
+    assert_eq!(fx.registry(), registry_before);
+}
+
 mod plan_moves_tests {
     use super::super::{fold_windows_key, plan_moves};
 
@@ -1120,7 +1249,26 @@ mod plan_moves_tests {
             .iter()
             .map(|n| n.map(|s| s.as_bytes().to_vec()))
             .collect();
-        plan_moves(&olds, &news, fold)
+        plan_moves(&olds, &news, fold, |_, _| false)
+    }
+
+    #[test]
+    fn stale_holders_are_joined_only_when_all_are_stale() {
+        let olds: [&[u8]; 3] = [b"y", b"z", b"y"];
+        let news = [None, Some(b"y".to_vec()), None];
+        assert_eq!(
+            plan_moves(&olds, &news, fold, |_, _| true),
+            [false, true, false]
+        );
+        assert_eq!(plan_moves(&olds, &news, fold, |h, _| h == 0), [false; 3]);
+        assert_eq!(plan_moves(&olds, &news, fold, |_, _| false), [false; 3]);
+        // Once joined, the key belongs to the mover's source: another source is refused.
+        let olds: [&[u8]; 3] = [b"y", b"z", b"w"];
+        let news = [None, Some(b"y".to_vec()), Some(b"y".to_vec())];
+        assert_eq!(
+            plan_moves(&olds, &news, fold, |_, _| true),
+            [false, true, false]
+        );
     }
 
     #[test]
