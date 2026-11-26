@@ -22,4 +22,7 @@ Règles :
 - Un ajout à la fois par version, pour savoir ce que chaque skill apporte.
 - Nos agents restent les exécutants : les skills cadrent le travail, sans remplacer les agents de crate ni `reviewer`
   (`unsafe`, sécurité, licences).
-- La rétro du skill retro est fusionnée avec la nôtre (questionnaire, mesures), dans ce repo seulement.
+- La rétro du skill retro est fusionnée avec la nôtre (questionnaire, mesures) dans un seul skill local
+  (`.claude/skills/retro/`), dans ce repo seulement ; tout l'hybride mattpocock reste dans ce repo, rien dans
+  agents-home. Le skill applique aussi les règles communes de rétro d'agents-home (date « Dernière rétro », amélioration
+  des agents des projets touchés), qui restent là-bas tant qu'elles ne dépendent d'aucun langage.
