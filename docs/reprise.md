@@ -24,6 +24,14 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 
 ## Prochaine session — dans cet ordre
 
+0. **Intégration progressive des skills mattpocock** (décisions de l'utilisateur, 2026-11-26) :
+   - adapter maintenant en copies locales dans `.claude/skills/` d'emu-rust les 6 skills du flux (grill-with-docs,
+     to-spec, to-tickets, implement, code-review, retro) : français, sans PR, délégation aux agents de crate, push par
+     lots ; efficacité jugée à la rétro ;
+   - **tdd** sur PB0 et **code-review** (en plus de `reviewer`) sur PB0 et PA1 ;
+   - tickets : des fichiers `.md` pour l'instant ; issues GitHub à partir de la 9 ou de la 10 (à évoquer en rétro) ;
+   - **retro** : fusionnée avec notre rétro (questionnaire, mesures), seulement dans ce repo.
+
 1. `git fetch`, lire ce fichier, créer le cron de suivi.
 2. Rétro n° 4 si pas faite le 2026-11-26.
 3. 8.0 : vague 2 sur `wip-8.0` (worktree `../emu-rust-wt80`) — PB0, PA1, PQ1 → PF1 (design 8.0 §0.7 et lots). Essais 8.0 :
