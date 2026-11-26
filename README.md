@@ -5,7 +5,7 @@ emu-rust fournit l'image, le son, le clavier et les manettes (PS4, USB type SNES
 jaquettes (thème sombre, manuel intégré, assistant de premier lancement), le Journal, le téléchargement des cores et
 des BIOS libres. Usage personnel.
 
-**Version stable : 7.5.0** ([releases](../../releases))
+**Version stable : 7.6.0** ([releases](../../releases))
 
 ## Systèmes pris en charge
 
@@ -30,9 +30,9 @@ ligne de commande (depuis PowerShell : `.\emu-rust-cli.exe --help`).
 | Version | Contenu | État |
 |---|---|---|
 | 7.1 → 7.5 | Finition (pied de page, icône, Journal, messages copiables, terminal caché, `emu-rust-cli.exe`), manette USB type SNES (7.2), refonte visuelle (7.3), Sega CD 32X (7.4), fusion des travaux Mac et PC (7.5) | livrées (7.5.0) |
-| 7.6 | Rangement des ROMs : « Ranger les ROMs… » (aperçu, choix du système, annulation, reprise après arrêt brutal) | en développement |
-| 8.x | Systèmes libretro non testés ajoutés depuis l'application (8.0 cartouches, dont Atari Lynx ; puis CD, ordinateurs, arcade), core jgenesis au choix, archives .7z et interface en anglais (numéros à fixer) | conçue |
-| 9.0 | Rendu matériel : OpenGL d'abord, puis DirectX ; Vulkan au second plan | prévue |
+| 7.6 | Rangement des ROMs : « Ranger les ROMs… » (aperçu, choix du système, annulation, reprise après arrêt brutal ; sauvegardes, favoris et jaquettes suivent les jeux) | livrée (7.6.0) |
+| 8.x | 8.0 systèmes libretro non testés ajoutés depuis l'application (cartouches, dont Atari Lynx) ; 8.1 archives .7z ; 8.2 interface en anglais ; 8.3 core jgenesis au choix ; 8.4 à 8.6 systèmes personnalisés CD, ordinateurs, arcade | 8.0 conçue, prochaine |
+| 9.0 | Rendu matériel : OpenGL d'abord, puis DirectX ; Vulkan au second plan | prévue, après la 8.6 |
 
 Détails : [docs/roadmap.md](docs/roadmap.md). Décisions d'architecture : [docs/adr/](docs/adr/).
 

@@ -14,7 +14,7 @@ d'agents-home, ajoutée après la divergence du 2026-11-25).
 - **Numérotation** : 8.0 systèmes personnalisés (Atari Lynx en premier, marque de scan en base PB0 → schéma v8 : une 7.x
   refusera la base), 8.1 7z, 8.2 anglais, 8.3 jgenesis, 8.4 CD, 8.5 ordinateurs, 8.6 arcade, 9.0 rendu matériel après
   la 8.6. 7z : conception (ADR 0027) commitée sur la branche locale `wip-7.7` ; créer `wip-8.1` depuis `main` après
-  la 8.0 et y reprendre ADR + design (proposition dans le même commit).
+  la 8.0 et y reprendre ADR + design (proposition : `.claude/archives/wt77/proposition-numerotation-8x.md`, local au PC).
 
 ## Prochaine session — dans cet ordre
 
