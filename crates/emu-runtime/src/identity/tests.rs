@@ -973,6 +973,140 @@ fn a_new_file_at_the_old_place_does_not_steal_the_moved_game_saves() {
     assert_eq!(fs::read(&srm).unwrap(), b"progress");
 }
 
+/// Manifest of a C64 set whose two disks are members of the same zip (`Maniac Mansion.zip`).
+fn zip_members_manifest(work: &Path, sources: &[(&str, &str, &Path)]) {
+    fs::create_dir_all(work).unwrap();
+    let mut text = b"emu-rust working copies 1\n".to_vec();
+    for (copy, member, src) in sources {
+        text.extend_from_slice(
+            format!(
+                "set\t{copy}\t{member}\t3\t-\t{:08x}\t",
+                crc32fast::hash(b"zip")
+            )
+            .as_bytes(),
+        );
+        escape(&path_key(&fs::canonicalize(src).unwrap()), &mut text);
+        text.push(b'\n');
+        fs::write(work.join(copy), b"progress").unwrap();
+    }
+    fs::write(work.join(workcopy::MANIFEST_NAME), &text).unwrap();
+}
+
+fn manifest_sources(work: &Path) -> Vec<Vec<u8>> {
+    let DirState::Manifest(entries) = workcopy::inspect(work, |_| true).unwrap() else {
+        panic!("manifest");
+    };
+    entries.iter().map(|e| e.source_key().to_vec()).collect()
+}
+
+fn canonical_key(path: &Path) -> Vec<u8> {
+    path_key(&fs::canonicalize(path).unwrap())
+}
+
+#[test]
+fn manifest_entries_sharing_a_zip_move_together_and_back() {
+    let fx = Fx::new();
+    let zip = fx.rom("Maniac Mansion.zip", b"zip");
+    let work = fx.saves().join("MANIACD0_04577_01.disks");
+    zip_members_manifest(
+        &work,
+        &[
+            ("MANIACD0.d64", "MANIACD0.d64", &zip),
+            ("MANIACD1.d64", "MANIACD1.d64", &zip),
+        ],
+    );
+    let to = move_rom(&fx, &zip, "c64/Maniac Mansion.zip");
+    let report = relocate_identities(&top_saves(&fx), &[(zip.clone(), to.clone())]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(report.manifests, 1);
+    assert_eq!(manifest_sources(&work), vec![canonical_key(&to); 2]);
+    // Undo (the reverse move): both entries come back together.
+    fs::rename(&to, &zip).unwrap();
+    let report = relocate_identities(&top_saves(&fx), &[(to, zip.clone())]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(report.manifests, 1);
+    assert_eq!(manifest_sources(&work), vec![canonical_key(&zip); 2]);
+}
+
+fn registry_entry(save_name: &str, path: &Path) -> Entry {
+    Entry {
+        save_name: save_name.to_owned(),
+        base: save_name.to_owned(),
+        index: 1,
+        legacy: false,
+        size: 3,
+        mtime: None,
+        crc: 0,
+        path: canonical_key(path),
+    }
+}
+
+fn registry_sources(fx: &Fx) -> Vec<Vec<u8>> {
+    let Registry::Entries(entries) = read_registry(&fx.saves().join(REGISTRY_NAME)).unwrap() else {
+        panic!("registry");
+    };
+    entries.into_iter().map(|e| e.path).collect()
+}
+
+#[test]
+fn registry_entries_sharing_a_source_move_together_and_back() {
+    let fx = Fx::new();
+    let zip = fx.rom("Maniac Mansion.zip", b"zip");
+    write_registry(
+        &fx.saves().join(REGISTRY_NAME),
+        &[
+            registry_entry("MANIACD0", &zip),
+            registry_entry("MANIACD1", &zip),
+        ],
+    )
+    .unwrap();
+    let to = move_rom(&fx, &zip, "c64/Maniac Mansion.zip");
+    let report = relocate_identities(&top_saves(&fx), &[(zip.clone(), to.clone())]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!((report.registries, report.entries), (1, 2));
+    assert_eq!(registry_sources(&fx), vec![canonical_key(&to); 2]);
+    fs::rename(&to, &zip).unwrap();
+    let report = relocate_identities(&top_saves(&fx), &[(to, zip.clone())]).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!((report.registries, report.entries), (1, 2));
+    assert_eq!(registry_sources(&fx), vec![canonical_key(&zip); 2]);
+}
+
+#[test]
+fn a_target_held_by_another_source_is_still_refused_without_absolute_path() {
+    let fx = Fx::new();
+    let a = fx.rom("a.zip", b"zip");
+    let b = fx.rom("b.zip", b"zip");
+    let work = fx.saves().join("Set.disks");
+    zip_members_manifest(&work, &[("D0.d64", "D0.d64", &a), ("D1.d64", "D1.d64", &b)]);
+    write_registry(
+        &fx.saves().join(REGISTRY_NAME),
+        &[registry_entry("A", &a), registry_entry("B", &b)],
+    )
+    .unwrap();
+    let (manifest_before, registry_before) = (manifest_sources(&work), fx.registry());
+    let report = relocate_identities(&top_saves(&fx), &[(a.clone(), b.clone())]).unwrap();
+    assert_eq!(
+        (report.registries, report.entries, report.manifests),
+        (0, 0, 0)
+    );
+    assert_eq!(report.skipped.len(), 2, "{:?}", report.skipped);
+    assert_eq!(manifest_sources(&work), manifest_before);
+    assert_eq!(fx.registry(), registry_before);
+    let root = fs::canonicalize(fx.tmp.path()).unwrap();
+    for (_, why) in &report.skipped {
+        assert!(why.contains("(b.zip)"), "{why}");
+        assert!(
+            !why.contains(&*root.to_string_lossy()),
+            "absolute path leaked: {why}"
+        );
+        assert!(
+            !why.contains(&*fx.tmp.path().to_string_lossy()),
+            "absolute path leaked: {why}"
+        );
+    }
+}
+
 mod plan_moves_tests {
     use super::super::{fold_windows_key, plan_moves};
 
@@ -1013,6 +1147,37 @@ mod plan_moves_tests {
     }
 
     #[test]
+    fn entries_of_one_source_follow_it_together() {
+        assert_eq!(plan(&["z", "z"], &[Some("y"), Some("y")]), [true, true]);
+        // Case-folded duplicates of one source (Windows).
+        assert_eq!(
+            plan(
+                &[r"C:\a.zip", r"c:\A.ZIP"],
+                &[Some(r"C:\c64\a.zip"), Some(r"c:\C64\A.ZIP")]
+            ),
+            [true, true]
+        );
+        // Chain through a shared source.
+        assert_eq!(
+            plan(&["z", "z", "y"], &[Some("y"), Some("y"), Some("x")]),
+            [true; 3]
+        );
+    }
+
+    #[test]
+    fn entries_of_one_source_are_refused_together() {
+        assert_eq!(
+            plan(&["z", "z", "y"], &[Some("y"), Some("y"), None]),
+            [false; 3]
+        );
+        // Another source took the target first.
+        assert_eq!(
+            plan(&["w", "z", "z"], &[Some("y"), Some("y"), Some("y")]),
+            [true, false, false]
+        );
+    }
+
+    #[test]
     fn refused_move_does_not_free_its_old_path() {
         assert_eq!(
             plan(&["a", "b", "c"], &[Some("c"), Some("a"), None]),
@@ -1050,6 +1215,45 @@ mod plan_moves_tests {
                 .collect();
             let set: std::collections::HashSet<_> = finals.iter().collect();
             assert_eq!(set.len(), n, "{o:?} -> {nw:?} gave {finals:?}");
+        }
+    }
+
+    #[test]
+    fn sources_keep_distinct_targets_and_entries_follow_their_source() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..5000 {
+            let sources = 1 + next(5) as usize;
+            // Where each source goes (moved_key is a function of the source).
+            let dest: Vec<Option<String>> = (0..sources)
+                .map(|_| match next(7) {
+                    6 => None,
+                    k => Some(format!("p{k}")),
+                })
+                .collect();
+            let n = 1 + next(7) as usize;
+            let owner: Vec<usize> = (0..n).map(|_| next(sources as u64) as usize).collect();
+            let olds: Vec<String> = owner.iter().map(|s| format!("p{s}")).collect();
+            let o: Vec<&str> = olds.iter().map(String::as_str).collect();
+            let nw: Vec<Option<&str>> = owner.iter().map(|&s| dest[s].as_deref()).collect();
+            let ok = plan(&o, &nw);
+            let finals: Vec<&str> = (0..n)
+                .map(|i| if ok[i] { nw[i].unwrap() } else { o[i] })
+                .collect();
+            for i in 0..n {
+                for j in 0..n {
+                    assert_eq!(
+                        owner[i] == owner[j],
+                        finals[i] == finals[j],
+                        "{o:?} -> {nw:?} gave {finals:?}"
+                    );
+                }
+            }
         }
     }
 }

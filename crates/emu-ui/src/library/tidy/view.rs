@@ -557,7 +557,7 @@ fn report(
     undo_section(ui, &out.last, confirm, actions);
     last_tidy_lines(ui, &out.last);
     for m in &out.messages {
-        crate::copyable::message(ui, WARNING, m);
+        crate::copyable::message(ui, WARNING, &exec::shown_message(out, m));
     }
     let shown = |p: &std::path::Path| exec::shown_path(out, p);
     let sel = |ui: &mut Ui, color: egui::Color32, s: String| {
@@ -598,7 +598,7 @@ fn report(
                 ui.add_space(6.0);
                 ui.label(RichText::new(text::SKIPPED_TITLE).strong());
                 for (p, m) in &out.skipped {
-                    sel(ui, WARNING, text::error_line(&shown(p), m));
+                    sel(ui, WARNING, exec::skipped_line(out, p, m));
                 }
             }
             ui.add_space(6.0);

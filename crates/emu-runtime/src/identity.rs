@@ -6,7 +6,7 @@
 //! `.emu-rust-games.lock`), the lock file itself, a `.corrupt-<unix>` copy of an unusable registry, and the
 //! inherited `<save_name>.srm` of a homonym (atomic, only when absent). Nothing is ever renamed, moved or deleted.
 
-use std::collections::HashSet;
+use std::collections::hash_map::{self, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -1019,10 +1019,13 @@ fn moved_key(raw: &[u8], table: &[Relocation]) -> Option<Vec<u8>> {
 }
 
 /// Decides which of the moves `olds[i] -> news[i]` (`None` = stays) are applied. The old keys of the entries that
-/// move are released, so chains (A->B, B->C), swaps and case-only changes work; a move onto a key held by an entry
-/// that stays, or by an earlier accepted move, is refused. A refused entry keeps its old key, which is therefore
-/// held again: moves accepted onto it are re-examined, until a fixed point (at most one pass per entry). Final keys
-/// are unique if the initial ones were. Deterministic: depends only on entry order. `fold` is the comparison key.
+/// move are released, so chains (A->B, B->C), swaps and case-only changes work. Several entries may share one source
+/// (the disks of one zip, each from its own member): they follow it together onto the same key, which is no
+/// collision. A move onto a key held by a different source (an entry that stays, or an earlier accepted move from
+/// another source) is refused. A refused entry keeps its old key, which is therefore held again: moves accepted onto
+/// it are re-examined, until a fixed point (at most one pass per entry). Invariant: two entries end on the same key
+/// if and only if they started from the same source. Deterministic: depends only on entry order. `fold` is the
+/// comparison key.
 fn plan_moves(
     olds: &[&[u8]],
     news: &[Option<Vec<u8>>],
@@ -1030,19 +1033,28 @@ fn plan_moves(
 ) -> Vec<bool> {
     let mut applied: Vec<bool> = news.iter().map(Option::is_some).collect();
     loop {
-        let mut taken: HashSet<Vec<u8>> = olds
+        // Held key -> (folded) source holding it.
+        let mut taken: HashMap<Vec<u8>, Vec<u8>> = olds
             .iter()
             .zip(&applied)
             .filter(|(_, a)| !**a)
-            .map(|(o, _)| fold(o))
+            .map(|(o, _)| (fold(o), fold(o)))
             .collect();
         let mut refused = false;
         for (i, new) in news.iter().enumerate() {
-            if let (true, Some(new)) = (applied[i], new)
-                && !taken.insert(fold(new))
-            {
-                applied[i] = false;
-                refused = true;
+            let (true, Some(new)) = (applied[i], new) else {
+                continue;
+            };
+            let source = fold(olds[i]);
+            match taken.entry(fold(new)) {
+                hash_map::Entry::Vacant(slot) => {
+                    slot.insert(source);
+                }
+                hash_map::Entry::Occupied(slot) if *slot.get() == source => {}
+                hash_map::Entry::Occupied(_) => {
+                    applied[i] = false;
+                    refused = true;
+                }
             }
         }
         if !refused {
@@ -1051,11 +1063,13 @@ fn plan_moves(
     }
 }
 
+/// Names only the target file: the absolute path (user name, verbatim prefix on Windows) stays out of the report.
 fn collision_note(key: &[u8]) -> String {
-    format!(
-        "chemin déjà utilisé par une autre identité ({}), entrée laissée telle quelle",
-        path_from_key(key).display()
-    )
+    let path = path_from_key(key);
+    let name = path
+        .file_name()
+        .map_or_else(|| "?".into(), |n| n.to_string_lossy());
+    format!("chemin déjà utilisé par une autre identité ({name}), entrée laissée telle quelle")
 }
 
 fn any_name(name: &str) -> bool {

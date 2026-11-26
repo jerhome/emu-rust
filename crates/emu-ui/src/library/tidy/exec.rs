@@ -363,6 +363,82 @@ pub(crate) fn shown_path(out: &Outcome, p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// `m` with every absolute form of the roms folder or the saves folder replaced by `roms` / `saves`: plain or
+/// Windows verbatim (`\\?\C:\…`, `\\?\UNC\…`), either separator, ASCII case folded on Windows. Safety net for texts
+/// that come from other crates and carry a path (the account name must not reach the report or the clipboard).
+pub(crate) fn shown_message(out: &Outcome, m: &str) -> String {
+    let mut s = m.to_owned();
+    for (base, name) in [(&out.root, "roms"), (&out.saves, "saves")] {
+        if let Some(b) = base.as_deref() {
+            s = replace_root(&s, b, name);
+        }
+    }
+    s
+}
+
+fn replace_root(m: &str, base: &Path, name: &str) -> String {
+    let mut plain = base.to_string_lossy().replace('\\', "/");
+    if let Some(unc) = plain.strip_prefix("//?/UNC/") {
+        plain = format!("//{unc}");
+    } else if let Some(rest) = plain.strip_prefix("//?/") {
+        plain = rest.to_owned();
+    }
+    let plain = plain.trim_end_matches('/').to_owned();
+    if plain.is_empty() {
+        return m.to_owned();
+    }
+    // Same byte length as `m`, so offsets found here are valid in `m`.
+    let fold = |s: &str| {
+        let s = s.replace('\\', "/");
+        if cfg!(windows) {
+            s.to_ascii_lowercase()
+        } else {
+            s
+        }
+    };
+    let hay = fold(m);
+    let mut forms = vec![format!("//?/{plain}")];
+    if let Some(unc) = plain.strip_prefix("//") {
+        forms.push(format!("//?/UNC/{unc}"));
+    }
+    forms.push(plain);
+    let forms: Vec<String> = forms.iter().map(|f| fold(f)).collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < m.len() {
+        // Earliest match, the longest form first on a tie (verbatim before plain).
+        let hit = forms
+            .iter()
+            .filter_map(|f| {
+                let mut from = at;
+                while let Some(i) = hay.get(from..)?.find(f.as_str()) {
+                    let end = from + i + f.len();
+                    if hay[end..].starts_with('/') {
+                        return Some((from + i, end));
+                    }
+                    from = from + i + 1;
+                }
+                None
+            })
+            .min_by_key(|&(start, end)| (start, std::cmp::Reverse(end)));
+        let Some((start, end)) = hit else { break };
+        if !m.is_char_boundary(start) || !m.is_char_boundary(end + 1) {
+            break;
+        }
+        out.push_str(&m[at..start]);
+        out.push_str(name);
+        out.push('/');
+        at = end + 1;
+    }
+    out.push_str(&m[at..]);
+    out
+}
+
+/// One « skipped » line: the path and the message, both relative.
+pub(crate) fn skipped_line(out: &Outcome, p: &Path, m: &str) -> String {
+    text::error_line(&shown_path(out, p), &shown_message(out, m))
+}
+
 /// `p` relative to `base`. Falls back to a textual comparison that ignores the Windows verbatim prefix
 /// (`\\?\C:\…`, as `fs::canonicalize` returns it) and the separator kind, because an I/O error text
 /// carries the plain form of a path whose root may be verbatim (or the opposite).
@@ -470,7 +546,7 @@ pub(crate) fn extra_name_lines(out: &Outcome, r: &TidyReport) -> Vec<String> {
 
 /// The whole report as plain text, what « Copier le rapport » puts in the clipboard.
 pub(crate) fn report_text(out: &Outcome) -> String {
-    let mut lines: Vec<String> = out.messages.clone();
+    let mut lines: Vec<String> = out.messages.iter().map(|m| shown_message(out, m)).collect();
     if let Some(r) = &out.report {
         let l = report_lines(out.kind, r);
         lines.push(l.headline.clone());
@@ -494,11 +570,7 @@ pub(crate) fn report_text(out: &Outcome) -> String {
     }
     if !out.skipped.is_empty() {
         lines.push(text::SKIPPED_TITLE.to_owned());
-        lines.extend(
-            out.skipped
-                .iter()
-                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
-        );
+        lines.extend(out.skipped.iter().map(|(p, m)| skipped_line(out, p, m)));
     }
     crate::copyable::joined(&lines)
 }
@@ -522,7 +594,7 @@ pub(crate) fn log_outcome(out: &Outcome) {
 
 /// Lines logged after the start-up recovery: messages, what was left or failed, identity collisions.
 pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
-    let mut lines = out.messages.clone();
+    let mut lines: Vec<String> = out.messages.iter().map(|m| shown_message(out, m)).collect();
     if let Some(r) = &out.report {
         lines.extend(
             r.left
@@ -534,11 +606,7 @@ pub(crate) fn recovery_log(out: &Outcome) -> Vec<String> {
     }
     if !out.skipped.is_empty() {
         lines.push(text::SKIPPED_TITLE.to_owned());
-        lines.extend(
-            out.skipped
-                .iter()
-                .map(|(p, m)| text::error_line(&shown_path(out, p), m)),
-        );
+        lines.extend(out.skipped.iter().map(|(p, m)| skipped_line(out, p, m)));
     }
     lines
 }
@@ -1137,6 +1205,45 @@ mod tests {
         let t = report_text(&out);
         assert!(t.contains("note") && t.contains(text::SKIPPED_TITLE), "{t}");
         assert!(t.contains("saves/a/.reg") && !t.contains("/d/saves"), "{t}");
+    }
+
+    #[test]
+    fn skipped_message_with_a_verbatim_path_is_relative() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(abs("/Users/u/data/roms"));
+        out.saves = Some(abs("/Users/u/data/saves"));
+        let m = if cfg!(windows) {
+            r"Sauvegarde \\?\C:\Users\u\data\roms\c64\Maniac Mansion.zip déjà prise"
+        } else {
+            "Sauvegarde /Users/u/data/roms/c64/Maniac Mansion.zip déjà prise"
+        };
+        out.skipped
+            .push((abs("/Users/u/data/saves/c64/.reg"), m.into()));
+        let t = report_text(&out);
+        assert!(t.contains("roms/c64/Maniac Mansion.zip"), "{t}");
+        assert!(!t.contains("?") && !t.contains("Users"), "{t}");
+        let line = skipped_line(&out, &out.skipped[0].0, m);
+        assert!(!line.contains("Users"), "{line}");
+    }
+
+    #[test]
+    fn shown_message_handles_plain_unc_and_case_forms() {
+        let mut out = Outcome::new(RunKind::Tidy);
+        out.root = Some(PathBuf::from("/d/roms"));
+        assert_eq!(
+            shown_message(&out, "a /d/roms/x et /d/roms/y"),
+            "a roms/x et roms/y"
+        );
+        assert_eq!(shown_message(&out, "/d/romsX/x"), "/d/romsX/x");
+        out.root = Some(PathBuf::from(r"\\?\UNC\srv\share\roms"));
+        assert_eq!(
+            shown_message(&out, r"\\srv\share\roms\a et \\?\UNC\srv\share\roms\b"),
+            "roms/a et roms/b"
+        );
+        if cfg!(windows) {
+            out.root = Some(PathBuf::from(r"C:\D\Roms"));
+            assert_eq!(shown_message(&out, r"\\?\c:\d\roms\x"), "roms/x");
+        }
     }
 
     #[test]
