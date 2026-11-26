@@ -178,3 +178,16 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 | 2026-11-23 | 7.2 | Pad reconnu par la base SDL mais mal mappé (même puce, câblages différents) | « Configurer » proposé aussi pour les manettes reconnues ; le mapping appris remplace la base pour ce modèle (GUID), donc pour toutes les manettes identiques ; « Oublier » revient à la base. | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 | Sticks analogiques des pads non reconnus | Hors 7.2 : seuls croix et boutons s'apprennent (suffisant pour un pad SNES) ; à ajouter si un pad à sticks non reconnu se présente. | décidé (défaut validé par l'utilisateur le 2026-11-23) |
 | 2026-11-23 | 7.2 → 7.3 | Manuel utilisateur | **Utilisateur** : prévoir un manuel, d'abord un simple `docs/manuel.md` (rédigé à partir de la 7.2 et complété à chaque version), puis intégré à l'application pendant la 7.3 (refonte et accompagnement). | décidé |
+
+## 7.7 — archives `.7z` après la fusion (architecte, 2026-11-25)
+
+Déjà répondues, non reposées : CD archivés proposés à l'extraction, cache de 2 Go réglable, extraction par
+emu-rust pour puae / VICE (décisions du 2026-11-24, `docs/design/v7.7-archives-7z.md`) ; D1 et D11 de la fusion
+(7z en 7.7, ADR 0027). Questions nouvelles, chacune avec sa réponse par défaut :
+
+| # | Question | Défaut |
+|---|---|---|
+| Z1 | **Rangement d'un `.7z` contenant un CD** : emu-rust ne décompresse pas pour ranger, il ne peut donc pas sonder le disque. Montrer l'unité comme « ambiguë » (vous choisissez le système) ou la laisser en place ? | **ambiguë**, choix proposé (comme un `.chd` sans DAT) |
+| Z2 | **Après extraction d'un CD archivé**, proposer « garder la version extraite dans `roms/` et mettre l'archive de côté » ? | **non** : emu-rust ne déplace ni ne supprime vos fichiers en dehors du rangement ; l'extraction reste dans le cache |
+| Z3 | **Plafond du cache** : 2 Go communs aux cartouches, disquettes et CD extraits, ou un plafond à part pour les CD (souvent 500 Mo à 700 Mo chacun) ? | **commun**, 2 Go ; un CD plus gros que le plafond est refusé avec le message « augmentez le cache dans les Réglages » |
+| Z4 | **Archive solide lente** sur le Mac de test (cartouche ou disquette, sans dialogue aujourd'hui) : prévenir avant d'extraire au-delà d'une taille ? | **non** : barre de progression avec « Annuler » dès que l'extraction dépasse une seconde |
