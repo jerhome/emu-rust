@@ -2,7 +2,14 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
-## [7.6.0] - à venir
+## [Non publié]
+
+### Corrigé
+
+- Jaquettes : réinitialiser une jaquette (ou toutes) supprime vraiment l'enregistrement et le fichier en cache ; une
+  réponse de chargement d'une recherche dépassée (après réinitialisation ou nouveau scan) n'écrase plus l'état courant.
+
+## [7.6.0] - 2026-11-26
 
 Rangement des ROMs (ADR 0023 §4, amendée pour la fusion). Guide d'essai : `docs/guide-essai-7.6.md`. Schéma de la
 base inchangé (v7) ; aucune migration : le journal du rangement est un fichier (`rangement/` dans le dossier des
@@ -34,6 +41,14 @@ données).
   « Le scan précédent avait été interrompu : les jeux dont le fichier est absent sont conservés jusqu'au prochain
   scan. » Le scan d'après, sans marqueur, retire les jeux dont le fichier a vraiment disparu.
 
+
+### Corrigé à l'essai réel (Windows)
+
+- Rangement : la sauvegarde d'un jeu à plusieurs disquettes tirées d'une même archive (Maniac Mansion C64) suit le
+  rangement et son annulation ; un fichier de suivi des disquettes abîmé par l'ancien défaut est réparé au rangement
+  suivant.
+- Rapport de rangement sous Windows : plus aucun chemin complet (`C:\…`, `\\?\…`, partages réseau) ; chemins
+  relatifs en `roms/…` et `saves/…`.
 ### Limites connues
 
 - **Deux scans après un arrêt brutal** : si l'application s'arrête brutalement (coupure, plantage) pendant un scan,
