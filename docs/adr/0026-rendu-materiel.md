@@ -1,6 +1,7 @@
 # ADR 0026 — Rendu matériel (9.x) : contexte OpenGL du core, interface toujours en OpenGL
 
-Statut : **accepté, amendé pour la fusion le 2026-11-25** (« Amendement de fusion » ci-dessous : il **prime**). Historique :
+Statut : **accepté, amendé pour la fusion le 2026-11-25**, puis **le 2026-11-26** (ordre : la 9.0 après toute la
+8.x ; « Amendement du 2026-11-26 » ci-dessous ; les amendements **priment**). Historique :
 accepté le 2026-11-25 par l'utilisateur, sur la ligne PC (`wip-7.2`), après la revue indépendante et trois relectures courtes ;
 réponses Q-A à Q-F et 7 questions du §11 intégrées). Questions restantes Q-G à Q-J (`docs/design/v9.0-rendu-materiel.md`
 §12) : à poser avant GX1, elles ne remettent pas en cause l'ADR. Mineurs de la dernière relecture : fin de la conception. Étude : `docs/etude-9.0-rendu-materiel.md` (les marques [V], [C], [M] y
@@ -20,14 +21,36 @@ contextes, `glow` a les requêtes de temps et les objets de synchronisation). `u
 (structure `retro_hw_render_callback`, trampolines, appels `context_reset` / `context_destroy`) et `emu-runtime`
 (contexte du core, FBO, synchronisation, relecture, mesures GPU). Aucun hôte réseau nouveau.
 
+## Amendement du 2026-11-26 — la 9.0 après toute la 8.x
+
+Décision de l'utilisateur du 2026-11-26 (18:14). Elle **remplace la réponse Q-E** (« après la 8.0 ») et prime sur
+l'amendement de fusion et sur le §12.
+
+- **Ordre** : la 9.0 part de `main` **après la livraison de la 8.6**, donc après 8.0 (systèmes personnalisés,
+  cartouches), 8.1 (archives `.7z`), 8.2 (interface en anglais), 8.3 (core jgenesis), 8.4 (CD), 8.5 (ordinateurs)
+  et 8.6 (arcade). Numérotation : ADR 0025, amendement du même jour.
+- **Ce qui peut toujours partir avant** : le prototype (branche `proto-9.0`, accord Q-F) et l'image Docker / CI
+  (`EMU_RUST_DOCKER`, paquets EGL), qui ne touchent aucun fichier des 8.x.
+- **Conséquences** : les types de la 8.0 (`HwRenderRequest`, `HwContextKind`, `FrameKind`) et le point unique de
+  refus existent à l'arrivée de la 9.0 ; ses textes entrent dans le catalogue FR / EN de la 8.2 ; les relevés de code
+  de la conception sont à refaire contre `main` après la 8.6, avant GX1 (les paliers 8.4 à 8.6 touchent le
+  lancement, le clavier et les entrées) ; les systèmes personnalisés à CD, ordinateurs et arcade existent déjà quand
+  le rendu matériel leur est ouvert (lot GU3). Le fond de l'ADR ne change pas.
+- **Option gardée** : avancer la 9.0 (avant la fin de la 8.x, voire avant la 8.0, §12) reste possible sur décision
+  de l'utilisateur ; les règles du §12 s'appliquent alors.
+
 ## Amendement de fusion (2026-11-25) — base Mac, ordre des versions
 
 Après la fusion des lignes PC et Mac (`.claude/fusion-plan.md`, D1-D15) :
 
-- **Ordre** : la 9.0 part de `main` après la livraison de la **8.0** (la « 7.2 » PC est livrée en 7.5 ; la 7.6
-  rangement, la 7.7 archives `.7z` et la 7.8 interface en anglais la précèdent). Les paliers de la 8.x sont
-  renumérotés (ADR 0025, amendement de fusion : CD 8.2, ordinateurs 8.3, arcade 8.4 ; 8.1 = core jgenesis) : le
-  « point unique de refus » (§1, §12) renvoie à ces numéros.
+- **Ordre** (remplacé le 2026-11-26 : après la **8.6**, amendement ci-dessus) : la 9.0 part de `main` après la
+  livraison de la **8.0** (la « 7.2 » PC est livrée en 7.5 ; la 7.6 rangement précède la 8.0). **Numérotation du
+  2026-11-26** (décision de l'utilisateur, ADR 0025, amendement du
+  même jour) : les archives `.7z` (ex-7.7) et l'interface en anglais (ex-7.8) ne précèdent plus la 8.0, elles
+  deviennent la **8.1** et la **8.2** ; 8.3 = core jgenesis, CD 8.4, ordinateurs 8.5, arcade 8.6 ; la 9.0
+  garde son numéro. Le « point unique de refus » (§1, §12) renvoie à ces numéros. La 8.1 (ADR 0027, proposée) touche la
+  copie de travail et `scan.rs`, pas le rendu ; son réglage `[library] archive_cache_mb` vit dans `config.toml`,
+  comme les réglages de la 9.0.
 - **Recalage du code (lot L10)** : les relevés « dans le code de `wip-7.2` » [C] sont à revérifier contre `main`
   avant GX1 (fenêtres de la 7.3, `theme.rs`, `Page`, `emu-app` bibliothèque + deux binaires de la 7.5). Le fond de
   l'ADR (contexte GL du core partagé, interface toujours en OpenGL, D3D11 et Vulkan au second plan) ne change pas.
@@ -358,9 +381,10 @@ en rendu logiciel**. Machine d'essai : HP ProBook 640 G8, i7-1165G7, Iris Xe, 16
   `FrameKind`) et la 8.0 en hérite ; la partie « systèmes personnalisés à rendu matériel » attend alors la 8.0.
 - `HwRenderRequest` (8.0 : type et version) gagne `depth`, `stencil`, `bottom_left_origin` ; à déclarer
   `#[non_exhaustive]` dès la 8.0 (note pour son architecte), ainsi que le nom `HwContextKind::Direct3D11` (§3).
-- Ordre des versions (réponse Q-E) : la 9.0 part de `main` **après** la fusion de la 7.2 et la livraison de la 8.0 ;
-  seuls le prototype (branche `proto-9.0`) et l'image Docker / CI (`EMU_RUST_DOCKER`, paquets EGL) partent avant.
-  Le cas « 9.0 avant 8.0 » ci-dessus n'est gardé que pour mémoire.
+- Ordre des versions (réponse Q-E, **remplacée le 2026-11-26** : la 9.0 part après la 8.6, amendement en tête) : la
+  9.0 part de `main` **après** la fusion de la 7.2 et la livraison de la 8.0 ; seuls le prototype (branche
+  `proto-9.0`) et l'image Docker / CI (`EMU_RUST_DOCKER`, paquets EGL) partent avant. Le cas « 9.0 avant 8.0 »
+  ci-dessus reste une option, sur décision de l'utilisateur.
 
 ## Conséquences
 

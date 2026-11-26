@@ -1,19 +1,22 @@
 # ADR 0025 — Version 8.0 : systèmes personnalisés (systèmes libretro non testés)
 
-Statut : **accepté, amendé pour la fusion le 2026-11-25** (« Amendement de fusion » ci-dessous : il **prime**). Historique :
+Statut : **accepté, amendé pour la fusion le 2026-11-25**, puis **le 2026-11-26** (numérotation 8.x, marque de scan en
+base, journal version 2 : « Amendement du 2026-11-26 » ci-dessous ; les amendements **priment**). Historique :
 accepté le 2026-11-25 par l'utilisateur, sur la ligne PC (`wip-7.1`), après la revue indépendante et quatre relectures courtes ;
 réponses aux questions 8.0 et R1-R3 dans `docs/questions-ouvertes.md`).
 Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 et feuille de route (ligne 8.0) ; étude
 `docs/essais-systemes-personnalises.md`, dont les réponses de l'utilisateur (§10, 2026-11-21) **font foi** : défaut
 recommandé partout, sauf **Q15** (export / import d'une définition : **reporté**, à rappeler à la conception de la
-8.1) et **Q16** (un système devenu officiel : la définition de l'utilisateur **reste en place**, emu-rust **propose
-la bascule, recommandée** ; jeux, sauvegardes et touches conservés). Essais : `docs/plan-essais-8x-9x.md`.
+8.4, palier CD) et **Q16** (un système devenu officiel : la définition de l'utilisateur **reste en place**, emu-rust
+**propose la bascule, recommandée** ; jeux, sauvegardes et touches conservés). Essais :
+`docs/plan-essais-8x-9x.md`.
 Précise ADR 0001 (un core par processus), 0005 (règle « Builtin », amendement à écrire : lot PD1), 0013 (cores
 manuels, `.info`, BIOS), 0014 (catalogue, DAT, jaquettes), 0022 (pas de processus enfant par partie), 0023
 (rangement ; journal en version 2 pour la bascule, amendement à écrire : lot PD1). Conception et découpage :
 `docs/design/v8.0-systemes-personnalises.md`.
 **Graphe des crates inchangé. Aucune dépendance de crate nouvelle (la sérialisation de l'enfant d'essai reste dans
-`emu-ui`, qui a déjà `toml`). Schéma de `library.sqlite` inchangé (v7 depuis la 7.4).** `unsafe` nouveau : `emu-libretro` (copie
+`emu-ui`, qui a déjà `toml`). Les systèmes personnalisés n'ajoutent aucune migration de `library.sqlite` ; la 8.0
+passe pourtant en v8 pour la marque de scan (amendement du 2026-11-26).** `unsafe` nouveau : `emu-libretro` (copie
 de deux structures C) et `emu-runtime` (`SetErrorMode` sous Windows, §5). Aucun hôte réseau nouveau.
 
 ## Amendement de fusion (2026-11-25) — base Mac, paliers renumérotés
@@ -21,18 +24,18 @@ de deux structures C) et `emu-runtime` (`SetErrorMode` sous Windows, §5). Aucun
 La conception a été écrite contre le code de `wip-7.1` (ligne PC). Après la fusion des deux lignes
 (`.claude/fusion-plan.md`, décisions D1-D15 de l'utilisateur), les points suivants priment sur le texte :
 
-- **Schéma** : la base est en **v7** (`game.needs_32x`, 7.4) ; la 8.0 n'ajoute toujours aucune migration.
+- **Schéma** : la base est en **v7** (`game.needs_32x`, 7.4) ; les systèmes personnalisés n'ajoutent toujours aucune
+  migration (la v8 de la 8.0 vient de la marque de scan : amendement du 2026-11-26).
 - **Rangement** : livré en **7.6** (et non 7.1) ; la bascule avec déplacement (§10, Q5) en dépend toujours. Le
   glisser-déposer (« 7.2.1 ») vient **après la 7.6**, sans numéro fixé.
-- **Paliers renumérotés (D10)** : la **8.1 reste au core jgenesis** (roadmap). Les paliers des systèmes personnalisés
-  deviennent : **8.0** cartouches / fichier unique ; **8.2** CD (ex-8.1) ; **8.3** ordinateurs (ex-8.2) ; **8.4**
-  arcade et entrées exotiques (ex-8.3). Partout dans ce texte et dans la conception 8.0, lire « prévu en 8.1 » ⇒
-  « prévu en **8.2** », « 8.2 » ⇒ « **8.3** », « 8.3 » ⇒ « **8.4** » (messages de refus compris, §9) ; Redump et le
-  rappel de Q15 (export / import) passent à la 8.2.
+- **Paliers renumérotés (D10)**, numérotation **remplacée le 2026-11-26** (amendement ci-dessous) : **8.0**
+  cartouches / fichier unique ; **8.4** CD ; **8.5** ordinateurs ; **8.6** arcade et entrées exotiques ; le core
+  jgenesis est la 8.3. Le corps du texte est corrigé en place (messages de refus compris, §9) ; Redump et le
+  rappel de Q15 (export / import) passent à la 8.4.
 - **PC Engine** (roadmap Mac du 2026-11-24 : « PC Engine / CD-ROM² inclus » en 8.0) : la **PC Engine à cartes
   (HuCard)** est le système personnalisé de référence des essais de la 8.0 (core par défaut du buildbot, p. ex.
-  beetle_pce_fast) ; le **CD-ROM²** est un format disque et suit le palier CD (**8.2**). jgenesis reste une
-  alternative au choix (8.1), jamais le défaut.
+  beetle_pce_fast) ; le **CD-ROM²** est un format disque et suit le palier CD (**8.4**). jgenesis reste une
+  alternative au choix (8.3), jamais le défaut.
 - **Style** : tout écran nouveau (ajout d'un système, liste, bascule) naît dans le thème de la 7.3 (`theme::`,
   jetons sans `Color32` brut) ; l'assistant de premier lancement (7.3) n'est pas modifié par la 8.0.
 - **Recalage du code (lot L10)** : les relevés « dans le code de `wip-7.1` » (§ Contexte) et les fichiers cités par la
@@ -40,6 +43,44 @@ La conception a été écrite contre le code de `wip-7.1` (ligne PC). Après la 
   `config.toml`, `theme.rs`, apprentissage de manette 7.2) **avant tout code 8.0**. Le fond de l'ADR ne change pas.
 - **Effet sur chaque système livré** (§14) : inchangé ; pour `megacd`, la marque CD 32X (`needs_32x`, marque
   manuelle) n'est pas touchée par la 8.0.
+
+## Amendement du 2026-11-26 — numérotation 8.x, marque de scan, journal version 2
+
+Décisions de l'utilisateur du 2026-11-26 (18:01) et recalage de la conception sur le code de la 7.6
+(`wip-7.6-merge`). Ces points priment sur le texte et sur l'amendement de fusion.
+
+- **Numérotation** : la 8.0 part **après la 7.6**, sans attendre les archives `.7z` ni l'interface en anglais.
+
+  | Version | Contenu | Ancien numéro |
+  |---|---|---|
+  | 8.0 | systèmes personnalisés : cartouches / fichier unique | 8.0 |
+  | 8.1 | archives `.7z` (ADR 0027, proposée) | 7.7 |
+  | 8.2 | interface en anglais | 7.8 |
+  | 8.3 | core jgenesis | 8.1 |
+  | 8.4 | systèmes personnalisés : CD (Redump, rappel de Q15) | 8.2 |
+  | 8.5 | systèmes personnalisés : ordinateurs | 8.3 |
+  | 8.6 | systèmes personnalisés : arcade et entrées exotiques | 8.4 |
+  | 9.0 | rendu matériel (ADR 0026), **après toute la 8.x** (après la 8.6) | 9.0 |
+
+  Les messages de refus disent donc « prévu en 8.4 » (disque), « prévus en 8.5 » (clavier complet et souris),
+  « prévu en 8.6 » (arcade) et « prévu en 9.0 » (rendu matériel) ; le corps du texte est corrigé en place.
+- **Le `.7z` suit la 8.0 au lieu de la précéder** : `7z` reste une extension d'archive réservée dès la 8.0 (§9,
+  jamais une extension de définition) ; tant que la 8.1 n'est pas livrée, un `.7z` n'est pas identifié, comme en
+  7.x. La 8.1 se recale sur le scan et le rangement de la 8.0 ; un jeu personnalisé en `.7z` suit alors son chemin.
+- **Textes** : la 8.0 écrit ses textes en français dans les `text.rs` de module ; la 8.2 les traduit avec les autres.
+- **Marque de scan en base (schéma v8)** — réponse de l'utilisateur du 2026-11-25 (« marqueur maintenant, marque
+  en base en v8 ») : la 7.6 pose un fichier `library.sqlite.scanning` pendant un scan ; s'il reste, le scan suivant
+  ne purge rien (`ScanReport::cautious`). La 8.0 le remplace par une colonne `game.scan_pending` : les lignes
+  écrites par un scan qui n'a pas fini sont connues exactement, le scan suivant les rapproche des fichiers déplacés
+  et purge normalement. C'est une **migration v7 → v8** (sans perte), hors du sujet des systèmes personnalisés, qui
+  n'en demandent toujours aucune (§13). Conséquence : une base v8 est refusée par une 7.x (`NewerSchema`, base
+  jamais modifiée), comme après chaque migration. Lot PB0 de la conception. **Confirmé par l'utilisateur le
+  2026-11-26** (marque en base dans la 8.0).
+- **Journal version 2, retour à une 7.x** (correction d'un fait, Conséquences) : le code de la 7.6 refuse tout
+  rangement et toute annulation tant qu'un journal illisible pour lui est **présent** dans `<data>/rangement/`,
+  pas seulement s'il est le plus récent, et ne le purge jamais. La décision ne change pas (confirmé par l'utilisateur
+  le 2026-11-26) (version 2 réservée à la
+  bascule, aucune bascule réelle en 8.0) ; le guide d'essai dit quel fichier mettre de côté.
 
 ## Amendements après revue (2026-11-25)
 
@@ -206,7 +247,7 @@ L'application en publie un nouvel **instantané** à chaque changement ; `catalo
     (encodée). Test : chacun des ≈ 165 noms de la table passe la liste blanche ou est une exception au
     `dat_file_stem` valide ;
   - 1 à 64 extensions `[a-z0-9]{1,8}`, jamais une extension d'archive, de liste ou de disque de la liste 8.0 (§9) ;
-  - `dat` ⊂ {`no-intro`, `tosec`, `libretro`} (Redump : 8.1) ; 1 à 8 cores, `origin.core` compris, à la syntaxe
+  - `dat` ⊂ {`no-intro`, `tosec`, `libretro`} (Redump : 8.4) ; 1 à 8 cores, `origin.core` compris, à la syntaxe
     d'id de core ; `info_name` ≤ 128 et `created_by` ≤ 32 caractères, **seulement nettoyés** des caractères de
     contrôle et bidi (texte affiché, jamais un chemin : `/` y est permis) ; `ignored_firmware` ≤ 64
     chemins relatifs sûrs (copie de la règle `is_safe_relative_path` d'`emu-assets` dans `emu-library`, égalité des
@@ -355,11 +396,11 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
   `bin` ; archive = `zip`, `7z` ; liste = `m3u`, `m3u8`. **`bin` est gardé** quand le core n'accepte aucune autre
   extension de disque (cartouche Atari 2600 de stella) ; retiré sinon.
 - **Ajoutable en 8.0** (`CoreInfo::addability`) : au moins une extension restante. Sinon grisé : rendu matériel ⇒
-  « prévu en 9.0 » ; disque seulement ⇒ « prévu en 8.1 » ; arcade (palier `arcade` de la table, ou seule extension
-  `zip`) ⇒ « prévu en 8.3 » ; aucune extension ⇒ non proposé. Ordinateur (`needs_kbd_mouse_focus` ou palier
-  `computer`) : ajoutable avec « clavier complet et souris : prévus en 8.2 » (réponse Q2).
+  « prévu en 9.0 » ; disque seulement ⇒ « prévu en 8.4 » ; arcade (palier `arcade` de la table, ou seule extension
+  `zip`) ⇒ « prévu en 8.6 » ; aucune extension ⇒ non proposé. Ordinateur (`needs_kbd_mouse_focus` ou palier
+  `computer`) : ajoutable avec « clavier complet et souris : prévus en 8.5 » (réponse Q2).
 - **Ajout en un clic** (Q4, Q5) : une case par nom `database` du core, la première cochée ; une machine de palier
-  `disc` (« PC Engine CD ») d'un core mixte est **grisée « prévu en 8.1 »** (réponse Q6). « Ajouter » enchaîne :
+  `disc` (« PC Engine CD ») d'un core mixte est **grisée « prévu en 8.4 »** (réponse Q6). « Ajouter » enchaîne :
   avertissement du §7 si besoin, installation (gestionnaire existant), sonde, écriture des définitions, publication
   du catalogue, création de `roms/<id>/`, scan incrémental, puis « Déposez vos jeux dans `roms/<id>/` » avec
   « Ouvrir le dossier ». Une `database` d'un système officiel n'est pas proposée (« déjà pris en charge »).
@@ -523,8 +564,9 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
 
 ### 13. Schéma, données, ordre de démarrage
 
-- **Aucune migration** : `game.system` et `dat_info(system, source)` sont du texte. La marque « non testé » est
-  dérivée du catalogue. `SCHEMA_VERSION` reste 7 (v7 posée par la 7.4 du Mac : `game.needs_32x`).
+- **Aucune migration pour les systèmes personnalisés** : `game.system` et `dat_info(system, source)` sont du texte.
+  La marque « non testé » est dérivée du catalogue. `SCHEMA_VERSION` passe de 7 (7.4 : `game.needs_32x`) à 8 pour la
+  seule marque de scan (`game.scan_pending`, amendement du 2026-11-26).
 - **Le scan ne supprime ni ne modifie jamais les lignes dont le système est absent de l'instantané** (définition
   en erreur, dossier illisible, système masqué ou retiré) ; elles ne sont pas affichées. Seul « Oublier ses jeux »
   (`forget_system`) les retire.
@@ -555,18 +597,19 @@ PB2).
 ## Conséquences
 
 - Livraison en trois temps : catalogue dynamique sans changement de comportement, définitions et garde-fous, puis
-  interface. 8.1, 8.2, 8.3 et 9.0 étendent `format`, `render`, la table des paliers et `addability`.
+  interface. 8.4, 8.5, 8.6 et 9.0 étendent `format`, `render`, la table des paliers et `addability`.
 - Fuite volontaire et bornée des instantanés (20 à 50 Kio par modification réelle).
 - Un core non testé peut fermer l'application **en cours de partie** ; le témoin le dit, la SRAM limite la perte.
 - Revue `reviewer` du rangement étendu (ADR 0023, Conséquences) : grammaire du journal version 2 **avant**
   l'exécution (lot PV3, sur le texte de PD1), puis `emu-library/src/tidy/` de PB3 comme code sensible (lot PV4).
 - Journal version 2 : écrit par la seule bascule avec déplacement. Un binaire 7.x refuse en entier un journal
-  version 2, ce qui bloque chez lui tout rangement et toute annulation tant que ce journal est le plus récent ;
+  version 2, ce qui bloque chez lui tout rangement et toute annulation tant que ce journal est présent dans
+  `<data>/rangement/` (il ne le purge jamais : amendement du 2026-11-26) ;
   écrit dans l'amendement PD1 et le guide d'essai 8.0. Sans conséquence pratique en 8.0 (aucune bascule réelle) ;
   à partir de la version qui ajoute un officiel, revenir à une version plus ancienne perd de toute façon ce
   système.
 - Revue `reviewer` : `unsafe` des copies FFI et de `SetErrorMode` ; enfant d'essai (dès sa livraison) ; analyse des
   définitions et des `.info` ; avertissement « contenu non vérifié ».
 - Assistance : un défaut sur un système personnalisé n'est pas un défaut d'emu-rust ; la marque figure partout.
-- Q15 (export / import) : le format le permet déjà (ni binaire, ni URL, ni chemin absolu) ; à rappeler en 8.1.
+- Q15 (export / import) : le format le permet déjà (ni binaire, ni URL, ni chemin absolu) ; à rappeler en 8.4.
 - Non gérés en 8.0 : rotation (`SET_ROTATION`), deux écrans et stylet (DS), sous-systèmes, pistolets.

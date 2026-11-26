@@ -4,6 +4,10 @@ Date : 2026-11-21. Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 («
 testées, gérables depuis l'application »). **Étude seulement** : aucune ADR, aucun code, aucun découpage définitif.
 Les questions de la section 9 doivent être tranchées par l'utilisateur avant toute conception.
 
+> **Numérotation (2026-11-26)** : les paliers de cette étude étaient numérotés 8.1 (CD), 8.2 (ordinateurs) et 8.3
+> (arcade) ; ils sont devenus **8.4, 8.5 et 8.6** (8.1 archives `.7z`, 8.2 interface en anglais, 8.3 core jgenesis ;
+> ADR 0025, amendement du 2026-11-26). Le texte est corrigé en place ; la 9.0 (rendu matériel) vient après la 8.6.
+
 Ce qui est marqué **constaté** a été mesuré ici ; **lu** = relevé dans le code ou une ADR ; **non vérifié** =
 connaissance générale, à confirmer.
 
@@ -39,7 +43,7 @@ core lancé : **rien n'a été essayé en vrai** dans cette étude.
 - **Deux risques dominent** : un core qui plante tue l'application (ADR 0022 a écarté le processus enfant par jeu) ;
   et les ROM système intégrées à des cores que personne ici n'a examinés (règle « Builtin », ADR 0005).
 - **Paliers proposés** : 8.0 = consoles à cartouche / fichier unique, rendu logiciel, mapping générique ;
-  8.1 = CD et multi-disques ; 8.2 = ordinateurs (clavier complet, souris) ; 8.3 = arcade et entrées exotiques ;
+  8.4 = CD et multi-disques ; 8.5 = ordinateurs (clavier complet, souris) ; 8.6 = arcade et entrées exotiques ;
   9.0 = rendu matériel (décidé).
 
 ## 2. Ce que fournissent les `.info`
@@ -128,19 +132,19 @@ Répartition proposée :
 | En-têtes à retirer | `HeaderRule::{INes, SnesCopier}` | NES, SNES | aucune (hash du fichier entier) | non en 8.0 |
 | Sondes d'identification | `disc.rs` (`SEGADISCSYSTEM`, `SEGA 32X` à 0x100, `PLAYSTATION` secteur 16, 3DO), `disc.rs:49-51` | Mega CD, 32X, PS1, 3DO | aucune : le dossier décide | non |
 | DAT | `DatSource` (4 dossiers de libretro-database), `dat` par système | choisi à la main par système | essayer `<database>.dat` dans no-intro, redump, tosec, `dat/`, à la demande | choisir le nom libretro dans une liste ; « aucun » |
-| CD | `disc`, `group_discs`, règles Redump (série, piste 01) | Mega CD, PS1, 3DO | palier 8.1 : image jamais hachée, identification par nom | case « système à CD » |
+| CD | `disc`, `group_discs`, règles Redump (série, piste 01) | Mega CD, PS1, 3DO | palier 8.4 : image jamais hachée, identification par nom | case « système à CD » |
 | Jeux-dossiers | `folder_games` (DOS) | DOS | non | non |
 | Jaquettes | `database` = dossier libretro-thumbnails ; `screenscraper`, `igdb` (numéros) | les 17 | libretro-thumbnails si le nom existe ; ScreenScraper / IGDB désactivés (numéro inconnu) | saisir les numéros |
 | Cores du système | `emu-assets/data/cores.toml` `[systems]`, surcharge `[cores.preferred]` | 17 clés | le core choisi à l'ajout | changer, ajouter une alternative |
 | Style de manette, noms des boutons | `emu-ui/src/keyboard.rs::PadStyle::from_core_id` / `from_extension` (listes de cores et d'extensions) | 9 styles | `PadStyle::Generic` (disposition SNES + L2/R2/L3/R3, `generic_default`) ; noms tirés de `SET_INPUT_DESCRIPTORS` | remappage clavier et manette, déjà par profil de core |
 | Type de manette (analogique…) | `cores.toml` `pad_devices`, `analog` | PS1, DOS | manette simple (`RETRO_DEVICE_JOYPAD`) | liste des types annoncés par le core |
-| Ordinateur ou console | `SystemKind`, `keyboard.rs::is_computer_profile` (9 cores nommés), `app.rs::keyboard_layout_id` (repli silencieux `atari_st`) | 5 ordinateurs | console | palier 8.2 : case « ordinateur » |
-| Clavier virtuel, touches | `emu-ui/data/keyboards/{atari_st,amiga,pc,cpc,c64}.toml`, `vkbd.rs:89` | 5 dispositions | palier 8.2 : disposition PC générique | non |
+| Ordinateur ou console | `SystemKind`, `keyboard.rs::is_computer_profile` (9 cores nommés), `app.rs::keyboard_layout_id` (repli silencieux `atari_st`) | 5 ordinateurs | console | palier 8.5 : case « ordinateur » |
+| Clavier virtuel, touches | `emu-ui/data/keyboards/{atari_st,amiga,pc,cpc,c64}.toml`, `vkbd.rs:89` | 5 dispositions | palier 8.5 : disposition PC générique | non |
 | Mode d'entrée par défaut | `systems.toml` `default_input` | CPC, C64 = joystick | clavier pour un ordinateur | oui |
-| Bureau sans jeu | `library/home.rs:107-116` (4 boutons nommés) | ST, Amiga, CPC, C64 | palier 8.2, si le core annonce `SUPPORT_NO_GAME` | — |
+| Bureau sans jeu | `library/home.rs:107-116` (4 boutons nommés) | ST, Amiga, CPC, C64 | palier 8.5, si le core annonce `SUPPORT_NO_GAME` | — |
 | BIOS | `.info` + `firmware.toml` + `cores.toml` (`required_firmware`, `optional_firmware`, `builtin_firmware`) ; `launch_firmware.rs:195` | par core et par système | liste du `.info`, états existants (valide, absent, différent, **non vérifiable**) ; avertissement non bloquant (ADR 0013 §8) | marquer un fichier « pas nécessaire » |
 | Options par défaut | `cores.toml` `options`, `options_by_extension`, `featured_options`, `layout_option` | par core | celles du core, aucune mise en avant | toutes, par jeu ou par core (existe) |
-| Copie de travail, sauvegardes | `cores.toml` `media`, `media_direct`, `game_saves`, `save_scope`, `save_family` | par core | `direct`, portée par core ; « Réinitialiser » ne supprime que `.srm` et états | palier 8.2 : « copie de travail » |
+| Copie de travail, sauvegardes | `cores.toml` `media`, `media_direct`, `game_saves`, `save_scope`, `save_family` | par core | `direct`, portée par core ; « Réinitialiser » ne supprime que `.srm` et états | palier 8.5 : « copie de travail » |
 | Divers par core | `vfs`, `fastforward_override`, `variable_state_size`, `m3u_launch`, `actions`, `system_caches`, `folders` | par core | tout désactivé | non |
 | Rendu matériel | `callbacks.rs:907` | toujours refusé, journalisé | refus net, « prévu en 9.0 » (§5.1) | non |
 | Zip mélangé | `scan.rs:310` `AMBIGUOUS_COMPUTERS` | CPC / C64 | sans objet (dossier seul) | — |
@@ -235,7 +239,7 @@ Lu : l'interface de disques est générique dans `emu-libretro` ; le regroupemen
 `.m3u` générés, la copie de travail et les exceptions par core (`m3u_launch`, `group_discs = false` pour opera)
 viennent d'essais. Pour un système inconnu : `.m3u` passé tel quel si le core l'accepte, sinon un jeu par disque.
 Les images de CD partagent leurs extensions entre 22 à 24 familles de systèmes (constaté : `chd` 24, `cue` 23,
-`iso` 22, `bin` 45) : hors du dossier du système, aucune attribution n'est possible. D'où le palier 8.1.
+`iso` 22, `bin` 45) : hors du dossier du système, aucune attribution n'est possible. D'où le palier 8.4.
 
 ### 5.5 BIOS
 
@@ -302,7 +306,7 @@ PICO-8, ZX Spectrum +3.
 - Trouver le bon dossier demande aujourd'hui de connaître la source (`dat = "tosec"`). Pour un système inconnu :
   essayer les 4 dossiers à la demande (4 requêtes au plus, sur action de l'utilisateur), mémoriser le résultat.
 - Les DAT No-Intro et `dat/` s'importent tels quels (CRC32 / SHA1). Les DAT Redump demandent pour bien faire une
-  sonde par système (série) : en 8.1, repli sur la taille + CRC32 de la piste 01 ou le nom.
+  sonde par système (série) : en 8.4, repli sur la taille + CRC32 de la piste 01 ou le nom.
 - Sans DAT ni jaquette : jeu affiché sous son nom de fichier, jouable (comportement existant, ADR 0014).
 
 ## 7. Paliers proposés (non définitifs)
@@ -310,9 +314,9 @@ PICO-8, ZX Spectrum +3.
 | Palier | Contenu | Ce que l'utilisateur obtient |
 |---|---|---|
 | **8.0** | Catalogue dynamique ; liste complète du buildbot ; ajout pré-rempli depuis le `.info` ; `roms/<id>/` ; consoles à **cartouche / fichier unique**, rendu logiciel ; mapping générique avec noms de boutons du core ; BIOS listés et vérifiés quand l'empreinte existe ; DAT et jaquettes par nom ; marque « non testé » ; garde-fou contre les plantages ; refus « prévu en 9.0 » ; export / import | Atari 2600 / 7800 / Lynx, PC Engine (HuCard), Neo Geo Pocket, WonderSwan, ColecoVision, Virtual Boy, SG-1000, MSX en cartouche… |
-| **8.1** | Systèmes à CD et multi-disques : `.m3u`, changement de disque, regroupement, Redump générique | PC Engine CD, Neo Geo CD, Saturn (Beetle Saturn, logiciel), PC-FX, CD-i |
-| **8.2** | Ordinateurs : clavier complet et clavier virtuel génériques, souris, démarrage sans jeu, copie de travail réglable | ZX Spectrum, MSX sur disquette, Atari 8 bits, X68000, PC-88 / 98, Thomson, VIC-20 / Plus-4 |
-| **8.3** | Arcade (romsets, BIOS à côté des ROM), pistolet / pointeur à la souris, sous-systèmes ; isolation renforcée si retenue | MAME, FBNeo, jeux à pistolet |
+| **8.4** | Systèmes à CD et multi-disques : `.m3u`, changement de disque, regroupement, Redump générique | PC Engine CD, Neo Geo CD, Saturn (Beetle Saturn, logiciel), PC-FX, CD-i |
+| **8.5** | Ordinateurs : clavier complet et clavier virtuel génériques, souris, démarrage sans jeu, copie de travail réglable | ZX Spectrum, MSX sur disquette, Atari 8 bits, X68000, PC-88 / 98, Thomson, VIC-20 / Plus-4 |
+| **8.6** | Arcade (romsets, BIOS à côté des ROM), pistolet / pointeur à la souris, sous-systèmes ; isolation renforcée si retenue | MAME, FBNeo, jeux à pistolet |
 | **9.0** | Rendu matériel (OpenGL, DirectX, Vulkan) — décidé | Dreamcast, GameCube, PSP, cores N64 principaux… et systèmes personnalisés à rendu matériel |
 
 Les machines citées sont celles que les `.info` rattachent à un core sans rendu matériel ; **aucune n'a été
@@ -351,7 +355,7 @@ changement de comportement.
 Chaque question a un défaut recommandé (**en gras**). Aucune ne porte sur le rendu matériel : c'est décidé (9.0).
 
 1. **Par où commencer ?** La 8.0 serait livrée en étapes. Quel ordre ?
-   - a) **Consoles à cartouche d'abord (8.0), puis CD (8.1), puis ordinateurs (8.2), puis arcade (8.3).**
+   - a) **Consoles à cartouche d'abord (8.0), puis CD (8.4), puis ordinateurs (8.5), puis arcade (8.6).**
    - b) Ordinateurs avant les CD.
    - c) Arcade (MAME / FBNeo) en premier.
    - d) Tout d'un coup, une seule grosse version.
@@ -440,14 +444,14 @@ Chaque question a un défaut recommandé (**en gras**). Aucune ne porte sur le r
 Défaut recommandé retenu pour toutes les questions, sauf deux :
 
 - **Q15, partage d'une définition** : **plus tard**, pas en 8.0. L'utilisateur demande qu'on **le lui rappelle**, par
-  exemple au moment de concevoir la 8.1.
+  exemple au moment de concevoir la 8.4.
 - **Q16, prise en charge officielle d'une machine déjà ajoutée** : la définition de l'utilisateur **reste en place**.
   emu-rust **propose la bascule vers la version officielle, en indiquant qu'elle est recommandée**. Jeux, sauvegardes et
   touches sont conservés lors de la bascule.
 
 | Question | Réponse retenue |
 |---|---|
-| Q1 | Ordre : cartouches (8.0), CD (8.1), ordinateurs (8.2), arcade (8.3) |
+| Q1 | Ordre : cartouches (8.0), CD (8.4), ordinateurs (8.5), arcade (8.6) |
 | Q2 | Aucune machine en particulier : le mécanisme général |
 | Q3 | Liste : émulateurs non expérimentaux, avec la case « tout afficher » |
 | Q4 | Ajout en un clic, tout pré-rempli, corrigeable ensuite |

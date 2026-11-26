@@ -210,8 +210,10 @@ remettre en cause à tout moment. Les questions bloquantes lui sont notifiées d
 
 Sections écrites sur la ligne PC (`wip-7.1` / `wip-7.2`) et reprises telles quelles ; les numéros de version y sont
 ceux de la ligne PC : **7.1 PC** = 7.5 (finition) et 7.6 (rangement), **7.2 PC** (CD 32X) = 7.4 + compléments 7.5,
-**7.2.1** (glisser-déposer) = après la 7.6 ; paliers 8.x renumérotés (ADR 0025, amendement de fusion : CD 8.2,
-ordinateurs 8.3, arcade 8.4 ; 8.1 = jgenesis).
+**7.2.1** (glisser-déposer) = après la 7.6 ; paliers 8.x renumérotés le 2026-11-26 (ADR 0025, amendement du même
+jour ; remplace la numérotation de la fusion) : 8.1 archives `.7z`, 8.2 interface en anglais, 8.3 jgenesis, CD 8.4,
+ordinateurs 8.5, arcade 8.6 ; la 9.0 vient après la 8.6. Les numéros de paliers des sections 8.0 et 7.5 ci-dessous
+sont corrigés en place.
 
 ### 7.2 — à discuter avec l'utilisateur
 
@@ -396,6 +398,7 @@ noVNC restent en rendu logiciel, cores à rendu matériel refusés comme en 8.0.
 10. GameCube / Wii, 3DS, PS2 : hors 9.x, plus tard.
 11. Vulkan : en dernier palier ; **l'utilisateur l'essaiera lui-même d'abord** (sur l'Iris Xe, même si ce n'est pas idéal), puis le camarade.
 12. Ordre des versions : à ajuster au fur et à mesure des discussions (7.1 → 7.2 → 8.0 → 9.0 pour l'instant).
+    **Décision du 2026-11-26** : la 9.0 vient après toute la 8.x (après la 8.6 ; ADR 0026 amendée).
 13. Relevé dxdiag (2026-11-23) : HP ProBook 640 G8, Intel Core i7-1165G7 (4 cœurs / 8 fils, 2,8 GHz, Iris Xe intégré), 16 Go, Windows 11 Pro 24H2 (build 26100), DirectX 12, écran à 150 %. Fichier d'échange très sollicité au relevé (30,6 Go utilisés, 5,9 Go libres) : mémoire chargée pendant les mesures. Pilote graphique Intel 32.0.101.7088.
 
 #### Conception 9.0 du 2026-11-25 (ADR 0026, `docs/design/v9.0-rendu-materiel.md`)
@@ -496,10 +499,10 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
    - a) **Défaut : la définition est archivée ; ses jeux sont retirés de la bibliothèque, favoris et historique
      compris (le recréer retrouve les sauvegardes, pas les favoris).**
    - b) Garder les jeux masqués, favoris compris, jusqu'à une suppression explicite.
-2. **Cores d'ordinateurs (clavier et souris) en 8.0**, alors que le clavier complet arrive en 8.2.
-   - a) **Défaut : ajout permis avec l'avertissement « clavier complet et souris : prévus en 8.2 »** (nécessaire
+2. **Cores d'ordinateurs (clavier et souris) en 8.0**, alors que le clavier complet arrive en 8.5.
+   - a) **Défaut : ajout permis avec l'avertissement « clavier complet et souris : prévus en 8.5 »** (nécessaire
      pour le MSX en cartouche du plan d'essais).
-   - b) Grisés jusqu'en 8.2.
+   - b) Grisés jusqu'en 8.5.
 3. **Essai à blanc qui plante, ou qui ne répond pas en 30 s.**
    - a) **Défaut : même boîte dans les deux cas : « Changer de core » (recommandé) ou « Lancer quand même »
      (emu-rust risque de se fermer ou de geler).**
@@ -514,7 +517,7 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
    - a) **Défaut : bascule reportée avec un message ; votre définition reste active, vos jeux restent jouables.**
    - b) Proposer le déplacement par le rangement (aperçu, annulation), dès qu'une version le rend nécessaire.
 6. **Core qui émule une console à cartouche et sa version CD** (PC Engine et PC Engine CD).
-   - a) **Défaut : la machine CD est visible mais grisée « prévu en 8.1 ».**
+   - a) **Défaut : la machine CD est visible mais grisée « prévu en 8.4 ».**
    - b) Masquée.
 7. **Nintendo DS (Zelda, au stylet)** : deux écrans et écran tactile sont une nouveauté d'interface.
    - a) **Défaut : hors 8.0, palier à part en fin de 8.x (vous l'aviez dite pas urgente).**
@@ -544,7 +547,7 @@ Chaque question a une **décision par défaut**, appliquée si l'utilisateur ne 
     - b) Pas besoin de la voir.
 
 Rappel demandé par l'utilisateur : **Q15, export / import d'une définition**, est reporté ; le lui rappeler à la
-conception de la 8.1 (le format 1 le permet déjà : ni binaire, ni URL, ni chemin absolu).
+conception de la 8.4 (le format 1 le permet déjà : ni binaire, ni URL, ni chemin absolu).
 
 #### Réponses de l'utilisateur du 2026-11-25
 
@@ -553,11 +556,11 @@ Intégrées à l'ADR 0025 (toujours « proposé » : l'acceptation sera demandé
 | Question | Réponse | Effet |
 |---|---|---|
 | Q1 supprimer un système | **autre que le défaut : garder les jeux masqués** | lignes gardées (favoris, historique), réapparues si le système est restauré ou recréé (même id) ; « Oublier ses jeux » = action explicite séparée ; fichiers et sauvegardes toujours conservés |
-| Q2 ordinateurs en 8.0 | défaut | ajoutables avec « clavier : 8.2 » |
+| Q2 ordinateurs en 8.0 | défaut | ajoutables avec « clavier : 8.5 » |
 | Q3 essai à blanc qui plante ou dépasse 30 s | défaut | boîte « Changer de core » (recommandé) / « Lancer quand même » |
 | Q4 bascule avec un autre core | défaut | son core en tête, le recommandé en alternative |
 | Q5 bascule exigeant un déplacement | **autre que le défaut : proposer le rangement** | le rangement 7.1 déplace le dossier (aperçu, accord, journal, annulation), puis la bascule se fait ; lots PB3 et PU4 ajoutés |
-| Q6 core mixte | défaut | machine CD grisée « 8.1 » |
+| Q6 core mixte | défaut | machine CD grisée « 8.4 » |
 | Q7 Nintendo DS | défaut | hors 8.0, palier à part en fin de 8.x |
 | Q8 non-émulateurs | défaut | ajoutables s'ils acceptent un format à fichier unique (ni disque, ni arcade) |
 | Q9 avertissement « non testé » | défaut | au premier lancement de chaque jeu, jusqu'à « Ça marche chez moi » |
@@ -602,12 +605,13 @@ reposées : Q1 (jeux masqués), Q4 (votre core en tête), Q5 (bascule par le ran
 
 Déjà répondues, non reposées : décisions **D1 à D15** de l'utilisateur (`.claude/fusion-plan.md`, toutes au défaut :
 versions, icône, console, CD 32X, pied de page, journal, fichiers d'origine, borne 512 Mio, `(32X)` nu refusé,
-jgenesis en 8.1, numéros d'ADR, CHANGELOG, reprise, tags, branche). Questions nouvelles, chacune avec sa réponse par
+jgenesis en 8.1 (devenue 8.3 le 2026-11-26), numéros d'ADR, CHANGELOG, reprise, tags, branche). Questions nouvelles,
+chacune avec sa réponse par
 défaut (« ok pour les défauts » suffit) :
 
 | # | Question | Défaut |
 |---|---|---|
-| F1 | **PC Engine CD-ROM²** : la roadmap Mac du 2026-11-24 le mettait en 8.0 ; dans l'ADR 0025 un format disque attend le palier CD. En 8.0 avec la HuCard, ou au palier CD (8.2) ? | **8.0 = HuCard seulement**, CD-ROM² en 8.2 avec les autres CD (Redump, multi-disques) |
+| F1 | **PC Engine CD-ROM²** : la roadmap Mac du 2026-11-24 le mettait en 8.0 ; dans l'ADR 0025 un format disque attend le palier CD. En 8.0 avec la HuCard, ou au palier CD (8.4, ex-8.2) ? | **8.0 = HuCard seulement**, CD-ROM² en 8.4 avec les autres CD (Redump, multi-disques) |
 | F2 | **Bandeau des fichiers d'origine** pour PlayStation et 3DO : le bandeau Mac disait « requis » (swanstation, opera) ; les données PC (`required_firmware` avec `fallback`) disent « améliore » (le core démarre avec son remplaçant). Lequel ? | **« améliore »** (données de `cores.toml`, cohérent avec le dialogue « une fois par jeu » de la 7.0) ; « requis » reste pour le Mega CD |
 | F3 | **`[interface] console = true`** d'un `config.toml` de la 7.1.0-rc.1 PC : converti en `[app] show_terminal = true` et retiré du fichier à la première sauvegarde ? | **oui** (alias à sens unique ; les autres clés de `[interface]` sont gardées telles quelles) |
 | F4 | **Disquettes à chiffre final** (`MANIACD0` / `MANIACD1`) : regroupées pour tous les ordinateurs (C64, CPC, Amiga, ST, DOS) ou seulement le C64 ? | **tous les ordinateurs**, règle stricte du PC (préfixe ≥ 4 caractères, lettre `D` ou mot « disk / side », même dossier) |

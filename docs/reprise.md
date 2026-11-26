@@ -4,55 +4,45 @@
 Mis à jour à chaque fin de session. **En début de session : `git fetch` puis lire ce fichier** (règle commune
 d'agents-home, ajoutée après la divergence du 2026-11-25).
 
-## État au 2026-11-25, 23 h (fin de session sur le PC du bureau)
+## État au 2026-11-26, 18 h 20 (PC du bureau)
 
-- **Divergence réparée.** Le 2026-11-25, le PC a travaillé sans pull sur une ancienne base (sa 7.1 = rangement des
-  ROMs, sa 7.2 = CD 32X). Fusion faite sur la base du Mac : `main` = **7.5.0** (05ff67d, puis correctif CI 2ce5b3e).
-  Décisions D1-D15, plan et notes : `docs/design/v7.5-finition-pc.md` (contrat) et ADR 0023 à 0026 (amendements de
-  fusion).
-- **7.5 = finition PC** sur la 7.4 : journal (page ouverte depuis le pied de page), pied de page sur toutes les
-  pages, messages copiables (presse-papiers réel, corrige le « Copier » de la 7.3), `emu-rust-cli.exe` sous Windows,
-  icône Mac produite par `scripts/gen-icons.sh`, écran Cores, bandeau des fichiers d'origine vérifiés (md5),
-  alias BIOS PS1, message « buildbot en cours de mise à jour », disquettes `MANIACD0/1` regroupées, compléments
-  CD 32X (marque manuelle touche X / clic droit). Schéma v7 inchangé.
-- **Aucun tag** : v7.3.0, v7.4.0 et v7.5.0 attendent l'essai de l'utilisateur (guide `docs/guide-essai-7.5.md`,
-  questions F1-F4 à confirmer).
-- **7.6 = rangement des ROMs** (ligne PC) : en cours sur `wip-7.6` (rangement dans emu-library + écrans) ;
-  branchement sur la 7.5 dans la branche locale `wip-7.6-merge` (PC). Point ouvert : `TidyBusy` intermittent dans
-  les tests (verrou du journal, ~5 % sur overlayfs) en diagnostic.
-- **En avance** : conceptions 8.0 (ADR 0025 acceptée) et 9.0 (ADR 0026 acceptée) recalées sur la fusion ; 7z
-  renuméroté **7.7 / ADR 0027** sur la branche `wip-7.7` (ex-`feat/7.5-7z`, locale au PC, non poussée) ; anglais en 7.8 ;
-  8.1 jgenesis ; paliers des systèmes personnalisés 8.2 (CD), 8.3 (ordinateurs), 8.4 (arcade).
-- Branches distantes : `wip-7.1`, `wip-7.2` (ligne PC d'avant fusion, gardées pour l'historique), `wip-7.5` ;
-  `feat/7.2-manette`, `feat/7.4-sega-cd-32x`, `feat/7.5-7z` : supprimables avec l'accord de l'utilisateur.
+- **7.5.0 taguée** (v7.3.0 → 496f8ce, v7.4.0 → d46f66f, v7.5.0 → 28121aa, le 2026-11-26 à 00:19) après l'essai
+  Windows de l'utilisateur (6/6). Releases GitHub publiées par le workflow de tag.
+- **7.6 = rangement des ROMs, poussée sur `main`** (3628a42, fusion de `wip-7.6-merge`) : rangement branché sur la
+  7.5, scan annulé sans perte de favoris, **marqueur « scan en cours »** (`<base>.scanning`, décision B : après un arrêt
+  brutal pendant un scan, le scan suivant est prudent — aucune purge — et le suivant retire les jeux vraiment supprimés ;
+  messages dans le statut et le Journal), tests `TidyBusy` stabilisés (flock hérité par fork : arbre mktidy généré une
+  fois). qa-systems OK (1629 tests, clippy Linux + Windows) ; reviewer OK au 2e tour. **Pas de tag** : essai d'abord
+  (`docs/guide-essai-7.6.md`).
+- **⚠ Boucler les essais de la 7.6 (et le tag v7.6.0) AVANT tout essai de la 8.0** (demande de l'utilisateur) : la
+  8.0 migre le schéma v7 → v8 (marque de scan en base, lot PB0) ; une 7.x refuse ensuite la base.
+- **Numérotation (décisions du 2026-11-26)** : 8.0 systèmes personnalisés (Atari Lynx essayé en premier), 8.1 archives
+  7z (cache `archive_cache_mb`, défaut 2000, minimum 1000), 8.2 interface en anglais, 8.3 jgenesis, 8.4 CD,
+  8.5 ordinateurs, 8.6 arcade, **9.0 rendu matériel après la 8.6**. ADR 0025 / 0026 amendées, design 8.0 recalé sur le
+  code de la 7.6 (chemin critique de 14 étapes, PX0 → PB0 → … → PP2).
+- **7z** : conception (ADR 0027, non commitée) dans le worktree `../emu-rust-wt77` (branche locale `wip-7.7`, base
+  ancienne) ; proposition : `.claude/proposition-numerotation-8x.md` de ce worktree. Créer `wip-8.1` depuis `main`
+  après la 8.0 et y copier ADR 0027 + design (pas de rebase).
 
 ## Prochaine session — dans cet ordre
 
 1. `git fetch`, lire ce fichier, créer le cron de suivi.
-2. Retour de l'utilisateur sur l'essai de la 7.5 (Windows et Mac : terminal, Copier, icône de la `.app`, Night Trap
-   32X, manette SNES, deux instances) ; tags v7.3.0 / v7.4.0 / v7.5.0 à faire valider.
-3. 7.6 : finir le branchement, diagnostic `TidyBusy`, vérification complète, revue, push.
-4. **Demander les caractéristiques du PC** et les inscrire dans CLAUDE.md (« Cibles ») — non fait le 2026-11-25.
-5. Dettes à déléguer : `Library::clear_cover` / `clear_all_covers` + `CoverCache::remove` dans emu-library
-   (remplacer le contournement de T8) ; réponse `Loaded` périmée dans `covers.rs` (génération) ; avertissement
-   cargo `main.rs` dans deux binaires d'emu-app ; captures Xvfb avant / après de la 7.3 (T7, dans Docker) ;
-   page Réglages (défilement), barre d'outils qui passe sur deux lignes à 1280 px, focus initial de la
-   bibliothèque ; idée : regrouper les disques d'un jeu répartis dans plusieurs dossiers.
-6. **Rappel demandé par l'utilisateur : skills AI Hero (Matt Pocock)** — lire https://www.aihero.dev/skills-catalog,
-   proposer 2 ou 3 skills au plus (discipline de conception : interroger une conception, améliorer une
-   architecture existante — la revue « Ousterhout »), l'utilisateur choisit, `reviewer` relit, installation en
-   copie modifiable dans `.claude/skills/` adaptée à nos règles (français, pas de PR, délégation aux agents).
-   Pas le paquet entier.
-7. Proposée et bien accueillie : revue « Ousterhout » par `reviewer` (modules superficiels, contournements
-   tactiques, fuites d'information) → liste de dettes.
-8. Sur le Mac, quand l'utilisateur est sur l'écran Retina seul : interface HiDPI ×2, mise à l'échelle des jeux en
-   16:10, performances à ~4 Mpx (SNES et Night Trap 32X plein écran), déplacement de fenêtre entre écrans.
-9. Ensuite : 7.6 interface en anglais ; 8.0 systèmes libretro non testés ; idée non planifiée après 8.0 : édition web
-   (WASM, 8/16 bits) ou son dans le mode noVNC (voir la roadmap).
-   8.1 : core libretro « jgenesis » au choix (fork jerhome) (32X, PC Engine) ; `reviewer` : GO sous conditions, 32X bloquant (BIOS Sega
-   embarqués dans `s32x-core`) ; portage existant RobLoach/libretro-jgenesis — détails dans la roadmap.
+2. Essai de la 7.6 par l'utilisateur (`docs/guide-essai-7.6.md`, sur une copie de la bibliothèque) → tag v7.6.0 sur
+   accord.
+3. 8.0 : branche `wip-8.0` depuis `main`, lot PX0 (design 8.0 §0.6 et lots).
+4. Mineurs reportés : `relocate` supprime une ligne « fantôme » sans le signaler dans `TidyReport` ; message
+   d'échec du marqueur qui écrit `<base>.scanning` au lieu du vrai chemin ; dossiers `target/tmp/mktidy-*` laissés
+   par les tests (balayés au run suivant).
+5. Dettes à déléguer (inchangées) : `Library::clear_cover` / `clear_all_covers` + `CoverCache::remove` ; réponse
+   `Loaded` périmée dans `covers.rs` ; avertissement cargo `main.rs` dans deux binaires d'emu-app ; page Réglages
+   (défilement), barre d'outils sur deux lignes à 1280 px, focus initial de la bibliothèque ; idée : ligne « Infos »
+   au clic droit (core, système, fichiers, marque 32X).
+6. Demander les caractéristiques du PC et les inscrire dans CLAUDE.md (« Cibles »).
+7. Sur le Mac (écran Retina seul) : HiDPI ×2, 16:10, performances à ~4 Mpx, fenêtre entre écrans.
+8. Branches distantes supprimables avec l'accord de l'utilisateur : `feat/7.2-manette`, `feat/7.4-sega-cd-32x`,
+   `feat/7.5-7z`.
 
 ## Budget
 
-Hebdomadaire ~88 % utilisé le 2026-11-24 à 22 h 40 : garder ~5 % pour le travail pro de l'utilisateur jusqu'au
-2026-11-25 19 h. Demander `/usage` aux points de suivi.
+Arrêt fixé par l'utilisateur à 20 % d'usage hebdomadaire le 2026-11-26 (17 % à 17 h 36). Demander `/usage` aux
+points de suivi.
