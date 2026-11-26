@@ -103,6 +103,44 @@ fn store_is_atomic_and_validated() {
 }
 
 #[test]
+fn remove_deletes_only_cached_regular_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CoverCache::with_limit(dir.path(), 300);
+    let rel = cache.store("gb", "00ff", &found(PNG)).unwrap();
+    let path = cache.resolve(&rel).unwrap();
+    assert!(path.exists());
+    assert!(cache.remove(&rel).unwrap());
+    assert!(!path.exists());
+    // Already gone: not an error.
+    assert!(!cache.remove(&rel).unwrap());
+    // Escapes are refused and nothing outside is touched.
+    let outside = dir.path().parent().unwrap().join("outside-cover-test");
+    std::fs::write(&outside, b"x").unwrap();
+    assert!(cache.remove(Path::new("../outside-cover-test")).is_err());
+    assert!(cache.remove(&outside).is_err());
+    assert!(cache.remove(Path::new("")).is_err());
+    assert!(outside.exists());
+    std::fs::remove_file(&outside).unwrap();
+    // A directory is not a cover file.
+    assert!(!cache.remove(Path::new("gb/boxart")).unwrap());
+    assert!(dir.path().join("gb/boxart").is_dir());
+}
+
+#[test]
+fn remove_frees_the_accounted_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = PNG.len() as u64;
+    // Room for two files only: without accounting the third store would prune.
+    let cache = CoverCache::with_limit(dir.path(), size * 2 + size / 2);
+    let a = cache.store("gb", "aa", &found(PNG)).unwrap();
+    cache.store("gb", "bb", &found(PNG)).unwrap();
+    assert!(cache.remove(&a).unwrap());
+    let c = cache.store("gb", "cc", &found(PNG)).unwrap();
+    assert!(cache.resolve(&c).unwrap().exists());
+    assert!(cache.root.join("gb/boxart/bb.png").exists());
+}
+
+#[test]
 fn cache_is_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let cache = CoverCache::with_limit(dir.path(), PNG.len() as u64 * 3);

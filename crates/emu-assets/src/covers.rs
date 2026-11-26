@@ -1284,6 +1284,33 @@ impl CoverCache {
         Ok(relative.join(file))
     }
 
+    /// Deletes one cached file, given the relative path stored in the database. `Ok(true)` if a file was
+    /// deleted, `Ok(false)` if nothing was there (or it is not a regular file: directories and symbolic links
+    /// are never touched). A path escaping `root` (`..`, absolute, drive prefix) is refused with an
+    /// `AssetError::Io` of kind `InvalidInput`. Blocking file system call: not for the UI thread.
+    pub fn remove(&self, relative: &Path) -> Result<bool, AssetError> {
+        let Some(path) = self.resolve(relative) else {
+            return Err(AssetError::Io {
+                path: relative.to_path_buf(),
+                source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+            });
+        };
+        let size = regular_file_size(&path);
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+            return Ok(false);
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(source) => return Err(AssetError::Io { path, source }),
+        }
+        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(total) = used.as_mut() {
+            *total = total.saturating_sub(size);
+        }
+        Ok(true)
+    }
+
     /// Refuses relative paths escaping `root` (`..`, absolute): the database is not trusted either.
     /// No file system access (usable from the UI thread): the file may not exist.
     pub fn resolve(&self, relative: &Path) -> Option<PathBuf> {

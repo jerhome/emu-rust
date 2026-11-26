@@ -61,7 +61,7 @@ pub(crate) trait CoverProvider {
     fn refresh(&mut self) {}
     /// « Rechercher à nouveau » : forget `Missing` records and suspended sources.
     fn retry_missing(&mut self) {}
-    /// T8: forget the cover of one game (`Some`) or of all games (`None`) — record, cached file, texture — then
+    /// Forget the cover of one game (`Some`) or of all games (`None`) — record, cached file, texture — then
     /// search again with the configured sources. Only explicit user actions call this.
     fn reset(&mut self, _game: Option<GameId>) {}
     /// Requests still waiting for the worker (captures wait for them).
@@ -217,14 +217,18 @@ pub(crate) enum Command {
     Configure(CoverSettings),
     Refresh,
     RetryMissing,
-    /// T8: explicit user reset of one game or of every game.
+    /// Explicit user reset of one game or of every game.
     Reset(Option<GameId>),
+    /// The UI dropped what it knew (reset, rescan, retry, settings): replies stamped with an older generation
+    /// are stale. Always sent just before the command that caused it.
+    Generation(u64),
 }
 
 pub(crate) enum Reply {
-    Loaded(GameId, ColorImage),
+    /// Reply stamped with the worker's generation (see [`Command::Generation`]).
+    Loaded(GameId, ColorImage, u64),
     /// No cover to show (not found, not cached and downloads off, or error): placeholder.
-    Absent(GameId),
+    Absent(GameId, u64),
     Status(WorkerStatus),
 }
 
@@ -266,6 +270,7 @@ pub(crate) struct Worker {
     notify: Notify,
     cancel: SharedCancel,
     sent: Option<WorkerStatus>,
+    generation: u64,
 }
 
 impl Worker {
@@ -296,6 +301,7 @@ impl Worker {
             notify,
             cancel,
             sent: None,
+            generation: 0,
         };
         w.refresh_back();
         w
@@ -335,6 +341,7 @@ impl Worker {
     pub(crate) fn handle(&mut self, command: Command) {
         match command {
             Command::Visible(ids) => self.front = ids.into(),
+            Command::Generation(g) => self.generation = g,
             Command::Configure(settings) => {
                 self.chain = (self.factory)(&settings);
                 self.settings = settings;
@@ -357,61 +364,59 @@ impl Worker {
         }
     }
 
-    /// T8: `emu-library` has no delete: a `Missing { checked_unix: 0 }` record is "never checked" for
-    /// `games_needing_cover` and `needs_download`, which is equivalent to no record.
-    /// T8: replace by `Library::clear_cover(id, kind)` / `clear_all_covers()` once they exist.
+    /// Explicit reset: removes the record (so the game is "never checked") and the cached file, safest order
+    /// first (read the record, delete the file, then forget the record). Blocking file system calls: this runs
+    /// in the worker, never on the UI thread.
     fn reset_covers(&mut self, target: Option<GameId>) {
-        let ids: Vec<GameId> = match target {
-            Some(id) => vec![id],
-            None => self
-                .db
-                .games()
-                .map(|g| g.into_iter().map(|g| g.id).collect())
-                .unwrap_or_default(),
-        };
         match target {
             Some(id) => {
                 self.outcomes.remove(&id);
+                let file = self.cached_path(id);
+                self.remove_cached(file);
+                if let Err(e) = self.db.clear_cover(id, CoverKind::Boxart) {
+                    tracing::warn!("jaquettes : {e}");
+                }
             }
-            None => self.outcomes.clear(),
-        }
-        let mut files = Vec::new();
-        for id in ids {
-            if let Ok(Some(CoverRecord {
-                state: CoverState::Cached { path, .. },
-                ..
-            })) = self.db.cover(id, CoverKind::Boxart)
-            {
-                files.push(path);
-            }
-            let forgotten = CoverState::Missing { checked_unix: 0 };
-            if let Err(e) = self.db.set_cover(id, CoverKind::Boxart, &forgotten) {
-                tracing::warn!("jaquettes : {e}");
-            }
-        }
-        // A file still referenced by another game is kept.
-        let still_used: HashSet<PathBuf> = self
-            .db
-            .games()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|g| self.db.cover(g.id, CoverKind::Boxart).ok().flatten())
-            .filter_map(|r| match r.state {
-                CoverState::Cached { path, .. } => Some(path),
-                CoverState::Missing { .. } => None,
-            })
-            .collect();
-        for relative in files.into_iter().filter(|p| !still_used.contains(p)) {
-            if let Some(file) = self.cache.resolve(&relative)
-                && let Err(e) = std::fs::remove_file(&file)
-            {
-                tracing::warn!("jaquettes : suppression de {} : {e}", file.display());
+            None => {
+                self.outcomes.clear();
+                let ids: Vec<GameId> = self
+                    .db
+                    .games()
+                    .map(|g| g.into_iter().map(|g| g.id).collect())
+                    .unwrap_or_default();
+                for id in ids {
+                    let file = self.cached_path(id);
+                    self.remove_cached(file);
+                }
+                if let Err(e) = self.db.clear_all_covers() {
+                    tracing::warn!("jaquettes : {e}");
+                }
             }
         }
         if let Some(chain) = &mut self.chain {
             chain.reset();
         }
         self.reset_session();
+    }
+
+    /// Relative path of the cached boxart file of `id`, if the record says one is cached.
+    fn cached_path(&self, id: GameId) -> Option<PathBuf> {
+        match self.db.cover(id, CoverKind::Boxart) {
+            Ok(Some(CoverRecord {
+                state: CoverState::Cached { path, .. },
+                ..
+            })) => Some(path),
+            _ => None,
+        }
+    }
+
+    fn remove_cached(&self, relative: Option<PathBuf>) {
+        let Some(relative) = relative else {
+            return;
+        };
+        if let Err(e) = self.cache.remove(&relative) {
+            tracing::warn!("jaquettes : suppression de {} : {e}", relative.display());
+        }
     }
 
     fn reset_session(&mut self) {
@@ -446,8 +451,8 @@ impl Worker {
     pub(crate) fn step(&mut self) {
         if let Some(id) = self.front.pop_front() {
             let reply = match self.load(id) {
-                Some(image) => Reply::Loaded(id, image),
-                None => Reply::Absent(id),
+                Some(image) => Reply::Loaded(id, image, self.generation),
+                None => Reply::Absent(id, self.generation),
             };
             self.send(reply);
         } else if self.downloading()
@@ -718,6 +723,8 @@ pub(crate) struct Covers {
     textures: usize,
     sent_visible: Vec<GameId>,
     status: WorkerStatus,
+    /// Bumped whenever slots are dropped on purpose; replies of an older generation are ignored.
+    generation: u64,
     settings: (CoversConfig, CredentialsConfig),
     capture: bool,
     alive: bool,
@@ -792,6 +799,7 @@ impl Covers {
                 textures: 0,
                 sent_visible: Vec::new(),
                 status: WorkerStatus::default(),
+                generation: 0,
                 settings: Default::default(),
                 capture: false,
                 alive: true,
@@ -808,6 +816,12 @@ impl Covers {
         if self.tx.send(command).is_err() {
             self.worker_gone();
         }
+    }
+
+    /// Starts a new generation: every reply already in flight becomes stale.
+    fn new_generation(&mut self) {
+        self.generation += 1;
+        self.send(Command::Generation(self.generation));
     }
 
     fn worker_gone(&mut self) {
@@ -858,14 +872,18 @@ impl CoverProvider for Covers {
         let mut changed = false;
         loop {
             match self.rx.try_recv() {
-                Ok(Reply::Loaded(id, image)) => {
-                    if matches!(self.slots.get(&id), Some(Slot::Requested)) {
+                Ok(Reply::Loaded(id, image, generation)) => {
+                    if generation == self.generation
+                        && matches!(self.slots.get(&id), Some(Slot::Requested))
+                    {
                         self.slots.insert(id, Slot::Decoded(image));
                         changed = true;
                     }
                 }
-                Ok(Reply::Absent(id)) => {
-                    if matches!(self.slots.get(&id), Some(Slot::Requested)) {
+                Ok(Reply::Absent(id, generation)) => {
+                    if generation == self.generation
+                        && matches!(self.slots.get(&id), Some(Slot::Requested))
+                    {
                         self.slots.insert(id, Slot::Absent);
                         changed = true;
                     }
@@ -990,18 +1008,21 @@ impl CoverProvider for Covers {
                 *token = CancelToken::new();
             }
         }
+        self.new_generation();
         self.send(Command::Configure(settings));
     }
 
     fn refresh(&mut self) {
         self.slots.retain(|_, s| !matches!(s, Slot::Absent));
         self.sent_visible.clear();
+        self.new_generation();
         self.send(Command::Refresh);
     }
 
     fn retry_missing(&mut self) {
         self.slots.retain(|_, s| !matches!(s, Slot::Absent));
         self.sent_visible.clear();
+        self.new_generation();
         self.send(Command::RetryMissing);
     }
 
@@ -1022,6 +1043,7 @@ impl CoverProvider for Covers {
             .filter(|s| matches!(s, Slot::Texture { .. }))
             .count();
         self.sent_visible.clear();
+        self.new_generation();
         self.send(Command::Reset(game));
     }
 
