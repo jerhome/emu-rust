@@ -820,6 +820,350 @@ pub fn cd32x_unmarked(game: &str, same_name: usize) -> String {
     msg
 }
 
+// ---- Systèmes non testés : lancement (ADR 0025 §5, §6, §7) ------------------------------------------------
+
+pub const CUSTOM_ACCEPT_TITLE: &str = "Contenu non vérifié";
+pub const CUSTOM_ACCEPT_YES: &str = "Accepter et continuer";
+pub const CUSTOM_UNTESTED_TITLE: &str = "Système non testé";
+pub const CUSTOM_TRY_AND_LAUNCH: &str = "Essayer puis lancer";
+pub const CUSTOM_LAUNCH: &str = "Lancer";
+pub const CUSTOM_WORKS_FOR_ME: &str = "Ça marche chez moi";
+pub const CUSTOM_TRY_TITLE: &str = "Essai du jeu";
+pub const CUSTOM_TRY_NOTE: &str =
+    "L'essai vérifie le démarrage seulement. Vos fichiers ne sont pas touchés.";
+pub const CUSTOM_TRY_CANCELLED: &str = "Essai annulé : le jeu n'est pas lancé.";
+pub const CUSTOM_FAILED_TITLE: &str = "L'essai du jeu a échoué";
+pub const CUSTOM_CHANGE_CORE: &str = "Changer de core";
+pub const CUSTOM_CHANGE_CORE_HINT: &str =
+    "Choisissez un autre core pour ce système dans « Core utilisé », puis relancez le jeu.";
+pub const CRASH_NOTICE_TITLE: &str = "Arrêt inattendu";
+pub const CUSTOM_BUSY: &str = "Un essai de jeu est déjà en cours.";
+
+pub fn custom_accept_body(core: &str) -> String {
+    format!(
+        "Le core « {} » n'a pas été examiné : il peut contenir des fichiers dont emu-rust ne connaît pas l'origine. \
+         L'utiliser quand même ?",
+        clean(core)
+    )
+}
+
+pub fn custom_untested_body(game: &str, system: &str, core: &str) -> String {
+    format!(
+        "« {} » est un jeu d'un système non testé ({}, core {}). Rien ne garantit qu'il démarre ni que ses \
+         sauvegardes fonctionnent.",
+        clean(game),
+        clean(system),
+        clean(core)
+    )
+}
+
+pub fn custom_try_body(game: &str) -> String {
+    format!(
+        "Essai de « {} » en cours (30 secondes au plus)…",
+        clean(game)
+    )
+}
+
+/// Why no dry run was made: the launch goes on after the warning only.
+pub fn custom_not_tried(why: &str) -> String {
+    format!("Pas d'essai : {why}.")
+}
+
+pub const NOT_TRIED_ARCHIVE: &str = "le jeu est dans une archive";
+pub const NOT_TRIED_SEVERAL_FILES: &str = "le jeu tient en plusieurs fichiers";
+pub const NOT_TRIED_TOO_BIG: &str = "le jeu est trop gros pour être copié";
+pub const NOT_TRIED_FAILED: &str = "l'essai n'a pas pu être préparé";
+
+pub fn custom_failed_crashed(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("Le core s'est arrêté pendant l'essai (code {code})."),
+        None => "Le core s'est arrêté brutalement pendant l'essai.".to_owned(),
+    }
+}
+
+pub const CUSTOM_FAILED_TIMEOUT: &str = "Le core n'a pas fini l'essai en 30 secondes.";
+
+pub fn custom_failed_load(message: &str) -> String {
+    format!("Le core n'a pas pu charger le jeu : {}", clean(message))
+}
+
+pub fn crash_notice(game: &str, core: &str, untested: bool) -> String {
+    let base = format!(
+        "emu-rust s'est arrêté pendant « {} » avec {} : plantage, arrêt forcé ou coupure.",
+        clean(game),
+        clean(core)
+    );
+    if untested {
+        format!("{base} Ce core n'est pas testé pour ce système : essayez-en un autre.")
+    } else {
+        base
+    }
+}
+
+// ---- Systèmes non testés : Réglages (ADR 0025 §2, §9, §10) -----------------------------------------------
+
+pub const CUSTOM_SYSTEMS_TITLE: &str = "Systèmes non testés";
+pub const CUSTOM_SYSTEMS_NOTE: &str = "Systèmes ajoutés depuis l'écran Cores (« Ajouter un système non testé… »). \
+     Leurs jeux vont dans le dossier roms/<identifiant>/ ; emu-rust ne garantit pas qu'ils fonctionnent.";
+pub const CUSTOM_SYSTEMS_NONE: &str = "Aucun système ajouté.";
+pub const CUSTOM_EDIT: &str = "Modifier";
+pub const CUSTOM_DELETE: &str = "Supprimer";
+pub const CUSTOM_OPEN_FOLDER: &str = "Ouvrir le dossier des définitions";
+pub const CUSTOM_PROBLEMS_TITLE: &str = "Systèmes en erreur";
+pub const CUSTOM_RETIRED_TITLE: &str = "Systèmes retirés";
+pub const CUSTOM_RESTORE: &str = "Restaurer";
+pub const CUSTOM_FORGET: &str = "Oublier ses jeux";
+pub const EDIT_DEFINITION_GONE: &str =
+    "Ce système a été supprimé entre-temps : rien n'est enregistré. Fermez le formulaire.";
+pub const CUSTOM_WAITING_PUBLICATION: &str =
+    "Le changement s'appliquera à la fin du scan ou du rangement en cours.";
+pub const CUSTOM_BUSY_TASK: &str =
+    "Impossible pendant un scan, un rangement ou une mise à jour des DAT : réessayez à la fin.";
+pub const CUSTOM_NO_LIBRARY: &str =
+    "La bibliothèque est indisponible : réessayez après un redémarrage.";
+
+pub fn custom_system_line(name: &str, id: &str, cores: &[String]) -> String {
+    format!(
+        "{} (roms/{}/) : {}",
+        clean(name),
+        clean(id),
+        clean_list(cores)
+    )
+}
+
+/// One refused or unreadable definition.
+pub fn definition_problem(file: &str, error: &str) -> String {
+    format!("{} : {}", clean(file), clean(error))
+}
+
+/// The single line that stands for every definition beyond the bound.
+pub fn too_many_definitions(count: usize, bound: usize) -> String {
+    let word = if count > 1 {
+        "définitions ignorées"
+    } else {
+        "définition ignorée"
+    };
+    format!("{count} {word} au-delà de {bound}")
+}
+
+pub const TOO_MANY_HINT: &str =
+    "Retirez des définitions du dossier pour que les suivantes soient lues.";
+pub const TOO_MANY_LIST: &str = "Fichiers ignorés";
+
+pub fn retired_removed_line(id: &str) -> String {
+    format!("{} : retiré par vous", clean(id))
+}
+
+pub fn retired_replaced_line(id: &str, official: Option<&str>) -> String {
+    match official {
+        Some(name) => format!("{} : remplacé par {}", clean(id), clean(name)),
+        None => format!("{} : remplacé par un système officiel", clean(id)),
+    }
+}
+
+pub const RETIRED_REPLACED_NOTE: &str =
+    "Seule l'annulation du rangement qui a fait la bascule le rend.";
+
+pub fn custom_switch_open(id: &str) -> String {
+    format!(
+        "Une bascule de « {} » vers un système officiel est en cours ou à terminer : terminez-la d'abord.",
+        clean(id)
+    )
+}
+
+pub fn custom_switch_unreadable(error: &str) -> String {
+    format!(
+        "Le journal des rangements n'a pas pu être lu ({}) : le système n'est pas modifié.",
+        clean(error)
+    )
+}
+
+pub fn custom_write_failed(error: &str) -> String {
+    format!(
+        "La définition n'a pas pu être écrite : {}. Vérifiez le dossier des définitions et réessayez.",
+        clean(error)
+    )
+}
+
+pub const CONFIRM_DELETE_TITLE: &str = "Supprimer le système";
+pub const CONFIRM_DELETE_YES: &str = "Supprimer";
+pub const CONFIRM_CANCEL: &str = "Annuler";
+
+pub fn confirm_delete_body(name: &str) -> String {
+    format!(
+        "Supprimer « {} » ? Ses fichiers et ses sauvegardes ne sont pas touchés ; ses jeux restent dans la \
+         bibliothèque, masqués. « Restaurer » (Systèmes retirés) les fait revenir.",
+        clean(name)
+    )
+}
+
+pub const CONFIRM_UNCERTAIN_TITLE: &str = "Supprimer un système au même identifiant qu'un officiel";
+pub const CONFIRM_UNCERTAIN_YES: &str = "Oublier ses jeux et supprimer";
+
+pub fn confirm_uncertain_body(name: &str, official: &str) -> String {
+    format!(
+        "« {} » a le même identifiant que le système officiel « {} » : ses jeux apparaîtraient sous ce système. \
+         La suppression oublie donc ses jeux dans la bibliothèque (vos fichiers ne sont pas touchés ; les \
+         jeux du système officiel sont gardés).",
+        clean(name),
+        clean(official)
+    )
+}
+
+pub const UNCERTAIN_GAMES_TITLE: &str = "Des jeux sont encore dans le dossier";
+
+pub fn uncertain_games_body(id: &str, files: &[String], more: bool) -> String {
+    let mut list = files
+        .iter()
+        .map(|f| clean(f))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if more {
+        list.push_str("\n…");
+    }
+    format!(
+        "Déplacez ces fichiers hors de roms/{}/ (ou supprimez-les), puis recommencez :\n{list}",
+        clean(id)
+    )
+}
+
+pub const OPEN_GAMES_FOLDER: &str = "Ouvrir le dossier";
+pub const CONFIRM_FORGET_TITLE: &str = "Oublier les jeux du système";
+
+/// `frozen_only`: a system with this id is active, so only the games it does not recognize are forgotten.
+pub fn confirm_forget_body(id: &str, frozen_only: bool) -> String {
+    if frozen_only {
+        return format!(
+            "Un système actif porte le même identifiant que « {} » : seuls les jeux qu'il ne reconnaît pas (gardés, \
+             masqués) sont oubliés dans la bibliothèque, favoris, historique et jaquettes compris ; ses propres jeux \
+             ne sont pas touchés. Vos fichiers ne sont pas touchés. Cette action est définitive.",
+            clean(id)
+        );
+    }
+    format!(
+        "Oublier tous les jeux de « {} » dans la bibliothèque (favoris, historique et jaquettes compris) ? \
+         Vos fichiers ne sont pas touchés. Cette action est définitive.",
+        clean(id)
+    )
+}
+
+pub const CONFIRM_FORGET_YES: &str = "Oublier ses jeux";
+
+pub fn custom_deleted(name: &str) -> String {
+    format!(
+        "Système « {} » supprimé : ses jeux sont masqués.",
+        clean(name)
+    )
+}
+
+pub fn custom_restored(id: &str) -> String {
+    format!("Système « {} » restauré.", clean(id))
+}
+
+pub fn custom_forgotten(id: &str) -> String {
+    format!("Jeux de « {} » oubliés.", clean(id))
+}
+
+pub fn custom_saved(name: &str) -> String {
+    format!("Système « {} » enregistré.", clean(name))
+}
+
+pub const EDIT_TITLE: &str = "Modifier le système";
+pub const EDIT_NAME: &str = "Nom";
+pub const EDIT_EXTENSIONS: &str = "Extensions (séparées par des virgules)";
+pub const EDIT_SCREENSCRAPER: &str = "Numéro ScreenScraper";
+pub const EDIT_IGDB: &str = "Numéro IGDB";
+pub const EDIT_CORES: &str = "Cores (le premier est utilisé)";
+pub const EDIT_FIRMWARE: &str = "Ne plus avertir pour ces fichiers système";
+pub const EDIT_SAVE: &str = "Enregistrer";
+pub const EDIT_CANCEL: &str = "Annuler";
+pub const EDIT_RECALC: &str = "Recalculer depuis le core";
+pub const EDIT_SEARCH_DAT: &str = "Chercher la base d'identification";
+pub const EDIT_UP: &str = "Monter";
+pub const EDIT_DOWN: &str = "Descendre";
+pub const EDIT_REMOVE_CORE: &str = "Retirer";
+pub const EDIT_NO_DATABASE: &str =
+    "Ce système n'a pas de nom de base libretro : aucune base ni jaquette n'est cherchée en ligne.";
+pub const EDIT_NUMBER_INVALID: &str = "Un numéro doit être un entier positif (ou vide).";
+pub const EDIT_NO_CORE: &str = "Gardez au moins un core.";
+
+pub fn edit_validation(error: &str) -> String {
+    format!("Définition refusée : {}.", clean(error))
+}
+
+pub const TASK_INTERRUPTED: &str = "tâche interrompue";
+pub const RECALC_RUNNING: &str = "Lecture du core en cours…";
+pub const SEARCH_RUNNING: &str = "Recherche de la base en cours…";
+
+pub fn recalc_done(name: &str, extensions: &[String]) -> String {
+    format!(
+        "« {} » : extensions relues dans le core ({}). Enregistrez pour les garder.",
+        clean(name),
+        clean_list(extensions)
+    )
+}
+
+pub const RECALC_NEEDS_CORE: &str =
+    "Le core n'est pas installé : installez-le depuis l'écran Cores, puis recalculez.";
+
+pub fn recalc_failed(why: &str) -> String {
+    format!("Le core n'a pas pu être lu : {}", clean(why))
+}
+
+pub fn search_found(sources: &[&str]) -> String {
+    format!(
+        "Base trouvée ({}). La définition est enregistrée avec ce que vous avez saisi, puis la base est importée.",
+        sources.join(", ")
+    )
+}
+
+pub const SEARCH_IMPORT_LATER: &str = "Une mise à jour des DAT est en cours : la base trouvée sera importée à la prochaine mise à jour.";
+
+pub const SEARCH_NOT_FOUND: &str = "Aucune base d'identification trouvée pour ce nom.";
+
+pub fn search_failed(why: &str) -> String {
+    format!(
+        "La recherche a échoué : {}. Vérifiez la connexion et réessayez.",
+        clean(why)
+    )
+}
+
+// ---- Systèmes non testés : ajout terminé ------------------------------------------------------------------
+
+pub const ADDED_TITLE: &str = "Système ajouté";
+pub const ADDED_OK: &str = "OK";
+
+pub fn added_body(names: &[String], ids: &[String], existing: &[String]) -> String {
+    let folders = ids
+        .iter()
+        .map(|id| format!("roms/{}/", clean(id)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut body = format!(
+        "{} : ajouté. Déposez vos jeux dans {folders}. Ce système n'est pas testé : un avertissement s'affiche \
+         au premier lancement de chaque jeu.",
+        clean_list(names)
+    );
+    if !existing.is_empty() {
+        let list = existing
+            .iter()
+            .map(|id| format!("roms/{}/", clean(id)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        body.push_str(&format!(
+            " Le dossier {list} existait déjà : ses fichiers sont pris en compte au scan."
+        ));
+    }
+    body
+}
+
+pub fn add_failed(error: &str) -> String {
+    format!(
+        "Le système n'a pas pu être ajouté : {}. Vérifiez le dossier des définitions et réessayez.",
+        clean(error)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

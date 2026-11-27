@@ -10,7 +10,10 @@
 //! Lifetimes:
 //! - `EnvState` (directories, options, geometry, messages, events): installed by `EnvInstall` from `Core::load` until
 //!   `Core` is dropped (after `retro_deinit`).
-//! - The `FrontendHandler`: installed by `HandlerGuard` only for the duration of one `retro_run`.
+//! - The `FrontendHandler`: installed by `HandlerGuard` only for the duration of one `retro_run`; the video kinds
+//!   seen (`Hot::frames_seen`) are reset with it.
+//! - `SET_HW_RENDER` and `SET_INPUT_DESCRIPTORS`: copied (never the core's pointers) into `EnvState`, then into
+//!   `Core` after each call into the core.
 //! - Keyboard and disk control function pointers registered by the core (`SET_KEYBOARD_CALLBACK`,
 //!   `SET_DISK_CONTROL(_EXT)_INTERFACE`): copied into `EnvState`, valid while the library is loaded. `Core` copies
 //!   them out and calls them outside any `ENV` borrow (they may re-enter the environment, e.g. `SET_MESSAGE`).
@@ -27,6 +30,7 @@ use crate::controllers;
 use crate::core::{CoreConfig, FrontendHandler, RunEvents};
 use crate::disk::DiskControlKind;
 use crate::error::LibretroError;
+use crate::hw::{self, HwRenderRequest, InputDescriptor};
 use crate::log;
 use crate::options::{self, OptionStore};
 use crate::sys;
@@ -81,6 +85,8 @@ struct Hot {
     /// A panic was caught at the FFI boundary since the handler was installed.
     panicked: Cell<bool>,
     pixel_format: Cell<PixelFormat>,
+    /// `hw::SEEN_*` bits of the video calls since the handler was installed (`Core::take_frame_kind`).
+    frames_seen: Cell<u8>,
 }
 
 thread_local! {
@@ -90,6 +96,7 @@ thread_local! {
             handler: Cell::new(None),
             panicked: Cell::new(false),
             pixel_format: Cell::new(PixelFormat::Xrgb1555),
+            frames_seen: Cell::new(0),
         }
     };
     static ENV: RefCell<Option<EnvState>> = const { RefCell::new(None) };
@@ -123,10 +130,16 @@ struct EnvState {
     ff_state: Option<FastForwardOverride>,
     /// A request arrived while no handler was installed (loading): reported by the next handler installation.
     ff_pending: bool,
-    /// Last `SET_CONTROLLER_INFO` (35), bounded copy; a new declaration replaces it.
+    /// Last `RETRO_ENVIRONMENT_SET_CONTROLLER_INFO`, bounded copy; a new declaration replaces it.
     controllers: Vec<Vec<ControllerType>>,
     /// `controllers` changed since `Core` last took it.
     controllers_changed: bool,
+    /// Last `SET_HW_RENDER` request (always refused in 8.0, ADR 0025 §8).
+    hw_render: Option<HwRenderRequest>,
+    /// Last `RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`, bounded and cleaned copy; a new declaration replaces it.
+    descriptors: Vec<InputDescriptor>,
+    /// `descriptors` changed since `Core` last took it.
+    descriptors_changed: bool,
 }
 
 /// Disk control callbacks as registered; the basic interface leaves the extended entries `None`.
@@ -166,6 +179,9 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         ff_pending: false,
         controllers: Vec::new(),
         controllers_changed: false,
+        hw_render: None,
+        descriptors: Vec::new(),
+        descriptors_changed: false,
     };
     ENV.with(|env| *env.borrow_mut() = Some(state));
     HOT.with(|hot| {
@@ -173,6 +189,7 @@ pub(crate) fn install_env(config: &CoreConfig, core_path: &Path) -> EnvInstall {
         hot.handler.set(None);
         hot.panicked.set(false);
         hot.pixel_format.set(PixelFormat::default());
+        hot.frames_seen.set(0);
     });
     EnvInstall {
         _not_send: PhantomData,
@@ -279,6 +296,33 @@ pub(crate) fn take_controller_types() -> Option<Vec<Vec<ControllerType>>> {
     .flatten()
 }
 
+/// The input descriptors declared since the previous call, if the core (re)declared them.
+pub(crate) fn take_input_descriptors() -> Option<Vec<InputDescriptor>> {
+    with_env(|env| {
+        std::mem::take(&mut env.descriptors_changed).then(|| std::mem::take(&mut env.descriptors))
+    })
+    .flatten()
+}
+
+/// Last `SET_HW_RENDER` request of the core, if any.
+pub(crate) fn hw_render_request() -> Option<HwRenderRequest> {
+    with_env(|env| env.hw_render.clone()).flatten()
+}
+
+/// Forgets the per-game declarations (`SET_HW_RENDER`, `SET_INPUT_DESCRIPTORS`) after `retro_unload_game`.
+pub(crate) fn clear_game_declarations() {
+    with_env(|env| {
+        env.hw_render = None;
+        env.descriptors.clear();
+        env.descriptors_changed = false;
+    });
+}
+
+/// `hw::SEEN_*` bits of the video calls since the handler was installed.
+pub(crate) fn frames_seen() -> u8 {
+    HOT.try_with(|hot| hot.frames_seen.get()).unwrap_or(0)
+}
+
 pub(crate) fn supports_no_game() -> bool {
     with_env(|env| env.support_no_game).unwrap_or(false)
 }
@@ -310,6 +354,7 @@ pub(crate) fn install_handler<'a>(slot: &'a mut &mut dyn FrontendHandler) -> Han
     HOT.with(|hot| {
         hot.handler.set(Some(ptr));
         hot.panicked.set(false);
+        hot.frames_seen.set(0);
     });
     with_env(|env| {
         env.events = RunEvents::default();
@@ -440,14 +485,23 @@ pub(crate) unsafe extern "C" fn video_refresh(
     pitch: usize,
 ) {
     ffi_boundary((), || {
+        if data == sys::RETRO_HW_FRAME_BUFFER_VALID {
+            note_frame(hw::SEEN_SENTINEL);
+            return;
+        }
         // SAFETY: libretro guarantees the buffer covers `height` rows of `pitch` bytes (last row may be
         // shorter) until this callback returns; the frame does not escape `with_handler`.
         let Some(frame) = (unsafe { frame_from_raw(data, width, height, pitch, pixel_format()) })
         else {
             return;
         };
+        note_frame(hw::SEEN_SOFTWARE);
         with_handler((), |handler| handler.video_refresh(frame));
     });
+}
+
+fn note_frame(bit: u8) {
+    let _ = HOT.try_with(|hot| hot.frames_seen.set(hot.frames_seen.get() | bit));
 }
 
 /// `retro_audio_sample_t`.
@@ -897,15 +951,30 @@ impl EnvState {
                 self.controllers_changed = true;
                 true
             }
-            sys::RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
-            | sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL
+            sys::RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS => {
+                // SAFETY: `const struct retro_input_descriptor *`, terminated by an entry with a null
+                // `description`; read within the bounds of `copy_input_descriptors` and copied before returning.
+                self.descriptors =
+                    unsafe { hw::copy_input_descriptors(data.cast_const().cast()) };
+                self.descriptors_changed = true;
+                true
+            }
+            sys::RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL
             | sys::RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS
             | sys::RETRO_ENVIRONMENT_SET_MEMORY_MAPS
             | sys::RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO
             | sys::RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE => true,
-            // Hardware rendering is phase 7.
+            // Recorded then always refused in 8.0 (ADR 0025 §8): the core falls back to software or fails its load,
+            // and the runtime reports "planned for 9.0". Nothing is written back, no core callback is called.
             sys::RETRO_ENVIRONMENT_SET_HW_RENDER => {
-                self.log_unhandled(cmd);
+                // SAFETY: `struct retro_hw_render_callback *` (in/out); only read, field by field.
+                if let Some(request) = unsafe { hw::read_hw_request(data.cast_const().cast()) } {
+                    if !self.logged_commands.contains(&cmd) {
+                        self.logged_commands.push(cmd);
+                        tracing::debug!(?request, "SET_HW_RENDER recorded and refused (planned for 9.0)");
+                    }
+                    self.hw_render = Some(request);
+                }
                 false
             }
             // Opt-in per core (ADR 0018). The table is thread-safe and needs no `EnvState`.

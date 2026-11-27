@@ -241,3 +241,22 @@ Aucun contenu libre trouvé pour `.crt`, `.t64`, `.tap` tiers : les supports gé
 - Licences à ajouter à `THIRD-PARTY-DATA.txt` (si ces fichiers y sont mentionnés) : GPL-2.0 (240p Sega CD), MIT
   (gba-tests, hexgl32x, rpg-adventure, AttoChess, matrix62, Wild-Boa-Snake, Floppy Bird), Unlicense
   (uberswap, Kidelyneen), GPL-3.0 (DskTest), GPL-2.0 (FreeDOS et ses paquets).
+
+## 9. PC Engine (8.0, core mednafen_pce_fast)
+
+Ajouté le 2026-11-27 (`platform-build`, lot PP1). Entrée du bloc `--with-8.0` de `scripts/fetch-test-assets.sh`.
+
+| Fichier | URL | Licence | Taille | SHA-256 |
+|---|---|---|---|---|
+| `240pSuite_1.10_HuCard.zip` | `https://sourceforge.net/projects/testsuite240p/files/OldFiles/PCE-TG16-SCD/240pSuite_1.10_HuCard.zip/download` | GPL-2.0 | 4 409 800 o décompressé | `3edcb149858fbe344582775659edeedd21c5f62a8cce0b452923201476629ff1` |
+| `240pSuite.pce` (membre du zip, installé sous `tests/roms/pce/240pSuite-PCE-1.10.pce`) | idem | GPL-2.0 | 262 144 | `5ecc11cd8bbc1844d6b603f8f5847f753d922273c563b06ee7f9da01cd7b8768` |
+
+- Source : 240p Test Suite, version PC Engine / TurboGrafx-16 (Artemio Urbina, dépôt `ArtemioUrbina/240pTestSuite`,
+  dossier `240psuite/PCE`). Même dépôt et même licence (GPL-2.0, fichier `LICENSE` du dépôt, `GPLv2.txt` dans le zip) que
+  les suites Mega Drive, SNES et Mega CD déjà utilisées. Le zip contient le code source complet (`src/`).
+- Date de publication du zip : 2019-10-30 (SourceForge). Vérifié le 2026-11-27 par téléchargement réel ; l'image
+  n'a pas été exécutée.
+- Aucun programme tiers embarqué connu, aucune ROM commerciale. Données de test locales, jamais téléchargées par
+  l'application (ADR 0005).
+- **`chipce8` (trapexit, MIT) retiré** : le dépôt est sous MIT, mais l'image embarque des programmes CHIP-8 dont le
+  README amont ne donne pas la provenance. Sans preuve de redistribuabilité, il n'est plus téléchargé.

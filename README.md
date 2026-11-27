@@ -5,7 +5,7 @@ emu-rust fournit l'image, le son, le clavier et les manettes (PS4, USB type SNES
 jaquettes (thème sombre, manuel intégré, assistant de premier lancement), le Journal, le téléchargement des cores et
 des BIOS libres. Usage personnel.
 
-**Version stable : 7.6.0** ([releases](../../releases))
+**Version stable : 7.6.0** ([releases](../../releases)) ; pré-version en essai : 8.0.0-rc.1
 
 ## Systèmes pris en charge
 

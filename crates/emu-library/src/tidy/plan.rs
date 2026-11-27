@@ -2,7 +2,7 @@
 //! units, classification by the scan's classifier with the folder rule neutralised, destinations and blocking
 //! checks. Nothing is written: neither the disk nor the database (SELECT only).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
@@ -14,8 +14,10 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::journal::{fold_path, same_place};
 use super::{
-    MAX_IGNORED_PATHS, TidyBlock, TidyMove, TidyOptions, TidyPlan, TidyReason, TidyStatus, TidyUnit,
+    MAX_IGNORED_PATHS, SwitchMove, TidyBlock, TidyMove, TidyOptions, TidyPlan, TidyReason,
+    TidyStatus, TidyUnit,
 };
+use crate::catalog::{Catalog, catalog};
 use crate::db::{DiscIndex, NameIndex, db_error, identify};
 use crate::disc::cue_file_names;
 use crate::media::{parse_m3u, strip_group_member_name, strip_media_marker};
@@ -27,7 +29,7 @@ use crate::scan::{
 use crate::systems::Attribution;
 use crate::{
     BinKind, GameId, Identification, LibraryError, ScanProgress, SystemInfo, SystemKind,
-    group_media, systems_for_extension,
+    group_media,
 };
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -46,9 +48,32 @@ pub(crate) struct Fingerprint {
     pub(crate) mtime: i64,
 }
 
+/// The catalog snapshot a plan was computed with (ADR 0025 §1). Part of the identity of a plan: two plans are equal
+/// only when their catalogs are (by value: the same catalog published twice is one catalog).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Snapshot(&'static Catalog);
+
+impl Snapshot {
+    pub(super) fn get(self) -> &'static Catalog {
+        self.0
+    }
+}
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0) || self.0 == other.0
+    }
+}
+
+impl Eq for Snapshot {}
+
 /// Plan-wide facts used again by [`TidyPlan::choose_system`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PlanContext {
+    /// Catalog snapshot taken at the start of the plan.
+    pub(super) cat: Snapshot,
+    /// Top-level folders left alone (ADR 0025 §12): never a source, never a destination.
+    pub(super) reserved: BTreeSet<String>,
     /// Canonical roms root.
     pub(super) root: PathBuf,
     /// Device of the root (Unix): a destination or a source on another device is blocked.
@@ -151,12 +176,21 @@ struct Walked {
     /// folders, leftovers): a folder holding one of them is never moved whole.
     others: Vec<PathBuf>,
     already_tidy: u64,
+    /// Reserved folders found at the top of the root (names).
+    reserved: BTreeSet<String>,
     ignored: u64,
     ignored_paths: Vec<PathBuf>,
+    /// A switch plan: the only top folder it counts ignored files of (`roms/<custom id>/`).
+    scope: Option<String>,
 }
 
 impl Walked {
     fn ignore(&mut self, rel: PathBuf) {
+        if let Some(folder) = &self.scope
+            && !under_folder(&rel, folder)
+        {
+            return;
+        }
         self.ignored += 1;
         if self.ignored_paths.len() < MAX_IGNORED_PATHS {
             self.ignored_paths.push(rel);
@@ -188,13 +222,31 @@ fn sorted_entries(dir: &Path) -> std::io::Result<Vec<fs::DirEntry>> {
     Ok(entries)
 }
 
-fn is_system_id(name: &str) -> bool {
-    crate::system(name).is_some()
+fn is_system_id(cat: &Catalog, name: &str) -> bool {
+    cat.system(name).is_some()
 }
 
-fn walk(options: &TidyOptions, cancel: &AtomicBool) -> Result<Walked, LibraryError> {
+/// The reserved id `name` stands for: ids are lower-case ASCII, but a folder of another case names the same one on
+/// the case-insensitive file systems (Windows, macOS).
+fn reserved_match<'r>(reserved: &'r BTreeSet<String>, name: &str) -> Option<&'r str> {
+    reserved
+        .iter()
+        .find(|r| r.eq_ignore_ascii_case(name))
+        .map(String::as_str)
+}
+
+fn walk(
+    cat: &'static Catalog,
+    reserved: &BTreeSet<String>,
+    options: &TidyOptions,
+    cancel: &AtomicBool,
+    scope: Option<&str>,
+) -> Result<Walked, LibraryError> {
     let (root, max_depth) = (options.roms_root(), options.max_depth());
-    let mut out = Walked::default();
+    let mut out = Walked {
+        scope: scope.map(str::to_owned),
+        ..Walked::default()
+    };
     let mut stack = vec![(PathBuf::new(), 0usize)];
     while let Some((rel, depth)) = stack.pop() {
         if scan::is_cancelled(cancel) {
@@ -225,12 +277,19 @@ fn walk(options: &TidyOptions, cancel: &AtomicBool) -> Result<Walked, LibraryErr
             };
             let top = rel.as_os_str().is_empty();
             if kind.is_symlink() {
-                // A linked `roms/<id>` is a destination matter (`DestinationNotPlainDir`), not a unit.
-                if top && name.to_str().is_some_and(is_system_id) {
-                    continue;
+                // A linked `roms/<id>` is a destination matter (`DestinationNotPlainDir`), not a unit; a reserved
+                // one is left alone.
+                if top && let Some(n) = name.to_str() {
+                    if let Some(id) = reserved_match(reserved, n) {
+                        out.reserved.insert(id.to_owned());
+                        continue;
+                    }
+                    if is_system_id(cat, n) {
+                        continue;
+                    }
                 }
                 let to_dir = fs::metadata(abs.join(&name)).is_ok_and(|m| m.is_dir());
-                if to_dir || is_candidate(&child) {
+                if to_dir || is_candidate(cat, &child) {
                     out.blocked.push((child.clone(), TidyBlock::Symlink));
                 } else {
                     out.ignore(child.clone());
@@ -239,7 +298,7 @@ fn walk(options: &TidyOptions, cancel: &AtomicBool) -> Result<Walked, LibraryErr
                 continue;
             }
             if name.to_str().is_none() {
-                if kind.is_dir() || is_candidate(&child) {
+                if kind.is_dir() || is_candidate(cat, &child) {
                     out.blocked.push((child.clone(), TidyBlock::NonUtf8Path));
                 } else {
                     out.ignore(child.clone());
@@ -249,7 +308,10 @@ fn walk(options: &TidyOptions, cancel: &AtomicBool) -> Result<Walked, LibraryErr
             }
             if kind.is_dir() {
                 let name = name.to_string_lossy();
-                if top && is_system_id(&name) {
+                if let Some(id) = reserved_match(reserved, &name).filter(|_| top) {
+                    // Retired, masked or broken system, or an id of the library the catalog lacks (ADR 0025 §12).
+                    out.reserved.insert(id.to_owned());
+                } else if top && is_system_id(cat, &name) {
                     out.already_tidy += count_items(&abs.join(&*name));
                 } else if name.ends_with(PART_SUFFIX) || depth >= max_depth {
                     out.others.push(child);
@@ -427,6 +489,7 @@ fn track_radical(path: &Path) -> String {
 }
 
 struct Builder<'w> {
+    cat: &'static Catalog,
     walked: &'w Walked,
     root: &'w Path,
     drafts: Vec<Option<Draft>>,
@@ -436,7 +499,7 @@ struct Builder<'w> {
 }
 
 impl<'w> Builder<'w> {
-    fn new(walked: &'w Walked, root: &'w Path) -> Self {
+    fn new(cat: &'static Catalog, walked: &'w Walked, root: &'w Path) -> Self {
         let by_key = walked
             .files
             .iter()
@@ -449,6 +512,7 @@ impl<'w> Builder<'w> {
             .filter_map(|(rel, b)| Some((norm_key(root.join(rel).to_str()?), b.clone())))
             .collect();
         Builder {
+            cat,
             walked,
             root,
             drafts: Vec::new(),
@@ -741,7 +805,11 @@ impl<'w> Builder<'w> {
             }
             let f = &self.walked.files[i];
             let ext = self.ext(i);
-            if !is_candidate(&f.rel) || is_executable(&f.rel) || f.size == 0 || ext == "sbi" {
+            if !is_candidate(self.cat, &f.rel)
+                || is_executable(&f.rel)
+                || f.size == 0
+                || ext == "sbi"
+            {
                 // `.sbi` files are claimed by their image below, when it exists.
                 if ext != "sbi" {
                     ignored.push(i);
@@ -778,10 +846,10 @@ impl<'w> Builder<'w> {
                 continue;
             }
             let computer = draft.layout == Layout::Flat && draft.files.len() == 1 && {
-                let systems = systems_for_extension(&ext);
+                let systems = official_for_extension(self.cat, &ext);
                 !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
             };
-            let disc = !computer && is_console_disc(&found_of(file, Vec::new(), false));
+            let disc = !computer && is_console_disc(self.cat, &found_of(file, Vec::new(), false));
             if computer || disc {
                 primaries.push(file.abs.clone());
                 draft_of.insert(file.abs.clone(), (d, disc));
@@ -872,8 +940,8 @@ fn found_of(file: &WalkFile, media: Vec<String>, is_dir: bool) -> Found {
 }
 
 /// Every unit's draft once grouping is done, in walk order of their primary entry.
-fn drafts(walked: &Walked, root: &Path) -> (Vec<Draft>, Vec<usize>) {
-    let mut b = Builder::new(walked, root);
+fn drafts(cat: &'static Catalog, walked: &Walked, root: &Path) -> (Vec<Draft>, Vec<usize>) {
+    let mut b = Builder::new(cat, walked, root);
     b.cues();
     b.playlists();
     b.tracks();
@@ -967,6 +1035,15 @@ impl Classified {
     }
 }
 
+/// Systems accepting `ext` that are official: the custom ones only count under their folder (ADR 0025 §12), so they
+/// never change what the tidy decides for a file of an official system, nor are offered as a choice.
+fn official_for_extension<'c>(cat: &'c Catalog, ext: &str) -> Vec<&'c SystemInfo> {
+    cat.for_extension(ext)
+        .into_iter()
+        .filter(|s| !s.is_custom())
+        .collect()
+}
+
 fn ids(systems: &[&SystemInfo]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in systems {
@@ -978,6 +1055,7 @@ fn ids(systems: &[&SystemInfo]) -> Vec<String> {
 }
 
 struct Classifier<'c> {
+    cat: &'static Catalog,
     conn: &'c Connection,
     names: NameIndex,
     discs: DiscIndex,
@@ -1016,7 +1094,7 @@ impl Classifier<'_> {
         } else {
             lower_ext(&found.path).unwrap_or_default()
         };
-        let analysis = match scan::analyze(found, self.max, cancel, &self.discs) {
+        let analysis = match scan::analyze_in(self.cat, found, self.max, cancel, &self.discs) {
             Ok(a) => a,
             Err(Failure::Cancelled) => return Err(LibraryError::Cancelled),
             Err(Failure::Empty) => return Ok(None),
@@ -1026,9 +1104,10 @@ impl Classifier<'_> {
             Err(Failure::Unclassified) => {
                 // Folder-only extension outside its folder (`.chd`, `.cue`, `.hdf`…): the candidates are every system
                 // accepting it, folder-only ones included; a single one is rule 5 (extension of one system).
-                let all = systems_for_extension(&ext);
+                let all = official_for_extension(self.cat, &ext);
                 let c = match all.as_slice() {
                     [one] => Classified::sure(&one.id, TidyReason::Extension, stem(&found.path)),
+                    [] => self.custom_extension(&ext, found),
                     _ => Classified::ambiguous(ids(&all)),
                 };
                 return Ok(Some((c, false)));
@@ -1093,7 +1172,7 @@ impl Classifier<'_> {
                     let candidate_ids = if ext == "zip" {
                         ids(candidates)
                     } else {
-                        ids(&systems_for_extension(&ext))
+                        ids(&official_for_extension(self.cat, &ext))
                     };
                     self.by_name(candidates, &stem, candidate_ids)?
                 } else {
@@ -1124,7 +1203,7 @@ impl Classifier<'_> {
                     let candidate_ids = if ext == "zip" {
                         ids(candidates)
                     } else {
-                        ids(&systems_for_extension(&ext))
+                        ids(&official_for_extension(self.cat, &ext))
                     };
                     self.by_name(candidates, &stem, candidate_ids)?
                 }
@@ -1143,10 +1222,19 @@ impl Classifier<'_> {
                     };
                     Classified::sure(&id.system, reason, title(id.title))
                 }
-                None => Classified::ambiguous(playlist_candidates(found, entries)),
+                None => Classified::ambiguous(playlist_candidates(self.cat, found, entries)),
             },
         };
         Ok(Some((classified, hashed)))
+    }
+
+    /// A file whose extension no official system takes outside its folder: when exactly one custom system has it, the
+    /// unit is suggested (unchecked, ADR 0025 §12 and Q17); when several have it, it is never proposed.
+    fn custom_extension(&self, ext: &str, found: &Found) -> Classified {
+        match self.cat.for_extension(ext).as_slice() {
+            [one] => Classified::suggested(&one.id, TidyReason::Extension, stem(&found.path)),
+            _ => Classified::status(TidyStatus::Unknown),
+        }
     }
 
     fn bin_header(&self, found: &Found) -> bool {
@@ -1155,8 +1243,8 @@ impl Classifier<'_> {
 }
 
 /// Systems accepting `.m3u` and the extension of every entry (all `.m3u` systems when none does).
-fn playlist_candidates(found: &Found, entries: &[scan::EntryCheck]) -> Vec<String> {
-    let all = systems_for_extension("m3u");
+fn playlist_candidates(cat: &Catalog, found: &Found, entries: &[scan::EntryCheck]) -> Vec<String> {
+    let all = cat.for_extension("m3u");
     // A disc entry attributed by its header names its system: the playlist goes with it.
     let headed: Vec<&SystemInfo> = entries
         .iter()
@@ -1185,13 +1273,36 @@ fn playlist_candidates(found: &Found, entries: &[scan::EntryCheck]) -> Vec<Strin
     }
 }
 
-/// `(id, system, title)` of the library row stored at `key`.
-fn known_row(conn: &Connection, key: &str) -> Result<Option<(i64, String, String)>, LibraryError> {
-    conn.prepare_cached("SELECT id, system, title FROM game WHERE path = ?1")
+/// A library row stored at a key: what the plan needs of it.
+struct KnownRow {
+    id: i64,
+    system: String,
+    title: String,
+    entry: Option<String>,
+    is_dir: bool,
+}
+
+fn known_row(conn: &Connection, key: &str) -> Result<Option<KnownRow>, LibraryError> {
+    conn.prepare_cached("SELECT id, system, title, entry, is_dir FROM game WHERE path = ?1")
         .map_err(db_error)?
-        .query_row([key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_row([key], |r| {
+            Ok(KnownRow {
+                id: r.get(0)?,
+                system: r.get(1)?,
+                title: r.get(2)?,
+                entry: r.get(3)?,
+                is_dir: r.get::<_, i64>(4)? != 0,
+            })
+        })
         .optional()
         .map_err(db_error)
+}
+
+/// `rel` is `<custom>` or lives under it, the folder compared without the case of ASCII letters.
+fn under_folder(rel: &Path, folder: &str) -> bool {
+    rel.components().next().is_some_and(
+        |c| matches!(c, std::path::Component::Normal(n) if n.to_string_lossy().eq_ignore_ascii_case(folder)),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1203,15 +1314,40 @@ pub(super) fn run(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<TidyPlan, LibraryError> {
+    run_in(conn, catalog(), options, cancel, progress, None, None)
+}
+
+/// [`run`] on a given catalog snapshot. `exempt`: a reserved folder (ADR 0025 §12) that is nevertheless a source,
+/// the one case being the switch of a custom system whose own folder is reserved in the catalog « after ».
+/// `switch` (with `exempt` = its custom id): the plan of a switch with move, which keeps only the units under
+/// `roms/<custom id>/` that the official system takes (design 8.0 §2.1): the rows of the custom id follow the
+/// official system when it accepts them, and the units it does not accept stay out of the plan.
+pub(super) fn run_in(
+    conn: &Connection,
+    cat: &'static Catalog,
+    options: &TidyOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&ScanProgress),
+    exempt: Option<&str>,
+    switch: Option<&SwitchMove>,
+) -> Result<TidyPlan, LibraryError> {
     scan::clear_probes();
     let root = options.roms_root();
     let root_dev = fs::metadata(root).ok().as_ref().and_then(dev_of);
-    let walked = walk(options, cancel)?;
-    let (drafts, ignored) = drafts(&walked, root);
+    let reserved = reserved_set(conn, cat, exempt)?;
+    let walked = walk(
+        cat,
+        &reserved,
+        options,
+        cancel,
+        switch.map(|sw| sw.custom_id.as_str()),
+    )?;
+    let (drafts, ignored) = drafts(cat, &walked, root);
     let mut classifier = Classifier {
+        cat,
         conn,
         names: NameIndex::default(),
-        discs: DiscIndex::load(conn)?,
+        discs: DiscIndex::load_in(cat, conn)?,
         max: options.max_file_size(),
     };
     let scan_root = normalize_root(options.scan_root());
@@ -1238,6 +1374,12 @@ pub(super) fn run(
             DraftKind::Odd(rel) => (rel.clone(), root.join(rel)),
             _ => (files[0].rel.clone(), files[0].abs.clone()),
         };
+        if let Some(sw) = switch
+            && !(under_folder(&rel, &sw.custom_id)
+                && files.iter().all(|f| under_folder(&f.rel, &sw.custom_id)))
+        {
+            continue;
+        }
         state.files_seen += 1;
         state.current = Some(primary_abs.clone());
         let extension = match &draft.kind {
@@ -1282,7 +1424,7 @@ pub(super) fn run(
         };
         if let Some(block) = draft.block.clone() {
             m.base = TidyStatus::Blocked(block);
-        } else if let Some((id, system, title)) = scan_root
+        } else if let Some(row) = scan_root
             .join(&rel)
             .to_str()
             .map(|key| known_row(conn, key))
@@ -1290,18 +1432,39 @@ pub(super) fn run(
             .flatten()
         {
             // Known game: the system of its row (its saves live under that system's core).
-            unit.known_game = Some(GameId(id));
-            unit.title = title;
-            unit.candidates = systems_for_extension(&extension)
-                .iter()
-                .filter(|s| s.id != system)
-                .map(|s| s.id.clone())
-                .collect();
-            m.choosable = !unit.candidates.is_empty();
-            m.base = TidyStatus::Sure(TidyReason::Library);
-            unit.system = Some(system.clone());
-            m.row_system = Some(system);
-            state.identified += 1;
+            unit.known_game = Some(GameId(row.id));
+            unit.title = row.title.clone();
+            let mut system = row.system.clone();
+            if let Some(sw) = switch.filter(|sw| sw.custom_id == system) {
+                // The row follows the official system when it accepts it; else it stays, frozen, out of the plan.
+                let accepted = cat.system(&sw.official_id).is_some_and(|o| {
+                    scan::accepts_row(o, &rel.to_string_lossy(), row.entry.as_deref(), row.is_dir)
+                });
+                if !accepted {
+                    continue;
+                }
+                system.clone_from(&sw.official_id);
+            }
+            if cat.system(&system).is_none() {
+                // Its system is not in the catalog (retired, in error, masked): nothing is put into `roms/<id>/`
+                // of a system that is absent (ADR 0025 §12); the game stays where it is.
+                m.base = TidyStatus::Unknown;
+            } else {
+                unit.candidates = if switch.is_some() {
+                    Vec::new()
+                } else {
+                    official_for_extension(cat, &extension)
+                        .iter()
+                        .filter(|s| s.id != system)
+                        .map(|s| s.id.clone())
+                        .collect()
+                };
+                m.choosable = !unit.candidates.is_empty();
+                m.base = TidyStatus::Sure(TidyReason::Library);
+                unit.system = Some(system.clone());
+                m.row_system = Some(system);
+                state.identified += 1;
+            }
         } else {
             let (found, kind) = match &draft.kind {
                 DraftKind::GameDir(i) => {
@@ -1315,7 +1478,7 @@ pub(super) fn run(
                         path: primary_abs.clone(),
                         key: primary_abs.to_string_lossy().into_owned(),
                         // Analysed like a folder of `roms/dos/` (design §10.1): the folder rule is the only way in.
-                        folders: vec![dos_id()],
+                        folders: vec![dos_id(cat)],
                         file_size: root_files.iter().map(|f| f.size).sum(),
                         mtime: root_files.iter().map(|f| f.mtime).max().unwrap_or(0),
                         media: Vec::new(),
@@ -1350,6 +1513,25 @@ pub(super) fn run(
                     if let Some(t) = c.title.filter(|t| !t.is_empty()) {
                         unit.title = t;
                     }
+                    if let Some(sw) = switch {
+                        // A file the library does not know yet: it goes to the official system when that is
+                        // what the analysis says, or one of the choices of an ambiguous unit; else it stays.
+                        let blocked = matches!(m.base, TidyStatus::Blocked(_));
+                        let takes = unit.system.as_deref() == Some(sw.official_id.as_str())
+                            || unit.candidates.contains(&sw.official_id);
+                        if !blocked && !takes {
+                            ignored_extra.push(rel.clone());
+                            continue;
+                        }
+                        if m.base == TidyStatus::Ambiguous {
+                            m.base = TidyStatus::Sure(TidyReason::Extension);
+                        }
+                        if !blocked {
+                            unit.system = Some(sw.official_id.clone());
+                        }
+                        unit.candidates.clear();
+                        m.choosable = false;
+                    }
                 }
             }
         }
@@ -1360,27 +1542,38 @@ pub(super) fn run(
             progress(&state);
         }
     }
+    // A switch plan speaks of `roms/<custom id>/` only (design 8.0 §0.10): what it ignores there stays in that
+    // folder (files the official system does not recognize, links, firmware, unreadable names).
     let mut ignored_paths: Vec<PathBuf> = walked.ignored_paths.clone();
     let mut ignored_count = walked.ignored;
-    for i in ignored {
+    let in_scope = |rel: &Path| switch.is_none_or(|sw| under_folder(rel, &sw.custom_id));
+    let later = ignored
+        .iter()
+        .map(|&i| walked.files[i].rel.as_path())
+        .chain(ignored_extra.iter().map(PathBuf::as_path))
+        .filter(|rel| in_scope(rel));
+    for rel in later {
         ignored_count += 1;
         if ignored_paths.len() < MAX_IGNORED_PATHS {
-            ignored_paths.push(walked.files[i].rel.clone());
-        }
-    }
-    for rel in ignored_extra {
-        ignored_count += 1;
-        if ignored_paths.len() < MAX_IGNORED_PATHS {
-            ignored_paths.push(rel);
+            ignored_paths.push(rel.to_path_buf());
         }
     }
     let mut plan = TidyPlan {
         units,
-        already_tidy: walked.already_tidy,
+        already_tidy: if switch.is_some() {
+            0
+        } else {
+            walked.already_tidy
+        },
+        reserved_folders: walked.reserved.iter().cloned().collect(),
         ignored: ignored_count,
         ignored_paths,
+        switch_frozen: Vec::new(),
+        switch: switch.cloned(),
         meta,
         context: PlanContext {
+            cat: Snapshot(cat),
+            reserved,
             root: root.to_path_buf(),
             root_dev,
             max_file_size: options.max_file_size(),
@@ -1393,8 +1586,31 @@ pub(super) fn run(
     Ok(plan)
 }
 
-fn dos_id() -> String {
-    crate::systems()
+/// Folders the plan leaves alone: the catalog's reserved ids (retired, broken, masked) plus the ids of the library's
+/// rows that the catalog lacks, minus `exempt` (ADR 0025 §12). An active id is never reserved.
+pub(super) fn reserved_set(
+    conn: &Connection,
+    cat: &Catalog,
+    exempt: Option<&str>,
+) -> Result<BTreeSet<String>, LibraryError> {
+    let mut reserved: BTreeSet<String> = cat.reserved_folders().iter().cloned().collect();
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT system FROM game")
+        .map_err(db_error)?;
+    let in_library = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    reserved.extend(in_library.into_iter().filter(|id| cat.system(id).is_none()));
+    if let Some(id) = exempt {
+        reserved.remove(id);
+    }
+    Ok(reserved)
+}
+
+fn dos_id(cat: &Catalog) -> String {
+    cat.systems()
         .iter()
         .find(|s| s.folder_games)
         .map_or_else(|| "dos".to_owned(), |s| s.id.clone())
@@ -1629,7 +1845,9 @@ fn check(
     for folder in created {
         for c in folder.components().skip(1) {
             let name = c.as_os_str().to_string_lossy();
-            if is_system_id(&name) {
+            if is_system_id(context.cat.get(), &name)
+                || reserved_match(&context.reserved, &name).is_some()
+            {
                 return Some(TidyBlock::FolderNamedLikeSystem {
                     name: name.into_owned(),
                 });

@@ -1,6 +1,8 @@
-//! Tidy journal, format version 1 (ADR 0023 §4.5 and §4.8, design v7.1 §3.4.1 which is authoritative). Written
-//! before anything moves; read by the recovery, the undo, the identity step and « Annuler le dernier rangement ».
-//! This module encodes, parses (strict grammar), lists and appends; `exec.rs` gives the lines their meaning.
+//! Tidy journal, format version 1 (ADR 0023 §4.5 and §4.8, design v7.1 §3.4.1 which is authoritative) and version
+//! 2, reserved to the switch with move of a custom system (ADR 0023, amendment of 2026-11-27, design 8.0 §2.6).
+//! Written before anything moves; read by the recovery, the undo, the identity step and « Annuler le dernier
+//! rangement ». This module encodes, parses (strict grammar), lists and appends; `exec.rs` gives the lines their
+//! meaning.
 //!
 //! File: `<journal_dir>/journal-<unix>.txt` (`journal-<unix>-<k>.txt` when that name is taken), UTF-8 text, one
 //! record per line ending with `\n`, never rewritten in place (only cut back to its last `\n` before appending),
@@ -20,8 +22,13 @@
 //! C <unit>                                      block committed (moves done and library rewritten)
 //! E                                             end of the run (or of its recovery)
 //! U                                             end of the undo section (or of its recovery)
+//! F                                             version 2 only: switch end done (definition retired or restored)
 //! I                                             identity registries rewritten (`emu_runtime::relocate_identities`)
 //! ```
+//!
+//! Version 2 (`emu-rust tidy 2`) has four more header lines after `R`: `X <custom> <official> <retired name> <n>`,
+//! `K copy|user|official`, `P - | core{,core}`, `Q - | encoded profile`; `F` follows `E` or `U` at once (`E F I`).
+//! The switch types and their rules are in [`SwitchHeader`] and the validator below.
 //!
 //! Grammar (anything else refuses the whole journal, error with the line number, never its content):
 //! `header [forward [undo]]`, `forward = {block} [E [I]]`, `undo = {block} [U [I]]` (only after `E`),
@@ -48,12 +55,19 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
-use super::TidyJournalInfo;
 use super::plan::PART_SUFFIX;
 use super::sys::Sys;
+use super::{KeysChoice, SwitchDirection, SwitchMove, TidyJournalInfo};
 use crate::LibraryError;
+use crate::custom::{
+    Retirement, is_valid_core_id, is_valid_id_syntax, parse_retired_name, retired_file_name,
+};
 
 pub(crate) const MAGIC: &str = "emu-rust tidy 1";
+pub(crate) const MAGIC_V2: &str = "emu-rust tidy 2";
+/// Cores of the `P` line, and the decoded size of the `Q` line (design 8.0 §2.6).
+const MAX_PRIOR_CORES: usize = 8;
+pub(crate) const MAX_PRIOR_PROFILE: usize = 16 * 1024;
 /// Read bound (design v7.1 §3.4.1).
 pub(crate) const MAX_JOURNAL_SIZE: u64 = 16 * 1024 * 1024;
 /// A forward section is closed before the file would exceed this, so its undo always fits under the read bound.
@@ -90,6 +104,8 @@ pub(crate) enum Op {
     DirRemoved(PathBuf),
     Commit(u32),
     End,
+    /// Version 2: the switch end is done.
+    Final,
     Identities,
     Undone,
 }
@@ -174,6 +190,202 @@ pub(crate) struct Journal {
     pub(crate) torn: bool,
     /// Bytes of the complete lines (header included).
     pub(crate) len: u64,
+    /// Version 2: the switch this journal records.
+    pub(crate) switch: Option<SwitchHeader>,
+    /// Version 2: an `F` follows the `E` of the forward section / the `U` of the undo section.
+    pub(crate) forward_final: bool,
+    pub(crate) undo_final: bool,
+}
+
+/// The four header lines `X K P Q` of a version 2 journal (design 8.0 §2.6, ADR 0023 §4.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwitchHeader {
+    pub(crate) custom_id: String,
+    pub(crate) official_id: String,
+    /// `retired_file_name(custom_id, Replaced, unix of the journal)`.
+    pub(crate) retired_name: String,
+    /// Units of the plan, `1..`; every block names a unit below it.
+    pub(crate) units: u32,
+    pub(crate) keys: KeysChoice,
+    pub(crate) prior_preference: Option<Vec<String>>,
+    pub(crate) prior_profile: Option<String>,
+}
+
+impl SwitchHeader {
+    pub(crate) fn switch(&self) -> SwitchMove {
+        SwitchMove {
+            custom_id: self.custom_id.clone(),
+            official_id: self.official_id.clone(),
+        }
+    }
+
+    /// The `X K P Q` lines, `\n` included; `None` for a value the grammar refuses (ids, core ids, profile size).
+    fn lines(&self) -> Option<[String; 4]> {
+        let valid = is_valid_id_syntax(&self.custom_id)
+            && is_valid_id_syntax(&self.official_id)
+            && self.custom_id != self.official_id
+            && self.units >= 1
+            && parse_retired_name(&self.retired_name)
+                .is_some_and(|(id, why, _)| id == self.custom_id && why == Retirement::Replaced);
+        if !valid {
+            return None;
+        }
+        let keys = match self.keys {
+            KeysChoice::Copy => "copy",
+            KeysChoice::KeepUser => "user",
+            KeysChoice::KeepOfficial => "official",
+        };
+        let cores = match self.prior_preference.as_deref() {
+            None | Some([]) => "-".to_owned(),
+            Some(list) => {
+                let mut seen = HashSet::new();
+                let ok = list.len() <= MAX_PRIOR_CORES
+                    && list
+                        .iter()
+                        .all(|c| c != "-" && is_valid_core_id(c) && seen.insert(c.as_str()));
+                if !ok {
+                    return None;
+                }
+                list.join(",")
+            }
+        };
+        let profile = match self.prior_profile.as_deref() {
+            None | Some("") => "-".to_owned(),
+            Some(p) if p.len() > MAX_PRIOR_PROFILE => return None,
+            Some("-") => "%2D".to_owned(),
+            Some(p) => escape_profile(p.as_bytes()),
+        };
+        Some([
+            format!(
+                "X {} {} {} {}\n",
+                self.custom_id, self.official_id, self.retired_name, self.units
+            ),
+            format!("K {keys}\n"),
+            format!("P {cores}\n"),
+            format!("Q {profile}\n"),
+        ])
+    }
+}
+
+/// Canonical profile encoding: bytes `0x21..=0x7E` but `%` as they are, the others as `%XX` (upper-case hex).
+fn escape_profile(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if (0x21..=0x7E).contains(&b) && b != b'%' {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_profile`], canonical forms only: a lower-case or incomplete `%XX`, a raw byte that must be
+/// escaped, an escape of a byte that is written as it is (but the profile `-` alone, `%2D`) refuse the line.
+fn unescape_profile(field: &str) -> Option<Vec<u8>> {
+    // The one-byte profile `-` is `%2D` (`-` alone is « none »); the loop below refuses that escape elsewhere.
+    if field == "%2D" {
+        return Some(b"-".to_vec());
+    }
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hex = field.get(i + 1..i + 3)?;
+                if !hex
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'A'..=b'F').contains(&c))
+                {
+                    return None;
+                }
+                let byte = u8::from_str_radix(hex, 16).ok()?;
+                if (0x21..=0x7E).contains(&byte) && byte != b'%' {
+                    return None;
+                }
+                out.push(byte);
+                i += 3;
+            }
+            b if (0x21..=0x7E).contains(&b) => {
+                out.push(b);
+                i += 1;
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// `X K P Q` lines → header; `None` outside the grammar.
+fn parse_switch_header(lines: &[&str]) -> Option<SwitchHeader> {
+    let [x, k, p, q] = lines else { return None };
+    let fields: Vec<&str> = x.split(' ').collect();
+    let ["X", custom, official, retired, n] = fields.as_slice() else {
+        return None;
+    };
+    let (id, why, _) = parse_retired_name(retired)?;
+    let units: u32 = canonical(n)?;
+    if !is_valid_id_syntax(custom)
+        || !is_valid_id_syntax(official)
+        || custom == official
+        || units == 0
+        || id != *custom
+        || why != Retirement::Replaced
+    {
+        return None;
+    }
+    let keys = match *k {
+        "K copy" => KeysChoice::Copy,
+        "K user" => KeysChoice::KeepUser,
+        "K official" => KeysChoice::KeepOfficial,
+        _ => return None,
+    };
+    let prior_preference = match p.strip_prefix("P ")? {
+        "-" => None,
+        list => {
+            let cores: Vec<&str> = list.split(',').collect();
+            let mut seen = HashSet::new();
+            let ok = cores.len() <= MAX_PRIOR_CORES
+                && cores
+                    .iter()
+                    .all(|c| *c != "-" && is_valid_core_id(c) && seen.insert(*c));
+            if !ok {
+                return None;
+            }
+            Some(cores.into_iter().map(str::to_owned).collect())
+        }
+    };
+    let prior_profile = match q.strip_prefix("Q ")? {
+        "-" => None,
+        field => {
+            let bytes = unescape_profile(field)?;
+            if bytes.is_empty() || bytes.len() > MAX_PRIOR_PROFILE {
+                return None;
+            }
+            Some(String::from_utf8(bytes).ok()?)
+        }
+    };
+    Some(SwitchHeader {
+        custom_id: (*custom).to_owned(),
+        official_id: (*official).to_owned(),
+        retired_name: (*retired).to_owned(),
+        units,
+        keys,
+        prior_preference,
+        prior_profile,
+    })
+}
+
+/// The six header lines of a version 2 journal, `\n` included; `None` for a relative root or a refused value.
+pub(crate) fn switch_header_lines(root: &Path, header: &SwitchHeader) -> Option<Vec<String>> {
+    if !root.is_absolute() {
+        return None;
+    }
+    let root = escape(&os_bytes(root.as_os_str())?, b"/\\:");
+    let mut lines = vec![format!("{MAGIC_V2}\n"), format!("R {root}\n")];
+    lines.extend(header.lines()?);
+    Some(lines)
 }
 
 fn journal_error(path: &Path, message: impl Into<String>) -> LibraryError {
@@ -413,6 +625,7 @@ pub(crate) fn encode(op: &Op) -> Option<String> {
         Op::DirRemoved(dir) => format!("D- {}", encode_rel(dir)?),
         Op::Commit(u) => format!("C {u}"),
         Op::End => "E".to_owned(),
+        Op::Final => "F".to_owned(),
         Op::Identities => "I".to_owned(),
         Op::Undone => "U".to_owned(),
     };
@@ -451,6 +664,7 @@ fn parse_op(line: &str) -> Option<Op> {
         ["D-", d] => Op::DirRemoved(decode_rel(d)?),
         ["C", u] => Op::Commit(canonical(u)?),
         ["E"] => Op::End,
+        ["F"] => Op::Final,
         ["I"] => Op::Identities,
         ["U"] => Op::Undone,
         _ => return None,
@@ -462,10 +676,28 @@ fn parse_op(line: &str) -> Option<Op> {
 enum Phase {
     Forward,
     AfterE,
+    /// Version 2: `E F`.
+    AfterEF,
     AfterEI,
+    /// Version 2: `E F I`.
+    AfterEFI,
     Undo,
     AfterU,
+    /// Version 2: `U F`.
+    AfterUF,
     AfterUI,
+    /// Version 2: `U F I`.
+    AfterUFI,
+}
+
+impl Phase {
+    /// The forward section is closed: an undo section may open, or `U` come.
+    fn after_forward(self) -> bool {
+        matches!(
+            self,
+            Phase::AfterE | Phase::AfterEF | Phase::AfterEI | Phase::AfterEFI
+        )
+    }
 }
 
 /// Checks of the open block.
@@ -512,6 +744,11 @@ struct Validator {
     seen: HashSet<u32>,
     /// Committed forward blocks by unit (index in `forward`).
     committed: HashMap<u32, usize>,
+    /// Version 2: units of the plan; units committed by the undo section.
+    units: Option<u32>,
+    undone: HashSet<u32>,
+    forward_final: bool,
+    undo_final: bool,
 }
 
 impl Validator {
@@ -529,13 +766,16 @@ impl Validator {
     }
 
     fn begin(&mut self, u: u32) -> Option<()> {
+        if self.units.is_some_and(|n| u >= n) {
+            return None;
+        }
         match self.phase {
             Phase::Forward | Phase::Undo => {}
-            Phase::AfterE | Phase::AfterEI => {
+            p if p.after_forward() => {
                 self.phase = Phase::Undo;
                 self.seen.clear();
             }
-            Phase::AfterU | Phase::AfterUI => return None,
+            _ => return None,
         }
         self.close_open();
         if !self.seen.insert(u) {
@@ -575,6 +815,7 @@ impl Validator {
         let mut open = self.open.take()?;
         open.block.committed = true;
         if self.phase == Phase::Undo {
+            self.undone.insert(u);
             self.undo.push(open.block);
         } else {
             self.committed.insert(u, self.forward.len());
@@ -693,17 +934,49 @@ impl Validator {
                 Some(())
             }
             Op::Undone => {
-                if !matches!(self.phase, Phase::AfterE | Phase::AfterEI | Phase::Undo) {
+                if !(self.phase.after_forward() || self.phase == Phase::Undo) {
                     return None;
                 }
                 self.close_open();
                 self.phase = Phase::AfterU;
                 Some(())
             }
+            Op::Final => {
+                let n = self.units?;
+                match self.phase {
+                    // Only a switch whose every unit has a validated block of the run is ended.
+                    Phase::AfterE if self.committed.len() == n as usize => {
+                        self.forward_final = true;
+                        self.phase = Phase::AfterEF;
+                    }
+                    Phase::AfterU if self.forward_final && self.undone.len() == n as usize => {
+                        self.undo_final = true;
+                        self.phase = Phase::AfterUF;
+                    }
+                    _ => return None,
+                }
+                Some(())
+            }
             Op::Identities => {
                 self.phase = match self.phase {
+                    // `I` right after the `E` / `U` of a switch end that is due: `F` must come first.
+                    Phase::AfterE
+                        if self
+                            .units
+                            .is_some_and(|n| self.committed.len() == n as usize) =>
+                    {
+                        return None;
+                    }
+                    Phase::AfterU
+                        if self.forward_final
+                            && self.units.is_some_and(|n| self.undone.len() == n as usize) =>
+                    {
+                        return None;
+                    }
                     Phase::AfterE => Phase::AfterEI,
+                    Phase::AfterEF => Phase::AfterEFI,
                     Phase::AfterU => Phase::AfterUI,
+                    Phase::AfterUF => Phase::AfterUFI,
                     _ => return None,
                 };
                 Some(())
@@ -713,14 +986,20 @@ impl Validator {
     }
 }
 
-/// `true` for an empty file or a cut header: « nothing moved » (FV0 11).
+/// `true` for an empty file or a cut header: « nothing moved » (FV0 11). Version 2: fewer than the six header
+/// lines, each complete one valid, the cut one a prefix of its line.
 fn is_cut_header(bytes: &[u8]) -> bool {
+    let (first, second) = (format!("{MAGIC}\n"), format!("{MAGIC_V2}\n"));
+    if bytes.len() <= first.len()
+        && (first.as_bytes().starts_with(bytes) || second.as_bytes().starts_with(bytes))
+    {
+        return true;
+    }
+    if let Some(rest) = bytes.strip_prefix(second.as_bytes()) {
+        return is_cut_switch_header(rest);
+    }
     if bytes.iter().filter(|&&b| b == b'\n').count() >= 2 {
         return false;
-    }
-    let first = format!("{MAGIC}\n");
-    if bytes.len() <= first.len() {
-        return first.as_bytes().starts_with(bytes);
     }
     let Some(rest) = bytes.strip_prefix(first.as_bytes()) else {
         return false;
@@ -729,8 +1008,51 @@ fn is_cut_header(bytes: &[u8]) -> bool {
     b"R ".starts_with(&rest[..rest.len().min(2)])
 }
 
+/// After the version 2 magic line: `R`, `X`, `K`, `P`, `Q` lines, the last complete or not at all.
+fn is_cut_switch_header(rest: &[u8]) -> bool {
+    const TAGS: [&str; 5] = ["R ", "X ", "K ", "P ", "Q "];
+    let Ok(text) = std::str::from_utf8(rest) else {
+        return false;
+    };
+    let complete = text.rfind('\n').map_or("", |i| &text[..=i]);
+    let tail = &text[complete.len()..];
+    let lines: Vec<&str> = complete.split_terminator('\n').collect();
+    if lines.len() >= TAGS.len() {
+        return false;
+    }
+    let valid = lines.iter().enumerate().all(|(i, line)| match i {
+        0 => line
+            .strip_prefix("R ")
+            .and_then(unescape_root)
+            .is_some_and(|r| r.is_absolute()),
+        // The `X` line is checked like the complete header; its retired name against the file name by `read`.
+        _ => switch_line_ok(i, line),
+    });
+    valid
+        && TAGS[lines.len()]
+            .as_bytes()
+            .starts_with(&tail.as_bytes()[..tail.len().min(2)])
+}
+
+/// One of the `X K P Q` lines (index 1 to 4 of the header after the magic line), checked alone.
+fn switch_line_ok(index: usize, line: &str) -> bool {
+    match index {
+        1 => {
+            let f: Vec<&str> = line.split(' ').collect();
+            // As `parse_switch_header`: the retired name is a `Replaced` one of the custom id.
+            matches!(f.as_slice(), ["X", c, o, r, n]
+                if is_valid_id_syntax(c) && is_valid_id_syntax(o) && c != o
+                    && parse_retired_name(r).is_some_and(|(id, why, _)| id == *c && why == Retirement::Replaced)
+                    && canonical::<u32>(n).is_some_and(|n| n >= 1))
+        }
+        2 => matches!(line, "K copy" | "K user" | "K official"),
+        3 => parse_switch_header(&["X a b a-1.replaced.toml 1", "K copy", line, "Q -"]).is_some(),
+        _ => parse_switch_header(&["X a b a-1.replaced.toml 1", "K copy", "P -", line]).is_some(),
+    }
+}
+
 /// Parses a whole journal; `Ok(None)`: empty or cut header. The error is a French message without any of the
-/// file's content.
+/// file's content. The retired name of a version 2 journal is checked against the file name by [`read`].
 pub(crate) fn parse(bytes: &[u8]) -> Result<Option<Journal>, String> {
     if is_cut_header(bytes) {
         return Ok(None);
@@ -742,15 +1064,27 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Option<Journal>, String> {
         None => "",
     };
     let mut lines = complete.split('\n');
-    if lines.next() != Some(MAGIC) {
-        return Err("en-tête absent ou version inconnue".to_owned());
-    }
+    let version2 = match lines.next() {
+        Some(MAGIC) => false,
+        Some(MAGIC_V2) => true,
+        _ => return Err("en-tête absent ou version inconnue".to_owned()),
+    };
     let root = lines
         .next()
         .and_then(|l| l.strip_prefix("R "))
         .and_then(unescape_root)
         .filter(|r| r.is_absolute())
         .ok_or_else(|| "racine absente ou invalide (ligne 2)".to_owned())?;
+    let switch = if version2 {
+        let head: Vec<&str> = lines.by_ref().take(4).collect();
+        Some(
+            parse_switch_header(&head)
+                .ok_or_else(|| "en-tête de bascule invalide (lignes 3 à 6)".to_owned())?,
+        )
+    } else {
+        None
+    };
+    let skipped = if version2 { 6 } else { 2 };
     let mut v = Validator {
         phase: Phase::Forward,
         forward: Vec::new(),
@@ -758,19 +1092,23 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Option<Journal>, String> {
         open: None,
         seen: HashSet::new(),
         committed: HashMap::new(),
+        units: switch.as_ref().map(|h| h.units),
+        undone: HashSet::new(),
+        forward_final: false,
+        undo_final: false,
     };
     for (index, line) in lines.enumerate() {
-        let invalid = || format!("ligne {} invalide", index + 3);
+        let invalid = || format!("ligne {} invalide", index + 1 + skipped);
         let op = parse_op(line).ok_or_else(invalid)?;
         v.line(op).ok_or_else(invalid)?;
     }
     let state = match v.phase {
         Phase::Forward => State::Running,
-        Phase::AfterE => State::Ended,
-        Phase::AfterEI => State::EndedMarked,
+        Phase::AfterE | Phase::AfterEF => State::Ended,
+        Phase::AfterEI | Phase::AfterEFI => State::EndedMarked,
         Phase::Undo => State::Undoing,
-        Phase::AfterU => State::Undone,
-        Phase::AfterUI => State::UndoneMarked,
+        Phase::AfterU | Phase::AfterUF => State::Undone,
+        Phase::AfterUI | Phase::AfterUFI => State::UndoneMarked,
     };
     v.close_open();
     Ok(Some(Journal {
@@ -780,6 +1118,9 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Option<Journal>, String> {
         state,
         torn,
         len: complete.len() as u64 + 1,
+        switch,
+        forward_final: v.forward_final,
+        undo_final: v.undo_final,
     }))
 }
 
@@ -823,7 +1164,24 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, LibraryError> {
 /// Reads and parses `path` (at most [`MAX_JOURNAL_SIZE`] bytes); `Ok(None)`: empty or cut header.
 pub(crate) fn read(path: &Path) -> Result<Option<Journal>, LibraryError> {
     let bytes = read_bytes(path)?;
-    parse(&bytes).map_err(|m| journal_error(path, m))
+    let journal = parse(&bytes).map_err(|m| journal_error(path, m))?;
+    // A version 2 journal is never suffixed `-<k>` and its retired name is the one of its own file name.
+    if let Some(header) = journal.as_ref().and_then(|j| j.switch.as_ref()) {
+        let unix = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(parse_name)
+            .filter(|&(_, k)| k == 0)
+            .and_then(|(unix, _)| u64::try_from(unix).ok());
+        let expected = unix.map(|u| retired_file_name(&header.custom_id, Retirement::Replaced, u));
+        if expected.as_deref() != Some(header.retired_name.as_str()) {
+            return Err(journal_error(
+                path,
+                "nom du journal incompatible avec la bascule qu'il décrit",
+            ));
+        }
+    }
+    Ok(journal)
 }
 
 /// `journal-<unix>.txt` / `journal-<unix>-<k>.txt` (k ≥ 1) → `(unix, k)`; canonical digits only (M3).
@@ -919,7 +1277,38 @@ impl Journal {
             undone: matches!(self.state, State::Undone | State::UndoneMarked),
             complete: !self.state.in_progress(),
             identities_done: matches!(self.state, State::EndedMarked | State::UndoneMarked),
+            switch: self.switch.as_ref().map(SwitchHeader::switch),
+            end_due: self.end_due().is_some(),
         }
+    }
+
+    /// Units with a validated block in the forward section.
+    pub(crate) fn committed_units(&self) -> usize {
+        self.forward.iter().filter(|b| b.committed).count()
+    }
+
+    /// A switch end is due (design 8.0 §2.6): forward, last line `E` with every unit validated and no `F`; or
+    /// undo, last line `U` after a forward `F` with every unit back and no `F`.
+    pub(crate) fn end_due(&self) -> Option<SwitchDirection> {
+        let n = self.switch.as_ref()?.units as usize;
+        match self.state {
+            State::Ended if !self.forward_final && self.committed_units() == n => {
+                Some(SwitchDirection::Forward)
+            }
+            State::Undone
+                if self.forward_final
+                    && !self.undo_final
+                    && self.undo.iter().filter(|b| b.committed).count() == n =>
+            {
+                Some(SwitchDirection::Undo)
+            }
+            _ => None,
+        }
+    }
+
+    /// The identity step is due: closed by `E` or `U` (or the `F` after them), not a switch end waiting for its `F`.
+    pub(crate) fn identities_due(&self) -> bool {
+        self.state.identities_due() && self.end_due().is_none()
     }
 
     /// Moves (`M` / `W`) of the committed blocks of the forward section.
@@ -1010,6 +1399,44 @@ impl JournalWriter {
         Err(write_error(dir, "trop de journaux pour la même seconde"))
     }
 
+    /// Version 2: creates exactly `<dir>/journal-<unix>.txt` (never suffixed; `AlreadyExists` when the name is
+    /// taken, the caller then tries a later second), syncs the folder, then writes the six header lines, each one
+    /// synced alone. A crash after any byte leaves a cut header (nothing moved) or a complete one.
+    pub(crate) fn create_switch(
+        sys: &dyn Sys,
+        dir: &Path,
+        root: &Path,
+        header: &SwitchHeader,
+        unix: i64,
+    ) -> Result<Self, LibraryError> {
+        let lines = switch_header_lines(root, header)
+            .ok_or_else(|| write_error(root, "en-tête de bascule impossible à journaliser"))?;
+        let path = dir.join(file_name(unix, 0));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|source| LibraryError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        sys.sync_dir(dir).map_err(|source| LibraryError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let mut writer = JournalWriter {
+            file,
+            path,
+            len: 0,
+            poisoned: false,
+        };
+        for line in &lines {
+            writer.write(sys, line)?;
+        }
+        Ok(writer)
+    }
+
     /// Opens an existing journal to append to it: first cuts it back to its last `\n` and syncs (I1), so a torn
     /// line is never glued to the next record. No `\n` is ever added to « repair » a line.
     pub(crate) fn append_to(sys: &dyn Sys, path: &Path) -> Result<Self, LibraryError> {
@@ -1087,3 +1514,6 @@ pub(crate) fn encoded_len(ops: &[Op]) -> Option<u64> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod switch_tests;

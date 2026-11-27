@@ -85,7 +85,7 @@ fn system_names(info: Option<&CoreInfo>) -> Vec<String> {
     for db in info.map_or(&[][..], |i| i.databases.as_slice()) {
         let name = emu_library::systems()
             .iter()
-            .find(|s| &s.database == db)
+            .find(|s| s.libretro_name() == Some(db.as_str()))
             .map_or_else(|| db.clone(), |s| s.name.clone());
         if !names.contains(&name) {
             names.push(name);
@@ -101,7 +101,7 @@ fn served_systems(prefs: &CorePreferences) -> BTreeMap<&CoreId, Vec<String>> {
         let mut names = vec![database.to_lowercase()];
         if let Some(s) = emu_library::systems()
             .iter()
-            .find(|s| s.database == database)
+            .find(|s| s.core_key() == database)
         {
             names.push(s.name.to_lowercase());
             names.push(s.id.to_lowercase());
@@ -122,9 +122,11 @@ pub(crate) fn rows(
     in_use: Option<&CoreId>,
     checks: &Checks,
 ) -> Vec<CoreRow> {
+    // A core of a system the user added (not in `cores.toml`) is theirs, not a recommendation.
     let recommended: BTreeSet<&CoreId> = prefs
         .systems()
         .flat_map(|(_, cores)| cores.iter().take(1))
+        .filter(|core| prefs.is_examined(core))
         .collect();
     let wanted: BTreeSet<&CoreId> = prefs
         .systems()
@@ -229,7 +231,8 @@ pub(crate) fn rows(
     out
 }
 
-/// Cores to install for "install recommended cores": the first core of each system, not installed yet.
+/// Cores to install for "install recommended cores": the first core of each system, not installed yet. A core
+/// that `cores.toml` does not list (a system the user added) is never part of it.
 pub(crate) fn recommended_missing(
     prefs: &CorePreferences,
     installed: &[InstalledCore],
@@ -237,6 +240,7 @@ pub(crate) fn recommended_missing(
     let mut out: Vec<CoreId> = Vec::new();
     for (_, cores) in prefs.systems() {
         if let Some(first) = cores.first()
+            && prefs.is_examined(first)
             && !out.contains(first)
             && !installed.iter().any(|c| &c.id == first)
         {
@@ -502,5 +506,27 @@ mod tests {
         assert_eq!(names.len(), expected.len());
         let some = recommended_missing(&prefs, &[managed("snes9x", 1, false)]);
         assert_eq!(some.len(), expected.len() - 1);
+    }
+
+    #[test]
+    fn the_core_of_a_system_the_user_added_is_not_recommended() {
+        let prefs = CorePreferences::builtin().with_custom_systems(
+            &[("Acme - Fictional".to_owned(), vec![id("fictional")])],
+            &[],
+        );
+        assert!(!recommended_missing(&prefs, &[]).contains(&id("fictional")));
+        let rows = rows(
+            &[],
+            None,
+            &BTreeMap::new(),
+            &prefs,
+            &RowFilter::default(),
+            None,
+            &Checks::default(),
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.id != id("fictional") || !r.recommended)
+        );
     }
 }

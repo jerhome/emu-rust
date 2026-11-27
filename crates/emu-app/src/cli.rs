@@ -17,7 +17,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad] [--wizard]\n\
                          \x20                [--screen library|library-settings|library-help|library-log|cores|\n\
                          \x20                          library-launch|library-tidy|library-tidy-report|\n\
-                         \x20                          library-tidy-undo|wizard]\n\
+                         \x20                          library-tidy-undo|wizard|custom-add|custom-sheet|\n\
+                         \x20                          custom-settings|switch-banner|switch-preview]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -163,9 +164,21 @@ pub enum Command {
     Version,
 }
 
-/// `emu-rust <version>`, from the crate version.
+/// The hidden argument of the dry-run child (ADR 0025 §5).
+pub const DRY_RUN_CHILD_ARG: &str = "--dry-run-child";
+
+/// The request file when the arguments are exactly `--dry-run-child <file>`: the child of a dry run. Looked for
+/// before anything else, and by this exact shape only (never mixed with other options).
+pub fn dry_run_child_request(args: &[OsString]) -> Option<PathBuf> {
+    match args {
+        [flag, file] if flag.as_os_str() == DRY_RUN_CHILD_ARG => Some(PathBuf::from(file)),
+        _ => None,
+    }
+}
+
+/// `emu-rust <version>[+<commit>]`.
 pub fn version_line() -> String {
-    format!("emu-rust {}", env!("CARGO_PKG_VERSION"))
+    format!("emu-rust {}", emu_ui::full_version())
 }
 
 enum ScreenArg {
@@ -302,11 +315,17 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "library-tidy-report" => ScreenArg::Library(LibraryScreen::TidyReport),
                     "library-tidy-undo" => ScreenArg::Library(LibraryScreen::TidyUndo),
                     "wizard" => ScreenArg::Library(LibraryScreen::Wizard),
+                    "custom-add" => ScreenArg::Library(LibraryScreen::CustomAdd),
+                    "custom-sheet" => ScreenArg::Library(LibraryScreen::CustomSheet),
+                    "custom-settings" => ScreenArg::Library(LibraryScreen::CustomSettings),
+                    "switch-banner" => ScreenArg::Library(LibraryScreen::SwitchBanner),
+                    "switch-preview" => ScreenArg::Library(LibraryScreen::SwitchPreview),
                     _ => {
                         return Err(
                             "--screen attend menu, keys, options, disks, computer, vkbd, journal, library, \
                                     library-settings, library-help, library-log, library-launch, library-tidy, \
-                                    library-tidy-report, library-tidy-undo, wizard ou cores"
+                                    library-tidy-report, library-tidy-undo, wizard, custom-add, custom-sheet, \
+                                    custom-settings, switch-banner, switch-preview ou cores"
                                 .into(),
                         );
                     }
@@ -523,6 +542,25 @@ mod tests {
 
     fn p(args: &[&str]) -> Result<Command, String> {
         parse(args.iter().map(OsString::from))
+    }
+
+    fn child(args: &[&str]) -> Option<PathBuf> {
+        dry_run_child_request(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_dry_run_child_is_recognised_by_its_exact_shape_only() {
+        assert_eq!(
+            child(&["--dry-run-child", "r.toml"]),
+            Some(PathBuf::from("r.toml"))
+        );
+        assert_eq!(child(&["--dry-run-child"]), None);
+        assert_eq!(child(&["--dry-run-child", "r", "--scale", "2"]), None);
+        assert_eq!(child(&["--scale", "2", "--dry-run-child", "r"]), None);
+        assert_eq!(child(&["--list-cores"]), None);
+        assert_eq!(child(&[]), None);
+        // Not a public option: the normal parser refuses it.
+        assert!(p(&["--dry-run-child", "r.toml"]).is_err());
     }
 
     #[test]
@@ -797,6 +835,11 @@ mod tests {
             ("library-tidy", LibraryScreen::Tidy),
             ("library-tidy-report", LibraryScreen::TidyReport),
             ("library-tidy-undo", LibraryScreen::TidyUndo),
+            ("custom-add", LibraryScreen::CustomAdd),
+            ("custom-sheet", LibraryScreen::CustomSheet),
+            ("custom-settings", LibraryScreen::CustomSettings),
+            ("switch-banner", LibraryScreen::SwitchBanner),
+            ("switch-preview", LibraryScreen::SwitchPreview),
         ] {
             let Command::Library(l) = p(&["--screen", arg]).unwrap() else {
                 panic!()

@@ -2,7 +2,7 @@
 //! System keys are **libretro database names** (`"Nintendo - Game Boy"`), the same as `.info` `database`
 //! fields, libretro-thumbnails and the `.rdb` files, shared with emu-library.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
@@ -171,9 +171,50 @@ pub struct PadDevices {
 pub struct CorePreferences {
     systems: BTreeMap<String, Vec<CoreId>>,
     cores: BTreeMap<CoreId, CoreProps>,
+    /// Cores named by the embedded `cores.toml` itself (not by overrides or custom systems).
+    examined: BTreeSet<CoreId>,
+    /// System keys of the embedded `cores.toml` (set by `parse` only: `with_overrides` adds keys to `systems`).
+    official_keys: BTreeSet<String>,
+    /// Core the user chose per system key (`with_overrides`): survives `with_custom_systems`.
+    user_choice: BTreeMap<String, CoreId>,
 }
 
 impl CorePreferences {
+    /// Custom systems `(core key, cores)`. A key also in `cores.toml` is replaced only when listed in `masked`
+    /// (official system hidden by an active definition, ADR 0025 §10); otherwise left untouched. A masked
+    /// official key given an empty list keeps the official list (a definition always has a core; an empty one
+    /// must not leave the system without any). The user's own choice (`with_overrides`) stays first, whatever
+    /// the call order.
+    pub fn with_custom_systems(
+        mut self,
+        systems: &[(String, Vec<CoreId>)],
+        masked: &[String],
+    ) -> Self {
+        for (key, cores) in systems {
+            let official = self.official_keys.contains(key);
+            if official && (!masked.contains(key) || cores.is_empty()) {
+                continue;
+            }
+            let mut unique: Vec<CoreId> = Vec::new();
+            for core in cores {
+                if !unique.contains(core) {
+                    unique.push(core.clone());
+                }
+            }
+            if let Some(choice) = self.user_choice.get(key) {
+                unique.retain(|c| c != choice);
+                unique.insert(0, choice.clone());
+            }
+            self.systems.insert(key.clone(), unique);
+        }
+        self
+    }
+
+    /// Whether `core` is listed in `cores.toml` (examined: no « unverified content » warning).
+    pub fn is_examined(&self, core: &CoreId) -> bool {
+        self.examined.contains(core)
+    }
+
     /// Parses the embedded `data/cores.toml`; a parse error is a bug caught by a unit test.
     pub fn builtin() -> Self {
         match Self::parse(BUILTIN) {
@@ -207,7 +248,20 @@ impl CorePreferences {
             let props = core_props(&core, entry)?;
             cores.insert(id, props);
         }
-        Ok(Self { systems, cores })
+        let official_keys = systems.keys().cloned().collect();
+        let examined = systems
+            .values()
+            .flatten()
+            .chain(cores.keys())
+            .cloned()
+            .collect();
+        Ok(Self {
+            systems,
+            cores,
+            examined,
+            official_keys,
+            user_choice: BTreeMap::new(),
+        })
     }
 
     /// Parses a `data/cores.toml`-format text (tests of sibling modules); panics on invalid data.
@@ -225,7 +279,8 @@ impl CorePreferences {
             };
             let cores = self.systems.entry(system.clone()).or_default();
             cores.retain(|c| c != &id);
-            cores.insert(0, id);
+            cores.insert(0, id.clone());
+            self.user_choice.insert(system.clone(), id);
         }
         self
     }
@@ -1188,6 +1243,135 @@ mod tests {
         let text = format!("supported_extensions = \"{}\"", exts.join("|"));
         (id(core), super::super::parse_info(id(core), &text).unwrap())
     }
+
+    #[test]
+    fn custom_systems_added_masked_replaced_or_left_intact() {
+        let prefs = CorePreferences::builtin();
+        let official = "Sega - Mega Drive - Genesis".to_owned();
+        let before = prefs.for_system(&official).to_vec();
+        assert!(!before.is_empty());
+        let systems = vec![
+            (
+                "mine".to_owned(),
+                vec![id("stella"), id("stella"), id("mgba")],
+            ),
+            (official.clone(), vec![id("mgba")]),
+        ];
+        // Not masked: the official key is untouched.
+        let kept = prefs.clone().with_custom_systems(&systems, &[]);
+        assert_eq!(kept.for_system(&official), &before[..]);
+        assert_eq!(kept.for_system("mine"), [id("stella"), id("mgba")]);
+        // Masked: replaced.
+        let masked = prefs.with_custom_systems(&systems, std::slice::from_ref(&official));
+        assert_eq!(masked.for_system(&official), [id("mgba")]);
+    }
+
+    #[test]
+    fn user_choice_survives_custom_systems_in_both_orders() {
+        let mine = "mine".to_owned();
+        let custom = vec![(mine.clone(), vec![id("stella"), id("mgba")])];
+        let mut overrides = BTreeMap::new();
+        overrides.insert(mine.clone(), "x".to_owned());
+        // Overrides first: the custom system keeps its cores, the choice stays first.
+        let a = CorePreferences::builtin()
+            .with_overrides(&overrides)
+            .with_custom_systems(&custom, &[]);
+        assert_eq!(a.for_system(&mine), [id("x"), id("stella"), id("mgba")]);
+        // Custom first, overrides after.
+        let b = CorePreferences::builtin()
+            .with_custom_systems(&custom, &[])
+            .with_overrides(&overrides);
+        assert_eq!(b.for_system(&mine), [id("x"), id("stella"), id("mgba")]);
+        // Masked official key: the user's choice is not erased.
+        let official = "Sega - Mega Drive - Genesis".to_owned();
+        let mut ov = BTreeMap::new();
+        ov.insert(official.clone(), "picodrive".to_owned());
+        let c = CorePreferences::builtin()
+            .with_overrides(&ov)
+            .with_custom_systems(
+                &[(official.clone(), vec![id("mgba")])],
+                std::slice::from_ref(&official),
+            );
+        assert_eq!(c.for_system(&official), [id("picodrive"), id("mgba")]);
+    }
+
+    #[test]
+    fn masked_official_with_no_core_keeps_the_official_list() {
+        let official = "Sega - Mega Drive - Genesis".to_owned();
+        let prefs = CorePreferences::builtin();
+        let before = prefs.for_system(&official).to_vec();
+        let prefs = prefs.with_custom_systems(
+            &[(official.clone(), vec![])],
+            std::slice::from_ref(&official),
+        );
+        assert_eq!(prefs.for_system(&official), &before[..]);
+    }
+
+    #[test]
+    fn examined_means_listed_in_cores_toml_only() {
+        let prefs = CorePreferences::builtin();
+        assert!(prefs.is_examined(&id("genesis_plus_gx")));
+        assert!(prefs.is_examined(&id("hatari")), "listed in [cores.*]");
+        let stranger = id("some_unlisted_core");
+        assert!(!prefs.is_examined(&stranger));
+        let mut overrides = BTreeMap::new();
+        overrides.insert("mine".to_owned(), stranger.to_string());
+        let prefs = prefs
+            .with_overrides(&overrides)
+            .with_custom_systems(&[("mine2".to_owned(), vec![stranger.clone()])], &[]);
+        assert!(!prefs.is_examined(&stranger));
+    }
+
+    /// Snapshot of the save-path keys of every core (ADR 0025 §10): changing one of them changes where saves
+    /// live and requires a save migration in the version that does it.
+    #[test]
+    fn save_keys_snapshot() {
+        let prefs = CorePreferences::builtin();
+        let mut lines = Vec::new();
+        for core in &prefs.examined {
+            let media = match prefs.media_policy(core) {
+                CoreMediaPolicy::Direct => "direct",
+                CoreMediaPolicy::WorkingCopy => "working_copy",
+            };
+            let scope = match prefs.save_scope(core) {
+                SaveScopePref::Core => "core",
+                SaveScopePref::Game => "game",
+            };
+            lines.push(format!(
+                "{core}|{media}|{scope}|{}|{}",
+                prefs.save_family(core).unwrap_or_default(),
+                prefs.game_save_patterns(core).join(",")
+            ));
+        }
+        assert_eq!(lines.join("\n"), SAVE_KEYS_SNAPSHOT.trim());
+    }
+
+    const SAVE_KEYS_SNAPSHOT: &str = "\
+bsnes|direct|core||\n\
+cap32|direct|game||*.sav\n\
+dosbox_pure|working_copy|core||{game}.pure.zip,{game}-*.sav\n\
+fceumm|direct|core||\n\
+gambatte|direct|core||\n\
+genesis_plus_gx|direct|core||{game}.brm\n\
+gpsp|direct|core||\n\
+hatari|working_copy|core||\n\
+hatarib|direct|core||\n\
+mednafen_psx|direct|core|psx-memcard|{game}.srm,{game}.*.mcr\n\
+mesen|direct|core||\n\
+mesen-s|direct|core||\n\
+mgba|direct|core||\n\
+nestopia|direct|core||\n\
+opera|direct|core||opera/per_game/{game}.*.srm\n\
+pcsx_rearmed|direct|core|psx-memcard|{game}.srm\n\
+picodrive|direct|core||\n\
+puae|working_copy|core||{game}.save*.adf\n\
+puae2021|working_copy|core||{game}.save*.adf\n\
+sameboy|direct|core||\n\
+snes9x|direct|core||\n\
+swanstation|direct|core|psx-memcard|{game}.srm\n\
+vbam|direct|core||\n\
+vice_x64|working_copy|core||{game}.save*.d64\n\
+vice_x64sc|working_copy|core||{game}.save*.d64";
 
     #[test]
     fn builtin_parses_with_expected_recommendations() {

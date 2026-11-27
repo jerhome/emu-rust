@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use zip::ZipArchive;
 
+use crate::catalog::{Catalog, catalog};
 use crate::db::{
     DiscIndex, Identified, NameIndex, RedumpSet, SEGA_32X, dat_match, db_error, extension_of,
     identification_text, identify, identify_dos, load_media, sha1_from, to_i64,
@@ -17,11 +18,13 @@ use crate::db::{
 use crate::disc::{BIN_PROBE_LEN, bin_kind, disc_header, first_track, serial_keys};
 use crate::dos::DosFile;
 use crate::media::{MAX_MEDIA_IMAGES, parse_m3u, strip_group_member_name, strip_media_marker};
-use crate::systems::{Attribution, attribute, systems};
+#[cfg(test)]
+use crate::systems::attribute;
+use crate::systems::{Attribution, attribute_in};
 use crate::{
     BinKind, DISC_EXTENSIONS, DiscFormat, DiscRegion, Identification, LibraryError, MAX_HASH_SIZE,
     RomHashes, SystemInfo, SystemKind, cue_references, disc_info, disc_needs_32x, group_media,
-    hash_reader, name_needs_32x, region_from_name, systems_for_extension,
+    hash_reader, name_needs_32x, region_from_name,
 };
 
 /// Folders are walked without following directory symlinks. A path component equal to a system `id`
@@ -80,13 +83,15 @@ pub struct ScanReport {
     /// Archives holding images of two different computers (`.dsk` and `.d64`): ignored (design v5.0 §3.4).
     pub ignored_mixed_archives: u64,
     /// 7.1 (ADR 0023 §4.5): files moved since the last scan whose row was kept (same `id`, favourite, history,
-    /// covers) instead of being removed and added again.
+    /// covers) instead of being removed and added again. 8.0 (§4.5, design §2.1): also the rows merged into the
+    /// row of the new path when both carried data (the old row is deleted after giving its data).
     pub moved: u64,
     /// 7.6: the previous scan was killed between two batches (its marker was left), so this one purged nothing:
     /// games whose file is missing stay listed until the next scan.
     pub cautious: bool,
-    /// 7.6: the scan marker could not be written or removed. A marker that stays makes every later scan cautious
-    /// (nothing purged): the user should be told to check the folder of the database.
+    /// The legacy `.scanning` file of a 7.6 (8.0 no longer writes it, it only reads it) could not be removed after
+    /// the scan. While it stays, every scan is cautious (nothing purged): the user should be told to check the
+    /// folder of the database. Not about the `scan_pending` marks of the rows, which are always lifted.
     pub marker_failed: bool,
 }
 
@@ -319,8 +324,8 @@ pub(crate) fn lower_ext(path: &Path) -> Option<String> {
     Some(path.extension()?.to_str()?.to_ascii_lowercase())
 }
 
-pub(crate) fn is_candidate(path: &Path) -> bool {
-    lower_ext(path).is_some_and(|e| e == "zip" || !systems_for_extension(&e).is_empty())
+pub(crate) fn is_candidate(cat: &Catalog, path: &Path) -> bool {
+    lower_ext(path).is_some_and(|e| e == "zip" || !cat.for_extension(&e).is_empty())
 }
 
 /// Extensions of the programs that make a folder a DOS game.
@@ -328,8 +333,12 @@ pub(crate) fn is_candidate(path: &Path) -> bool {
 const AMBIGUOUS_COMPUTERS: &[&str] = &["cpc", "c64"];
 
 /// The CPC / C64 system `attribute` gives to a file with this extension, when it is a single one.
-fn ambiguous_computer(ext: &str, folders: &[String]) -> Option<&'static str> {
-    let system = match attribute(ext, folders) {
+fn ambiguous_computer(
+    cat: &'static Catalog,
+    ext: &str,
+    folders: &[String],
+) -> Option<&'static str> {
+    let system = match attribute_in(cat, ext, folders) {
         Attribution::Folder(s) => s,
         Attribution::Candidates(c) if c.len() == 1 => c[0],
         _ => return None,
@@ -366,17 +375,17 @@ pub(crate) fn folders_of(base: &Path, dir: &Path) -> Vec<String> {
 }
 
 /// The `folder_games` system whose id is a component of `folders` (any position).
-fn folder_games_system(folders: &[String]) -> Option<&'static SystemInfo> {
-    systems()
+fn folder_games_system(cat: &'static Catalog, folders: &[String]) -> Option<&'static SystemInfo> {
+    cat.systems()
         .iter()
         .find(|s| s.folder_games && folders.contains(&s.id))
 }
 
 /// `Some(system)` when `folders` (those of a directory) end strictly below a `folder_games` folder: the
 /// directory is then a game when it holds an executable.
-fn game_folder_system(folders: &[String]) -> Option<&'static SystemInfo> {
+fn game_folder_system(cat: &'static Catalog, folders: &[String]) -> Option<&'static SystemInfo> {
     let (_, parents) = folders.split_last()?;
-    folder_games_system(parents)
+    folder_games_system(cat, parents)
 }
 
 fn entries_have_executable(entries: &[fs::DirEntry]) -> bool {
@@ -387,6 +396,7 @@ fn entries_have_executable(entries: &[fs::DirEntry]) -> bool {
 }
 
 struct Walk<'a> {
+    cat: &'static Catalog,
     report: &'a mut ScanReport,
     /// Prefixes whose stored games are kept even if not seen (missing root, unreadable folder).
     keep: &'a mut Vec<PathBuf>,
@@ -395,6 +405,7 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    // `self.cat`: the catalog snapshot of the scan.
     /// Records the folder `dir` as one game of `system` (its files are not walked). `entries` are its entries.
     fn game_folder(
         &mut self,
@@ -448,6 +459,7 @@ impl Walk<'_> {
         max_depth: usize,
         cancel: &AtomicBool,
     ) -> Result<(), LibraryError> {
+        let cat = self.cat;
         let root = &normalize_root(root);
         // The root itself may be a symlink (a mounted drive): it is the only followed directory link.
         if !fs::metadata(root).is_ok_and(|m| m.is_dir()) {
@@ -481,15 +493,17 @@ impl Walk<'_> {
                 .collect();
             entries.sort_by_key(|e| e.file_name());
             let dir_folders = folders_of(base, &dir);
-            if let Some(system) = game_folder_system(&dir_folders)
+            if let Some(system) = game_folder_system(cat, &dir_folders)
                 && entries_have_executable(&entries)
             {
                 self.game_folder(&dir, &dir_folders, system, &entries);
                 continue;
             }
-            let games_root = dir_folders
-                .last()
-                .is_some_and(|last| systems().iter().any(|s| s.folder_games && s.id == *last));
+            let games_root = dir_folders.last().is_some_and(|last| {
+                cat.systems()
+                    .iter()
+                    .any(|s| s.folder_games && s.id == *last)
+            });
             let mut subdirs = Vec::new();
             for entry in entries {
                 let path = entry.path();
@@ -502,7 +516,7 @@ impl Walk<'_> {
                         subdirs.push(path);
                     }
                     continue;
-                } else if !is_candidate(&path) {
+                } else if !is_candidate(cat, &path) {
                     continue;
                 } else if kind.is_symlink() {
                     // File links are followed; directory links never are (loops, escaping the root).
@@ -688,7 +702,12 @@ pub(crate) fn norm_key(key: &str) -> String {
 /// Multi-disk games (design v2.0 §3.4): the files of a valid `.m3u` are listed under the playlist, and the
 /// disks of a `(Disk N of M)` group of a computer system under their first disk. The other files of these
 /// games are removed from `found` (and `seen`, so a row stored by an earlier scan goes away).
-fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mut ScanReport) {
+fn resolve_media(
+    cat: &'static Catalog,
+    found: &mut Vec<Found>,
+    seen: &mut HashSet<String>,
+    report: &mut ScanReport,
+) {
     let mut hidden: HashSet<String> = HashSet::new();
     let mut by_norm: HashMap<String, Vec<String>> = HashMap::new();
     for f in found.iter() {
@@ -724,9 +743,9 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
         .filter(|(_, f)| !hidden.contains(&f.key))
         .filter(|(_, f)| {
             lower_ext(&f.path).is_some_and(|e| {
-                let systems = systems_for_extension(&e);
+                let systems = cat.for_extension(&e);
                 !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
-            }) || is_console_disc(f)
+            }) || is_console_disc(cat, f)
         })
         .filter(|(_, f)| lower_ext(&f.path).is_some_and(|e| !is_m3u(&e)))
         .map(|(i, f)| (f.path.clone(), i))
@@ -759,7 +778,7 @@ fn resolve_media(found: &mut Vec<Found>, seen: &mut HashSet<String>, report: &mu
 /// disc header outside any system folder, a `.pbp`, a PlayStation track without `.cue`): its `(Disc N)` files are
 /// grouped like disks (design v6.0 §3.4). DOS discs, and the discs of a system with `group_discs = false` (3DO),
 /// are left as they are.
-pub(crate) fn is_console_disc(found: &Found) -> bool {
+pub(crate) fn is_console_disc(cat: &'static Catalog, found: &Found) -> bool {
     let Some(ext) = lower_ext(&found.path) else {
         return false;
     };
@@ -770,14 +789,14 @@ pub(crate) fn is_console_disc(found: &Found) -> bool {
         probe_cached(&found.path)
             .map(|p| p.kind)
             .and_then(track_format)
-            .and_then(|f| crate::system(f.system_id()))
+            .and_then(|f| cat.system(f.system_id()))
     } else if is_disc_image(&ext) {
-        match attribute(&ext, &found.folders) {
+        match attribute_in(cat, &ext, &found.folders) {
             Attribution::Folder(s) => Some(s),
             Attribution::Unclassified if ext != "chd" => disc_info(&found.path)
                 .ok()
                 .flatten()
-                .and_then(|i| crate::system(i.format.system_id())),
+                .and_then(|i| cat.system(i.format.system_id())),
             Attribution::Candidates(c) if c.len() == 1 => Some(c[0]),
             _ => None,
         }
@@ -931,14 +950,14 @@ fn entry_folders(found: &Found, entry: &Path) -> Vec<String> {
 
 /// Attribution of a playlist entry; a disc image outside any system folder is attributed by its disc header
 /// (same probe as a lone disc, design v6.0 §3.4: the system of a `.m3u` is the one of its entries).
-fn entry_attribution(found: &Found, entry: &Path) -> Option<Attribution> {
+fn entry_attribution(cat: &'static Catalog, found: &Found, entry: &Path) -> Option<Attribution> {
     let ext = lower_ext(entry)?;
-    let attribution = attribute(&ext, &entry_folders(found, entry));
+    let attribution = attribute_in(cat, &ext, &entry_folders(found, entry));
     if matches!(attribution, Attribution::Unclassified)
         && ext != "chd"
         && DISC_EXTENSIONS.contains(&ext.as_str())
         && let Ok(Some(info)) = disc_info(entry)
-        && let Some(s) = crate::system(info.format.system_id())
+        && let Some(s) = cat.system(info.format.system_id())
     {
         return Some(Attribution::Candidates(vec![s]));
     }
@@ -946,8 +965,8 @@ fn entry_attribution(found: &Found, entry: &Path) -> Option<Attribution> {
 }
 
 /// The system accepting `.m3u` named by a folder of the playlist.
-fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
-    match attribute(&lower_ext(&found.path)?, &found.folders) {
+fn playlist_folder(cat: &'static Catalog, found: &Found) -> Option<&'static SystemInfo> {
+    match attribute_in(cat, &lower_ext(&found.path)?, &found.folders) {
         Attribution::Folder(s) => Some(s),
         _ => None,
     }
@@ -956,29 +975,44 @@ fn playlist_folder(found: &Found) -> Option<&'static SystemInfo> {
 /// An unchanged file is not hashed again unless the attribution rules now give another answer (the roots
 /// changed, a v1 row whose migrated flag was approximate, a 2.0 `.ipf` outside any folder): the stored system
 /// and flag must match the rules.
-fn pin_agrees(old: &Existing, found: &Found) -> bool {
+fn pin_agrees(cat: &'static Catalog, old: &Existing, found: &Found) -> bool {
     if found.is_dir != old.is_dir {
         return false;
     }
     if found.is_dir {
         return old.pinned
-            && folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
+            && folder_games_system(cat, &found.folders).is_some_and(|s| s.id == old.system);
     }
     if is_playlist(found) {
-        return playlist_agrees(old, found);
+        return playlist_agrees(cat, old, found);
     }
     let Some(ext) = extension_of(&found.path, old.entry.as_deref()) else {
         return true;
     };
+    // A game moved under the folder of an official system that a definition masks (a switch with move stopped
+    // before its end, ADR 0025 §10): its row keeps its system, it is not re-attributed from the folder.
+    if cat
+        .masked_official()
+        .iter()
+        .any(|o| found.folders.contains(&o.id))
+        && cat.system(&old.system).is_some_and(|s| {
+            accepts_row(
+                s,
+                &found.path.to_string_lossy(),
+                old.entry.as_deref(),
+                false,
+            )
+        })
+    {
+        return true;
+    }
     if ext == "zip" {
         // A DOS archive (no launched entry): only the folder rule can have changed.
-        return crate::system(&old.system).is_some_and(|s| s.folder_games)
+        return cat.system(&old.system).is_some_and(|s| s.folder_games)
             && old.pinned
-                == folder_games_system(&found.folders).is_some_and(|s| s.id == old.system);
+                == folder_games_system(cat, &found.folders).is_some_and(|s| s.id == old.system);
     }
-    if ext == "bin"
-        && (old.system == SEGA_32X || crate::system(&old.system).is_some_and(|s| s.disc))
-    {
+    if ext == "bin" && (old.system == SEGA_32X || cat.system(&old.system).is_some_and(|s| s.disc)) {
         // Kept as 32X, PlayStation or 3DO by its header (unchanged content): only the folder flag can have changed.
         return old.pinned == found.folders.contains(&old.system);
     }
@@ -997,7 +1031,7 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
         return false;
     }
     let accepts = |c: &[&SystemInfo]| c.iter().any(|s| s.id == old.system);
-    match attribute(&ext, &found.folders) {
+    match attribute_in(cat, &ext, &found.folders) {
         Attribution::Folder(s) => old.pinned && old.system == s.id,
         Attribution::Candidates(c) => !old.pinned && accepts(&c),
         // Kept only while the DATs still attribute it (a DAT import re-identifies and sets `unknown` otherwise).
@@ -1012,7 +1046,7 @@ fn pin_agrees(old: &Existing, found: &Found) -> bool {
             !old.pinned
                 && (ext != "chd" || old.identification == "name")
                 && DISC_EXTENSIONS.contains(&ext.as_str())
-                && crate::system(&old.system).is_some_and(|s| s.disc)
+                && cat.system(&old.system).is_some_and(|s| s.disc)
         }
     }
 }
@@ -1026,11 +1060,11 @@ fn zip_media_agrees(old: &Existing, found: &Found) -> bool {
 }
 
 /// Without hashing: entries needing the DATs always send the playlist to a new analysis.
-fn playlist_agrees(old: &Existing, found: &Found) -> bool {
+fn playlist_agrees(cat: &'static Catalog, old: &Existing, found: &Found) -> bool {
     let mut systems: Vec<&str> = Vec::new();
     for entry in &found.media {
         let path = Path::new(entry);
-        let Some(attribution) = entry_attribution(found, path) else {
+        let Some(attribution) = entry_attribution(cat, found, path) else {
             continue;
         };
         if needs_hashes(&attribution) {
@@ -1044,7 +1078,7 @@ fn playlist_agrees(old: &Existing, found: &Found) -> bool {
     }
     systems.sort_unstable();
     systems.dedup();
-    let folder = playlist_folder(found);
+    let folder = playlist_folder(cat, found);
     let system = match systems.as_slice() {
         [one] => *one,
         _ => match folder {
@@ -1056,8 +1090,8 @@ fn playlist_agrees(old: &Existing, found: &Found) -> bool {
 }
 
 /// The `folder_games` system of the catalog (DOS): where `.dosz` and zips holding programs go.
-fn dos_system() -> Option<&'static SystemInfo> {
-    systems().iter().find(|s| s.folder_games)
+fn dos_system(cat: &'static Catalog) -> Option<&'static SystemInfo> {
+    cat.systems().iter().find(|s| s.folder_games)
 }
 
 /// Sega CD track found without the `.cue` naming it (also reported this way inside a zip).
@@ -1068,9 +1102,14 @@ pub(crate) const AUDIO_TRACK_ALONE: &str = "piste audio d'un disque : ignorée";
 pub(crate) const ZIPPED_DISC: &str =
     "Les CD ne se lisent pas dans un zip : décompressez-le ou convertissez-le en CHD.";
 
-fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
+fn analyze_zip(
+    cat: &'static Catalog,
+    found: &Found,
+    max: u64,
+    cancel: &AtomicBool,
+) -> Result<Analysis, Failure> {
     // Under a DOS folder, or a `.dosz`: a DOS game whatever the archive holds (design v4.0 §3.4).
-    let folder_dos = folder_games_system(&found.folders);
+    let folder_dos = folder_games_system(cat, &found.folders);
     let dosz = lower_ext(&found.path).as_deref() == Some("dosz");
     // The content of a DOS archive is never read: only its central directory, so no size limit.
     if found.file_size > MAX_ARCHIVE_SIZE && folder_dos.is_none() && !dosz {
@@ -1128,9 +1167,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         };
         saw_program |= EXECUTABLE_EXTENSIONS.contains(&ext.as_str());
         saw_disc |= is_disc_image(&ext);
-        let candidates = systems_for_extension(&ext);
+        let candidates = cat.for_extension(&ext);
         if entry.size() > 0
-            && let Some(id) = ambiguous_computer(&ext, &found.folders)
+            && let Some(id) = ambiguous_computer(cat, &ext, &found.folders)
         {
             computers.insert(id);
         }
@@ -1148,7 +1187,9 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
             chosen = Some((index, name, entry.size(), candidates));
         }
     }
-    if let Some(system) = folder_dos.or_else(|| (dosz || saw_program).then(dos_system).flatten()) {
+    if let Some(system) =
+        folder_dos.or_else(|| (dosz || saw_program).then(|| dos_system(cat)).flatten())
+    {
         if dos_files.is_empty() {
             return Err(if saw_empty {
                 Failure::Empty
@@ -1178,10 +1219,10 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
         return Err(ZIPPED_DISC.to_owned().into());
     }
     let mut zip_disks = false;
-    if let Some(order) = zip_disk_order(&useful) {
+    if let Some(order) = zip_disk_order(cat, &useful) {
         // The first disk in disk order is the entry (identified and hashed), not the first in the archive.
         let (index, name, size, ext) = &useful[order[0]];
-        chosen = Some((*index, name.clone(), *size, systems_for_extension(ext)));
+        chosen = Some((*index, name.clone(), *size, cat.for_extension(ext)));
         zip_disks = true;
     }
     let Some((index, name, declared, _)) = chosen else {
@@ -1194,7 +1235,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
     let Some(ext) = lower_ext(Path::new(&name)) else {
         return Err("extension inconnue".to_owned().into());
     };
-    let mut rule = rule_of(attribute(&ext, &found.folders))?;
+    let mut rule = rule_of(attribute_in(cat, &ext, &found.folders))?;
     if ext == "bin" {
         // A zipped 32X `.bin` (design v6.0 §3.4): the first bytes of the entry decide, bounded read.
         let entry = archive
@@ -1214,7 +1255,7 @@ fn analyze_zip(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
                 return Err(ZIPPED_DISC.to_owned().into());
             }
             BinKind::Sega32x => {
-                if let Some(r) = rule_32x(found) {
+                if let Some(r) = rule_32x(cat, found) {
                     rule = r;
                 }
             }
@@ -1255,7 +1296,10 @@ const DISK_EXTENSIONS: &[&str] = &[
 /// Indexes into `useful`, in disk order (`Disk N` / `Side X`, else alphabetical), when the archive holds two
 /// disks or more and nothing else of the catalog (a `.prg` next to `.st` files leaves the 5.0 behaviour), all of
 /// them of one computer system.
-fn zip_disk_order(useful: &[(usize, String, u64, String)]) -> Option<Vec<usize>> {
+fn zip_disk_order(
+    cat: &'static Catalog,
+    useful: &[(usize, String, u64, String)],
+) -> Option<Vec<usize>> {
     if useful.len() < 2 || useful.len() > MAX_MEDIA_IMAGES {
         return None;
     }
@@ -1268,8 +1312,8 @@ fn zip_disk_order(useful: &[(usize, String, u64, String)]) -> Option<Vec<usize>>
     let common = useful
         .iter()
         .skip(1)
-        .fold(systems_for_extension(&useful[0].3), |acc, u| {
-            let next = systems_for_extension(&u.3);
+        .fold(cat.for_extension(&useful[0].3), |acc, u| {
+            let next = cat.for_extension(&u.3);
             acc.into_iter()
                 .filter(|s| next.iter().any(|n| n.id == s.id))
                 .collect()
@@ -1302,8 +1346,8 @@ fn rule_systems(rule: &Rule) -> &[&'static SystemInfo] {
 }
 
 /// A `.bin` with the `SEGA 32X` signature: system `32x`, pinned when a folder is named after it.
-fn rule_32x(found: &Found) -> Option<Rule> {
-    let system = crate::system(SEGA_32X)?;
+fn rule_32x(cat: &'static Catalog, found: &Found) -> Option<Rule> {
+    let system = cat.system(SEGA_32X)?;
     Some(Rule::Identify {
         candidates: vec![system],
         pinned: found.folders.contains(&system.id),
@@ -1337,13 +1381,13 @@ fn hash_file(
 
 /// The entries of a playlist are hashed only when their attribution needs the DATs; an unreadable entry is
 /// left unattributed (the playlist then follows its folder).
-fn playlist_rule(found: &Found, max: u64, cancel: &AtomicBool) -> Rule {
+fn playlist_rule(cat: &'static Catalog, found: &Found, max: u64, cancel: &AtomicBool) -> Rule {
     let entries = found
         .media
         .iter()
         .filter_map(|entry| {
             let path = Path::new(entry);
-            let attribution = entry_attribution(found, path)?;
+            let attribution = entry_attribution(cat, found, path)?;
             let hashes = if needs_hashes(&attribution) {
                 let size = fs::metadata(path).map(|m| m.len()).ok()?;
                 let header = match &attribution {
@@ -1362,7 +1406,7 @@ fn playlist_rule(found: &Found, max: u64, cancel: &AtomicBool) -> Rule {
         .collect();
     Rule::Playlist {
         entries,
-        folder: playlist_folder(found),
+        folder: playlist_folder(cat, found),
     }
 }
 
@@ -1372,13 +1416,14 @@ fn stem_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn analyze(
+pub(crate) fn analyze_in(
+    cat: &'static Catalog,
     found: &Found,
     max: u64,
     cancel: &AtomicBool,
     discs: &DiscIndex,
 ) -> Result<Analysis, Failure> {
-    let result = analyze_file(found, max, cancel, discs);
+    let result = analyze_file(cat, found, max, cancel, discs);
     // A read failed by `CancelRead` surfaces as an I/O or archive error: the flag tells them apart.
     if result.is_err() && is_cancelled(cancel) {
         return Err(Failure::Cancelled);
@@ -1387,29 +1432,30 @@ pub(crate) fn analyze(
 }
 
 fn analyze_file(
+    cat: &'static Catalog,
     found: &Found,
     max: u64,
     cancel: &AtomicBool,
     discs: &DiscIndex,
 ) -> Result<Analysis, Failure> {
     if found.is_dir {
-        return analyze_dir(found, max, cancel);
+        return analyze_dir(cat, found, max, cancel);
     }
     let Some(ext) = lower_ext(&found.path) else {
         return Err("extension inconnue".to_owned().into());
     };
     if ext == "zip" || ext == "dosz" {
-        return analyze_zip(found, max, cancel);
+        return analyze_zip(cat, found, max, cancel);
     }
     // Disc images first (never hashed, probed only), before the generic attribution of design v3.0 §3.5.2.
     if is_disc_image(&ext) {
-        return analyze_disc(found, &ext, max, cancel, discs);
+        return analyze_disc(cat, found, &ext, max, cancel, discs);
     }
     let playlist = is_playlist(found);
     let mut rule = if playlist {
-        playlist_rule(found, max, cancel)
+        playlist_rule(cat, found, max, cancel)
     } else {
-        rule_of(attribute(&ext, &found.folders))?
+        rule_of(attribute_in(cat, &ext, &found.folders))?
     };
     if ext == "bin" && !playlist {
         let probe = probe_cached(&found.path);
@@ -1417,13 +1463,13 @@ fn analyze_file(
         // A PlayStation / 3DO track no `.cue` names is a game by itself (design v7.0 §3.4).
         if let Some(system) = kind
             .and_then(track_format)
-            .and_then(|f| crate::system(f.system_id()))
+            .and_then(|f| cat.system(f.system_id()))
         {
             let pinned = found.folders.contains(&system.id);
             return disc_analysis(found, &ext, system, pinned, max, cancel, discs);
         }
         if kind == Some(BinKind::Sega32x)
-            && let Some(r) = rule_32x(found)
+            && let Some(r) = rule_32x(cat, found)
         {
             rule = r;
         } else if let Some(folder) = track_folder(&found.folders) {
@@ -1437,7 +1483,7 @@ fn analyze_file(
     }
     let (region, needs_32x) = if playlist {
         (
-            playlist_region(found, discs),
+            playlist_region(cat, found, discs),
             found.media.first().is_some_and(|m| probe_32x(Path::new(m))),
         )
     } else {
@@ -1499,8 +1545,13 @@ fn analyze_file(
 
 /// A game folder: the DOS DAT is matched on the programs and data files of its root (at most `MAX_DOS_FILES`
 /// files of at most `MAX_DOS_FILE_SIZE` bytes, their CRC32 computed here).
-fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis, Failure> {
-    let Some(system) = folder_games_system(&found.folders) else {
+fn analyze_dir(
+    cat: &'static Catalog,
+    found: &Found,
+    max: u64,
+    cancel: &AtomicBool,
+) -> Result<Analysis, Failure> {
+    let Some(system) = folder_games_system(cat, &found.folders) else {
         return Err("dossier hors d'un dossier de jeux".to_owned().into());
     };
     let mut names: Vec<(std::ffi::OsString, PathBuf)> = fs::read_dir(&found.path)
@@ -1565,6 +1616,7 @@ fn analyze_dir(found: &Found, max: u64, cancel: &AtomicBool) -> Result<Analysis,
 /// in the Redump DAT of exactly one disc system (design v7.0 §3.4), a `.pbp` its only system; anything else is
 /// unclassified.
 fn analyze_disc(
+    cat: &'static Catalog,
     found: &Found,
     ext: &str,
     max: u64,
@@ -1582,7 +1634,7 @@ fn analyze_disc(
         zip_disks: false,
         needs_32x: false,
     };
-    let (system, pinned) = match attribute(ext, &found.folders) {
+    let (system, pinned) = match attribute_in(cat, ext, &found.folders) {
         Attribution::Folder(s) if s.folder_games => {
             return Ok(analysis(
                 Rule::Dos {
@@ -1603,14 +1655,14 @@ fn analyze_disc(
                 disc_info(&found.path)
                     .ok()
                     .flatten()
-                    .and_then(|i| crate::system(i.format.system_id()))
+                    .and_then(|i| cat.system(i.format.system_id()))
             };
             // A title shared by several machines (« Road Rash (USA) ») attributes nothing.
             let by_name = || {
                 if ext != "chd" {
                     return None;
                 }
-                let mut hits = systems().iter().filter(|s| {
+                let mut hits = cat.systems().iter().filter(|s| {
                     s.disc
                         && s.extensions.iter().any(|e| e == ext)
                         && discs
@@ -1837,7 +1889,7 @@ fn region_of_row(path: &Path, title: &str, set: Option<&RedumpSet>) -> Option<Di
 }
 
 /// Region of a playlist (multi-CD): its first disc image, else its own name (Redump line, then tag).
-fn playlist_region(found: &Found, discs: &DiscIndex) -> Option<DiscRegion> {
+fn playlist_region(cat: &'static Catalog, found: &Found, discs: &DiscIndex) -> Option<DiscRegion> {
     let stem = stem_of(&found.path);
     found
         .media
@@ -1851,7 +1903,7 @@ fn playlist_region(found: &Found, discs: &DiscIndex) -> Option<DiscRegion> {
             disc_header(first).ok().flatten()?.0.region
         })
         .or_else(|| {
-            systems()
+            cat.systems()
                 .iter()
                 .filter(|s| s.disc)
                 .filter_map(|s| discs.get(&s.id)?.by_name(&stem))
@@ -2020,6 +2072,7 @@ enum Stored {
 
 /// Inserts or updates the row of `found`.
 fn store(
+    cat: &'static Catalog,
     conn: &Connection,
     names: &mut NameIndex,
     found: &Found,
@@ -2047,7 +2100,7 @@ fn store(
     let headerless = analysis.hashes.and_then(|h| h.headerless);
     let region = analysis
         .region
-        .filter(|_| crate::system(&id.system).is_some_and(|s| s.disc))
+        .filter(|_| cat.system(&id.system).is_some_and(|s| s.disc))
         .map(DiscRegion::key);
     let needs_32x = needs_32x_of(
         &id.system,
@@ -2058,13 +2111,14 @@ fn store(
     );
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
-                           title, identification, pinned, is_dir, region, needs_32x)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                           title, identification, pinned, is_dir, region, needs_32x, scan_pending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)
          ON CONFLICT(path) DO UPDATE SET entry = excluded.entry, system = excluded.system, size = excluded.size,
              file_size = excluded.file_size, mtime_unix = excluded.mtime_unix, crc32 = excluded.crc32,
              sha1 = excluded.sha1, crc32_nh = excluded.crc32_nh, sha1_nh = excluded.sha1_nh,
              title = excluded.title, identification = excluded.identification, pinned = excluded.pinned,
-             is_dir = excluded.is_dir, region = excluded.region, needs_32x = excluded.needs_32x",
+             is_dir = excluded.is_dir, region = excluded.region, needs_32x = excluded.needs_32x,
+             scan_pending = 1",
         params![
             found.key,
             analysis.entry,
@@ -2107,7 +2161,10 @@ fn store(
 
 /// Writes the analysed files of `pending` in one short transaction, then empties it. Returns the keys of the rows
 /// it inserted (no row at that path before this scan): the candidates of the moved-file check.
+// `cat` is the scan's catalog snapshot, one more argument than clippy allows; the rest are the batch's own state.
+#[allow(clippy::too_many_arguments)]
 fn store_batch(
+    cat: &'static Catalog,
     conn: &mut Connection,
     names: &mut NameIndex,
     existing: &HashMap<String, Existing>,
@@ -2126,7 +2183,7 @@ fn store_batch(
     let mut inserted = Vec::new();
     for (index, f, analysis) in pending.iter() {
         let old = existing.get(&f.key);
-        match store(&tx, names, f, analysis, old)? {
+        match store(cat, &tx, names, f, analysis, old)? {
             Stored::Unclassified => {
                 skipped.push((*index, f.path.clone()));
                 continue;
@@ -2335,7 +2392,194 @@ fn merge_moved(
     Ok(kept)
 }
 
-/// Name of the "scan in progress" marker: a file next to the database, so the schema does not change.
+/// A vanished row and the marked row with user data that takes over its data (same game).
+struct Heir {
+    /// The vanished row: deleted once its data is given.
+    old: i64,
+    /// The row that stays.
+    new: i64,
+}
+
+/// Pairs of a vanished row (not merged as a moved file) and a marked row with user data that are each other's only
+/// twin. Ambiguous twins give no pair.
+fn heirs_of(
+    conn: &Connection,
+    gone: &[Twin],
+    moved: &HashMap<i64, i64>,
+    with_data: &[String],
+) -> Result<Vec<Heir>, LibraryError> {
+    if with_data.is_empty() {
+        return Ok(Vec::new());
+    }
+    let remaining: Vec<&Twin> = gone.iter().filter(|g| !moved.contains_key(&g.id)).collect();
+    let stay = load_twins(conn, with_data)?;
+    let mut pairs = Vec::new();
+    for old in &remaining {
+        let mut hits = stay.iter().filter(|new| old.same_game(new));
+        let (Some(new), None) = (hits.next(), hits.next()) else {
+            continue;
+        };
+        if remaining.iter().filter(|o| o.same_game(new)).count() == 1 {
+            pairs.push(Heir {
+                old: old.id,
+                new: new.id,
+            });
+        }
+    }
+    Ok(pairs)
+}
+
+/// Carries the user data of row `old` to row `new` (same game): favourite if either has it, play counts added,
+/// latest play date, and the covers `new` does not have. `old` is deleted by the caller (its other covers go
+/// with it). Saves and states live in files named after the game, not in the database.
+fn give_data(tx: &Connection, old: i64, new: i64) -> Result<Vec<String>, LibraryError> {
+    // Both rows have a cached cover of one kind: the staying row's is kept (below), so the file of the other one
+    // loses its last row when `old` is deleted. Collected here, removed by the caller once the transaction is
+    // committed.
+    let orphans: Vec<String> = {
+        let mut stmt = tx
+            .prepare_cached(
+                "SELECT o.path FROM cover o JOIN cover n ON n.game = ?2 AND n.kind = o.kind
+                 WHERE o.game = ?1 AND o.state = 'cached' AND n.state = 'cached'
+                   AND o.path IS NOT NULL AND o.path IS NOT n.path",
+            )
+            .map_err(db_error)?;
+        stmt.query_map(params![old, new], |r| r.get(0))
+            .map_err(db_error)?
+            .collect::<Result<_, _>>()
+            .map_err(db_error)?
+    };
+    tx.execute(
+        "UPDATE game SET
+             favorite = MAX(favorite, (SELECT favorite FROM game WHERE id = ?1)),
+             play_count = play_count + (SELECT play_count FROM game WHERE id = ?1),
+             last_played_unix = CASE
+                 WHEN last_played_unix IS NULL THEN (SELECT last_played_unix FROM game WHERE id = ?1)
+                 WHEN (SELECT last_played_unix FROM game WHERE id = ?1) IS NULL THEN last_played_unix
+                 ELSE MAX(last_played_unix, (SELECT last_played_unix FROM game WHERE id = ?1)) END
+         WHERE id = ?2",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    // A "missing" answer of the staying row gives way to a cached cover of the old one (a cached cover never does).
+    tx.execute(
+        "DELETE FROM cover WHERE game = ?2 AND state = 'missing'
+         AND EXISTS (SELECT 1 FROM cover o WHERE o.game = ?1 AND o.kind = cover.kind AND o.state = 'cached')",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    tx.execute(
+        "UPDATE OR IGNORE cover SET game = ?2 WHERE game = ?1",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    Ok(orphans)
+}
+
+/// Removes the cover files that no row points to any more, after the transaction that dropped their rows. Paths are
+/// relative to `covers/` beside the database; anything else (absolute, `..`, links) is left alone. A failure is
+/// only logged: a stray file costs a few Kio, a failed scan costs the user's patience.
+fn remove_orphan_covers(conn: &Connection, orphans: &[String]) {
+    let Some(root) = conn
+        .path()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| Path::new(p).parent().map(|d| d.join("covers")))
+    else {
+        return;
+    };
+    for rel in orphans {
+        let relative = Path::new(rel);
+        let plain = relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        let in_use = conn
+            .query_row("SELECT 1 FROM cover WHERE path = ?1", [rel], |_| Ok(()))
+            .is_ok();
+        if !plain || relative.as_os_str().is_empty() || in_use {
+            continue;
+        }
+        let file = root.join(relative);
+        if !fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_file()) {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&file) {
+            tracing::warn!("cannot remove the cover file {}: {e}", file.display());
+        }
+    }
+}
+
+/// Lifts the `scan_pending` marks at the end of a scan, except the ones of `keep` (rows of a killed scan that carry
+/// user data and were not merged: the next scan must still see them to carry the data over). Callers run it in the
+/// transaction that ends the scan, so a crash never leaves the marks half lifted.
+fn lift_marks(conn: &Connection, keep: &[i64]) -> Result<(), LibraryError> {
+    conn.execute(
+        "UPDATE game SET scan_pending = NULL WHERE scan_pending IS NOT NULL",
+        [],
+    )
+    .map_err(db_error)?;
+    let mut remark = conn
+        .prepare_cached("UPDATE game SET scan_pending = 1 WHERE id = ?1")
+        .map_err(db_error)?;
+    for id in keep {
+        remark.execute([id]).map_err(db_error)?;
+    }
+    Ok(())
+}
+
+/// Rows of an earlier, killed scan that this scan may merge (see `select_candidates`).
+#[derive(Default)]
+struct Leftovers {
+    /// Paths of rows without user data: candidates of the moved-file check, like the rows this scan stored.
+    extra: Vec<String>,
+    /// Paths of marked rows that carry user data: they stay and take over the data of their vanished twin.
+    with_data: Vec<String>,
+    /// Ids of every row marked at the start that carries user data (found or not): their mark survives a scan that
+    /// ends without merging them (cancelled, or cautious).
+    data_marks: Vec<i64>,
+}
+
+/// Sorts the rows marked at the start (and, in a cautious scan, every found row) into rows that can be absorbed
+/// (no user data) and rows that must stay (a favourite, a play, a cover). `has_gone`: without a vanished row there
+/// is nothing to merge, only the marks to keep are computed.
+fn select_candidates(
+    conn: &Connection,
+    existing: &HashMap<String, Existing>,
+    seen: &HashSet<String>,
+    marked_at_start: &HashSet<i64>,
+    prudent: bool,
+    has_gone: bool,
+) -> Result<Leftovers, LibraryError> {
+    let mut pristine = conn
+        .prepare_cached(
+            "SELECT 1 FROM game g WHERE id = ?1 AND favorite = 0 AND play_count = 0
+             AND last_played_unix IS NULL AND NOT EXISTS (SELECT 1 FROM cover WHERE game = g.id)",
+        )
+        .map_err(db_error)?;
+    let mut out = Leftovers::default();
+    for (path, old) in existing {
+        let marked = marked_at_start.contains(&old.id);
+        let wanted = has_gone && seen.contains(path) && (prudent || marked);
+        if !(marked || wanted) {
+            continue;
+        }
+        let is_pristine = pristine.exists([old.id]).map_err(db_error)?;
+        if marked && !is_pristine {
+            out.data_marks.push(old.id);
+        }
+        if !wanted {
+            continue;
+        }
+        if is_pristine {
+            out.extra.push(path.clone());
+        } else if marked && !prudent {
+            out.with_data.push(path.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Name of the "scan in progress" marker file of a 7.6: it is no longer written (8.0 marks the rows, `scan_pending`),
+/// but one left behind by a 7.6 still makes the first scan cautious, then it is removed.
 fn marker_path(conn: &Connection) -> Option<PathBuf> {
     let db = conn.path().filter(|p| !p.is_empty())?;
     let mut name = std::ffi::OsString::from(db);
@@ -2343,11 +2587,84 @@ fn marker_path(conn: &Connection) -> Option<PathBuf> {
     Some(PathBuf::from(name))
 }
 
-/// A marker is written before the first batch and removed when the scan ends normally or is cancelled. One that
-/// is still there at the start means the previous scan died between two batches: rows it stored may be the new
-/// side of a file moved by hand whose old row is not merged yet, so this scan only merges and never purges
-/// (the next one purges again). A failed marker write is not fatal: the scan is as safe as before 7.6.
+/// `analyze_in` on the published catalog (tests, single files).
+#[cfg(test)]
+pub(crate) fn analyze(
+    found: &Found,
+    max: u64,
+    cancel: &AtomicBool,
+    discs: &DiscIndex,
+) -> Result<Analysis, Failure> {
+    analyze_in(catalog(), found, max, cancel, discs)
+}
+
+/// Every row a scan writes carries `scan_pending = 1` until the scan ends normally or is cancelled. Rows still
+/// marked at the start belong to a scan killed between two batches: they may be the new side of a file moved by
+/// hand whose old row is not merged yet, so they join the candidates of the moved-file check before the usual
+/// purge. A marked row that carries user data takes the data of its unique vanished twin (merge, counted as
+/// moved); when the scan is cancelled or cautious no merge happens, so such a row keeps its mark for the next scan
+/// (rows without data are always unmarked). A `.scanning` file left by a 7.6 makes this scan cautious once (it
+/// merges and never purges) and is removed only after a scan that ended normally, never after a cancelled or
+/// failed one.
 pub(crate) fn run(
+    conn: &mut Connection,
+    options: &ScanOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<ScanReport, LibraryError> {
+    run_in(catalog(), conn, options, cancel, progress)
+}
+
+/// A row the scan leaves alone: its system is absent from the snapshot, or its id is in conflict (an official masked
+/// by a definition of the same id, or whose definition is in error) and the active system of that id does not accept
+/// its extension: the row belongs to the other half of the conflict, so it is neither purged nor reclassified.
+fn is_frozen(cat: &Catalog, path: &str, old: &Existing) -> bool {
+    row_is_frozen(cat, &old.system, path, old.entry.as_deref(), old.is_dir)
+}
+
+/// The predicate of [`is_frozen`], on the stored columns of a row: shared by the scan and by `Library::games`, which
+/// hides the frozen rows (they stay in the base) so that the library never shows nor launches them with the core of
+/// the definition (design v8.0 §0.9 point 11, ADR 0025 §13).
+pub(crate) fn row_is_frozen(
+    cat: &Catalog,
+    system: &str,
+    path: &str,
+    entry: Option<&str>,
+    is_dir: bool,
+) -> bool {
+    let Some(system) = cat.system(system) else {
+        return true;
+    };
+    cat.is_conflicted(&system.id) && !accepts_row(system, path, entry, is_dir)
+}
+
+/// Whether `system` would have attributed the stored row (path, recorded zip entry, game folder) to itself, read
+/// from the row alone, never from the disk: the test shared by the scan's frozen rows, the switch and « Oublier ses
+/// jeux » (ADR 0025 §10, §13). A zip is judged by its entry, an unknown entry is not accepted.
+pub(crate) fn accepts_row(
+    system: &SystemInfo,
+    path: &str,
+    entry: Option<&str>,
+    is_dir: bool,
+) -> bool {
+    if is_dir {
+        return system.folder_games;
+    }
+    let name = match lower_ext(Path::new(path)).as_deref() {
+        Some("zip") => entry.map(Path::new),
+        _ => Some(Path::new(path)),
+    };
+    name.and_then(lower_ext).is_some_and(|ext| {
+        system
+            .extensions
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&ext))
+    })
+}
+
+/// [`run`] on a given catalog snapshot (the public entry point captures the published one).
+pub(crate) fn run_in(
+    cat: &'static Catalog,
     conn: &mut Connection,
     options: &ScanOptions,
     cancel: &AtomicBool,
@@ -2356,15 +2673,10 @@ pub(crate) fn run(
     let marker = marker_path(conn);
     let prudent = marker.as_deref().is_some_and(Path::exists);
     let mut marker_failed = false;
-    if let Some(m) = &marker
-        && let Err(e) = std::fs::write(m, b"scan in progress\n")
-    {
-        tracing::warn!("cannot write the scan marker {}: {e}", m.display());
-        marker_failed = true;
-    }
-    let mut result = run_scan(conn, options, cancel, progress, prudent);
-    // Any other error keeps the marker: the scan did not reach its end.
-    if matches!(result, Ok(_) | Err(LibraryError::Cancelled))
+    let mut result = run_scan(cat, conn, options, cancel, progress, prudent);
+    // Only a scan that ended normally removes the legacy file; a cancelled or failed one keeps it.
+    if result.is_ok()
+        && prudent
         && let Some(m) = &marker
         && let Err(e) = std::fs::remove_file(m)
         && e.kind() != std::io::ErrorKind::NotFound
@@ -2382,6 +2694,7 @@ pub(crate) fn run(
 }
 
 fn run_scan(
+    cat: &'static Catalog,
     conn: &mut Connection,
     options: &ScanOptions,
     cancel: &AtomicBool,
@@ -2398,6 +2711,7 @@ fn run_scan(
     let mut found = Vec::new();
     {
         let mut walk = Walk {
+            cat,
             report: &mut report,
             keep: &mut keep,
             seen: &mut seen,
@@ -2408,9 +2722,32 @@ fn run_scan(
         }
     }
 
-    resolve_media(&mut found, &mut seen, &mut report);
-    let existing = load_existing(conn)?;
-    let discs = DiscIndex::load(conn)?;
+    resolve_media(cat, &mut found, &mut seen, &mut report);
+    let mut existing = load_existing(conn)?;
+    // Rows of a system absent from the snapshot (definition retired, in error or unreadable, official masked) are
+    // neither modified nor purged, whatever the files say (ADR 0025 §13): they are out of this scan altogether.
+    // Same for the rows of an id in conflict that the active system does not accept (see `is_frozen`).
+    let frozen: HashSet<String> = existing
+        .iter()
+        .filter(|(path, old)| is_frozen(cat, path, old))
+        .map(|(path, _)| path.clone())
+        .collect();
+    if !frozen.is_empty() {
+        existing.retain(|path, _| !frozen.contains(path));
+        found.retain(|f| !frozen.contains(&f.key));
+        seen.retain(|key| !frozen.contains(key));
+    }
+    let discs = DiscIndex::load_in(cat, conn)?;
+    // Rows still marked now belong to a scan killed earlier: read before this scan's own batches mark theirs.
+    let marked_at_start: HashSet<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM game WHERE scan_pending = 1")
+            .map_err(db_error)?;
+        stmt.query_map([], |r| r.get(0))
+            .map_err(db_error)?
+            .collect::<Result<_, _>>()
+            .map_err(db_error)?
+    };
     // (row id, region key) of unchanged rows of a disc system whose region was never computed (v5 rows).
     let mut regions: Vec<(i64, &'static str)> = Vec::new();
     // (row id, flag) of unchanged `megacd` rows whose `needs_32x` was never computed (v6 rows) or is `false`
@@ -2437,12 +2774,12 @@ fn run_scan(
             o.file_size == to_i64(f.file_size)
                 && o.mtime == f.mtime
                 && (o.media == f.media || zip_media_agrees(o, f))
-                && pin_agrees(o, f)
+                && pin_agrees(cat, o, f)
         }) {
             report.unchanged += 1;
             if let Some(o) = old
                 && o.region.is_none()
-                && let Some(system) = crate::system(&o.system).filter(|s| s.disc)
+                && let Some(system) = cat.system(&o.system).filter(|s| s.disc)
             {
                 let probe = f.media.first().map_or(f.path.as_path(), Path::new);
                 if let Some(region) = region_of_row(probe, &o.title, discs.get(&system.id)) {
@@ -2465,7 +2802,7 @@ fn run_scan(
             }
         } else {
             // No transaction is open here: a slow read never holds the write lock.
-            match analyze(f, options.max_file_size, cancel, &discs) {
+            match analyze_in(cat, f, options.max_file_size, cancel, &discs) {
                 Ok(analysis) => {
                     if analysis.hashes.is_some() {
                         state.hashed += 1;
@@ -2497,6 +2834,7 @@ fn run_scan(
         }
         if pending.len() >= BATCH || (!pending.is_empty() && batch_start.elapsed() >= BATCH_TIME) {
             inserted.extend(store_batch(
+                cat,
                 conn,
                 &mut names,
                 &existing,
@@ -2514,6 +2852,7 @@ fn run_scan(
     }
     // Work done before a cancellation is kept: the next scan skips it as unchanged.
     inserted.extend(store_batch(
+        cat,
         conn,
         &mut names,
         &existing,
@@ -2554,26 +2893,23 @@ fn run_scan(
         .map(|(path, old)| Twin::of_existing(path, old))
         .collect();
     // Rows stored by this scan: the only ones counted in `report.added`.
-    let mut own_ids = HashSet::new();
-    if prudent {
-        own_ids.extend(load_twins(conn, &inserted)?.iter().map(|t| t.id));
-        // Rows stored by the interrupted scan are not in `inserted`: they are candidates too, but only pristine
-        // ones, because a merge deletes the fresh row without carrying its favourite, history or covers.
-        let mut pristine = conn
-            .prepare_cached(
-                "SELECT 1 FROM game g WHERE path = ?1 AND favorite = 0 AND play_count = 0
-                 AND last_played_unix IS NULL AND NOT EXISTS (SELECT 1 FROM cover WHERE game = g.id)",
-            )
-            .map_err(db_error)?;
-        let mut extra = Vec::new();
-        for path in existing.keys().filter(|p| seen.contains(*p)) {
-            if pristine.exists([path]).map_err(db_error)? {
-                extra.push(path.clone());
-            }
-        }
-        drop(pristine);
-        inserted.extend(extra);
-    }
+    let own_ids: HashSet<i64> = load_twins(conn, &inserted)?.iter().map(|t| t.id).collect();
+    // Rows of an interrupted scan (marked at the start, or any row after a 7.6 `.scanning` file) are candidates too,
+    // but only the ones without user data: a merge deletes the fresh row without carrying its favourite, history
+    // or covers. The marked ones that have data stay, and take over the data of their twin (see `heirs`).
+    let Leftovers {
+        extra,
+        with_data,
+        data_marks,
+    } = select_candidates(
+        conn,
+        &existing,
+        &seen,
+        &marked_at_start,
+        prudent,
+        !gone.is_empty(),
+    )?;
+    inserted.extend(extra);
     let moved = if gone.is_empty() || inserted.is_empty() {
         HashMap::new()
     } else {
@@ -2581,27 +2917,45 @@ fn run_scan(
         merge_moved(conn, &gone, &fresh)?
     };
     report.moved = moved.len() as u64;
-    // A cautious scan also absorbs rows of the interrupted one, which this report never counted as added.
-    let absorbed = if prudent {
-        moved.values().filter(|n| own_ids.contains(n)).count() as u64
-    } else {
-        report.moved
-    };
+    // Only the rows this scan stored were counted as added: absorbing a row of the interrupted one changes nothing.
+    let absorbed = moved.values().filter(|n| own_ids.contains(n)).count() as u64;
     report.added = report.added.saturating_sub(absorbed);
     if cancelled {
+        // The twins of the rows kept marked are not merged: the next scan does it.
+        let tx = conn.transaction().map_err(db_error)?;
+        lift_marks(&tx, &data_marks)?;
+        tx.commit().map_err(db_error)?;
         return Err(LibraryError::Cancelled);
     }
 
+    // A marked row that carries user data is not absorbed, so the row of its vanished file must not be purged with
+    // its own data: when they are each other's only twin, the old row's data goes to the row that stays.
+    let heirs = heirs_of(conn, &gone, &moved, &with_data)?;
+    let merged: HashSet<i64> = heirs.iter().map(|h| h.old).collect();
     let tx = conn.transaction().map_err(db_error)?;
+    let mut orphan_covers: Vec<String> = Vec::new();
+    for heir in &heirs {
+        orphan_covers.extend(give_data(&tx, heir.old, heir.new)?);
+    }
     for (path, old) in existing.iter().filter(|_| !prudent) {
         if seen.contains(path) || kept_rows(path) || moved.contains_key(&old.id) {
             continue;
         }
-        report.removed += tx
+        let deleted = tx
             .execute("DELETE FROM game WHERE id = ?1", [old.id])
             .map_err(db_error)? as u64;
+        // A row whose data went to its twin is a move, not a removal.
+        if merged.contains(&old.id) {
+            report.moved += deleted;
+        } else {
+            report.removed += deleted;
+        }
     }
+    // Same transaction as the purge: the scan has reached its end. A cautious scan merged nothing: the rows with
+    // data keep their mark for the next one.
+    lift_marks(&tx, if prudent { &data_marks } else { &[] })?;
     tx.commit().map_err(db_error)?;
+    remove_orphan_covers(conn, &orphan_covers);
     unclassified.sort_by_key(|(index, _)| *index);
     report.unclassified = unclassified.len() as u64;
     report.unclassified_paths = unclassified
@@ -2613,6 +2967,9 @@ fn run_scan(
     progress(&state);
     Ok(report)
 }
+
+#[cfg(test)]
+mod custom_tests;
 
 #[cfg(test)]
 mod tests {

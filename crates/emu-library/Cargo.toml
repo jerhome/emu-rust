@@ -30,6 +30,8 @@ libc = "0.2"
 winapi-util = "0.1.11"
 
 [dev-dependencies]
+# Reads the manifest of tests/tools/mkcustom.py (already in the lock file). MIT/Apache-2.0.
+serde_json = "1"
 tempfile = { workspace = true }
 
 [lints]

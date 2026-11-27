@@ -46,6 +46,9 @@ fn reset(db: &Path, value: &str, version: i64) {
     let conn = Connection::open(db).unwrap();
     conn.execute(&format!("UPDATE game SET needs_32x = {value}"), [])
         .unwrap();
+    // Back to the layout of `version` (7 or 6): v8 added `scan_pending`.
+    conn.execute_batch("ALTER TABLE game DROP COLUMN scan_pending;")
+        .unwrap();
     conn.pragma_update(None, "user_version", version).unwrap();
 }
 
@@ -90,5 +93,5 @@ fn a_v6_base_with_never_computed_flags_is_remarked_by_the_name_rules() {
         .unwrap()
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }

@@ -4,6 +4,9 @@
 
 mod cd32x;
 mod covers;
+mod custom_launch;
+mod custom_systems;
+mod demo;
 mod dos;
 mod firmware_banner;
 pub(crate) mod firmware_gate;
@@ -12,6 +15,8 @@ mod home;
 mod host;
 mod pad_settings;
 mod settings;
+#[doc(hidden)]
+pub mod test_support;
 pub(crate) mod text;
 pub(crate) mod tidy;
 mod wizard;
@@ -153,6 +158,10 @@ enum Dialog {
     },
     /// Files of a shared extension that the scan could not attribute (design v3.0 §3.5.2).
     Unclassified(Vec<PathBuf>),
+    /// Launch of a custom system (« non testé », dry run) or the notice of an interrupted launch.
+    Custom(custom_launch::CustomDialog),
+    /// Confirmations of the custom systems (delete, forget) and the notice of an addition.
+    CustomSystems(custom_systems::Confirm),
 }
 
 /// What a launch was asked with: enough to start it again after a BIOS import.
@@ -267,6 +276,8 @@ pub(crate) struct LibraryUi {
     dat_offered: bool,
     /// libretro-database root, each DAT source below it (tests: a local server).
     dat_base_url: String,
+    /// HTTP settings of the DAT requests (tests: loopback allowed).
+    dat_http: emu_assets::http::HttpConfig,
     status: Option<(String, Level)>,
     dialog: Option<Dialog>,
     focus_dialog: bool,
@@ -297,6 +308,10 @@ pub(crate) struct LibraryUi {
     /// First-run wizard, drawn instead of the home grid while `Some`.
     wizard: Option<wizard::Wizard>,
     tidy: tidy::TidyUi,
+    /// Dry run and steps of the launches of custom systems.
+    custom: custom_launch::State,
+    /// Definitions of the custom systems: the settings section, the publication of the catalog.
+    custom_systems: custom_systems::State,
 }
 
 fn now_unix() -> i64 {
@@ -378,6 +393,7 @@ impl LibraryUi {
             dat_progress: None,
             dat_offered: false,
             dat_base_url: worker::DAT_REPO_ROOT.to_owned(),
+            dat_http: emu_assets::http::HttpConfig::default(),
             status: None,
             dialog: None,
             focus_dialog: false,
@@ -398,8 +414,13 @@ impl LibraryUi {
             advice: None,
             wizard: None,
             tidy: tidy::TidyUi::default(),
+            custom: custom_launch::State::default(),
+            custom_systems: custom_systems::State::default(),
         };
         ui.reload_games();
+        // The switch banner reads the catalog load (`pending_switches`).
+        ui.refresh_custom_systems();
+        ui.show_crash_notices();
         ui
     }
 
@@ -576,7 +597,7 @@ impl LibraryUi {
             self.dirs.library_db.clone(),
             self.dirs.database.clone(),
             self.dat_base_url.clone(),
-            emu_assets::http::HttpConfig::default(),
+            self.dat_http.clone(),
             notify(ctx),
         ));
     }
@@ -810,7 +831,7 @@ impl LibraryUi {
             return;
         };
         let prefs = cores_ui::preferences(&self.config.cores);
-        let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
+        let database = emu_library::system(&args.system_id).map(|s| s.core_key().to_owned());
         let needs_32x = args
             .disc
             .as_ref()
@@ -827,6 +848,14 @@ impl LibraryUi {
             args.ext.as_deref(),
             needs,
         );
+        // A custom system: the BIOS files the user ignored do not stop the launch.
+        let check = match emu_library::system(&args.system_id)
+            .filter(|s| s.is_custom())
+            .and_then(|s| emu_library::catalog().custom(&s.id))
+        {
+            Some(custom) => cores_ui::without_ignored(check, &custom.ignored_firmware),
+            None => check,
+        };
         // Disc systems (design v6.0 §2.1): the discs of the game for this core, a zip refused before anything.
         let core = match &check {
             LaunchCheck::Ready { id, .. }
@@ -940,7 +969,7 @@ impl LibraryUi {
             .get(core.as_str())
             .cloned()
             .unwrap_or_default();
-        let database = emu_library::system(&args.system_id).map(|s| s.database.as_str());
+        let database = emu_library::system(&args.system_id).map(|s| s.core_key());
         let lf = check_launch_firmware(
             &self.dirs.system,
             prefs,
@@ -1141,7 +1170,7 @@ impl LibraryUi {
     fn prefer_core(&mut self, system_db: &str, core: CoreId) {
         let Some(info) = emu_library::systems()
             .iter()
-            .find(|s| s.database == system_db)
+            .find(|s| s.core_key() == system_db)
         else {
             return;
         };
@@ -1182,6 +1211,22 @@ impl LibraryUi {
                 }
                 self.set_page(Page::Home);
                 self.launch_game(game);
+            }
+        }
+    }
+
+    /// What the add flow of the cores screen asks: accepted content to remember, definitions to write.
+    fn apply_add_events(&mut self) {
+        for event in self.cores.take_add_events() {
+            match event {
+                cores_ui::AddEvent::ContentAccepted(core) => {
+                    self.config
+                        .custom_systems
+                        .content_accepted
+                        .insert(core.to_string());
+                    self.save_config();
+                }
+                cores_ui::AddEvent::Drafts(drafts) => self.add_custom_systems(drafts),
             }
         }
     }
@@ -1265,6 +1310,8 @@ impl LibraryUi {
         self.start_covers(&ctx);
         self.covers.poll(&ctx);
         self.poll_workers();
+        self.poll_catalog_publication(&ctx);
+        self.poll_custom_jobs();
         if self.page != Page::Cores {
             // The install keeps running behind the other pages; its result is still needed.
             self.cores.poll(&ctx);
@@ -1272,7 +1319,11 @@ impl LibraryUi {
         if std::mem::take(&mut self.tidy.pending) {
             self.start_tidy(&ctx);
         }
+        if std::mem::take(&mut self.tidy.pending_switch) {
+            self.start_first_proposed_switch(&ctx);
+        }
         self.relaunch_after_install();
+        self.apply_add_events();
         self.bios_completed();
         self.poll_folder();
         self.help_shortcuts(ui);
@@ -1330,12 +1381,15 @@ impl LibraryUi {
             }
         } else if self.snapshot_busy() {
             self.snapshot_dialog(&ctx);
+        } else if self.custom_trying() {
+            self.try_dialog(&ctx);
         } else if self.programs_open() {
             self.programs_dialog(&ctx);
         } else {
             self.dialog_ui(&ctx);
         }
         self.gate_dos_launches(&ctx);
+        self.gate_custom_launches();
         std::mem::take(&mut self.events)
     }
 
@@ -1493,6 +1547,12 @@ impl LibraryUi {
         if matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
             return self.firmware3_dialog(ctx);
         }
+        if matches!(self.dialog, Some(Dialog::Custom(_))) {
+            return self.custom_dialog(ctx);
+        }
+        if matches!(self.dialog, Some(Dialog::CustomSystems(_))) {
+            return self.custom_systems_dialog(ctx);
+        }
         if matches!(
             self.dialog,
             Some(Dialog::ChooseFolder(_) | Dialog::FolderPath { .. } | Dialog::Unclassified(_))
@@ -1547,6 +1607,8 @@ impl LibraryUi {
                 Dialog::Notice(m) => (text::CD32X_TITLE, m.clone()),
                 Dialog::FreeBios { .. }
                 | Dialog::Firmware3 { .. }
+                | Dialog::Custom(_)
+                | Dialog::CustomSystems(_)
                 | Dialog::ChooseFolder(_)
                 | Dialog::FolderPath { .. }
                 | Dialog::Unclassified(_) => (text::LAUNCH_FAILED_TITLE, String::new()),
@@ -1584,6 +1646,8 @@ impl LibraryUi {
                     | Dialog::Notice(_)
                     | Dialog::FreeBios { .. }
                     | Dialog::Firmware3 { .. }
+                    | Dialog::Custom(_)
+                    | Dialog::CustomSystems(_)
                     | Dialog::ChooseFolder(_)
                     | Dialog::FolderPath { .. }
                     | Dialog::Unclassified(_) => None,
@@ -1946,7 +2010,7 @@ fn firmware_info(
     FirmwareInfo {
         system: emu_library::systems()
             .iter()
-            .find(|s| s.database == lf.system)
+            .find(|s| s.core_key() == lf.system)
             .map(|s| s.name.clone()),
         region,
         alternatives: alternatives

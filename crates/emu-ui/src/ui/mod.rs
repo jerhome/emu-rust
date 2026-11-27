@@ -389,6 +389,8 @@ pub struct UiData<'a> {
     pub eightbit: &'a EightBitView,
     /// Core with pad modes (PlayStation, design v7.0 §2.4): `Some(true)` = DualShock, `Some(false)` = digital pad.
     pub pad_dualshock: Option<bool>,
+    /// Names the core gave to the buttons of its pad (generic pad of a custom system); empty: A, B, X, Y.
+    pub pad_names: &'a [(emu_runtime::JoypadButton, String)],
 }
 
 /// Overlay state that lives across frames.

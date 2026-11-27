@@ -349,6 +349,15 @@ pub fn no_core_for_system() -> &'static str {
     "Aucun core connu pour ce système."
 }
 
+/// A custom system whose core wants hardware rendering (planned for 9.0).
+pub fn hardware_render(core: &str) -> String {
+    format!(
+        "Le core « {} » demande un rendu matériel (OpenGL ou Vulkan), prévu en 9.0. Il ne peut pas être lancé \
+         pour l'instant.",
+        crate::ui::text::sanitize_core_line(core)
+    )
+}
+
 // ---- free BIOS (ADR 0015 §2) -------------------------------------------------------------------------------
 
 pub const BIOS_SECTION: &str = "BIOS et SoundFont libres";
@@ -432,5 +441,78 @@ pub fn builtin_notice(notice: &str) -> String {
 pub fn not_32x_capable(core: &str) -> String {
     format!(
         "CD 32X : le core préféré « {core} » n'émule pas la 32X, picodrive est utilisé à sa place"
+    )
+}
+
+// ---- Ajouter un système non testé (ADR 0025 §9) -------------------------------------------------------------
+
+pub const ADD_BUTTON: &str = "Ajouter un système non testé…";
+pub const ADD_TITLE: &str = "Ajouter un système non testé";
+pub const ADD_INTRO: &str = "Cores que libretro propose pour des machines qu'emu-rust n'a pas testées. Rien n'est \
+     garanti : un avertissement s'affiche au premier lancement de chaque jeu.";
+pub const ADD_SHOW_ALL: &str = "Tout afficher (moteurs de jeu, cores expérimentaux)";
+pub const ADD_NO_INFO: &str =
+    "Liste vide : « Vérifier les mises à jour » télécharge le catalogue et les fiches des cores.";
+pub const ADD_NO_MATCH: &str = "Aucun core ne correspond.";
+pub const ADD_CHOOSE: &str = "Choisir";
+pub const ADD_BACK: &str = "Retour à la liste";
+pub const ADD_CLOSE: &str = "Fermer";
+pub const ADD_CONFIRM: &str = "Ajouter";
+pub const ADD_CANCEL: &str = "Annuler";
+pub const ADD_MACHINES: &str = "Machines à ajouter";
+pub const ADD_FIRMWARE: &str = "Fichiers système annoncés par le core";
+pub const ADD_FIRMWARE_NOTE: &str = "Jamais téléchargés : « Importer un BIOS… » range les vôtres. Leur absence n'empêche pas le lancement.";
+pub const ADD_REQUIRED: &str = "requis";
+pub const ADD_OPTIONAL: &str = "facultatif";
+pub const ADD_LICENSE: &str = "Licence";
+pub const ADD_NO_CACHE: &str = "pas de dossier de cache";
+pub const ADD_TASK_INTERRUPTED: &str = "tâche interrompue.";
+pub const ADD_NO_SHEET: &str = "fiche du core introuvable.";
+pub const ADD_PROBING: &str = "Lecture des réglages du core…";
+pub const ADD_INSTALLING: &str = "Installation du core…";
+pub const ADD_WAITING_CATALOG: &str = "En attente du catalogue…";
+
+pub fn add_row_line(license: Option<&str>) -> String {
+    match license {
+        Some(l) => format!("licence {}", crate::ui::text::sanitize_core_line(l)),
+        None => String::new(),
+    }
+}
+
+pub const ADD_HARDWARE: &str = "Rendu matériel : prévu en 9.0";
+pub const ADD_DISC_ONLY: &str = "Disques seulement : prévu en 8.4";
+pub const ADD_ARCADE: &str = "Arcade : prévu en 8.6";
+pub const MACHINE_SUPPORTED: &str = "déjà pris en charge";
+pub const MACHINE_ADDED: &str = "déjà ajouté";
+pub const MACHINE_DISC: &str = "disques : prévu en 8.4";
+pub const MACHINE_ARCADE: &str = "arcade : prévu en 8.6";
+
+pub const WARN_EXPERIMENTAL: &str = "Core expérimental.";
+pub const WARN_KEYBOARD: &str = "Ce core veut le clavier complet et la souris : prévus en 8.5, la manette seule peut ne pas suffire.";
+pub const WARN_NO_SAVESTATES: &str = "Ce core ne gère pas les états sauvegardés.";
+pub const WARN_UNVERIFIED: &str = "Contenu non vérifié : emu-rust n'a pas examiné ce core.";
+
+pub const ACCEPT_TITLE: &str = "Contenu non vérifié";
+pub const ACCEPT_YES: &str = "Accepter et continuer";
+
+pub fn accept_body(core: &str) -> String {
+    format!(
+        "Le core « {} » n'a pas été examiné par emu-rust ; il peut contenir des fichiers système d'origine dont \
+         le statut n'est pas vérifié. Usage personnel uniquement.",
+        crate::ui::text::sanitize_core_line(core)
+    )
+}
+
+pub fn add_failed_probe(why: &str) -> String {
+    format!(
+        "Le core n'a pas pu être lu : {} Le système n'est pas ajouté.",
+        crate::ui::text::sanitize_core_line(why)
+    )
+}
+
+pub fn add_install_failed(why: &str) -> String {
+    format!(
+        "L'installation du core a échoué : {} Réessayez ou vérifiez la connexion.",
+        crate::ui::text::sanitize_core_line(why)
     )
 }

@@ -16,15 +16,38 @@ use crate::keyboard::PadStyle;
 use crate::pad_mode::PadMode;
 use crate::theme;
 
-/// Systems of the remap page: label, core id (profile key base), pad style.
-const SYSTEMS: [(&str, &str, PadStyle); 6] = [
-    ("Mega Drive", "genesis_plus_gx", PadStyle::MegaDrive),
-    ("Master System", "genesis_plus_gx", PadStyle::MasterSystem),
-    ("Game Gear", "genesis_plus_gx", PadStyle::GameGear),
-    ("Super Nintendo", "snes9x", PadStyle::Snes),
-    ("Game Boy", "gambatte", PadStyle::GameBoy),
-    ("NES", "mesen", PadStyle::Nes),
+/// Systems of the remap page: label, core id (profile key base), pad style, library system id.
+const SYSTEMS: [(&str, &str, PadStyle, &str); 6] = [
+    (
+        "Mega Drive",
+        "genesis_plus_gx",
+        PadStyle::MegaDrive,
+        "megadrive",
+    ),
+    (
+        "Master System",
+        "genesis_plus_gx",
+        PadStyle::MasterSystem,
+        "mastersystem",
+    ),
+    (
+        "Game Gear",
+        "genesis_plus_gx",
+        PadStyle::GameGear,
+        "gamegear",
+    ),
+    ("Super Nintendo", "snes9x", PadStyle::Snes, "snes"),
+    ("Game Boy", "gambatte", PadStyle::GameBoy, "gb"),
+    ("NES", "mesen", PadStyle::Nes, "nes"),
 ];
+
+/// Profile key of a remap-page entry: the one the game of that system reads (`profile_key_for`).
+fn profile_of(system_id: &str, style: PadStyle, core_id: &str) -> String {
+    emu_library::system(system_id).map_or_else(
+        || style.profile_key(core_id),
+        |system| crate::keyboard::profile_key_for(system, style, core_id),
+    )
+}
 
 const DPAD_TARGETS: [JoypadButton; 4] = [
     JoypadButton::Up,
@@ -243,18 +266,17 @@ pub(super) fn set_dualshock_default(
 pub(super) fn remap(
     config: &mut GamepadConfig,
     style: PadStyle,
-    core_id: &str,
+    profile: &str,
     target: JoypadButton,
     physical: PadButton,
 ) {
-    let profile = style.profile_key(core_id);
-    let map = PadMap::from_config(style, &profile, config);
+    let map = PadMap::from_config(style, profile, config);
     for (other, t) in map.bindings() {
         if *t == target && *other != physical && !is_dpad(*other) {
-            set_binding(config, style, &profile, *other, None);
+            set_binding(config, style, profile, *other, None);
         }
     }
-    set_binding(config, style, &profile, physical, Some(target));
+    set_binding(config, style, profile, physical, Some(target));
 }
 
 fn is_dpad(button: PadButton) -> bool {
@@ -295,11 +317,12 @@ impl LibraryUi {
             self.set_status(text::PAD_REMAP_MODE.to_owned(), Level::Warn);
             return;
         }
-        let (_, core_id, style) = SYSTEMS[self.pad.system.min(SYSTEMS.len() - 1)];
+        let (_, core_id, style, system_id) = SYSTEMS[self.pad.system.min(SYSTEMS.len() - 1)];
+        let profile = profile_of(system_id, style, core_id);
         remap(
             &mut self.config.input.gamepad,
             style,
-            core_id,
+            &profile,
             target,
             physical,
         );
@@ -704,8 +727,8 @@ impl LibraryUi {
                     self.pad.learning = None;
                 }
             });
-            let (_, core_id, style) = SYSTEMS[self.pad.system.min(SYSTEMS.len() - 1)];
-            let profile = style.profile_key(core_id);
+            let (_, core_id, style, system_id) = SYSTEMS[self.pad.system.min(SYSTEMS.len() - 1)];
+            let profile = profile_of(system_id, style, core_id);
             let map = PadMap::from_config(style, &profile, &self.config.input.gamepad);
             let can_learn = self.pad.available && !self.pad.pads.is_empty();
             if !can_learn {
@@ -770,13 +793,7 @@ mod tests {
             .find(|(_, t)| *t == JoypadButton::A)
             .map(|(b, _)| *b)
             .unwrap();
-        remap(
-            &mut c,
-            style,
-            "genesis_plus_gx",
-            JoypadButton::A,
-            PadButton::North,
-        );
+        remap(&mut c, style, &key, JoypadButton::A, PadButton::North);
         let map = PadMap::from_config(style, &key, &c);
         assert_eq!(map.target(PadButton::North), Some(JoypadButton::A));
         assert_eq!(map.target(owner), None);
@@ -787,7 +804,7 @@ mod tests {
 
     #[test]
     fn remappable_targets_skip_the_dpad_and_repeat_nothing() {
-        for (_, _, style) in SYSTEMS {
+        for (_, _, style, _) in SYSTEMS {
             let t = remappable_targets(style);
             assert!(!t.is_empty());
             assert!(t.iter().all(|b| !DPAD_TARGETS.contains(b)));

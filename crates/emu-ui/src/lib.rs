@@ -11,7 +11,11 @@ mod config_library;
 mod content;
 mod copyable;
 mod cores_ui;
+mod crash_guard;
+mod custom;
 mod dos_launch;
+mod dry_run;
+mod dry_run_log;
 mod egui_layer;
 mod file_picker;
 mod firmware_hints;
@@ -20,6 +24,7 @@ mod game_options;
 mod gamepad;
 mod help;
 mod hotkeys;
+mod input_descriptors;
 mod keyboard;
 mod launch_firmware;
 mod library;
@@ -40,8 +45,8 @@ pub use crate::bios_import::{
     identify_bios, import_bios, import_error, known_import_items, unverified_item,
 };
 pub use crate::config::{
-    AudioSettings, Config, ConfigError, DEFAULT_PROFILE, DataDirs, Hotkeys, InputConfig, MAX_SCALE,
-    MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
+    AudioSettings, Config, ConfigError, CustomSystemsConfig, DEFAULT_PROFILE, DataDirs, Hotkeys,
+    InputConfig, MAX_SCALE, MIN_SCALE, ScalingChoice, SpeedConfig, SyncChoice, VideoConfig,
 };
 pub use crate::config_app::{AppConfig, UiConfig};
 pub use crate::config_computer::{
@@ -56,9 +61,16 @@ pub use crate::content::{
     GameContent, LaunchRefusal, content_spec, media_set_name, plan_disc_launch,
 };
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
+pub use crate::crash_guard::check_previous_launches;
+pub use crate::custom::{AddWarning, Addability, addability, addability_with};
 pub use crate::dos_launch::{
     clear_dos_cache, dos_cli_content, invalidate_core_caches, prepare_dos_snapshot,
     system_cache_names,
+};
+pub use crate::dry_run::{
+    DRY_RUN_FRAMES, DRY_RUN_TIMEOUT, DryRunCommand, DryRunDir, DryRunVerdict, GameCopyError,
+    MAX_GAME_COPY_BYTES, SkipReason, clean_stale_dry_runs, dry_run_child_main, run_dry_run,
+    run_dry_run_until,
 };
 pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
@@ -70,8 +82,11 @@ pub use crate::gamepad::{
     RawTranslator, ScriptedPadSource, UnrecognizedPad, retropad_from_name, retropad_name,
 };
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
-pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile};
+pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile, profile_key_for};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
+/// Headless driver of the library screen for the tests of `tests/` (not part of the program).
+#[doc(hidden)]
+pub use crate::library::test_support;
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 pub use crate::ui::text::sanitize_core_line;
@@ -83,10 +98,64 @@ pub use emu_library as library_db;
 /// Native error box before any window exists (Windows without a console; elsewhere stderr only). ADR 0023 §3.
 pub use emu_runtime::fatal_dialog;
 
+/// Loads the official systems and `<data>/systems/*.toml` and publishes them for `systems()` / `system()` (ADR 0025
+/// §1). First step of the start-up, before [`finish_pending_identities`]; problems of definitions go to the
+/// journal (a broken definition never stops the program). Returns the load for the callers that show the problems.
+pub fn publish_catalog(dirs: &DataDirs) -> library_db::CatalogLoad {
+    let load = library_db::Catalog::load(&dirs.custom_systems);
+    for problem in &load.problems {
+        tracing::warn!(
+            "système personnalisé {} ignoré : {}",
+            problem.file.display(),
+            problem.error
+        );
+    }
+    library_db::install_catalog(load.catalog.clone());
+    load
+}
+
+/// Number of live tasks (scan, tidying) that read the catalog of systems.
+static CATALOG_PINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Held by a scan or a tidying task while it runs: the catalog it started with must not change under it
+/// (rows classified under two catalogs, files moved by a plan made with another one; design 8.0 §7).
+pub(crate) struct CatalogPin(());
+
+impl CatalogPin {
+    pub(crate) fn new() -> Self {
+        CATALOG_PINS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for CatalogPin {
+    fn drop(&mut self) {
+        CATALOG_PINS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// [`publish_catalog`] for a running application (after a system was added, removed or restored): `None`, and
+/// nothing changed, while a scan or a tidying runs; the caller asks again once it is over. Tasks are started by
+/// the interface thread, which is also the one that publishes: nothing starts between the check and the
+/// publication.
+pub fn try_publish_catalog(dirs: &DataDirs) -> Option<library_db::CatalogLoad> {
+    if catalog_pinned() {
+        return None;
+    }
+    Some(publish_catalog(dirs))
+}
+
+/// A scan, a tidying or a DAT update is reading the catalog right now.
+pub(crate) fn catalog_pinned() -> bool {
+    CATALOG_PINS.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
 /// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
-/// `Library::pending_tidy_identities`. Called before the library opens and before a direct launch; problems go
-/// to the journal, never fatal. Runs on the calling thread, before the window exists, on purpose.
+/// `Library::pending_tidy_identities`, and the end of a switch to an official system that was cut (`pending_switch`:
+/// keys and core from the journal header, then `complete_switch`, never a question). Called before the library opens
+/// and before a direct launch; problems go to the journal, never fatal. Runs on the calling thread, before the window
+/// exists, on purpose. The settings file may have changed: read it after this call.
 pub fn finish_pending_identities(dirs: &DataDirs) {
     use crate::library::tidy::exec;
     if !exec::recovery_needed(dirs) {
@@ -95,10 +164,34 @@ pub fn finish_pending_identities(dirs: &DataDirs) {
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let out = exec::run_job(dirs, exec::Job::Recovery, &cancel, &mut |_| {});
     exec::log_outcome(&out);
+    if let Some(done) = &out.switched {
+        // The end of a switch changed the definitions and the settings file: the catalog is published again, and the
+        // caller reads the settings after this call.
+        tracing::info!(
+            "bascule vers {} terminée au démarrage",
+            done.switch.official_id
+        );
+        publish_catalog(dirs);
+    }
 }
 
 /// Version shown by the footer and `--version` (workspace version).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Short commit of the build (build.rs); `None` without git.
+pub const COMMIT: Option<&str> = option_env!("EMU_GIT_SHA");
+
+/// `<version>+<commit>` (semver build metadata), or the bare version without commit.
+pub fn format_version(version: &str, commit: Option<&str>) -> String {
+    match commit.filter(|c| !c.is_empty()) {
+        Some(c) => format!("{version}+{c}"),
+        None => version.to_owned(),
+    }
+}
+
+/// Version of this build with its commit: shown by the footer and `--version`.
+pub fn full_version() -> String {
+    format_version(VERSION, COMMIT)
+}
 /// Credit line of the footer (ADR 0023 §1): `emu-rust <VERSION> — <CREDIT>`.
 pub const CREDIT: &str = "dev by claude@jerhome";
 
@@ -151,7 +244,7 @@ pub struct LaunchOptions {
     /// `[computer] auto_fast_load` says.
     pub auto_fast_load: bool,
     /// `--pad-device` (`digital` | `dualshock`): pad mode of this run, over the game's and the config's; `None`:
-    /// the usual rule (design v7.0 §2.4). Read by PU2.
+    /// the usual rule (design v7.0 §2.4).
     pub pad_device: Option<String>,
     /// libretro database name of the game's system (library entry); `None` (CLI): found from the content's
     /// extension and header. Chooses the firmware table, the « Réglages » section and the « CD » menu.
@@ -210,6 +303,16 @@ pub enum LibraryScreen {
     /// The same sample report with the « Annuler le dernier rangement » confirmation open
     /// (`--screen library-tidy-undo`).
     TidyUndo,
+    /// « Ajouter un système non testé » : la liste des cores, avec des cores d'exemple (`--screen custom-add`).
+    CustomAdd,
+    /// La fiche d'un core d'exemple (`--screen custom-sheet`).
+    CustomSheet,
+    /// Réglages > Systèmes non testés, avec des définitions d'exemple (`--screen custom-settings`).
+    CustomSettings,
+    /// Le bandeau de proposition de bascule vers un système officiel (`--screen switch-banner`).
+    SwitchBanner,
+    /// L'aperçu d'une bascule (`--screen switch-preview`).
+    SwitchPreview,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,
@@ -248,4 +351,19 @@ pub fn run_library(options: LibraryOptions) -> Result<(), UiError> {
 /// requests shutdown, or `exit_after_frames` is reached. Must be called on the main thread.
 pub fn run(options: LaunchOptions) -> Result<(), UiError> {
     app::run(options)
+}
+
+#[cfg(test)]
+mod catalog_pin_tests {
+    use super::*;
+
+    #[test]
+    fn the_catalog_is_not_published_while_a_scan_or_tidying_task_pins_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(dir.path());
+        let pin = CatalogPin::new();
+        // Other tests may pin too: only the held pin matters here.
+        assert!(try_publish_catalog(&dirs).is_none());
+        drop(pin);
+    }
 }

@@ -61,7 +61,10 @@ pub(super) fn show(
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
                         for &button in style.buttons() {
-                            ui.label(style.button_name(button));
+                            ui.label(text::button_with_name(
+                                style.button_name(button),
+                                crate::input_descriptors::name_of(data.pad_names, button),
+                            ));
                             let label = if overlay.capture == Some(button) {
                                 "…".to_owned()
                             } else {

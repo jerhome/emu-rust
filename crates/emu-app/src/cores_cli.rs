@@ -316,7 +316,7 @@ fn check_bios(manager: &CoreManager, dirs: &DataDirs, id: Option<&str>) -> Resul
         let system_name = |database: &str| {
             emu_ui::library_db::systems()
                 .iter()
-                .find(|s| s.database == database)
+                .find(|s| s.core_key() == database)
                 .map_or_else(|| database.to_owned(), |s| s.name.clone())
         };
         let (with_table, without_table): (Vec<_>, Vec<_>) = prefs

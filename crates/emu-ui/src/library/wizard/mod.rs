@@ -99,7 +99,7 @@ pub(crate) fn propose_cores<'a>(
         .into_iter()
         .filter_map(emu_library::system)
         .map(|info| {
-            let cores = prefs.for_system(&info.database);
+            let cores = prefs.for_system(info.core_key());
             let have = cores.iter().find(|c| installed.contains(*c)).cloned();
             let core = if have.is_some() {
                 None

@@ -2,10 +2,15 @@
 //! journal written before acting, never overwrites, never renames, never deletes user data, undo and recovery.
 //! Only the roms root is tidied (never `[library] roots`). The scan classifier is reused, not duplicated.
 
+#[cfg(test)]
+mod custom_tests;
 mod exec;
 mod journal;
 mod plan;
 mod relocate;
+mod switch;
+#[cfg(test)]
+mod switch_tests;
 mod sys;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +37,9 @@ pub struct TidyOptions {
     max_file_size: u64,
     /// Lower-case file names of known firmware (BIOS): such a file is never a unit, it stays in place.
     firmware_names: Vec<String>,
+    /// The custom systems folder (`<data>/systems`), given by the caller: a switch with move reads and checks the
+    /// names of `.retired/` there. Never deduced from a catalog; unknown, the switch is refused.
+    systems_dir: Option<PathBuf>,
 }
 
 impl TidyOptions {
@@ -54,7 +62,20 @@ impl TidyOptions {
             max_depth: defaults.max_depth,
             max_file_size: defaults.max_file_size,
             firmware_names: Vec::new(),
+            systems_dir: None,
         })
+    }
+
+    /// The custom systems folder: required by `plan_switch` and `apply_switch` (without it
+    /// `Err(UnknownSystem(custom_id))`) and by the undo of a switch journal after its `F` (without it
+    /// `TidyRefused { SwitchNotReversible }`, nothing moved).
+    pub fn with_systems_dir(mut self, systems_dir: &Path) -> Self {
+        self.systems_dir = Some(systems_dir.to_path_buf());
+        self
+    }
+
+    pub(crate) fn systems_dir(&self) -> Option<&Path> {
+        self.systems_dir.as_deref()
     }
 
     /// File names of the known firmware (`firmware.toml`, `required_firmware` of emu-assets: this crate does not
@@ -218,11 +239,20 @@ pub struct TidyPlan {
     pub units: Vec<TidyUnit>,
     /// Items directly under the folder of their system (`roms/<id>/…`), never analysed nor moved.
     pub already_tidy: u64,
+    /// Folders `roms/<id>/` the plan leaves as they are: retired, masked or broken systems and ids of the library
+    /// absent from the catalog (ADR 0025 §12), sorted. Nothing is taken from them nor put into them; the preview says
+    /// so (« dossier d'un système retiré ou en erreur : laissé tel quel »).
+    pub reserved_folders: Vec<String>,
     /// Files that are not games (texts, images, executables outside a game folder, empty files…), left in place.
     pub ignored: u64,
     /// The first [`MAX_IGNORED_PATHS`] of them, in walk order: the UI checks them against the known BIOS md5
     /// (« Importer un BIOS… »), which this crate does not know.
     pub ignored_paths: Vec<PathBuf>,
+    /// `plan_switch` only, else empty: rows of the custom id that the official system does not accept, stored
+    /// paths sorted; the preview lists them as « gardés, masqués, jusqu'à Oublier ses jeux » (ADR 0025 §10).
+    pub switch_frozen: Vec<String>,
+    /// `plan_switch` only: the switch this plan is for.
+    switch: Option<SwitchMove>,
     /// One entry per unit (same index): files as analysed, layout and status before the destination checks.
     meta: Vec<plan::UnitMeta>,
     context: plan::PlanContext,
@@ -342,25 +372,42 @@ pub struct TidyJournalInfo {
     pub complete: bool,
     /// Last line `I`: identity registries rewritten since the last closing line.
     pub identities_done: bool,
+    /// `Some` for a switch journal (version 2): the UI words its undo differently.
+    pub switch: Option<SwitchMove>,
+    /// A switch journal whose end (`F`) is due: `complete_switch` first, no undo (`SwitchPending`).
+    pub end_due: bool,
 }
+
+pub use switch::{
+    KeysChoice, PendingSwitch, SwitchChoices, SwitchDirection, SwitchMove, open_switch,
+};
 
 impl TidyJournalInfo {
     /// « Annuler le dernier rangement » may be offered for it (closed run, not undone).
     pub fn can_undo(&self) -> bool {
-        self.complete && !self.undone
+        self.complete && !self.undone && !self.end_due
     }
 }
 
 /// Creates `roms/<id>/` for every system of the catalog, moving nothing. Returns the created ones only. The roms
 /// root itself is created when missing; an existing entry of that name (folder, file or link) is left alone.
 pub fn create_system_folders(roms_root: &Path) -> Result<Vec<PathBuf>, LibraryError> {
+    create_system_folders_in(crate::catalog::catalog(), roms_root)
+}
+
+/// [`create_system_folders`] on a given catalog snapshot: the active systems only, custom ones included; the
+/// folders of retired, masked or broken systems (ADR 0025 §12) are never recreated.
+pub(crate) fn create_system_folders_in(
+    cat: &crate::catalog::Catalog,
+    roms_root: &Path,
+) -> Result<Vec<PathBuf>, LibraryError> {
     let io = |path: &Path, source| LibraryError::Io {
         path: path.to_path_buf(),
         source,
     };
     std::fs::create_dir_all(roms_root).map_err(|e| io(roms_root, e))?;
     let mut created = Vec::new();
-    for system in crate::systems() {
+    for system in cat.systems() {
         let dir = roms_root.join(&system.id);
         if std::fs::symlink_metadata(&dir).is_ok() {
             continue;
@@ -401,6 +448,18 @@ impl Library {
         progress: &mut dyn FnMut(&ScanProgress),
     ) -> Result<TidyPlan, LibraryError> {
         plan::run(&self.conn, options, cancel, progress)
+    }
+
+    /// [`Library::plan_tidy`] on a given catalog snapshot (tests: nothing is published).
+    #[cfg(test)]
+    pub(crate) fn plan_tidy_in(
+        &self,
+        cat: &'static crate::catalog::Catalog,
+        options: &TidyOptions,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(&ScanProgress),
+    ) -> Result<TidyPlan, LibraryError> {
+        plan::run_in(&self.conn, cat, options, cancel, progress, None, None)
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.

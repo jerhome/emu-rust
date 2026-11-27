@@ -13,6 +13,7 @@ use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
+use super::demo::Demo;
 use super::pad_settings::LearnPad;
 use super::{LaunchRequest, Level, LibraryEvent, LibraryUi, Page, text};
 use crate::app::{App, Restart, open_gamepad, pad_poll_interval};
@@ -77,6 +78,11 @@ pub(crate) fn run(options: LibraryOptions) -> Result<(), UiError> {
         Some(LibraryScreen::TidyReport) => library.open_tidy_report_demo(false),
         Some(LibraryScreen::TidyUndo) => library.open_tidy_report_demo(true),
         Some(LibraryScreen::Wizard) => library.open_wizard(),
+        Some(LibraryScreen::CustomAdd) => library.open_custom_demo(Demo::Add),
+        Some(LibraryScreen::CustomSheet) => library.open_custom_demo(Demo::Sheet),
+        Some(LibraryScreen::CustomSettings) => library.open_custom_demo(Demo::Settings),
+        Some(LibraryScreen::SwitchBanner) => library.open_custom_demo(Demo::Banner),
+        Some(LibraryScreen::SwitchPreview) => library.open_custom_demo(Demo::SwitchPreview),
         None if options.wizard || first_run => library.open_wizard(),
         _ => {}
     }

@@ -504,6 +504,62 @@ pub struct FirmwareAdvice {
 }
 
 const REQUIRED_BENEFIT: &str = "BIOS indispensable : sans lui, le jeu ne démarre pas";
+const OPTIONAL_BENEFIT: &str = "BIOS facultatif : améliore la compatibilité ou la fidélité du core";
+
+/// Banner of a core that `cores.toml` does not list (custom system, design 8.0 §2.2, ADR 0025 §6): files of
+/// `info.firmware` minus `ignored` (`CustomSystem::ignored_firmware`); `optional = false` ⇒
+/// [`AdviceNeed::Required`] (never blocking), otherwise `Improves`; md5 of the `notes` and `KnownFirmware` for
+/// the state. `Ok(None)` when every file is `Ok` or `Unverified`; a `Free` file is never listed (intended). Unsafe paths ⇒ `Err`.
+pub fn firmware_advice_from_info(
+    core: &CoreId,
+    info: &CoreInfo,
+    ignored: &[String],
+    system_dir: &Path,
+    known: &KnownFirmware,
+) -> Result<Option<FirmwareAdvice>, FirmwareError> {
+    if let Some(spec) = info
+        .firmware
+        .iter()
+        .find(|s| !is_safe_relative_path(&s.path))
+    {
+        return Err(FirmwareError::UnsafePath(spec.path.clone()));
+    }
+    let mut required = Vec::new();
+    let mut improves = Vec::new();
+    for spec in &info.firmware {
+        if ignored.contains(&spec.path)
+            || required
+                .iter()
+                .chain(&improves)
+                .any(|f: &AdviceFile| f.name == spec.path)
+        {
+            continue;
+        }
+        let state = check_one(system_dir, spec, known, &[]);
+        if matches!(
+            state,
+            FirmwareState::Ok | FirmwareState::Free { .. } | FirmwareState::Unverified
+        ) {
+            continue;
+        }
+        let (need, benefit, list) = if spec.optional {
+            (AdviceNeed::Improves, OPTIONAL_BENEFIT, &mut improves)
+        } else {
+            (AdviceNeed::Required, REQUIRED_BENEFIT, &mut required)
+        };
+        list.push(AdviceFile {
+            name: spec.path.clone(),
+            need,
+            benefit: benefit.to_owned(),
+            state,
+        });
+    }
+    required.append(&mut improves);
+    Ok((!required.is_empty()).then(|| FirmwareAdvice {
+        core: core.clone(),
+        files: required,
+    }))
+}
 
 /// Banner data for `core` running a game of `system` (libretro database name) in region `variant`
 /// (`"usa"`…, `None` or a key absent from the table = unknown).
@@ -604,6 +660,120 @@ pub fn firmware_advice(
 mod tests {
     use super::*;
     use crate::cores::{CoreId, parse_info};
+
+    fn custom_advice(
+        text: &str,
+        ignored: &[&str],
+        files: &[(&str, &[u8])],
+        known: &KnownFirmware,
+    ) -> Result<Option<FirmwareAdvice>, FirmwareError> {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, data) in files {
+            std::fs::write(dir.path().join(name), data).unwrap();
+        }
+        let core = CoreId::new("x").unwrap();
+        let info = parse_info(core.clone(), text).unwrap();
+        let ignored: Vec<String> = ignored.iter().map(|s| (*s).to_owned()).collect();
+        firmware_advice_from_info(&core, &info, &ignored, dir.path(), known)
+    }
+
+    const ABC: &str = "900150983cd24fb0d6963f7d28e17f72";
+
+    #[test]
+    fn info_advice_required_then_improves_and_ignored() {
+        let text = format!(
+            "firmware0_path = \"opt.bin\"\nfirmware0_opt = \"true\"\nfirmware1_path = \"req.bin\"\n\
+             firmware1_opt = \"false\"\nfirmware2_path = \"skip.bin\"\nfirmware3_path = \"good.bin\"\n\
+             firmware4_path = \"nohash.bin\"\nfirmware5_path = \"bad.bin\"\n\
+             notes = \"(!) good.bin (md5): {ABC}|(!) bad.bin (md5): {ABC}\"\n"
+        );
+        let advice = custom_advice(
+            &text,
+            &["skip.bin"],
+            &[
+                ("good.bin", b"abc"),
+                ("nohash.bin", b"abc"),
+                ("bad.bin", b"xyz"),
+            ],
+            &KnownFirmware::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(advice.core.to_string(), "x");
+        let listed: Vec<_> = advice
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.name.as_str(),
+                    f.need,
+                    matches!(f.state, FirmwareState::Missing),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("req.bin", AdviceNeed::Required, true),
+                ("bad.bin", AdviceNeed::Required, false),
+                ("opt.bin", AdviceNeed::Improves, true),
+            ]
+        );
+        assert!(matches!(
+            advice.files[1].state,
+            FirmwareState::WrongHash { .. }
+        ));
+    }
+
+    #[test]
+    fn info_advice_is_none_when_satisfied_or_empty() {
+        let text = format!(
+            "firmware0_path = \"good.bin\"\nfirmware1_path = \"nohash.bin\"\nfirmware2_path = \"gone.bin\"\n\
+             notes = \"(!) good.bin (md5): {ABC}\"\n"
+        );
+        let files: &[(&str, &[u8])] = &[("good.bin", b"abc"), ("nohash.bin", b"abc")];
+        let known = KnownFirmware::default();
+        assert_eq!(
+            custom_advice(&text, &["gone.bin"], files, &known).unwrap(),
+            None
+        );
+        assert!(custom_advice(&text, &[], files, &known).unwrap().is_some());
+        assert_eq!(custom_advice("", &[], &[], &known).unwrap(), None);
+    }
+
+    #[test]
+    fn info_advice_uses_known_hashes() {
+        let known =
+            KnownFirmware::parse(&format!("[firmware]\n\"k.bin\" = [\"{ABC}\"]\n")).unwrap();
+        let text = "firmware0_path = \"k.bin\"\n";
+        assert_eq!(
+            custom_advice(text, &[], &[("k.bin", b"abc")], &known).unwrap(),
+            None
+        );
+        let advice = custom_advice(text, &[], &[("k.bin", b"xyz")], &known)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            advice.files[0].state,
+            FirmwareState::WrongHash { .. }
+        ));
+    }
+
+    #[test]
+    fn info_advice_refuses_unsafe_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreId::new("x").unwrap();
+        let mut info = parse_info(core.clone(), "").unwrap();
+        info.firmware.push(FirmwareSpec {
+            path: "../escape.bin".into(),
+            description: String::new(),
+            optional: false,
+            md5: None,
+        });
+        let result =
+            firmware_advice_from_info(&core, &info, &[], dir.path(), &KnownFirmware::default());
+        assert!(matches!(result, Err(FirmwareError::UnsafePath(_))));
+    }
 
     #[test]
     fn builtin_parses() {

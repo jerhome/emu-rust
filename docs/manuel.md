@@ -51,6 +51,59 @@ Sur l'écran **Cores** :
   cherchent sous un autre nom (par exemple `scph5501.bin` pour un BIOS SCPH-7001 américain), l'import en fait une
   copie sous ce nom et l'écran l'indique (« copie de SCPH-7001 »). Un BIOS d'une autre région est signalé.
 
+### Systèmes non testés
+
+Libretro propose des cores pour beaucoup de machines qu'emu-rust n'a pas testées. Vous pouvez les ajouter vous-même ;
+rien n'est garanti pour eux.
+
+- **Ajouter** : sur l'écran **Cores**, après **Vérifier les mises à jour**, cliquez **Ajouter un système non
+  testé…**. La liste montre les émulateurs non expérimentaux (**Tout afficher** ajoute les moteurs de jeu et les cores
+  expérimentaux) et se filtre par machine. Les cores grisés disent pourquoi : rendu matériel (prévu en 9.0), disques
+  seulement (prévu en 8.4), arcade (prévu en 8.6). Une machine déjà prise en charge par emu-rust n'est pas proposée.
+- **La fiche** d'un core liste ses machines (une case chacune), sa licence, les fichiers système qu'il annonce
+  (jamais téléchargés : **Importer un BIOS…** range les vôtres) et ses avertissements (expérimental, clavier complet
+  prévu en 8.5, pas d'états sauvegardés). Un core qu'emu-rust n'a pas examiné demande d'abord une acceptation, une
+  seule fois par core : il peut contenir des fichiers système d'origine dont le statut n'est pas vérifié. Usage
+  personnel seulement.
+- **Ensuite** emu-rust installe le core, lit ses réglages dans un processus à part (un core qui plante n'emporte pas
+  l'application), crée le dossier `roms/<identifiant>/`, scanne et vous dit où déposer vos jeux.
+- **Premier lancement de chaque jeu** : un avertissement « système non testé » ; **Essayer puis lancer** fait un essai
+  de quelques secondes dans un processus à part, sur une copie du jeu. Un jeu en plusieurs fichiers, dans une archive
+  ou de plus de 256 Mio n'est pas essayé : seul l'avertissement s'affiche, à chaque lancement. **Ça marche chez moi**
+  supprime l'avertissement et l'essai pour ce système et ce core (pas l'acceptation du core). L'étiquette « non
+  testé » reste.
+- **Réglages > Systèmes non testés** : nom, extensions, cores (l'ordre compte), numéros ScreenScraper et IGDB, fichiers
+  système à ne plus signaler, **Recalculer depuis le core** (relit les extensions du core), **Chercher la base
+  d'identification** (au plus trois requêtes, par le nom libretro de la machine ; sans nom libretro, aucune base ni
+  jaquette n'est cherchée) et **Supprimer**.
+- **Supprimer** retire la définition (jamais effacée : dossier `systems/.retired/`) ; les fichiers, les sauvegardes et
+  le dossier `roms/<identifiant>/` ne sont pas touchés, et les jeux restent dans la bibliothèque, masqués.
+  **Systèmes retirés** : **Restaurer** les fait revenir ; **Oublier ses jeux** les retire pour de bon de la
+  bibliothèque (jamais les fichiers). Un système retiré par une bascule vers un système officiel est listé « remplacé
+  par… » sans bouton **Restaurer** (seule l'annulation de la bascule le rend), mais **Oublier ses jeux** y est
+  proposé. Si l'identifiant du système est celui d'un système officiel, le retrait compte comme un conflit : les jeux
+  propres à la définition restent masqués jusqu'à **Oublier ses jeux** ou **Restaurer**, et **Oublier ses jeux**
+  n'oublie alors que ces jeux-là (ceux que le système actif ne reconnaît pas) : les jeux du système officiel ne sont
+  jamais touchés. La suppression avec oubli est refusée tant qu'un de ces jeux reste dans `roms/<identifiant>/` :
+  déplacez-les.
+- **Bascule vers un système officiel** : quand une version d'emu-rust prend en charge officiellement un système que
+  vous aviez ajouté, un bandeau en bas de la bibliothèque (et un bouton **Basculer…** dans les Réglages) le propose.
+  Jamais de bascule automatique. L'aperçu dit ce qui change avant toute action. Trois cas : **même dossier** (aucun
+  fichier déplacé, définitive), **autre dossier** (les jeux sont rangés dans le dossier du système officiel par le
+  rangement ; annulable tant que vous ne rangez rien d'autre avec **Annuler la bascule…**) et **incertain** (un
+  système officiel porte le même nom de dossier : « est-ce la même machine ? » ; sans réponse positive rien
+  ne change). Vos touches (si celles du système officiel diffèrent, vous choisissez lesquelles garder) et le core que
+  vous utilisiez (il reste le premier choix) sont repris. Les jeux que le système officiel ne reconnaît pas sont
+  gardés, masqués, jusqu'à **Oublier ses jeux**. Si la fenêtre se ferme ou le courant s'arrête en cours de route, la
+  fin de la bascule se fait au démarrage suivant, sans question ; si elle ne peut pas se faire, le bandeau dit
+  pourquoi (par exemple : **Retirer ce système et terminer la bascule**).
+- **Noms des boutons** : le core d'un système non testé annonce parfois le nom de ses boutons (« Tir », « Saut ») ;
+  l'écran des touches les affiche à côté de A, B, X, Y une fois le core essayé ou joué une fois.
+- **Systèmes en erreur** : une définition illisible est listée avec la raison et ses jeux restent intacts. Au-delà de
+  256 définitions, les suivantes sont ignorées : une seule ligne le dit, la liste est repliée.
+- **Limite** : un core qui demande le rendu matériel est refusé (« prévu en 9.0 »), même s'il ne l'exigeait qu'en
+  option et que le jeu s'est mal chargé pour une autre raison.
+
 ### Ce que l'application télécharge, et ce que vous fournissez
 
 L'application télécharge seulement :
@@ -238,6 +291,7 @@ Ouvrez **Réglages** depuis la bibliothèque. On y trouve :
 - **Afficher le terminal** (après redémarrage) : sous Windows, la fenêtre noire est cachée par défaut ;
   cochez la case pour la voir (emu-rust se relance alors avec `emu-rust-cli.exe`, placé à côté). Sur Mac,
   l'application se rouvre dans le Terminal. Utile surtout pour dépanner ;
+- **Systèmes non testés** : modifier, supprimer et restaurer les systèmes ajoutés (voir « Systèmes non testés ») ;
 - **Ouvrir le journal** : la page **Journal** (voir « Pied de page et journal »).
 
 Sous Windows, les commandes en ligne (`--help`, `--install-core`…) passent par `emu-rust-cli.exe` :
@@ -271,6 +325,7 @@ Activez les jaquettes dans les **Réglages** puis lancez **Rechercher à nouveau
 Hors ligne, seul le cache est utilisé.
 
 **Le jeu est lent sur un Mac modeste.**
+
 - Gardez les réglages par défaut : ils sont légers.
 - Pour l'Amiga, préférez le core plus léger (puae2021) dans l'écran **Cores**.
 - Pour le Commodore 64, gardez le core par défaut (l'autre est environ cinq fois plus lent).

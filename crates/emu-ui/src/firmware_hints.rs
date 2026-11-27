@@ -23,7 +23,7 @@ pub(crate) struct CoreEnhancement {
 pub(crate) fn system_name(database: &str) -> String {
     emu_library::systems()
         .iter()
-        .find(|s| s.database == database)
+        .find(|s| s.core_key() == database)
         .map_or_else(|| database.to_owned(), |s| s.name.clone())
 }
 

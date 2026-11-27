@@ -10,16 +10,206 @@ use rusqlite::{
     Connection, DropBehavior, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params,
 };
 
-use crate::systems::{Attribution, attribute};
+use crate::catalog::{Catalog, catalog};
+use crate::systems::{Attribution, attribute_in};
 use crate::{
     Dat, DatSource, DiscRegion, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport,
-    SystemInfo, normalize_title, systems_for_extension,
+    SystemInfo, normalize_title,
 };
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
 /// v5 (4.0): `game.is_dir` (unpacked DOS game folders). v6 (6.0): `game.region` (disc systems), and the Redump
-/// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs).
-pub const SCHEMA_VERSION: u32 = 7;
+/// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs). v8 (8.0):
+/// `game.scan_pending` (rows written by a scan that has not ended yet).
+pub const SCHEMA_VERSION: u32 = 8;
+
+/// What `Library::forget_system` does with the DAT rows of the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ForgetDats {
+    /// Uncertain conflict: the DAT rows are the official's (ADR 0025 §9).
+    Keep,
+    Remove,
+}
+
+/// Which rows of a system [`Library::forget_system`] removes.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ForgetScope<'a> {
+    /// Every row of the id (a retired system).
+    All,
+    /// Uncertain conflict (ADR 0025 §9): only the rows of `id` that the active custom definition `id` of the
+    /// catalog claims **and** that the masked official of that id does not accept; official games and shared
+    /// extensions are kept with their data.
+    ClaimedBy(&'a Catalog),
+    /// Switch accepted (ADR 0025 §10): only the rows of `id` that the scan freezes in the catalog (id in conflict,
+    /// row not accepted by its active system).
+    Frozen(&'a Catalog),
+}
+
+/// Which rows [`Library::reassign_system`] rewrites.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ReassignScope<'a> {
+    All,
+    /// Only the rows of `from` that the system accepts (path extension, recorded `.zip` entry, game folder): the
+    /// scan's frozen-row test, shared.
+    AcceptedBy(&'a SystemInfo),
+}
+
+/// What the stored rows of a system need to be judged by [`crate::scan::accepts_row`].
+struct RowKey {
+    id: i64,
+    path: String,
+    entry: Option<String>,
+    is_dir: bool,
+}
+
+fn row_keys(conn: &Connection, system: &str) -> Result<Vec<RowKey>, LibraryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, path, entry, is_dir FROM game WHERE system = ?1 ORDER BY path")
+        .map_err(db_error)?;
+    stmt.query_map([system], |r| {
+        Ok(RowKey {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            entry: r.get(2)?,
+            is_dir: r.get::<_, i64>(3)? != 0,
+        })
+    })
+    .map_err(db_error)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(db_error)
+}
+
+fn accepts(system: &SystemInfo, key: &RowKey) -> bool {
+    crate::scan::accepts_row(system, &key.path, key.entry.as_deref(), key.is_dir)
+}
+
+impl Library {
+    /// « Oublier ses jeux »: deletes the game rows selected by `scope` (and with [`ForgetDats::Remove`] the DAT
+    /// rows) of a system `id`, one transaction; their covers and disk lists go with them (foreign keys). `Keep`
+    /// for an uncertain conflict, whose DAT rows are the official's (ADR 0025 §9). Explicit action only: removing a
+    /// system keeps its rows hidden. Files on disk are never touched; an unknown id is a no-op. `Err` if
+    /// `ClaimedBy` and `id` is not an active custom system masking an official one of the same id.
+    pub fn forget_system(
+        &mut self,
+        id: &str,
+        dats: ForgetDats,
+        scope: ForgetScope<'_>,
+    ) -> Result<(), LibraryError> {
+        // The scope is checked against the catalog first; the rows are read inside the transaction, so a scan
+        // cannot add or change one between the selection and the delete.
+        let claim = match scope {
+            ForgetScope::ClaimedBy(cat) => {
+                let custom = cat.system(id).filter(|s| s.is_custom());
+                let official = cat.masked_official().iter().find(|o| o.id == id);
+                let (Some(custom), Some(official)) = (custom, official) else {
+                    return Err(LibraryError::UnknownSystem(id.to_owned()));
+                };
+                Some((custom, official))
+            }
+            _ => None,
+        };
+        let tx = self.conn.transaction().map_err(db_error)?;
+        let doomed: Option<Vec<i64>> = match scope {
+            ForgetScope::All => None,
+            ForgetScope::ClaimedBy(_) => {
+                let (custom, official) =
+                    claim.ok_or_else(|| LibraryError::UnknownSystem(id.to_owned()))?;
+                Some(
+                    row_keys(&tx, id)?
+                        .iter()
+                        .filter(|k| accepts(custom, k) && !accepts(official, k))
+                        .map(|k| k.id)
+                        .collect(),
+                )
+            }
+            ForgetScope::Frozen(cat) => Some(match cat.system(id) {
+                Some(active) if cat.is_conflicted(id) => row_keys(&tx, id)?
+                    .iter()
+                    .filter(|k| !accepts(active, k))
+                    .map(|k| k.id)
+                    .collect(),
+                _ => Vec::new(),
+            }),
+        };
+        match doomed {
+            None => {
+                tx.execute("DELETE FROM game WHERE system = ?1", [id])
+                    .map_err(db_error)?;
+            }
+            Some(rows) => {
+                let mut delete = tx
+                    .prepare("DELETE FROM game WHERE id = ?1 AND system = ?2")
+                    .map_err(db_error)?;
+                for row in rows {
+                    delete.execute(params![row, id]).map_err(db_error)?;
+                }
+            }
+        }
+        if dats == ForgetDats::Remove {
+            // The entries follow (ON DELETE CASCADE).
+            tx.execute("DELETE FROM dat_info WHERE system = ?1", [id])
+                .map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to`, one transaction. Forward:
+    /// `AcceptedBy(official)` (the official system of the built-in table, masked or not): the rows it does not
+    /// accept keep `from`, a retired id, so they stay frozen and hidden. Undo: `All` (the frozen rows never moved).
+    /// Idempotent. Returns the number of rows changed.
+    pub fn reassign_system(
+        &mut self,
+        from: &str,
+        to: &str,
+        scope: ReassignScope<'_>,
+    ) -> Result<usize, LibraryError> {
+        let tx = self.conn.transaction().map_err(db_error)?;
+        let rows: Option<Vec<i64>> = match scope {
+            ReassignScope::All => None,
+            ReassignScope::AcceptedBy(system) => Some(
+                row_keys(&tx, from)?
+                    .iter()
+                    .filter(|k| accepts(system, k))
+                    .map(|k| k.id)
+                    .collect(),
+            ),
+        };
+        let changed = match rows {
+            None => tx
+                .execute("UPDATE game SET system = ?2 WHERE system = ?1", [from, to])
+                .map_err(db_error)?,
+            Some(rows) => {
+                let mut update = tx
+                    .prepare("UPDATE game SET system = ?3 WHERE id = ?1 AND system = ?2")
+                    .map_err(db_error)?;
+                let mut n = 0;
+                for row in rows {
+                    n += update.execute(params![row, from, to]).map_err(db_error)?;
+                }
+                n
+            }
+        };
+        tx.commit().map_err(db_error)?;
+        Ok(changed)
+    }
+
+    /// Rows of `id` that `official` does not accept (same test), stored paths sorted: what a switch leaves frozen.
+    /// Read by `plan_switch` (`TidyPlan::switch_frozen`) and by the UI for an in-place or uncertain switch.
+    pub fn switch_frozen_rows(
+        &self,
+        id: &str,
+        official: &SystemInfo,
+    ) -> Result<Vec<String>, LibraryError> {
+        Ok(row_keys(&self.conn, id)?
+            .into_iter()
+            .filter(|k| !accepts(official, k))
+            .map(|k| k.path)
+            .collect())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(pub i64);
@@ -240,6 +430,11 @@ ALTER TABLE dat_entry ADD COLUMN region TEXT;
     // 1 for a Sega CD 32X disc (7.4), 0 for another `megacd` game; NULL until the next scan fills it. Additive.
     r#"
 ALTER TABLE game ADD COLUMN needs_32x INTEGER;
+"#,
+    // 1 for a row written by a scan that has not ended (8.0): a scan killed between two batches leaves them, the
+    // next one merges them like moved files. NULL otherwise. Additive.
+    r#"
+ALTER TABLE game ADD COLUMN scan_pending INTEGER;
 "#,
 ];
 
@@ -691,7 +886,7 @@ pub(crate) fn extension_of(path: &Path, entry: Option<&str>) -> Option<String> {
 /// A game pinned by the scan's folder rule (`game.pinned`) stays on its system. Playlists are left to the next
 /// scan (their system comes from their entries); a file of a shared extension no longer found in the DATs keeps
 /// its system as "unknown", and the next scan re-evaluates it (design v3.0 §3.5.2).
-fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
+fn reidentify(cat: &'static Catalog, conn: &Connection, system: &str) -> Result<u64, LibraryError> {
     struct Row {
         id: i64,
         path: String,
@@ -744,27 +939,27 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
             continue;
         }
         // Games of a `folder_games` system are identified from their file lists: the next scan redoes them.
-        if crate::system(&row.system).is_some_and(|s| s.folder_games) {
+        if cat.system(&row.system).is_some_and(|s| s.folder_games) {
             continue;
         }
         // A disc identified by its track CRC or header serial (never stored): the next scan redoes it, the name
         // alone must not undo it here.
-        if crate::system(&row.system).is_some_and(|s| s.disc)
+        if cat.system(&row.system).is_some_and(|s| s.disc)
             && matches!(row.identification.as_str(), "crc32_size" | "serial")
         {
             continue;
         }
         let (candidates, by_dat): (Vec<&SystemInfo>, bool) = if ext == "bin"
-            && (row.system == SEGA_32X || crate::system(&row.system).is_some_and(|s| s.disc))
+            && (row.system == SEGA_32X || cat.system(&row.system).is_some_and(|s| s.disc))
         {
             // Kept as 32X, PlayStation or 3DO by its header (scanner probe): only the DAT of that system
             // re-identifies it.
-            match crate::system(&row.system) {
+            match cat.system(&row.system) {
                 Some(s) if system == row.system => (vec![s], false),
                 _ => continue,
             }
         } else {
-            let all = systems_for_extension(&ext);
+            let all = cat.for_extension(&ext);
             if !all.iter().any(|s| s.id == system) {
                 continue;
             }
@@ -774,7 +969,7 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
                 .find(|s| row.pinned && s.id == row.system);
             match pinned {
                 Some(p) => (vec![p], false),
-                None => match attribute(&ext, &[]) {
+                None => match attribute_in(cat, &ext, &[]) {
                     Attribution::Folder(s) => (vec![s], false),
                     Attribution::Candidates(c) => (c, false),
                     Attribution::ByDat(c) => (c, true),
@@ -899,7 +1094,12 @@ fn dat_region(field: Option<&str>, game: &str) -> Option<DiscRegion> {
 pub(crate) struct DiscIndex(HashMap<String, RedumpSet>);
 
 impl DiscIndex {
+    #[cfg(test)]
     pub fn load(conn: &Connection) -> Result<Self, LibraryError> {
+        Self::load_in(catalog(), conn)
+    }
+
+    pub fn load_in(cat: &Catalog, conn: &Connection) -> Result<Self, LibraryError> {
         let mut index = DiscIndex::default();
         let mut stmt = conn
             .prepare(
@@ -907,7 +1107,8 @@ impl DiscIndex {
                  ORDER BY rowid",
             )
             .map_err(db_error)?;
-        for system in crate::systems()
+        for system in cat
+            .systems()
             .iter()
             .filter(|s| s.disc && s.dats.contains(&DatSource::Redump))
         {
@@ -993,8 +1194,8 @@ fn dat_info_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DatInfo>>
     }))
 }
 
-fn first_source(system: &str) -> Result<DatSource, LibraryError> {
-    crate::system(system)
+fn first_source(cat: &Catalog, system: &str) -> Result<DatSource, LibraryError> {
+    cat.system(system)
         .and_then(|s| s.dats.first().copied())
         .ok_or_else(|| LibraryError::UnknownSystem(system.to_owned()))
 }
@@ -1081,7 +1282,7 @@ impl Library {
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        let source = first_source(system)?;
+        let source = first_source(catalog(), system)?;
         self.import_dat_source(system, source, dat, etag)
     }
 
@@ -1095,7 +1296,8 @@ impl Library {
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        let declared = crate::system(system).is_some_and(|s| s.dats.contains(&source));
+        let cat = catalog();
+        let declared = cat.system(system).is_some_and(|s| s.dats.contains(&source));
         if !declared {
             return Err(LibraryError::UnknownSystem(format!(
                 "{system} ({})",
@@ -1150,9 +1352,9 @@ impl Library {
             params![system, source, to_i64(count)],
         )
         .map_err(db_error)?;
-        reidentify(&tx, system)?;
+        reidentify(cat, &tx, system)?;
         // Disc games are identified from their track size, CRC and header serial (not stored) too.
-        if crate::system(system).is_some_and(|s| s.folder_games || s.disc) {
+        if cat.system(system).is_some_and(|s| s.folder_games || s.disc) {
             // The identification of these games needs their file lists (not stored): an impossible mtime makes
             // the next scan analyse them again, once.
             tx.execute(
@@ -1161,10 +1363,10 @@ impl Library {
             )
             .map_err(db_error)?;
         }
-        if crate::system(system).is_some_and(|s| s.disc) {
+        if cat.system(system).is_some_and(|s| s.disc) {
             // A `.chd` outside any folder is attributed by its name only when one Redump DAT lists it (design
             // v7.0 §3.4): a new Redump DAT may make the name of another disc system's `.chd` ambiguous.
-            for other in crate::systems().iter().filter(|s| s.disc && s.id != system) {
+            for other in cat.systems().iter().filter(|s| s.disc && s.id != system) {
                 tx.execute(
                     "UPDATE game SET mtime_unix = -1
                      WHERE system = ?1 AND pinned = 0 AND lower(path) LIKE '%.chd'",
@@ -1198,6 +1400,7 @@ impl Library {
 
     /// Imported DATs of a system, in `SystemInfo::dats` order (sources the catalog no longer declares last).
     pub fn dat_infos(&self, system: &str) -> Result<Vec<DatInfo>, LibraryError> {
+        let cat = catalog();
         let mut stmt = self
             .conn
             .prepare(&format!(
@@ -1212,7 +1415,7 @@ impl Library {
             .into_iter()
             .flatten()
             .collect();
-        if let Some(info) = crate::system(system) {
+        if let Some(info) = cat.system(system) {
             infos.sort_by_key(|d| info.dat_rank(d.source.id()));
         }
         Ok(infos)
@@ -1220,7 +1423,7 @@ impl Library {
 
     /// DAT of the **first declared source** of the system (2.0 callers; `dat_info_for` for the others).
     pub fn dat_info(&self, system: &str) -> Result<Option<DatInfo>, LibraryError> {
-        match first_source(system) {
+        match first_source(catalog(), system) {
             Ok(source) => self.dat_info_for(system, source),
             Err(_) => Ok(None),
         }
@@ -1238,15 +1441,32 @@ impl Library {
     }
 
     pub fn games(&self) -> Result<Vec<Game>, LibraryError> {
+        self.games_in(catalog())
+    }
+
+    /// [`Library::games`] on a given catalog snapshot.
+    pub(crate) fn games_in(&self, cat: &Catalog) -> Result<Vec<Game>, LibraryError> {
         let mut stmt = self
             .conn
             .prepare(&format!("SELECT {GAME_COLUMNS} FROM game ORDER BY id"))
             .map_err(db_error)?;
+        // Rows of a system absent from the catalog (retired, in error, masked), and the frozen rows of an id in
+        // conflict (the active system does not accept them), stay in the base but are hidden: same predicate as
+        // the scan's.
         let mut games: Vec<Game> = stmt
             .query_map([], game_from_row)
             .map_err(db_error)?
-            .collect::<Result<_, _>>()
+            .collect::<Result<Vec<Game>, _>>()
             .map_err(db_error)?;
+        games.retain(|g| {
+            !crate::scan::row_is_frozen(
+                cat,
+                &g.system,
+                &g.path.to_string_lossy(),
+                g.entry.as_deref(),
+                g.is_dir,
+            )
+        });
         let mut media = load_media(&self.conn, None)?;
         for g in &mut games {
             g.media = media.remove(&g.id.0).unwrap_or_default();
@@ -1355,20 +1575,45 @@ impl Library {
         kind: CoverKind,
         retry_before_unix: i64,
     ) -> Result<Vec<GameId>, LibraryError> {
+        self.games_needing_cover_in(catalog(), kind, retry_before_unix)
+    }
+
+    /// [`Library::games_needing_cover`] on a given catalog snapshot.
+    pub(crate) fn games_needing_cover_in(
+        &self,
+        cat: &Catalog,
+        kind: CoverKind,
+        retry_before_unix: i64,
+    ) -> Result<Vec<GameId>, LibraryError> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT g.id FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
+                "SELECT g.id, g.system, g.path, g.entry, g.is_dir FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
                  WHERE c.game IS NULL OR (c.state = 'missing' AND c.checked_unix < ?2)
                  ORDER BY g.id",
             )
             .map_err(db_error)?;
-        stmt.query_map(params![kind_name(kind), retry_before_unix], |r| {
-            Ok(GameId(r.get(0)?))
-        })
-        .map_err(db_error)?
-        .collect::<Result<_, _>>()
-        .map_err(db_error)
+        let rows = stmt
+            .query_map(params![kind_name(kind), retry_before_unix], |r| {
+                Ok((
+                    GameId(r.get(0)?),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, bool>(4)?,
+                ))
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        // A hidden row (system absent from the catalog, or frozen in a conflict) never asks for a cover.
+        Ok(rows
+            .into_iter()
+            .filter(|(_, system, path, entry, is_dir)| {
+                !crate::scan::row_is_frozen(cat, system, path, entry.as_deref(), *is_dir)
+            })
+            .map(|(id, ..)| id)
+            .collect())
     }
 
     /// Forgets the record of one cover (cached or missing): the game is then "never checked" for `kind`.
@@ -1398,6 +1643,9 @@ impl Library {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod forget_tests;
 
 #[cfg(test)]
 mod tests {

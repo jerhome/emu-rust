@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Prints the GitHub release notes for VERSION: the `## [VERSION]` section of CHANGELOG.md followed by
-# packaging/release-notes.md (test checklist, core URLs). Usage: release-notes.sh VERSION [--allow-missing-changelog]
+# Prints the GitHub release notes for VERSION: the `## [VERSION]` section of CHANGELOG.md preceded by an optional
+# packaging/release-notes-X.Y.Z.md and followed by packaging/release-notes.md (test checklist, core URLs).
+# Usage: release-notes.sh VERSION [--allow-missing-changelog]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,5 +27,12 @@ if [[ -z ${section//[[:space:]]/} ]]; then
     fi
 fi
 
+# Optional per-release header (warning, highlights): packaging/release-notes-X.Y.Z.md, X.Y.Z = version without any
+# pre-release suffix (8.0.0-rc.1 reads release-notes-8.0.0.md). Absent for most releases.
+header="packaging/release-notes-${version%%-*}.md"
+if [[ -f $header ]]; then
+    sed "s/@VERSION@/$version/g" "$header"
+    printf '\n'
+fi
 printf '%s\n\n' "$section"
 sed "s/@VERSION@/$version/g" packaging/release-notes.md

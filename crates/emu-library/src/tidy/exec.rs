@@ -16,15 +16,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::Connection;
 
 use super::journal::{
-    self, Block, Content, JournalWriter, MAX_FORWARD_SIZE, MAX_UNDO_SIZE, MTIME_TOLERANCE_SECS, Op,
-    State, same_place,
+    self, Block, Content, Journal, JournalWriter, MAX_FORWARD_SIZE, MAX_UNDO_SIZE,
+    MTIME_TOLERANCE_SECS, Op, State, SwitchHeader, same_place,
 };
 use super::relocate;
 use super::sys::Sys;
 use super::{
-    AbsoluteMoves, TidyBlock, TidyExtraName, TidyOptions, TidyPlan, TidyProgress, TidyReport,
-    TidySection, TidyStatus,
+    AbsoluteMoves, SwitchChoices, SwitchMove, TidyBlock, TidyExtraName, TidyOptions, TidyPlan,
+    TidyProgress, TidyReport, TidySection, TidyStatus,
 };
+use crate::catalog::{Catalog, catalog};
+use crate::custom::{Retirement, retired_file_name};
 use crate::scan::mtime_of;
 use crate::{LibraryError, TidyRefusal};
 
@@ -400,6 +402,10 @@ pub(super) struct Exec<'a> {
     options: &'a TidyOptions,
     root: PathBuf,
     report: TidyReport,
+    /// Catalog the undo reads the reserved folders from (ADR 0025 §12): the published one, or a test's.
+    cat: &'static Catalog,
+    /// Folders `roms/<id>/` an undo takes nothing from and puts nothing into (set by `undo`).
+    reserved: BTreeSet<String>,
 }
 
 impl<'a> Exec<'a> {
@@ -414,7 +420,16 @@ impl<'a> Exec<'a> {
             options,
             root: options.roms_root().to_path_buf(),
             report: TidyReport::default(),
+            cat: catalog(),
+            reserved: BTreeSet::new(),
         }
+    }
+
+    /// Reads the reserved folders of the undo from `cat` instead of the published catalog (tests).
+    #[cfg(test)]
+    pub(super) fn with_catalog(mut self, cat: &'static Catalog) -> Self {
+        self.cat = cat;
+        self
     }
 
     fn signal(&mut self, rel: &Path, message: &str) {
@@ -1061,12 +1076,18 @@ impl<'a> Exec<'a> {
                 _ => return Err(TidyBlock::ChangedSincePlan),
             }
         }
+        let cat = plan.context.cat.get();
+        // The folder of the custom system a switch empties stays (it becomes a reserved folder, ADR 0025 §12).
+        let source_folder = plan.switch.as_ref().map(|s| s.custom_id.as_str());
         let emptied = |sources: &mut dyn Iterator<Item = &Path>| -> Vec<PathBuf> {
             let mut set = BTreeSet::new();
             for s in sources {
                 for a in ancestors(s) {
-                    let top_system =
-                        depth(&a) == 1 && a.to_str().is_some_and(|n| crate::system(n).is_some());
+                    let top_system = depth(&a) == 1
+                        && a.to_str().is_some_and(|n| {
+                            cat.system(n).is_some()
+                                || source_folder.is_some_and(|c| n.eq_ignore_ascii_case(c))
+                        });
                     if !top_system {
                         set.insert(a);
                     }
@@ -1158,9 +1179,65 @@ impl<'a> Exec<'a> {
     }
 
     pub(super) fn apply(
+        self,
+        plan: &TidyPlan,
+        selected: &[u32],
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(&TidyProgress),
+    ) -> Result<TidyReport, LibraryError> {
+        self.run_forward(plan, selected, None, cancel, progress)
+    }
+
+    /// Every unit of a switch plan, under a version 2 journal (design 8.0 §2.1): the run ends with `E`; the end of
+    /// the switch (`F`) is `complete_switch`'s, once `pending_switch` says it is due.
+    pub(super) fn apply_switch(
+        self,
+        plan: &TidyPlan,
+        choices: &SwitchChoices,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(&TidyProgress),
+    ) -> Result<TidyReport, LibraryError> {
+        let invalid = |message: &str| {
+            io_at(
+                &self.root,
+                io::Error::new(io::ErrorKind::InvalidInput, message.to_owned()),
+            )
+        };
+        let Some(switch) = plan.switch.clone() else {
+            return Err(invalid("aperçu qui n'est pas celui d'une bascule"));
+        };
+        if self.options.systems_dir().is_none() {
+            return Err(LibraryError::UnknownSystem(switch.custom_id));
+        }
+        if !plan.switchable() {
+            return Err(invalid(
+                "bascule impossible : une unité est bloquée ou aucune n'est à déplacer",
+            ));
+        }
+        // The journal names its units `0..n`: what `plan_switch` produces.
+        let ids_ok = plan
+            .units
+            .iter()
+            .enumerate()
+            .all(|(i, u)| usize::try_from(u.id).is_ok_and(|id| id == i));
+        let units = u32::try_from(plan.units.len()).unwrap_or(0);
+        let seed = SwitchSeed {
+            switch,
+            choices: choices.clone(),
+            units,
+        };
+        if !ids_ok || !seed.valid(&self.root) {
+            return Err(invalid("choix de bascule impossibles à journaliser"));
+        }
+        let selected: Vec<u32> = plan.units.iter().map(|u| u.id).collect();
+        self.run_forward(plan, &selected, Some(&seed), cancel, progress)
+    }
+
+    fn run_forward(
         mut self,
         plan: &TidyPlan,
         selected: &[u32],
+        switch: Option<&SwitchSeed>,
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(&TidyProgress),
     ) -> Result<TidyReport, LibraryError> {
@@ -1228,7 +1305,10 @@ impl<'a> Exec<'a> {
                 }
             };
             let current = writer.as_ref().map_or_else(
-                || journal::header(&self.root).map_or(0, |h| h.len() as u64),
+                || match switch {
+                    Some(seed) => seed.header_len(&self.root),
+                    None => journal::header(&self.root).map_or(0, |h| h.len() as u64),
+                },
                 JournalWriter::len,
             );
             // A path the journal cannot hold leaves this unit only (FV1a m5).
@@ -1246,7 +1326,15 @@ impl<'a> Exec<'a> {
                 continue;
             }
             if writer.is_none() {
-                writer = Some(new_journal(self.sys, self.options)?);
+                writer = Some(match switch {
+                    Some(seed) => new_switch_journal(
+                        self.sys,
+                        self.options,
+                        seed,
+                        self.options.systems_dir(),
+                    )?,
+                    None => new_journal(self.sys, self.options)?,
+                });
             }
             let Some(w) = writer.as_mut() else { continue };
             match self.run_block(w, &spec) {
@@ -1274,106 +1362,12 @@ impl<'a> Exec<'a> {
 
     /// The undo block of a committed forward block, or why it stays (FV0 10).
     fn undo_spec(&self, forward: &Block) -> Result<Spec, TidyBlock> {
-        let root = &self.root;
-        let mut files = Vec::new();
-        let mut whole = None;
-        let mut listings = Listings::new();
-        for op in &forward.body {
-            match op {
-                Op::Move {
-                    n,
-                    size,
-                    mtime,
-                    from,
-                    to,
-                } => {
-                    let meta = match probe(root, to) {
-                        Probe::File(m) => m,
-                        _ => return Err(TidyBlock::ChangedSincePlan),
-                    };
-                    // One name only (an unreadable count proves nothing): never undo a file with another link.
-                    if links_of(&root.join(to), &meta) != Some(1) {
-                        return Err(TidyBlock::ChangedSincePlan);
-                    }
-                    if let Some(path) = first_read_only(root, [to.as_path()]) {
-                        return Err(TidyBlock::ReadOnlyFile { path });
-                    }
-                    if !same_state(&meta, *size, *mtime) {
-                        return Err(TidyBlock::ChangedSincePlan);
-                    }
-                    free(root, from, &mut listings)
-                        .map_err(|existing| TidyBlock::Conflict { existing })?;
-                    files.push(FileMove {
-                        n: *n,
-                        from: to.clone(),
-                        to: from.clone(),
-                        size: meta.len(),
-                        mtime: mtime_of(&meta),
-                    });
-                }
-                Op::Whole {
-                    files: count,
-                    size,
-                    mtime,
-                    from,
-                    to,
-                } => {
-                    if !matches!(probe(root, to), Probe::Dir) {
-                        return Err(TidyBlock::ChangedSincePlan);
-                    }
-                    let Some(now) = aggregate(root, to, self.options.max_depth()) else {
-                        return Err(TidyBlock::ChangedSincePlan);
-                    };
-                    if now.0 != *count
-                        || now.1 != *size
-                        || (now.2 - mtime).abs() > MTIME_TOLERANCE_SECS
-                    {
-                        return Err(TidyBlock::ChangedSincePlan);
-                    }
-                    free(root, from, &mut listings)
-                        .map_err(|existing| TidyBlock::Conflict { existing })?;
-                    whole = Some(WholeMove {
-                        files: now.0,
-                        size: now.1,
-                        mtime: now.2,
-                        from: to.clone(),
-                        to: from.clone(),
-                    });
-                }
-                _ => {}
-            }
-        }
-        for target in files
-            .iter()
-            .map(|f| &f.to)
-            .chain(whole.iter().map(|w| &w.to))
-        {
-            for a in ancestors(target) {
-                match probe(root, &a) {
-                    Probe::Dir | Probe::Absent => {}
-                    _ => return Err(TidyBlock::Conflict { existing: a }),
-                }
-            }
-        }
-        // Folders the forward block created (and `<D>`), removed when emptied.
-        let mut emptied: Vec<PathBuf> = forward
-            .body
-            .iter()
-            .filter_map(|op| match op {
-                Op::DirCreated(d) => Some(d.clone()),
-                _ => None,
-            })
-            .chain(forward.final_dir())
-            .collect();
-        emptied.sort_by_key(|d| std::cmp::Reverse(depth(d)));
-        emptied.dedup();
-        Ok(Spec {
-            unit: forward.unit,
-            files,
-            whole,
-            assembly: None,
-            emptied,
-        })
+        undo_spec_in(
+            &self.root,
+            self.options.max_depth(),
+            &self.reserved,
+            forward,
+        )
     }
 
     pub(super) fn undo(
@@ -1384,6 +1378,8 @@ impl<'a> Exec<'a> {
     ) -> Result<TidyReport, LibraryError> {
         let _lock = lock(self.options.journal_dir())?;
         let entries = journal::load_all(self.options.journal_dir())?;
+        // A switch end that is due blocks everything, whatever the root of its journal.
+        pending_guard(&entries)?;
         // The newest journal (empty files aside) must be the one asked, readable, of this root (FV0 10).
         let Some((newest, content)) = entries
             .into_iter()
@@ -1408,6 +1404,18 @@ impl<'a> Exec<'a> {
         preflight(self.options.journal_dir())?;
         if !matches!(journal.state, State::Ended | State::EndedMarked) {
             return Err(refused(path, TidyRefusal::AlreadyUndone));
+        }
+        self.reserved = undo_reserved(self.conn, self.cat, journal.switch.as_ref())?;
+        if journal.switch.is_some() {
+            // Before any action: a unit that cannot come back, or a definition in the way (ADR 0025 §10.5). The
+            // definitions folder is the one the caller gave in the options, never deduced.
+            switch_undo_check(
+                self.options,
+                &self.reserved,
+                &newest.path,
+                &journal,
+                self.options.systems_dir(),
+            )?;
         }
         let mut writer = JournalWriter::append_to(self.sys, &newest.path)?;
         let units: Vec<&Block> = journal
@@ -1521,6 +1529,131 @@ impl<'a> Exec<'a> {
         }
         Ok(None)
     }
+}
+
+/// The undo block of a committed forward block, or why it stays (FV0 10). `reserved`: folders `roms/<id>/` the undo
+/// takes nothing from and puts nothing into (ADR 0025 §12); a unit with a path under one stays whole.
+fn undo_spec_in(
+    root: &Path,
+    max_depth: usize,
+    reserved: &BTreeSet<String>,
+    forward: &Block,
+) -> Result<Spec, TidyBlock> {
+    let mut files = Vec::new();
+    let mut whole = None;
+    let mut listings = Listings::new();
+    for op in &forward.body {
+        if let Op::Move { from, to, .. } | Op::Whole { from, to, .. } = op
+            && let Some(name) = [from, to]
+                .into_iter()
+                .find_map(|p| reserved_top(reserved, p))
+        {
+            return Err(TidyBlock::FolderNamedLikeSystem { name });
+        }
+        match op {
+            Op::Move {
+                n,
+                size,
+                mtime,
+                from,
+                to,
+            } => {
+                let meta = match probe(root, to) {
+                    Probe::File(m) => m,
+                    _ => return Err(TidyBlock::ChangedSincePlan),
+                };
+                // One name only (an unreadable count proves nothing): never undo a file with another link.
+                if links_of(&root.join(to), &meta) != Some(1) {
+                    return Err(TidyBlock::ChangedSincePlan);
+                }
+                if let Some(path) = first_read_only(root, [to.as_path()]) {
+                    return Err(TidyBlock::ReadOnlyFile { path });
+                }
+                if !same_state(&meta, *size, *mtime) {
+                    return Err(TidyBlock::ChangedSincePlan);
+                }
+                free(root, from, &mut listings)
+                    .map_err(|existing| TidyBlock::Conflict { existing })?;
+                files.push(FileMove {
+                    n: *n,
+                    from: to.clone(),
+                    to: from.clone(),
+                    size: meta.len(),
+                    mtime: mtime_of(&meta),
+                });
+            }
+            Op::Whole {
+                files: count,
+                size,
+                mtime,
+                from,
+                to,
+            } => {
+                if !matches!(probe(root, to), Probe::Dir) {
+                    return Err(TidyBlock::ChangedSincePlan);
+                }
+                let Some(now) = aggregate(root, to, max_depth) else {
+                    return Err(TidyBlock::ChangedSincePlan);
+                };
+                if now.0 != *count || now.1 != *size || (now.2 - mtime).abs() > MTIME_TOLERANCE_SECS
+                {
+                    return Err(TidyBlock::ChangedSincePlan);
+                }
+                free(root, from, &mut listings)
+                    .map_err(|existing| TidyBlock::Conflict { existing })?;
+                whole = Some(WholeMove {
+                    files: now.0,
+                    size: now.1,
+                    mtime: now.2,
+                    from: to.clone(),
+                    to: from.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    for target in files
+        .iter()
+        .map(|f| &f.to)
+        .chain(whole.iter().map(|w| &w.to))
+    {
+        for a in ancestors(target) {
+            match probe(root, &a) {
+                Probe::Dir | Probe::Absent => {}
+                _ => return Err(TidyBlock::Conflict { existing: a }),
+            }
+        }
+    }
+    // Folders the forward block created (and `<D>`), removed when emptied.
+    let mut emptied: Vec<PathBuf> = forward
+        .body
+        .iter()
+        .filter_map(|op| match op {
+            Op::DirCreated(d) => Some(d.clone()),
+            _ => None,
+        })
+        .chain(forward.final_dir())
+        .collect();
+    emptied.sort_by_key(|d| std::cmp::Reverse(depth(d)));
+    emptied.dedup();
+    // A reserved folder is never removed, even empty (ADR 0023, amendment of 2026-11-27).
+    emptied.retain(|d| !(depth(d) == 1 && reserved_top(reserved, d).is_some()));
+    Ok(Spec {
+        unit: forward.unit,
+        files,
+        whole,
+        assembly: None,
+        emptied,
+    })
+}
+
+/// The reserved id `path` starts with, ignoring the case of ASCII letters (Windows, macOS).
+fn reserved_top(reserved: &BTreeSet<String>, path: &Path) -> Option<String> {
+    let first = path.components().next()?.as_os_str().to_str()?;
+    reserved
+        .iter()
+        .find(|r| r.eq_ignore_ascii_case(first))
+        .cloned()
 }
 
 const UNJOURNALABLE: &str = "chemin impossible à écrire dans le journal : unité laissée en place";
@@ -1647,6 +1780,9 @@ fn preflight(dir: &Path) -> Result<(), LibraryError> {
     for (listed, content) in journal::load_all(dir)? {
         match content {
             Content::Unreadable(e) => return Err(e),
+            Content::Journal(j) if j.end_due().is_some() => {
+                return Err(refused(&listed.path, TidyRefusal::SwitchPending));
+            }
             Content::Journal(j) if j.state.in_progress() => {
                 return Err(refused(&listed.path, TidyRefusal::Interrupted));
             }
@@ -1654,6 +1790,88 @@ fn preflight(dir: &Path) -> Result<(), LibraryError> {
         }
     }
     Ok(())
+}
+
+/// What `apply_switch` fixes before the journal exists: the retired name in its header depends on the second the
+/// journal is created at.
+pub(super) struct SwitchSeed {
+    switch: SwitchMove,
+    choices: SwitchChoices,
+    units: u32,
+}
+
+impl SwitchSeed {
+    fn header(&self, unix: u64) -> SwitchHeader {
+        SwitchHeader {
+            custom_id: self.switch.custom_id.clone(),
+            official_id: self.switch.official_id.clone(),
+            retired_name: retired_file_name(&self.switch.custom_id, Retirement::Replaced, unix),
+            units: self.units,
+            keys: self.choices.keys,
+            prior_preference: self.choices.prior_preference.clone(),
+            prior_profile: self.choices.prior_profile.clone(),
+        }
+    }
+
+    /// The header the grammar accepts (ids, cores, profile size), whatever the second.
+    fn valid(&self, root: &Path) -> bool {
+        journal::switch_header_lines(root, &self.header(0)).is_some()
+    }
+
+    fn header_len(&self, root: &Path) -> u64 {
+        journal::switch_header_lines(root, &self.header(now_unix().unsigned_abs()))
+            .map_or(0, |lines| lines.concat().len() as u64)
+    }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// A new version 2 journal named `max(now, newest + 1)`, the second raised while `journal-<unix>.txt` or
+/// `.retired/<retired name>` exists (never `-<k>`: two switches never share a retired name, ADR 0023 amendment of
+/// 2026-11-27). `systems_dir`: the definitions folder given by the caller; unknown, the switch is refused.
+fn new_switch_journal(
+    sys: &dyn Sys,
+    options: &TidyOptions,
+    seed: &SwitchSeed,
+    systems_dir: Option<&Path>,
+) -> Result<JournalWriter, LibraryError> {
+    let Some(systems_dir) = systems_dir else {
+        return Err(LibraryError::UnknownSystem(seed.switch.custom_id.clone()));
+    };
+    let newest = journal::list(options.journal_dir())?
+        .last()
+        .map_or(0, |l| l.unix.saturating_add(1));
+    let mut unix = now_unix().max(newest);
+    for _ in 0..1000 {
+        let header = seed.header(unix.unsigned_abs());
+        // An unreadable entry counts as taken: never overwrite a retired definition.
+        let name_taken = crate::custom::exact_entry(
+            &crate::custom::retired_dir(systems_dir).join(&header.retired_name),
+        )
+        .unwrap_or(true);
+        if !name_taken {
+            match JournalWriter::create_switch(
+                sys,
+                options.journal_dir(),
+                options.roms_root(),
+                &header,
+                unix,
+            ) {
+                Err(LibraryError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::AlreadyExists => {}
+                other => return other,
+            }
+        }
+        unix = unix.saturating_add(1);
+    }
+    Err(write_error(
+        options.journal_dir(),
+        "aucun nom de journal de bascule libre",
+    ))
 }
 
 /// A new journal named `max(now, newest + 1)` (M3).
@@ -1672,9 +1890,71 @@ fn new_journal(sys: &dyn Sys, options: &TidyOptions) -> Result<JournalWriter, Li
     )
 }
 
+/// `SwitchPending` when any readable journal of the folder, whatever its root, has a switch end due.
+fn pending_guard(entries: &[(journal::Listed, Content)]) -> Result<(), LibraryError> {
+    for (listed, content) in entries {
+        if matches!(content, Content::Journal(j) if j.end_due().is_some()) {
+            return Err(refused(&listed.path, TidyRefusal::SwitchPending));
+        }
+    }
+    Ok(())
+}
+
+/// Folders an undo leaves alone (ADR 0025 §12, ADR 0023 amendment of 2026-11-27): the catalog's reserved ones plus
+/// the ids of the library's rows it lacks; for a switch journal its two ids are exempt (one or the other is
+/// reserved depending on whether the run has its `F`).
+pub(super) fn undo_reserved(
+    conn: &Connection,
+    cat: &Catalog,
+    switch: Option<&SwitchHeader>,
+) -> Result<BTreeSet<String>, LibraryError> {
+    let mut reserved = super::plan::reserved_set(conn, cat, None)?;
+    if let Some(h) = switch {
+        reserved.retain(|r| {
+            !r.eq_ignore_ascii_case(&h.custom_id) && !r.eq_ignore_ascii_case(&h.official_id)
+        });
+    }
+    Ok(reserved)
+}
+
+/// The check before the undo of a switch journal (`SwitchNotReversible`, nothing is touched): every committed unit
+/// must be able to come back, and, after a forward `F`, `<systems_dir>/<custom>.toml` must not exist while
+/// `.retired/<retired name>` must (exact names). `systems_dir` unknown after an `F`: refused, the definition
+/// cannot be checked.
+pub(super) fn switch_undo_check(
+    options: &TidyOptions,
+    reserved: &BTreeSet<String>,
+    journal_path: &Path,
+    journal: &Journal,
+    systems_dir: Option<&Path>,
+) -> Result<(), LibraryError> {
+    let Some(h) = &journal.switch else {
+        return Ok(());
+    };
+    let not_reversible = || refused(journal_path, TidyRefusal::SwitchNotReversible);
+    if journal.forward_final {
+        let Some(dir) = systems_dir else {
+            return Err(not_reversible());
+        };
+        let active = dir.join(format!("{}.toml", h.custom_id));
+        let kept = crate::custom::retired_dir(dir).join(&h.retired_name);
+        let present = |p: &Path| crate::custom::exact_entry(p).map_err(|e| io_at(p, e));
+        if present(&active)? || !present(&kept)? {
+            return Err(not_reversible());
+        }
+    }
+    for forward in journal.forward.iter().filter(|b| b.committed) {
+        if undo_spec_in(options.roms_root(), options.max_depth(), reserved, forward).is_err() {
+            return Err(not_reversible());
+        }
+    }
+    Ok(())
+}
+
 /// `I` marker and purge (design v7.1 §3.4.1).
 pub(super) fn mark(sys: &dyn Sys, options: &TidyOptions, path: &Path) -> Result<(), LibraryError> {
     let _lock = lock(options.journal_dir())?;
+    pending_guard(&journal::load_all(options.journal_dir())?)?;
     // Only a journal of this folder (the purge below works there).
     let listed = journal::list(options.journal_dir())?;
     if !listed.iter().any(|l| same_file_path(&l.path, path)) {
@@ -1720,7 +2000,7 @@ pub(super) fn pending(
     Ok(journal::load_all(options.journal_dir())?
         .into_iter()
         .filter_map(|(listed, content)| match content {
-            Content::Journal(j) if j.root == root && j.state.identities_due() => {
+            Content::Journal(j) if j.root == root && j.identities_due() => {
                 let moved = j
                     .net_moves()
                     .into_iter()

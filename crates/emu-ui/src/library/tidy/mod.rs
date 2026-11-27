@@ -3,6 +3,7 @@
 //! Exécution → Rapport (FU2b, `exec`). Pure parts are unit-tested here; drawing is in `view`.
 
 pub(crate) mod exec;
+pub(crate) mod switch;
 pub(super) mod text;
 mod view;
 
@@ -311,7 +312,7 @@ impl Preview {
         let job = choice.clone();
         // Leaving the preview drops the task (cancel flag) and the queue with it: no further choice runs. A
         // choice already in `choose_system*` runs to its end: emu-library offers no cancellation there.
-        let task = Task::spawn("tidy-choice", notify, move |cancel, _progress| {
+        let task = Task::spawn_pinning_catalog("tidy-choice", notify, move |cancel, _progress| {
             choice_job(cancel, plan, &job)
         });
         self.choosing = Some((choice, task));
@@ -431,6 +432,13 @@ pub(super) enum Stage {
         progress: Option<ScanProgress>,
     },
     Preview(Box<Preview>),
+    /// Analysis of a switch to an official system (`switch::spawn_switch_plan`).
+    SwitchAnalysing {
+        task: switch::SwitchPlanTask,
+        progress: Option<ScanProgress>,
+    },
+    /// Preview of a switch: what changes, the keys question, « Basculer ».
+    Switch(Box<switch::SwitchPreview>),
     Failed(String),
     /// `apply_tidy` / `undo_tidy` then the identity step, in a worker. Not left before the end; a window closed
     /// meanwhile waits for it at exit (bounded), the journal makes the next start finish the rest.
@@ -459,11 +467,22 @@ pub(super) struct TidyUi {
     pub focus_first: bool,
     /// Start the analysis on the next frame (capture mode).
     pub pending: bool,
+    /// Start the analysis of the first switch proposed by the real data folder on the next frame (capture mode).
+    pub pending_switch: bool,
+    /// Switch proposals the user closed during this session (the banner is not shown again until the next start).
+    pub dismissed: BTreeSet<String>,
+    /// Page the « Retour » of the tidy page goes back to (the settings, or the library for the switch banner).
+    pub back_to: Option<super::Page>,
+    /// The switch analysis finished: the preview needs the settings (read by the page, which owns the config).
+    pub switch_ready: Option<Box<switch::SwitchAnalysis>>,
 }
 
 impl TidyUi {
     pub(super) fn busy(&self) -> bool {
-        matches!(self.stage, Stage::Analysing { .. } | Stage::Running { .. })
+        matches!(
+            self.stage,
+            Stage::Analysing { .. } | Stage::SwitchAnalysing { .. } | Stage::Running { .. }
+        )
     }
 
     /// Drains the workers; `true` when something changed.
@@ -491,6 +510,26 @@ impl TidyUi {
                 });
                 self.stage = Stage::Report(Box::new(outcome));
                 self.focus_first = true;
+            }
+            return changed;
+        }
+        if let Stage::SwitchAnalysing { task, progress } = &mut self.stage {
+            let (steps, done) = task.poll();
+            let changed = !steps.is_empty() || done.is_some();
+            if let Some(p) = steps.into_iter().last() {
+                *progress = Some(p);
+            }
+            match done {
+                Some(Some(Ok(analysis))) => {
+                    // The page turns it into a preview: the keys question reads the settings.
+                    self.switch_ready = Some(Box::new(analysis));
+                    self.stage = Stage::Idle;
+                }
+                Some(Some(Err(e))) => self.stage = Stage::Failed(e),
+                Some(None) => {
+                    self.stage = Stage::Failed(text::analysis_failed("tâche interrompue"));
+                }
+                None => {}
             }
             return changed;
         }
@@ -590,11 +629,12 @@ pub(super) fn spawn_plan(
     db: PathBuf,
     roms: PathBuf,
     journals: PathBuf,
+    systems: PathBuf,
     manager: Option<Arc<CoreManager>>,
     prefs: CorePreferences,
     notify: Notify,
 ) -> PlanTask {
-    Task::spawn("tidy-plan", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("tidy-plan", notify, move |cancel, progress| {
         if !roms.is_dir() {
             return Err(text::no_roms_folder(&roms));
         }
@@ -604,6 +644,7 @@ pub(super) fn spawn_plan(
         let names = firmware_names(&catalogue, &prefs);
         let options = TidyOptions::new(&roms, &journals)
             .map_err(|e| text::analysis_failed(&e.to_string()))?
+            .with_systems_dir(&systems)
             .with_firmware_names(&names);
         let plan = match library.plan_tidy(&options, cancel, &mut |p: &ScanProgress| {
             progress(p.clone());
@@ -630,7 +671,7 @@ pub(super) fn spawn_plan(
                 });
             }
         }
-        let last = exec::read_last(&options);
+        let last = exec::read_last(&options, Some(&library), &systems);
         Ok(Analysis { plan, bios, last })
     })
 }

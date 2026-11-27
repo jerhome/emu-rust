@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use emu_assets::cores::{
     CoreChoice, CoreError, CoreId, CoreInfo, CoreManager, CorePreferences, FirmwareState,
-    FirmwareStatus, choose_core,
+    FirmwareStatus, RenderNeed, choose_core,
 };
 
 use super::text;
@@ -35,6 +35,51 @@ pub(crate) enum LaunchCheck {
     NoCore,
     /// The core cannot be loaded (altered file, missing…). Never in use.
     Failed(CoreError),
+    /// Custom system whose core needs hardware rendering (planned for 9.0; design 8.0 §0.2).
+    HardwareRender { id: CoreId },
+}
+
+/// Steps before the game of a custom system starts, in order (design 8.0 §2.5, ADR 0025 §6, §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CustomStep {
+    AcceptContent,
+    UntestedWarning,
+    DryRun,
+    Launch,
+}
+
+/// What the user and the cache already know about a (core, system) pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CustomLaunchState {
+    /// The core is in `cores.toml` or the user accepted its unverified content.
+    pub content_accepted: bool,
+    /// « Ça marche chez moi » for the pair (core, system).
+    pub works_for_me: bool,
+    /// This game already passed the dry run with this core file.
+    pub dry_run_passed: bool,
+}
+
+/// Steps to run for `system` played with `core`; empty for an official system. « Ça marche chez moi » skips the
+/// warning and the dry run (the user vouches for the pair); a game that passed the dry run is not tried again and
+/// its warning was shown at that first launch.
+pub(crate) fn custom_launch_steps(
+    system: &emu_library::SystemInfo,
+    _core: &CoreId,
+    state: &CustomLaunchState,
+) -> Vec<CustomStep> {
+    if !system.is_custom() {
+        return Vec::new();
+    }
+    let mut steps = Vec::new();
+    if !state.content_accepted {
+        steps.push(CustomStep::AcceptContent);
+    }
+    if !state.works_for_me && !state.dry_run_passed {
+        steps.push(CustomStep::UntestedWarning);
+        steps.push(CustomStep::DryRun);
+    }
+    steps.push(CustomStep::Launch);
+    steps
 }
 
 impl LaunchCheck {
@@ -43,8 +88,49 @@ impl LaunchCheck {
         match self {
             LaunchCheck::NoCore => Some(text::no_core_for_system().to_owned()),
             LaunchCheck::Failed(e) => Some(text::error(e)),
+            LaunchCheck::HardwareRender { id } => Some(text::hardware_render(id.as_str())),
             _ => None,
         }
+    }
+}
+
+/// `HardwareRender` when the `.info` of `id` announces hardware rendering (a custom system: planned for 9.0).
+pub(crate) fn hardware_check(info: Option<&CoreInfo>, id: &CoreId) -> Option<LaunchCheck> {
+    matches!(info?.render, RenderNeed::Hardware(_))
+        .then(|| LaunchCheck::HardwareRender { id: id.clone() })
+}
+
+/// The BIOS files the user told emu-rust to ignore for a custom system (`ignored_firmware` of its definition)
+/// no longer stop a launch: a `FirmwareMissing` left with nothing else becomes `Ready`.
+pub(crate) fn without_ignored(check: LaunchCheck, ignored: &[String]) -> LaunchCheck {
+    if ignored.is_empty() {
+        return check;
+    }
+    match check {
+        LaunchCheck::FirmwareMissing { id, path, missing } => {
+            let missing: Vec<FirmwareStatus> = missing
+                .into_iter()
+                .filter(|f| !ignored.contains(&f.spec.path))
+                .collect();
+            if missing.is_empty() {
+                LaunchCheck::Ready {
+                    id,
+                    path,
+                    warnings: Vec::new(),
+                }
+            } else {
+                LaunchCheck::FirmwareMissing { id, path, missing }
+            }
+        }
+        LaunchCheck::Ready { id, path, warnings } => LaunchCheck::Ready {
+            id,
+            path,
+            warnings: warnings
+                .into_iter()
+                .filter(|f| !ignored.contains(&f.spec.path))
+                .collect(),
+        },
+        other => other,
     }
 }
 
@@ -171,4 +257,155 @@ pub(crate) fn plan_launch(
 /// The game is over (or the user cancelled): the core may be updated or removed again.
 pub(crate) fn release(manager: &CoreManager) {
     manager.set_in_use(None);
+}
+
+#[cfg(test)]
+mod steps_tests {
+    use emu_library::{SystemInfo, SystemOrigin};
+
+    use super::*;
+
+    fn system(origin: SystemOrigin) -> SystemInfo {
+        SystemInfo::synthetic("acme", "Acme", "acm", origin)
+    }
+
+    fn core() -> CoreId {
+        CoreId::new("acme_core").unwrap()
+    }
+
+    #[test]
+    fn an_official_system_has_no_step() {
+        let steps = custom_launch_steps(
+            &system(SystemOrigin::Official),
+            &core(),
+            &CustomLaunchState::default(),
+        );
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn a_first_launch_accepts_warns_tries_then_launches() {
+        let steps = custom_launch_steps(
+            &system(SystemOrigin::Custom),
+            &core(),
+            &CustomLaunchState::default(),
+        );
+        assert_eq!(
+            steps,
+            [
+                CustomStep::AcceptContent,
+                CustomStep::UntestedWarning,
+                CustomStep::DryRun,
+                CustomStep::Launch
+            ]
+        );
+    }
+
+    #[test]
+    fn an_accepted_core_skips_the_acceptance_only() {
+        let state = CustomLaunchState {
+            content_accepted: true,
+            ..CustomLaunchState::default()
+        };
+        let steps = custom_launch_steps(&system(SystemOrigin::Custom), &core(), &state);
+        assert_eq!(steps[0], CustomStep::UntestedWarning);
+        assert_eq!(steps.len(), 3);
+    }
+
+    #[test]
+    fn a_game_that_passed_the_dry_run_launches_at_once() {
+        let state = CustomLaunchState {
+            content_accepted: true,
+            dry_run_passed: true,
+            ..CustomLaunchState::default()
+        };
+        assert_eq!(
+            custom_launch_steps(&system(SystemOrigin::Custom), &core(), &state),
+            [CustomStep::Launch]
+        );
+    }
+
+    #[test]
+    fn works_for_me_skips_the_warning_and_the_dry_run_but_not_the_acceptance() {
+        let state = CustomLaunchState {
+            works_for_me: true,
+            ..CustomLaunchState::default()
+        };
+        assert_eq!(
+            custom_launch_steps(&system(SystemOrigin::Custom), &core(), &state),
+            [CustomStep::AcceptContent, CustomStep::Launch]
+        );
+    }
+
+    fn missing(name: &str) -> FirmwareStatus {
+        FirmwareStatus {
+            spec: emu_assets::cores::FirmwareSpec {
+                path: name.to_owned(),
+                description: String::new(),
+                optional: false,
+                md5: None,
+            },
+            state: FirmwareState::Missing,
+        }
+    }
+
+    fn firmware_missing(names: &[&str]) -> LaunchCheck {
+        LaunchCheck::FirmwareMissing {
+            id: core(),
+            path: PathBuf::from("core.so"),
+            missing: names.iter().map(|n| missing(n)).collect(),
+        }
+    }
+
+    #[test]
+    fn ignored_bios_files_no_longer_stop_the_launch() {
+        let ignored = vec!["a.bin".to_owned()];
+        assert!(matches!(
+            without_ignored(firmware_missing(&["a.bin"]), &ignored),
+            LaunchCheck::Ready { .. }
+        ));
+        let LaunchCheck::FirmwareMissing { missing, .. } =
+            without_ignored(firmware_missing(&["a.bin", "b.bin"]), &ignored)
+        else {
+            panic!("b.bin is still missing");
+        };
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].spec.path, "b.bin");
+        assert!(matches!(
+            without_ignored(firmware_missing(&["a.bin"]), &[]),
+            LaunchCheck::FirmwareMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn hardware_rendering_is_read_from_the_info() {
+        use emu_assets::cores::{HwApi, HwApiKind};
+        let mut info = CoreInfo {
+            id: core(),
+            display_name: "Acme".to_owned(),
+            core_name: None,
+            version: None,
+            license: None,
+            extensions: Vec::new(),
+            databases: Vec::new(),
+            firmware: Vec::new(),
+            description: None,
+            system_name: None,
+            categories: Vec::new(),
+            experimental: false,
+            render: RenderNeed::Software,
+            supports_no_game: None,
+            needs_fullpath: None,
+            keyboard_focus: None,
+            savestate: None,
+        };
+        assert!(hardware_check(Some(&info), &core()).is_none());
+        assert!(hardware_check(None, &core()).is_none());
+        info.render = RenderNeed::Hardware(vec![HwApi {
+            kind: HwApiKind::Vulkan,
+            min_version: None,
+        }]);
+        let check = hardware_check(Some(&info), &core()).unwrap();
+        assert!(check.blocking_message().unwrap().contains("9.0"));
+    }
 }

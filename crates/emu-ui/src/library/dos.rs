@@ -130,7 +130,7 @@ impl LibraryUi {
     }
 
     /// The launch stops before the game: the core marked in use by `plan_launch` is released.
-    fn abort_launch(&mut self, message: String) {
+    pub(super) fn abort_launch(&mut self, message: String) {
         if let Some(m) = self.cores.manager() {
             cores_ui::release(m);
         }

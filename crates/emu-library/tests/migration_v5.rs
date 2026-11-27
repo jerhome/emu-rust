@@ -48,12 +48,13 @@ fn a_v4_base_gains_is_dir_without_loss() {
     let db = tmp.path().join("library.sqlite");
     fs::copy(fixture(), &db).unwrap();
     drop(Library::open(&db).unwrap());
-    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(SCHEMA_VERSION, 8);
     // Back to the v4 layout (the v6 columns go too: the steps after v4 are replayed).
     {
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "ALTER TABLE game DROP COLUMN needs_32x;
+            "ALTER TABLE game DROP COLUMN scan_pending;
+             ALTER TABLE game DROP COLUMN needs_32x;
              ALTER TABLE game DROP COLUMN region;
              ALTER TABLE dat_entry DROP COLUMN serial;
              ALTER TABLE dat_entry DROP COLUMN region;
@@ -76,7 +77,7 @@ fn a_v4_base_gains_is_dir_without_loss() {
     assert_eq!(all.len(), 7);
     assert!(all.iter().all(|g| !g.is_dir));
     drop(lib);
-    assert_eq!(user_version(&db), 7);
+    assert_eq!(user_version(&db), 8);
     assert_eq!(rows(&db, GAME_SQL), games);
     assert_eq!(
         rows(&db, "SELECT * FROM game_media ORDER BY game_id, idx"),

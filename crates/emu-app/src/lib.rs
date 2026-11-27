@@ -142,9 +142,8 @@ fn prepare(
 fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     let (dirs, config) = prepare(cli.data_dir, cli.system_dir, cli.save_dir)?;
     // The game's path may be one an interrupted ROM tidying moved (ADR 0023 §4.5); a capture never moves files.
-    if cli.dump_window.is_none() {
-        emu_ui::finish_pending_identities(&dirs);
-    }
+    start_up(&dirs, cli.dump_window.is_none());
+    let config = reread_config(&dirs, config);
     let core = match cli.core {
         cli::CoreSpec::Path(path) => path,
         cli::CoreSpec::Managed(id) => cores_cli::managed_core_path(&id, &dirs, &config)?,
@@ -280,10 +279,44 @@ fn relaunch_for_terminal(
     Ok(false)
 }
 
+/// The exit code of the dry-run child: `0` when the result was written, else the (small, positive) code.
+fn child_exit_code(code: i32) -> ExitCode {
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+/// First steps of every start-up with the data directories known (ADR 0025 §1): the catalog of systems is
+/// published, then the interrupted ROM tidying is finished (`recover`), because both read it, then the witnesses
+/// of a launch that stopped are read (ADR 0025 §5). A capture (`--dump-window`) never moves the user's files nor
+/// consumes a witness, so it does not recover.
+fn start_up(dirs: &emu_ui::DataDirs, recover: bool) {
+    emu_ui::publish_catalog(dirs);
+    if recover {
+        emu_ui::finish_pending_identities(dirs);
+        // Before any launch of this process: a marker of the same pid belongs to a dead instance (containers).
+        emu_ui::check_previous_launches(dirs);
+    }
+}
+
+/// The end of a cut switch (`start_up`) rewrites the settings file: what the interface keeps in memory must be what is
+/// on the disk, or its next save would undo the switch. A file that cannot be read keeps the configuration loaded
+/// before (locked defaults).
+fn reread_config(dirs: &emu_ui::DataDirs, loaded: emu_ui::Config) -> emu_ui::Config {
+    if loaded.is_locked() {
+        return loaded;
+    }
+    emu_ui::Config::load(&dirs.config_file).unwrap_or(loaded)
+}
+
 /// The whole program; `flavor` says which executable runs it.
 pub fn run(flavor: Flavor) -> ExitCode {
-    emu_ui::log::install_panic_hook();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // The child of a dry run (ADR 0025 §5) before anything else: no panic hook (it writes to the journal), no
+    // data directories, no configuration, no tracing (the log file is locked by the parent), no relaunch, no
+    // signal handler, and never a message box. Every failure is an exit code.
+    if let Some(request) = cli::dry_run_child_request(&args) {
+        return child_exit_code(emu_ui::dry_run_child_main(&request));
+    }
+    emu_ui::log::install_panic_hook();
     let parsed = cli::parse(args.clone());
     let root = parsed.as_ref().ok().and_then(early_root);
     // Read again by `prepare`; a broken file is reported there, once tracing is up. The 7.1.0-rc.1 key
@@ -320,9 +353,11 @@ pub fn run(flavor: Flavor) -> ExitCode {
                 // Unlike --help/--version (informational, SUCCESS), the requested action was not run: FAILURE.
                 return cli_refused(flavor, ExitCode::FAILURE);
             }
-            match prepare(c.data_dir, c.system_dir, None)
-                .and_then(|(dirs, config)| cores_cli::run(&c.action, &dirs, &config))
-            {
+            match prepare(c.data_dir, c.system_dir, None).and_then(|(dirs, config)| {
+                // Publishes the catalog only: this command resumes no tidying.
+                start_up(&dirs, false);
+                cores_cli::run(&c.action, &dirs, &config)
+            }) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => fail(flavor, &e),
@@ -330,11 +365,9 @@ pub fn run(flavor: Flavor) -> ExitCode {
         }
         Ok(cli::Command::Library(l)) => match prepare(l.data_dir, l.system_dir, l.save_dir) {
             Ok((dirs, config)) => {
-                // An interrupted ROM tidying is finished before the library opens (ADR 0023 §4.5); a capture
-                // (`--dump-window`) never moves the user's files.
-                if l.dump_window.is_none() {
-                    emu_ui::finish_pending_identities(&dirs);
-                }
+                // An interrupted ROM tidying is finished before the library opens (ADR 0023 §4.5).
+                start_up(&dirs, l.dump_window.is_none());
+                let config = reread_config(&dirs, config);
                 install_signal_handler();
                 report(
                     flavor,

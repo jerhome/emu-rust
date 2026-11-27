@@ -123,8 +123,43 @@ impl LibraryUi {
         });
 
         let firmware = self.firmware_banner();
+        let proposals = self.visible_switch_proposals();
+        let mut switch_pick: Option<(String, bool)> = None;
+        let end_due = self
+            .custom_systems
+            .view
+            .as_ref()
+            .and_then(|v| v.end_due.clone());
+        let mut end_pick = false;
         egui::Panel::bottom("library-status").show(ui, |ui| {
             ui.add_space(2.0);
+            if let Some(due) = &end_due {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        super::WARNING,
+                        super::tidy::text::switch_end_banner(
+                            &due.switch.custom_id,
+                            due.block,
+                            &due.retired_name,
+                        ),
+                    );
+                    if due.block == super::tidy::switch::EndBlock::PlaceTaken
+                        && ui
+                            .add_enabled(
+                                !dialog_open && !self.capture,
+                                egui::Button::new(super::tidy::text::SWITCH_REMOVE_AND_END),
+                            )
+                            .clicked()
+                    {
+                        end_pick = true;
+                    }
+                });
+            }
+            for proposal in &proposals {
+                if let Some(pick) = switch_banner(ui, proposal, !dialog_open && !self.capture) {
+                    switch_pick = Some((proposal.custom_id.clone(), pick));
+                }
+            }
             if let Some(banner) = firmware {
                 ui.horizontal_wrapped(|ui| {
                     let color = if banner.required {
@@ -183,6 +218,21 @@ impl LibraryUi {
                 super::weak(ui, line);
             }
         });
+
+        if let (true, Some(due)) = (end_pick, &end_due) {
+            let ctx = ui.ctx().clone();
+            self.remove_and_end_switch(&ctx, &due.switch.custom_id);
+        }
+        match switch_pick {
+            Some((id, true)) => {
+                let ctx = ui.ctx().clone();
+                self.start_switch(&ctx, &id);
+            }
+            Some((id, false)) => {
+                self.tidy.dismissed.insert(id);
+            }
+            None => {}
+        }
 
         // Keys that work wherever the focus is (not while typing, not under a dialog).
         if !dialog_open {
@@ -732,4 +782,36 @@ pub(super) fn fit_rect(frame: Rect, size: Vec2) -> Rect {
     }
     let scale = (frame.width() / size.x).min(frame.height() / size.y);
     Rect::from_center_size(frame.center(), size * scale)
+}
+
+/// One line of the switch banner (ADR 0025 §10): « emu-rust prend désormais en charge … officiellement », or the
+/// question of an uncertain conflict. `Some(true)`: the user asks for the switch; `Some(false)`: closed.
+fn switch_banner(
+    ui: &mut Ui,
+    proposal: &emu_library::SwitchProposal,
+    enabled: bool,
+) -> Option<bool> {
+    use super::tidy::text as t;
+    let uncertain = proposal.kind == emu_library::SwitchKind::Uncertain;
+    let line = if uncertain {
+        t::switch_banner_uncertain(&proposal.official.name)
+    } else {
+        t::switch_banner(&proposal.official.name)
+    };
+    let mut pick = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(theme::ACCENT, line);
+        let (yes, no) = if uncertain {
+            (t::SWITCH_UNCERTAIN_YES, t::SWITCH_NOT_THIS_ONE)
+        } else {
+            (t::SWITCH_START_RECOMMENDED, t::SWITCH_BANNER_DISMISS)
+        };
+        if ui.add_enabled(enabled, egui::Button::new(yes)).clicked() {
+            pick = Some(true);
+        }
+        if ui.button(no).clicked() {
+            pick = Some(false);
+        }
+    });
+    pick
 }

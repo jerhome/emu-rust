@@ -156,7 +156,7 @@ pub(crate) fn content_database(
     let lists_core = |s: &emu_library::SystemInfo| {
         prefs
             .systems()
-            .any(|(db, cores)| db == s.database && cores.contains(core))
+            .any(|(db, cores)| db == s.core_key() && cores.contains(core))
     };
     let candidates_of = |ext: &str| -> Vec<&emu_library::SystemInfo> {
         emu_library::systems_for_extension(ext)
@@ -184,7 +184,7 @@ pub(crate) fn content_database(
                 .copied()
         }
     };
-    chosen.map(|s| s.database.clone()).or_else(|| {
+    chosen.map(|s| s.core_key().to_owned()).or_else(|| {
         let plain = |db: &str| {
             prefs
                 .systems()

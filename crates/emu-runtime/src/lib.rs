@@ -10,8 +10,10 @@ mod audio_ring;
 mod content;
 mod dialog;
 mod diskorder;
+mod dry_run;
 mod emulator;
 mod error;
+mod exit;
 mod frame;
 mod fsname;
 mod gl;
@@ -27,8 +29,9 @@ mod workcopy;
 
 pub use emu_libretro::{
     AvInfo, ControllerType, CoreMessage, CoreOption, CoreOptionCategory, CoreOptionValue,
-    DiskControlKind, FastForwardOverride, GameGeometry, JoypadButton, KeyEvent, KeyModifiers,
-    LibretroError, LogLevel, MemoryKind, RetroKey, SystemInfo, SystemTiming, mouse_id,
+    DiskControlKind, FastForwardOverride, FrameKind, GameGeometry, HwContextKind, HwRenderRequest,
+    InputDescriptor, JoypadButton, KeyEvent, KeyModifiers, LibretroError, LogLevel,
+    MAX_INPUT_DESCRIPTORS, MemoryKind, RetroKey, SystemInfo, SystemTiming, mouse_id,
 };
 
 pub use crate::added::{AddedDisk, OrphanCopy, OrphanKind};
@@ -42,8 +45,12 @@ pub use crate::audio_ring::{
 };
 pub use crate::content::archive_entry_names;
 pub use crate::dialog::fatal_dialog;
+pub use crate::dry_run::{
+    DryRunOutcome, DryRunReport, DryRunRequest, dry_run, suppress_crash_dialogs,
+};
 pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SIZE};
 pub use crate::error::RuntimeError;
+pub use crate::exit::exit_immediately;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
 pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest, SaveScope};

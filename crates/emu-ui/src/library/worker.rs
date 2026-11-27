@@ -29,6 +29,9 @@ pub(crate) enum Event<P, R> {
 pub(crate) struct Task<P, R> {
     rx: Receiver<Event<P, R>>,
     cancel: Arc<AtomicBool>,
+    /// The task holds the catalog of systems until it ends (see [`Task::spawn_pinning_catalog`]).
+    #[cfg(test)]
+    pinned: bool,
 }
 
 impl<P: Send + 'static, R: Send + 'static> Task<P, R> {
@@ -36,12 +39,32 @@ impl<P: Send + 'static, R: Send + 'static> Task<P, R> {
     where
         F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
     {
+        Self::spawn_inner(name, notify, None, work)
+    }
+
+    /// [`Task::spawn`] for a task that reads the catalog of systems while it runs (scan, tidying): the catalog
+    /// cannot be published (`crate::try_publish_catalog`) until the task ends, whatever the way it ends.
+    pub(crate) fn spawn_pinning_catalog<F>(name: &str, notify: Notify, work: F) -> Self
+    where
+        F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
+    {
+        Self::spawn_inner(name, notify, Some(crate::CatalogPin::new()), work)
+    }
+
+    fn spawn_inner<F>(name: &str, notify: Notify, pin: Option<crate::CatalogPin>, work: F) -> Self
+    where
+        F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
+    {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
+        #[cfg(test)]
+        let pinned = pin.is_some();
         let spawned = thread::Builder::new()
             .name(format!("emu-library-{name}"))
             .spawn(move || {
+                // Held until the work is over (or the thread dies): the pin is released by its `Drop`.
+                let _pin = pin;
                 let mut progress = |p: P| {
                     if tx.send(Event::Progress(p)).is_ok() {
                         notify();
@@ -56,7 +79,18 @@ impl<P: Send + 'static, R: Send + 'static> Task<P, R> {
             // The sender was dropped with the closure: `poll` reports the task as interrupted.
             tracing::error!("impossible de lancer la tâche {name} : {e}");
         }
-        Self { rx, cancel }
+        Self {
+            rx,
+            cancel,
+            #[cfg(test)]
+            pinned,
+        }
+    }
+
+    /// Whether the catalog is held for this task.
+    #[cfg(test)]
+    pub(crate) fn pins_catalog(&self) -> bool {
+        self.pinned
     }
 
     pub(crate) fn cancel(&self) {
@@ -105,7 +139,7 @@ pub(crate) type ScanTask = Task<ScanProgress, Result<ScanReport, String>>;
 pub(crate) type DatTask = Task<(), Result<(String, u64), String>>;
 
 pub(crate) fn spawn_scan(db: PathBuf, roots: Vec<PathBuf>, notify: Notify) -> ScanTask {
-    Task::spawn("scan", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("scan", notify, move |cancel, progress| {
         let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         let options = ScanOptions {
             roots,
@@ -199,7 +233,8 @@ pub(crate) fn spawn_dat_download(
     http: HttpConfig,
     notify: Notify,
 ) -> DatDownloadTask {
-    Task::spawn("dat-download", notify, move |cancel, progress| {
+    // The task reads the catalog of systems all along: it pins it like a scan does.
+    Task::spawn_pinning_catalog("dat-download", notify, move |cancel, progress| {
         let client = HttpClient::new(http).map_err(|e| e.to_string())?;
         let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         Ok(download_dats(
@@ -210,6 +245,84 @@ pub(crate) fn spawn_dat_download(
             systems(),
             cancel,
             progress,
+        ))
+    })
+}
+
+/// The sources `search_dats` asks, in this order: at most one request each (ADR 0025 §9).
+const SEARCH_SOURCES: [DatSource; 3] = [DatSource::NoIntro, DatSource::Tosec, DatSource::Libretro];
+
+/// A DAT found by [`search_dats`]: its source and the ETag the server gave.
+pub(crate) type FoundDat = (DatSource, Option<String>);
+
+/// « Chercher la base d'identification » of a custom system: the DAT named after its libretro `database`, in each
+/// of [`SEARCH_SOURCES`] under `base_url`; only a 404 means « not there ». The files found are saved where the DAT
+/// update puts them and returned with their ETag. Any other failure (refusal, quota, size limit, disk) stops the
+/// search: nothing is concluded.
+pub(crate) fn search_dats(
+    client: &HttpClient,
+    base_url: &str,
+    dest_dir: &Path,
+    database: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<FoundDat>, String> {
+    let mut found = Vec::new();
+    for source in SEARCH_SOURCES {
+        if cancelled() {
+            break;
+        }
+        let dest = dat_file(dest_dir, source, &emu_library::dat_file_stem(database));
+        let url = dat_url(&source_base(base_url, source), database);
+        match download_dat(client, &url, &dest, None) {
+            Ok(DatDownload::Updated { etag, .. }) => found.push((source, etag)),
+            Ok(DatDownload::NotModified) => {}
+            Err(emu_assets::AssetError::Http { status: 404 }) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(found)
+}
+
+/// Imports the files [`search_dats`] saved for the system `id` (named after `database`), and only those: no
+/// request. The catalog must already list the sources (published definition).
+pub(crate) fn import_found_dats(
+    library: &mut Library,
+    dest_dir: &Path,
+    id: &str,
+    database: &str,
+    found: &[FoundDat],
+) -> DatSummary {
+    let mut summary = DatSummary::default();
+    let label = system(id).map_or_else(|| id.to_owned(), |s| s.name.clone());
+    for (source, etag) in found {
+        let dest = dat_file(dest_dir, *source, &emu_library::dat_file_stem(database));
+        let imported = load_dat_file(&dest)
+            .and_then(|dat| library.import_dat_source(id, *source, &dat, etag.as_deref()));
+        match imported {
+            Ok(n) => summary.updated.push((label.clone(), n)),
+            Err(e) => summary.failed.push((label.clone(), e.to_string())),
+        }
+    }
+    summary
+}
+
+/// The local import of [`import_found_dats`] as a task (pins the catalog like the DAT update).
+pub(crate) fn spawn_found_dats_import(
+    db: PathBuf,
+    dest_dir: PathBuf,
+    id: String,
+    database: String,
+    found: Vec<FoundDat>,
+    notify: Notify,
+) -> DatDownloadTask {
+    Task::spawn_pinning_catalog("dat-import", notify, move |_, _| {
+        let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
+        Ok(import_found_dats(
+            &mut library,
+            &dest_dir,
+            &id,
+            &database,
+            &found,
         ))
     })
 }
@@ -229,6 +342,7 @@ pub(crate) fn download_dats(
     let mut network_errors = 0;
     let jobs: Vec<(&SystemInfo, DatSource)> = catalog
         .iter()
+        .filter(|s| s.libretro_name().is_some())
         .flat_map(|s| s.dats.iter().map(move |d| (s, *d)))
         .collect();
     for (i, (s, source)) in jobs.iter().enumerate() {
@@ -246,7 +360,9 @@ pub(crate) fn download_dats(
             total: jobs.len(),
             system: label.clone(),
         });
-        let dest = dat_file(dest_dir, *source, &s.database);
+        // No libretro name: no request and no file (filtered above).
+        let name = s.libretro_name().unwrap_or_default();
+        let dest = dat_file(dest_dir, *source, &emu_library::dat_file_stem(name));
         let etag = library
             .dat_info_for(&s.id, *source)
             .ok()
@@ -254,7 +370,7 @@ pub(crate) fn download_dats(
             .and_then(|info| info.etag)
             .filter(|_| dest.is_file());
         let base = source_base(base_url, *source);
-        match download_dat(client, &dat_url(&base, &s.database), &dest, etag.as_deref()) {
+        match download_dat(client, &dat_url(&base, name), &dest, etag.as_deref()) {
             Ok(DatDownload::NotModified) => {
                 network_errors = 0;
                 summary.unchanged += 1;

@@ -100,8 +100,9 @@ pub(super) mod help_anchor {
     pub const SETTINGS: &str = "reglages";
     pub const IN_GAME: &str = "en-jeu";
     pub const PADS: &str = "manettes";
+    pub const CUSTOM: &str = "systemes-non-testes";
     #[cfg(test)]
-    pub const ALL: [&str; 4] = [ROMS, SETTINGS, IN_GAME, PADS];
+    pub const ALL: [&str; 5] = [ROMS, SETTINGS, IN_GAME, PADS, CUSTOM];
 }
 
 impl LibraryUi {
@@ -164,6 +165,7 @@ impl LibraryUi {
     /// Re-reads what the page shows from disk and the database.
     pub(super) fn refresh_settings_cache(&mut self) {
         self.refresh_dos_cache();
+        self.refresh_custom_systems();
         self.settings.root_exists = self
             .config
             .library
@@ -245,6 +247,8 @@ impl LibraryUi {
                     self.computers_section(ui);
                     ui.separator();
                     self.dos_cache_section(ui);
+                    ui.separator();
+                    self.custom_systems_section(ui, &ctx);
                     ui.separator();
                     self.app_section(ui);
                 });

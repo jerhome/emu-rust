@@ -7,6 +7,7 @@ use libloading::Library;
 use crate::callbacks::{self, EnvInstall, ProcessGuard};
 use crate::controllers;
 use crate::error::LibretroError;
+use crate::hw::{FrameKind, HwRenderRequest, InputDescriptor};
 use crate::log;
 use crate::resident::{self, CopyFile};
 use crate::sys;
@@ -113,6 +114,12 @@ pub struct Core {
     disk_paths: Vec<CString>,
     /// Copy of the last `SET_CONTROLLER_INFO`, refreshed after every call into the core that may send it.
     controllers: Vec<Vec<ControllerType>>,
+    /// Copy of the last `SET_INPUT_DESCRIPTORS`, refreshed like `controllers`.
+    descriptors: Vec<InputDescriptor>,
+    /// Last `SET_HW_RENDER` request (refused), refreshed like `controllers`.
+    hw_render: Option<HwRenderRequest>,
+    /// Video of the last `run`, until `take_frame_kind`.
+    frame_kind: Option<FrameKind>,
     /// Registry key of the library given to `load` (ADR 0022); journals and `GET_LIBRETRO_PATH` use the
     /// original path, never the copy.
     origin: PathBuf,
@@ -261,6 +268,26 @@ fn open_private_copy(
 }
 
 impl Core {
+    /// Request recorded from `SET_HW_RENDER` (the call is still refused to the core), if any. Kept until the core is
+    /// dropped (a later request replaces it); picked up after each call into the core (`load`, `load_game*`, even
+    /// when it fails, `run`, `reset_with`).
+    pub fn hw_render_request(&self) -> Option<&HwRenderRequest> {
+        self.hw_render.as_ref()
+    }
+
+    /// Kind of the frame of the last `run`; resets the flag (a second call without `run` returns
+    /// [`FrameKind::Missing`]). A dupe (`NULL` frame) counts as software; an invalid frame (zero size, short
+    /// pitch) does not.
+    pub fn take_frame_kind(&mut self) -> FrameKind {
+        self.frame_kind.take().unwrap_or(FrameKind::Missing)
+    }
+
+    /// Last `SET_INPUT_DESCRIPTORS` (≤ [`MAX_INPUT_DESCRIPTORS`](crate::hw::MAX_INPUT_DESCRIPTORS)); empty when
+    /// none was sent. A new declaration replaces the list.
+    pub fn input_descriptors(&self) -> &[InputDescriptor] {
+        &self.descriptors
+    }
+
     /// Opens the library, checks `retro_api_version`, sets the environment, calls `retro_init`, then installs the
     /// AV/input callbacks (RetroArch order; some cores, e.g. Mesen, crash if they are set before `retro_init`).
     pub fn load(path: &Path, config: CoreConfig) -> Result<Self, LibretroError> {
@@ -330,6 +357,9 @@ impl Core {
 
         Ok(Core {
             controllers: callbacks::take_controller_types().unwrap_or_default(),
+            descriptors: callbacks::take_input_descriptors().unwrap_or_default(),
+            hw_render: callbacks::hw_render_request(),
+            frame_kind: None,
             api,
             library: Some(library),
             env: Some(env),
@@ -381,6 +411,7 @@ impl Core {
         // `handler` through the guard, which outlives this call.
         unsafe { (self.api.run)() };
         let (events, panicked) = installed.finish();
+        self.frame_kind = Some(FrameKind::from_seen(callbacks::frames_seen()));
         let events = std::mem::take(&mut self.pending_events).merged(events);
         self.frames_run = self.frames_run.saturating_add(1);
         self.sync_controllers();
@@ -505,10 +536,17 @@ impl Core {
         Ok(())
     }
 
-    /// Picks up a `SET_CONTROLLER_INFO` sent since the last sync (no allocation when nothing changed).
+    /// Picks up a `SET_CONTROLLER_INFO`, `SET_INPUT_DESCRIPTORS` or `SET_HW_RENDER` sent since the last sync (no
+    /// allocation when nothing changed).
     fn sync_controllers(&mut self) {
         if let Some(ports) = callbacks::take_controller_types() {
             self.controllers = ports;
+        }
+        if let Some(descriptors) = callbacks::take_input_descriptors() {
+            self.descriptors = descriptors;
+        }
+        if let Some(request) = callbacks::hw_render_request() {
+            self.hw_render = Some(request);
         }
     }
 
@@ -775,6 +813,10 @@ impl Core {
         self.pending_events = RunEvents::default();
         self.av_info = None;
         callbacks::set_av_info(None);
+        callbacks::clear_game_declarations();
+        self.hw_render = None;
+        self.descriptors.clear();
+        self.frame_kind = None;
     }
 }
 

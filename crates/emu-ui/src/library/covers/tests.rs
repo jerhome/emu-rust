@@ -249,7 +249,10 @@ fn keys_and_queries() {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     );
     let q = cover_query(&g).unwrap();
-    assert_eq!(q.database, system(&g.system).unwrap().database);
+    assert_eq!(
+        q.database,
+        system(&g.system).unwrap().libretro_name().unwrap()
+    );
     assert!(!q.file_name.is_empty());
 }
 

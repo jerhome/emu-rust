@@ -2,6 +2,93 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Versionnage : [SemVer](https://semver.org/lang/fr/).
 
+## [8.0.0-rc.1] - 2026-11-27
+
+Systèmes non testés. Guide d'essai : `docs/guide-essai-8.0.md`. **Avant de lancer cette version, copiez le dossier
+des données** : le schéma de la base passe en v8 et une version 7.x refuse ensuite de l'ouvrir.
+
+### Ajouté
+
+- **Systèmes non testés** : ajoutez vous-même une machine que libretro propose mais qu'emu-rust n'a pas testée
+  (écran Cores, après « Vérifier les mises à jour », « Ajouter un système non testé… »). La liste montre les
+  émulateurs non expérimentaux (« Tout afficher » pour le reste) et se filtre par machine ; une machine déjà prise
+  en charge n'est pas proposée. Les cores qui demandent le rendu matériel (prévu en 9.0), les disques seuls (8.4) et
+  l'arcade (8.6) sont grisés avec la raison. La fiche d'un core donne ses machines, sa licence, les fichiers système
+  qu'il annonce et ses avertissements. Un core qu'emu-rust n'a pas examiné demande une acceptation, une fois par
+  core. L'application installe le core, lit ses réglages dans un processus à part, crée `roms/<identifiant>/`,
+  scanne et indique où déposer les jeux. Rien n'est garanti pour ces systèmes ; l'étiquette « non testé » reste
+  affichée.
+- **Atari Lynx** : premier système prévu à l'essai réel de cette fonction (cores `handy`, puis `mednafen_lynx` ;
+  BIOS `lynxboot.img` à fournir).
+- **Essai à blanc** : au premier lancement d'un jeu non testé, après l'avertissement, « Essayer puis lancer » le
+  fait tourner dans un processus à part (30 secondes au plus, annulable), sur une copie du jeu, puis lance la
+  partie. Un jeu déjà essayé avec succès avec le même core ne l'est plus. « Ça marche chez moi » supprime
+  l'avertissement et l'essai pour ce système et ce core (jamais l'acceptation du core). Un core qui plante pendant
+  l'essai n'emporte pas l'application : la raison est dite, et « Changer de core » ouvre l'écran Cores.
+- **Témoin de lancement** : si emu-rust s'arrête en pleine partie (plantage du core, arrêt forcé, coupure), le
+  démarrage suivant le dit, avec le jeu et le core ; pour un système non testé, il conseille d'essayer un autre
+  core.
+- **Réglages > Systèmes non testés** : nom, extensions, cores (l'ordre compte), numéros ScreenScraper et IGDB,
+  fichiers système à ne plus signaler, « Recalculer depuis le core » (relit les extensions), « Chercher la base
+  d'identification » (au plus trois requêtes, import pour ce seul système ; aucune sans nom libretro de la machine),
+  « Supprimer ». La définition supprimée n'est jamais effacée (dossier `systems/.retired/`) et les fichiers ne sont
+  pas touchés : les jeux sont masqués, « Restaurer » les fait revenir, « Oublier ses jeux » les retire de la
+  bibliothèque (jamais les fichiers). Une définition illisible est listée sous « Systèmes en erreur », ses jeux
+  intacts.
+- **Bascule vers un système officiel** : quand un système officiel a le même
+  identifiant ou la même machine libretro qu'un système que vous avez ajouté, votre système reste actif (rien ne
+  change en silence) et un bandeau propose la bascule, jamais automatique. Trois cas : **même identifiant et même
+  machine**, bascule recommandée, sans déplacement de fichier, définitive ; **même machine sous un autre
+  identifiant**, les jeux sont déplacés de `roms/<votre identifiant>/` vers `roms/<identifiant officiel>/` par le
+  rangement (aperçu, accord, journal ; proposée seulement si aucun jeu n'est bloqué), et suivis (favoris,
+  historique, jaquettes, sauvegardes) ; **même identifiant, machine peut-être différente**, emu-rust demande
+  « est-ce la même machine ? » (« Non » garde votre système). Vos touches et votre core sont gardés ; les jeux que
+  le système officiel ne reconnaît pas restent masqués jusqu'à « Oublier ses jeux ». La bascule avec déplacement
+  s'annule par « Annuler la bascule… » (page du rangement) tant que vous ne rangez rien d'autre ; une bascule
+  interrompue se termine au démarrage suivant, sans question. Aucun système officiel n'arrive avec la 8.0 : la bascule sert
+  surtout aux versions suivantes.
+- **Noms des boutons** : l'écran des touches en jeu d'un système non testé affiche le nom que le core donne à
+  chaque bouton (« A — Tir »), gardé après un essai à blanc réussi ou une partie.
+- Importer un BIOS pour un système non testé, d'après les fichiers que le core annonce (jamais téléchargés).
+
+### Modifié
+
+- **Schéma de la base v8** : la marque d'un scan en cours est gardée en base (la 8.0 n'écrit plus le fichier
+  `.scanning` ; celui laissé par une 7.6 est encore lu). Une version 7.x refuse la base v8. Pour y revenir : fermez
+  emu-rust et restaurez la copie du dossier des données faite avant la 8.0 (après une bascule, mettez aussi de côté
+  le journal de bascule du dossier `rangement/`).
+- Un jeu déplacé ou renommé à la main entre deux scans garde son favori, son historique et sa jaquette : le scan
+  les reporte sur le jeu retrouvé au lieu de les perdre, si le rapprochement est sans ambiguïté (rien après un scan
+  annulé ou interrompu).
+- Les systèmes viennent maintenant d'un catalogue qui peut contenir vos définitions (256 au plus ; les suivantes
+  sont ignorées, une seule ligne le dit).
+
+### Limites connues
+
+- Un core qui demande le rendu matériel, même seulement en option, est refusé (« prévu en 9.0 ») ; si son jeu se
+  charge mal pour une autre raison, le message est le même.
+- Un jeu en plusieurs fichiers, dans un dossier, dans une archive (`.zip`, `.7z`) ou de plus de 256 Mio n'est pas
+  essayé : seul l'avertissement s'affiche, à chaque lancement, jusqu'à « Ça marche chez moi ».
+- Si la fenêtre se ferme pendant un essai à blanc, l'essai peut continuer jusqu'à 35 s en arrière-plan ; son dossier
+  (`cache/dry-run/`) est supprimé au démarrage suivant.
+- Supprimer un système ajouté dont l'identifiant est celui d'un système officiel : seul `roms/<identifiant>/` du
+  dossier de jeux principal est vérifié avant d'oublier ses jeux ; les autres dossiers de jeux de la bibliothèque ne
+  le sont pas.
+- Dossier de données sur un volume FAT ou exFAT : à la fin d'une bascule, le fichier de définition est copié puis
+  renommé ; un autre programme qui créerait au même instant un fichier du même nom dans `systems/` pourrait être
+  écrasé (emu-rust lui-même ne le fait jamais).
+- Une bascule ne s'annule que si c'est le dernier rangement. Après une annulation partielle, déplacez à la main les
+  jeux restants vers `roms/<identifiant du système officiel>/`, puis scannez. Les jaquettes renommées par la
+  bascule ne reviennent pas (elles se retéléchargent).
+- L'annulation d'une bascule ne rend que le profil clavier du premier core du système : si vous aviez choisi
+  « Garder vos touches », les attributions de la manette et les profils des autres cores du système officiel ne
+  reviennent pas.
+- Après « Oublier ses jeux » d'un système retiré par une bascule avec déplacement, l'annulation de la bascule
+  restaure le système sans ses bases d'identification importées : relancez « Chercher la base d'identification ».
+- « Effacer toutes les jaquettes » laisse sur le disque celles des jeux masqués (place perdue seulement).
+- Rotation d'écran non gérée (jeux Lynx verticaux mal orientés) ; clavier complet des ordinateurs prévu en 8.5.
+- Textes en français seulement ; l'anglais vient avec la 8.2.
+
 ## [Non publié]
 
 ### Corrigé

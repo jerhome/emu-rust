@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::custom::DefinitionError;
+
 /// Messages are user-facing French. They never quote file contents (DAT lines are reported by number only).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -38,6 +40,9 @@ pub enum LibraryError {
     /// write a journal is an `Io` error.
     #[error("{path} : journal de rangement illisible : {message}")]
     Journal { path: PathBuf, message: String },
+    /// A custom system definition refused by `validate_custom` (8.0, ADR 0025 §2); nothing was written.
+    #[error("définition de système : {0}")]
+    Definition(DefinitionError),
     /// A readable journal whose state refuses the action (ADR 0023 §4.8, RV3). Nothing was touched.
     #[error("{journal} : {reason}")]
     TidyRefused {
@@ -62,6 +67,10 @@ pub enum TidyRefusal {
     NotClosed,
     /// `mark_tidy_identities`: not a journal of this folder, or an empty one.
     UnknownJournal,
+    /// A switch end is due: finish it first (`complete_switch`, design 8.0 §2.1).
+    SwitchPending,
+    /// The undo of this switch journal cannot bring everything back (ADR 0025 §10.5).
+    SwitchNotReversible,
 }
 
 impl std::fmt::Display for TidyRefusal {
@@ -73,6 +82,8 @@ impl std::fmt::Display for TidyRefusal {
             Self::AlreadyUndone => "ce rangement est déjà annulé",
             Self::NotClosed => "rangement non terminé",
             Self::UnknownJournal => "journal de rangement inconnu",
+            Self::SwitchPending => "une bascule de système doit d'abord être terminée",
+            Self::SwitchNotReversible => "cette bascule ne peut pas être entièrement annulée",
         })
     }
 }

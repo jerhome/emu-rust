@@ -455,7 +455,15 @@ fn run_job_tidies_then_undoes_and_offers_undo_once() {
         .collect();
     assert_eq!(selected.len(), 2);
     let cancel = AtomicBool::new(false);
-    let out = run_job(&dirs, Job::Apply { plan, selected }, &cancel, &mut |_| {});
+    let out = run_job(
+        &dirs,
+        Job::Apply {
+            plan: Box::new(plan),
+            selected,
+        },
+        &cancel,
+        &mut |_| {},
+    );
     assert_eq!(out.kind, RunKind::Tidy);
     assert!(out.messages.is_empty(), "{:?}", out.messages);
     assert_eq!(out.report.as_ref().unwrap().moved.len(), 2);
@@ -492,4 +500,16 @@ fn undo_needs_a_confirmation_and_an_idle_page() {
     assert!(!ui.may_undo());
     ui.close();
     assert!(ui.confirm_undo.is_none());
+}
+
+#[test]
+fn the_folders_a_tidying_leaves_alone_are_named_in_the_preview_text() {
+    let line = text::reserved_folders(&["gone".to_owned(), "broken".to_owned()]);
+    assert!(
+        line.contains("roms/gone/") && line.contains("roms/broken/"),
+        "{line}"
+    );
+    assert!(line.contains("laissé tel quel"));
+    // With the official catalog alone no folder is reserved.
+    assert!(plan(&tree(), &[]).reserved_folders.is_empty());
 }

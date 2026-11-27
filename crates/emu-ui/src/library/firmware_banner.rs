@@ -1,13 +1,14 @@
 //! « Fichier d'origine » banner of the selected game (design v7.5 §8, ADR 0023 §5): the core that would run it
 //! needs, or works better with, a file the user must provide. State per file (absent, unexpected md5, not
-//! verified) and benefit come from `emu_assets::cores::firmware_advice` (`cores.toml`, md5 of `firmware.toml`).
+//! verified) and benefit come from `emu_assets::cores::firmware_advice` (`cores.toml`, md5 of `firmware.toml`) or, for a custom system,
+//! `firmware_advice_from_info` (the `.info` of the core, minus the files the user ignored).
 //! Advice only: nothing is downloaded (ADR 0005), the button opens the existing BIOS import. Computed once per
 //! selected game (a directory read), never per frame. The only notice of the library: nothing is announced « once
 //! per core and file ».
 
 use emu_assets::cores::{
     AdviceFile, AdviceNeed, CoreChoice, FirmwareAdvice, FirmwareState, KnownFirmware,
-    firmware_advice,
+    firmware_advice, firmware_advice_from_info,
 };
 use emu_library::Game;
 
@@ -82,7 +83,7 @@ impl LibraryUi {
     fn compute_banner(&self, game: &Game) -> Option<Banner> {
         let manager = self.cores.manager()?;
         let prefs = cores_ui::preferences(&self.config.cores);
-        let database = emu_library::system(&game.system).map(|s| s.database.clone())?;
+        let database = emu_library::system(&game.system).map(|s| s.core_key().to_owned())?;
         let installed: Vec<_> = manager.installed().into_iter().map(|c| c.id).collect();
         let infos = manager.infos();
         let ext = grid::launch_extension(game);
@@ -108,15 +109,26 @@ impl LibraryUi {
             (!game.is_dir).then_some(game.path.as_path()),
         );
         let known = KnownFirmware::builtin();
-        match firmware_advice(
-            &prefs,
-            &core,
-            &database,
-            variant,
-            infos.get(&core),
-            &self.dirs.system,
-            &known,
-        ) {
+        let system = emu_library::system(&game.system)?;
+        let advice = if system.is_custom() {
+            // A core `cores.toml` does not list: its `.info` names the files; the user may have ignored some.
+            let info = infos.get(&core)?;
+            let ignored = emu_library::catalog()
+                .custom(&system.id)
+                .map_or(&[][..], |c| c.ignored_firmware.as_slice());
+            firmware_advice_from_info(&core, info, ignored, &self.dirs.system, &known)
+        } else {
+            firmware_advice(
+                &prefs,
+                &core,
+                &database,
+                variant,
+                infos.get(&core),
+                &self.dirs.system,
+                &known,
+            )
+        };
+        match advice {
             Ok(advice) => banner(&advice?),
             Err(e) => {
                 tracing::warn!("fichiers d'origine de {core} : {e}");

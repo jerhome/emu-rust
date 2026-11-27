@@ -3,6 +3,7 @@
 //! thread except `installed()`, `verified_path()` and `firmware_status()` (a few files, snapshot refreshed only
 //! after an action). BIOS files are only checked, never downloaded.
 
+mod add;
 mod bios;
 mod capture;
 mod import;
@@ -23,13 +24,17 @@ use emu_assets::cores::{
 use emu_assets::http::{HttpClient, HttpConfig, Progress};
 use emu_assets::jobs::{Job, JobEvent, Notify};
 
+pub(crate) use self::add::AddEvent;
 pub(crate) use self::bios::BiosUi;
 pub use self::bios::open_free_bios_manager;
 pub(crate) use self::capture::run_capture;
 pub(crate) use self::import::ImportUi;
 #[cfg(test)]
 use self::launch::prepare_launch;
-pub(crate) use self::launch::{GameNeeds, LaunchCheck, choose_game_core, plan_launch, release};
+pub(crate) use self::launch::{
+    CustomLaunchState, CustomStep, GameNeeds, LaunchCheck, choose_game_core, custom_launch_steps,
+    hardware_check, plan_launch, release, without_ignored,
+};
 use self::rows::{Checks, CoreRow, CoreState, RowFilter, Scope, recommended_missing, rows};
 use crate::Config;
 use crate::config::DataDirs;
@@ -73,12 +78,28 @@ pub(crate) fn preferences(config: &CoresConfig) -> CorePreferences {
     for (system, core) in &config.preferred {
         match emu_library::system(system) {
             Some(info) => {
-                overrides.insert(info.database.clone(), core.clone());
+                overrides.insert(info.core_key().to_owned(), core.clone());
             }
             None => tracing::warn!("[cores.preferred] {system} : système inconnu, ignoré"),
         }
     }
-    CorePreferences::builtin().with_overrides(&overrides)
+    let catalog = emu_library::catalog();
+    let customs: Vec<(String, Vec<CoreId>)> = catalog
+        .customs()
+        .filter_map(|custom| {
+            let system = catalog.system(&custom.id)?;
+            let cores = custom.cores.iter().filter_map(|c| CoreId::new(c)).collect();
+            Some((system.core_key().to_owned(), cores))
+        })
+        .collect();
+    let masked: Vec<String> = catalog
+        .masked_official()
+        .iter()
+        .map(|s| s.core_key().to_owned())
+        .collect();
+    CorePreferences::builtin()
+        .with_overrides(&overrides)
+        .with_custom_systems(&customs, &masked)
 }
 
 /// VICE option switching the JiffyDOS ROMs on.
@@ -187,6 +208,8 @@ pub(crate) struct CoresUi {
     pub(crate) bios: BiosUi,
     /// « Importer un BIOS… » dialog; drawn by the library over any page.
     pub(crate) import: ImportUi,
+    /// « Ajouter un système non testé… ».
+    add: add::AddUi,
 }
 
 impl CoresUi {
@@ -205,6 +228,8 @@ impl CoresUi {
             .inspect_err(|e| tracing::warn!("{e}"))
             .ok();
         ui.bios = BiosUi::new(bios, config.computer.emutos_variant.as_deref());
+        ui.set_cache_dir(dirs.cache_dir());
+        ui.set_content_accepted(config.custom_systems.content_accepted.clone());
         ui
     }
 
@@ -244,6 +269,7 @@ impl CoresUi {
             focus_confirm: false,
             bios: BiosUi::new(None, None),
             import: ImportUi::new(system_dir_for_import, manager_for_import),
+            add: add::AddUi::default(),
         }
     }
 
@@ -472,6 +498,7 @@ impl CoresUi {
                 }
             }
         }
+        self.drive_add(ctx);
     }
 
     /// From the snapshot (installed cores); otherwise computed once (cores not installed).
@@ -611,6 +638,8 @@ impl CoresUi {
                     event = Some(CoresEvent::SetCoreOption { core, key, value });
                 }
             }
+        } else if self.add_open() {
+            self.add_view(ui, escape);
         } else {
             if escape && self.confirm_remove.is_some() {
                 self.confirm_remove = None;
@@ -707,6 +736,9 @@ impl CoresUi {
             }
             if ui.button(text::IMPORT_BUTTON).clicked() {
                 self.import.start(None);
+            }
+            if ui.button(text::ADD_BUTTON).clicked() {
+                self.open_add();
             }
             if ui
                 .add_enabled(
@@ -905,7 +937,7 @@ impl CoresUi {
                 for (system, cores) in systems {
                     let name = emu_library::systems()
                         .iter()
-                        .find(|s| s.database == system)
+                        .find(|s| s.core_key() == system)
                         .map_or_else(|| system.clone(), |s| s.name.clone());
                     let current = self.prefs.for_system(&system).first().cloned();
                     ui.horizontal_wrapped(|ui| {

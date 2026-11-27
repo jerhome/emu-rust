@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use emu_library::{
-    AbsoluteMoves, Library, LibraryError, TidyJournalInfo, TidyOptions, TidyPlan, TidyProgress,
-    TidyReport, TidySection,
+    AbsoluteMoves, Library, LibraryError, PendingSwitch, SwitchChoices, SwitchDirection,
+    SwitchMove, SystemInfo, TidyJournalInfo, TidyOptions, TidyPlan, TidyProgress, TidyReport,
+    TidySection,
 };
 
 use super::text;
@@ -22,6 +23,8 @@ pub(crate) enum RunKind {
     Undo,
     /// Start-up / pre-launch replay of an interrupted run.
     Recovery,
+    /// Switch to an official system (ADR 0025 §10), with or without moved files.
+    Switch,
 }
 
 /// Everything the report screen shows. Strings are French and already sanitized where they come from paths.
@@ -40,6 +43,9 @@ pub(crate) struct Outcome {
     pub root: Option<PathBuf>,
     /// Saves folder, idem (`saves/<core>/…`: no account name in the report).
     pub saves: Option<PathBuf>,
+    /// A switch (or its undo) reached its end during this run: the settings and the catalog changed, the screen
+    /// reads them again.
+    pub switched: Option<PendingSwitch>,
 }
 
 impl Outcome {
@@ -52,6 +58,7 @@ impl Outcome {
             last: LastTidy::default(),
             root: None,
             saves: None,
+            switched: None,
         }
     }
 }
@@ -67,6 +74,21 @@ pub(crate) trait TidySteps {
     /// `--save-dir` replaces the usual saves folder: the identity step is left for a later start (rv-fu2b m8),
     /// otherwise it would update the registries of the wrong folder and mark the journal done.
     fn identities_deferred(&self) -> bool;
+    /// A switch whose end is due (`Library::pending_switch`).
+    fn pending_switch(&mut self) -> Result<Option<PendingSwitch>, LibraryError> {
+        Ok(None)
+    }
+    /// Keys and core of the switch, in the settings file (`Err`: French reason, the end is postponed).
+    fn settle_switch(&mut self, _pending: &PendingSwitch) -> Result<(), String> {
+        Ok(())
+    }
+    fn complete_switch(&mut self, _pending: &PendingSwitch) -> Result<(), LibraryError> {
+        Ok(())
+    }
+    /// Why the undo of this switch journal is refused in advance (`check_switch_undo`), if it is.
+    fn switch_undo_refusal(&mut self, _journal: &Path, _custom_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// French text of a tidy error (TidyBusy, unreadable journal, other root; anything else as is).
@@ -89,6 +111,8 @@ pub(crate) struct LastTidy {
     pub error: Option<String>,
     /// An unreadable journal blocks tidying and undoing until the file is removed.
     pub blocked: bool,
+    /// The undo of a switch journal is refused in advance (a unit cannot return, definition recreated…).
+    pub undo_refusal: Option<String>,
 }
 
 impl LastTidy {
@@ -108,6 +132,7 @@ impl LastTidy {
                         LibraryError::Journal { .. } | LibraryError::TidyRootMismatch { .. }
                     ),
                     error: Some(error),
+                    undo_refusal: None,
                 }
             }
         }
@@ -117,8 +142,22 @@ impl LastTidy {
     pub(crate) fn undo_target(&self) -> Option<&Path> {
         self.info
             .as_ref()
-            .filter(|i| i.can_undo())
+            .filter(|i| i.can_undo() && self.undo_refusal.is_none())
             .map(|i| i.path.as_path())
+    }
+
+    /// `last_tidy` plus, for a switch that can be undone, the advance check of its undo.
+    pub(crate) fn read<S: TidySteps>(steps: &mut S) -> Self {
+        let mut last = Self::from_result(steps.last());
+        if let Some((info, switch)) = last
+            .info
+            .as_ref()
+            .filter(|i| i.can_undo())
+            .and_then(|i| Some((i, i.switch.as_ref()?)))
+        {
+            last.undo_refusal = steps.switch_undo_refusal(&info.path, &switch.custom_id);
+        }
+        last
     }
 }
 
@@ -176,6 +215,28 @@ fn recovered_texts(report: &TidyReport) -> Vec<&'static str> {
     v
 }
 
+/// End of a switch whose last block is down (ADR 0025 §10.3, §10.5), without any question: keys and core from the
+/// journal header, then `complete_switch`. Before the identity step (`F` precedes `I`). A failure leaves the
+/// journal « end due »: it blocks tidying and undoing and is retried at each start.
+pub(crate) fn complete_pending_switch<S: TidySteps>(steps: &mut S, out: &mut Outcome) {
+    let pending = match steps.pending_switch() {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return,
+        Err(e) => {
+            out.messages.push(error_text(&e));
+            return;
+        }
+    };
+    if let Err(reason) = steps.settle_switch(&pending) {
+        out.messages.push(text::switch_settings_failed(&reason));
+        return;
+    }
+    match steps.complete_switch(&pending) {
+        Ok(()) => out.switched = Some(pending),
+        Err(e) => out.messages.push(text::switch_end_failed(&error_text(&e))),
+    }
+}
+
 /// `recover_tidy`, then the identity step of every pending journal. Errors are reported, never fatal.
 pub(crate) fn finish_pending<S: TidySteps>(steps: &mut S, out: &mut Outcome) {
     match steps.recover() {
@@ -198,6 +259,7 @@ pub(crate) fn finish_pending<S: TidySteps>(steps: &mut S, out: &mut Outcome) {
         }
         Err(e) => out.messages.push(error_text(&e)),
     }
+    complete_pending_switch(steps, out);
     match steps.pending() {
         Ok(list) => {
             for (journal, moves) in list {
@@ -218,6 +280,7 @@ pub(crate) fn after_run<S: TidySteps>(
     let mut out = Outcome::new(kind);
     match result {
         Ok(report) => {
+            complete_pending_switch(steps, &mut out);
             if let Some(journal) = &report.journal {
                 identities(steps, journal, &report.moved, &mut out);
             }
@@ -235,7 +298,7 @@ pub(crate) fn after_run<S: TidySteps>(
             }
         }
     }
-    out.last = LastTidy::from_result(steps.last());
+    out.last = LastTidy::read(steps);
     out
 }
 
@@ -243,6 +306,7 @@ pub(crate) fn after_run<S: TidySteps>(
 struct RealSteps<'a> {
     library: &'a mut Library,
     options: &'a TidyOptions,
+    dirs: &'a DataDirs,
     saves: &'a Path,
     deferred: bool,
 }
@@ -268,6 +332,25 @@ impl TidySteps for RealSteps<'_> {
     fn identities_deferred(&self) -> bool {
         self.deferred
     }
+    fn pending_switch(&mut self) -> Result<Option<PendingSwitch>, LibraryError> {
+        self.library.pending_switch(self.options)
+    }
+    fn settle_switch(&mut self, pending: &PendingSwitch) -> Result<(), String> {
+        super::switch::settle_on_disk(self.dirs, pending)
+    }
+    fn complete_switch(&mut self, pending: &PendingSwitch) -> Result<(), LibraryError> {
+        self.library
+            .complete_switch(self.options, pending, &self.dirs.custom_systems)
+    }
+    fn switch_undo_refusal(&mut self, journal: &Path, custom_id: &str) -> Option<String> {
+        undo_refusal(
+            self.library
+                .check_switch_undo(self.options, journal, &self.dirs.custom_systems),
+            custom_id,
+            &self.dirs.custom_systems,
+            self.options.roms_root(),
+        )
+    }
 }
 
 /// The saves folder is not the usual one of the data folder (`--save-dir`).
@@ -278,9 +361,29 @@ pub(crate) fn saves_overridden(dirs: &DataDirs) -> bool {
 /// What the worker runs.
 #[derive(Debug, Clone)]
 pub(crate) enum Job {
-    Apply { plan: TidyPlan, selected: Vec<u32> },
-    Undo { journal: PathBuf },
+    Apply {
+        plan: Box<TidyPlan>,
+        selected: Vec<u32>,
+    },
+    Undo {
+        journal: PathBuf,
+    },
     Recovery,
+    Switch {
+        switch: SwitchMove,
+        official: Box<SystemInfo>,
+        choices: SwitchChoices,
+        run: SwitchRun,
+    },
+}
+
+/// How a switch runs.
+#[derive(Debug, Clone)]
+pub(crate) enum SwitchRun {
+    /// Other id, units to move: `apply_switch`, then the end of the switch.
+    WithMoves(Box<TidyPlan>),
+    /// No file moves: `rows_move` (other id, no unit) rewrites the rows the official system accepts first.
+    Direct { rows_move: bool },
 }
 
 impl Job {
@@ -289,6 +392,7 @@ impl Job {
             Job::Apply { .. } => RunKind::Tidy,
             Job::Undo { .. } => RunKind::Undo,
             Job::Recovery => RunKind::Recovery,
+            Job::Switch { .. } => RunKind::Switch,
         }
     }
 }
@@ -311,7 +415,7 @@ pub(crate) fn run_job(
         out
     };
     let options = match TidyOptions::new(&roms_root(dirs), &dirs.tidy_journals) {
-        Ok(o) => o,
+        Ok(o) => o.with_systems_dir(&dirs.custom_systems),
         Err(e) => return fail(error_text(&e)),
     };
     let mut library = match Library::open_existing(&dirs.library_db) {
@@ -320,10 +424,16 @@ pub(crate) fn run_job(
     };
     let result = match &job {
         Job::Apply { plan, selected } => {
-            Some(library.apply_tidy(&options, plan, selected, cancel, progress))
+            Some(library.apply_tidy(&options, plan.as_ref(), selected, cancel, progress))
         }
         Job::Undo { journal } => Some(library.undo_tidy(&options, journal, cancel, progress)),
         Job::Recovery => None,
+        Job::Switch {
+            choices,
+            run: SwitchRun::WithMoves(plan),
+            ..
+        } => Some(library.apply_switch(&options, plan, choices, cancel, progress)),
+        Job::Switch { .. } => None,
     };
     // Canonical like the roms root, so that reported paths and messages can be shown as `saves/…`.
     let saves = dirs
@@ -333,18 +443,51 @@ pub(crate) fn run_job(
     let mut steps = RealSteps {
         library: &mut library,
         options: &options,
+        dirs,
         saves: &saves,
         deferred: saves_overridden(dirs),
     };
     let mut out = match result {
         Some(result) => after_run(kind, result, &mut steps),
+        None if matches!(job, Job::Switch { .. }) => {
+            let Job::Switch {
+                switch,
+                official,
+                choices,
+                run,
+            } = &job
+            else {
+                return fail(String::new());
+            };
+            let rows_move = matches!(run, SwitchRun::Direct { rows_move: true });
+            super::switch::run_direct(
+                dirs,
+                steps.library,
+                &options,
+                switch,
+                official,
+                choices,
+                rows_move,
+            )
+        }
         None => {
             let mut out = Outcome::new(kind);
             finish_pending(&mut steps, &mut out);
-            out.last = LastTidy::from_result(steps.last());
+            out.last = LastTidy::read(&mut steps);
             out
         }
     };
+    if let Job::Switch { switch, .. } = &job
+        && out.switched.is_none()
+        && let Some(r) = &out.report
+    {
+        if !r.left.is_empty() {
+            out.messages
+                .push(text::switch_incomplete(r.left.len(), &switch.custom_id));
+        } else if r.cancelled {
+            out.messages.push(text::SWITCH_INTERRUPTED.to_owned());
+        }
+    }
     out.root = Some(options.roms_root().to_path_buf());
     for m in &mut out.messages {
         *m = text::relativize_as(&text::relativize(m, options.roms_root()), &saves, "saves");
@@ -461,7 +604,7 @@ pub(crate) fn skipped_line(out: &Outcome, p: &Path, m: &str) -> String {
 /// `p` relative to `base`. Falls back to a textual comparison that ignores the Windows verbatim prefix
 /// (`\\?\C:\…`, as `fs::canonicalize` returns it) and the separator kind, because an I/O error text
 /// carries the plain form of a path whose root may be verbatim (or the opposite).
-fn strip_root(p: &Path, base: &Path) -> Option<PathBuf> {
+pub(crate) fn strip_root(p: &Path, base: &Path) -> Option<PathBuf> {
     if let Ok(rel) = p.strip_prefix(base) {
         return Some(rel.to_path_buf());
     }
@@ -547,7 +690,7 @@ pub(crate) fn report_lines(kind: RunKind, r: &TidyReport) -> ReportLines {
             cancelled: r.cancelled.then_some(text::UNDO_CANCELLED),
             left_title: text::UNDO_LEFT_TITLE,
         },
-        RunKind::Tidy | RunKind::Recovery => ReportLines {
+        RunKind::Tidy | RunKind::Recovery | RunKind::Switch => ReportLines {
             headline: text::moved(r.moved.len(), r.dirs_created, r.dirs_removed),
             cancelled: r.cancelled.then_some(text::CANCELLED),
             left_title: text::LEFT_TITLE,
@@ -563,9 +706,25 @@ pub(crate) fn extra_name_lines(out: &Outcome, r: &TidyReport) -> Vec<String> {
         .collect()
 }
 
+/// « Bascule faite » / « Bascule annulée » when the run reached the end of a switch.
+/// A run that may have written `config.toml` (a switch, its undo, the end of a switch replayed): the settings are read
+/// again, even when the run did not reach the end of the switch.
+pub(crate) fn settings_may_have_changed(out: &Outcome) -> bool {
+    out.switched.is_some() || matches!(out.kind, RunKind::Switch | RunKind::Recovery)
+}
+
+pub(crate) fn switched_line(out: &Outcome) -> Option<String> {
+    let p = out.switched.as_ref()?;
+    Some(match p.direction {
+        SwitchDirection::Undo => text::switch_undone(&text::system_name(&p.switch.custom_id)),
+        _ => text::switch_done(&text::system_name(&p.switch.official_id)),
+    })
+}
+
 /// The whole report as plain text, what « Copier le rapport » puts in the clipboard.
 pub(crate) fn report_text(out: &Outcome) -> String {
     let mut lines: Vec<String> = out.messages.iter().map(|m| shown_message(out, m)).collect();
+    lines.extend(switched_line(out));
     if let Some(r) = &out.report {
         let l = report_lines(out.kind, r);
         lines.push(l.headline.clone());
@@ -676,6 +835,8 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         undone: false,
         complete: true,
         identities_done: true,
+        end_due: false,
+        switch: None,
     })));
     out.root = Some(root);
     out.saves = Some(dirs.saves.clone());
@@ -685,26 +846,120 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
 pub(crate) type RunTask = Task<TidyProgress, Outcome>;
 
 pub(crate) fn spawn_run(dirs: DataDirs, job: Job, notify: Notify) -> RunTask {
-    Task::spawn("tidy-run", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("tidy-run", notify, move |cancel, progress| {
         run_job(&dirs, job, cancel, &mut |p: &TidyProgress| {
             progress(p.clone())
         })
     })
 }
 
-/// For the analysis worker: `last_tidy` read off the UI thread.
-pub(crate) fn read_last(options: &TidyOptions) -> LastTidy {
+/// For the analysis worker: `last_tidy` read off the UI thread, and for a switch that can be undone, the advance
+/// check of its undo (`library`: the worker's own connection).
+pub(crate) fn read_last(
+    options: &TidyOptions,
+    library: Option<&Library>,
+    systems_dir: &Path,
+) -> LastTidy {
     let mut last = LastTidy::from_result(emu_library::last_tidy(options));
     if let Some(m) = &mut last.error {
         *m = text::relativize(m, options.roms_root());
     }
+    if let (Some(library), Some(info)) = (library, &last.info)
+        && info.can_undo()
+        && let Some(switch) = &info.switch
+    {
+        last.undo_refusal = undo_refusal(
+            library.check_switch_undo(options, &info.path, systems_dir),
+            &switch.custom_id,
+            systems_dir,
+            options.roms_root(),
+        );
+    }
     last
+}
+
+/// French reason of a refused undo of a switch journal (`None`: the undo is possible).
+/// The cause of a refusal (`SwitchNotReversible` groups three) is read from the names in `systems/`, like
+/// `switch::end_block`.
+fn undo_refusal(
+    checked: Result<(), LibraryError>,
+    custom_id: &str,
+    systems_dir: &Path,
+    roms_root: &Path,
+) -> Option<String> {
+    match checked {
+        Ok(()) => None,
+        Err(LibraryError::TidyRefused { .. }) => Some(undo_refusal_text(custom_id, systems_dir)),
+        Err(e) => Some(text::relativize(&error_text(&e), roms_root)),
+    }
+}
+
+fn undo_refusal_text(custom_id: &str, systems_dir: &Path) -> String {
+    if systems_dir.join(format!("{custom_id}.toml")).exists() {
+        return text::switch_undo_recreated(custom_id);
+    }
+    let retired = emu_library::retired_customs(systems_dir)
+        .iter()
+        .any(|r| r.id == custom_id && r.why == emu_library::Retirement::Replaced);
+    if retired {
+        text::SWITCH_UNDO_REFUSED_UNIT.to_owned()
+    } else {
+        text::SWITCH_UNDO_REFUSED_MISSING.to_owned()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use emu_library::TidyBlock;
+
+    #[test]
+    fn settings_are_read_again_after_a_switch_or_a_recovery_even_incomplete() {
+        for (kind, expected) in [
+            (RunKind::Switch, true),
+            (RunKind::Recovery, true),
+            (RunKind::Tidy, false),
+            (RunKind::Undo, false),
+        ] {
+            assert_eq!(settings_may_have_changed(&Outcome::new(kind)), expected);
+        }
+    }
+
+    fn refused() -> Result<(), LibraryError> {
+        Err(LibraryError::TidyRefused {
+            journal: PathBuf::from("j"),
+            reason: emu_library::TidyRefusal::SwitchNotReversible,
+        })
+    }
+
+    #[test]
+    fn the_refusal_of_an_undo_names_its_cause_from_the_systems_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let systems = dir.path();
+        let roms = Path::new("/r/roms");
+        let say = || undo_refusal(refused(), "mine", systems, roms).unwrap();
+        // Nothing retired, nothing recreated: the retired file is missing.
+        assert!(say().contains("remettez-le"), "{}", say());
+        // The retired file is there (replaced): same text, the units are the cause.
+        std::fs::write(systems.join("mine.toml"), "format = 1\n").unwrap();
+        emu_library::retire_custom(systems, "mine", emu_library::Retirement::Replaced, 5).unwrap();
+        assert!(say().contains("un jeu ne peut pas revenir"), "{}", say());
+        // Recreated definition: delete it first.
+        std::fs::write(systems.join("mine.toml"), "format = 1\n").unwrap();
+        assert!(
+            say().contains("supprimez d'abord le système (mine)"),
+            "{}",
+            say()
+        );
+        std::fs::remove_file(systems.join("mine.toml")).unwrap();
+        // The retired file is gone: put it back.
+        for r in emu_library::retired_customs(systems) {
+            std::fs::remove_file(systems.join(".retired").join(r.file.file_name().unwrap()))
+                .unwrap();
+        }
+        assert!(say().contains("remettez-le"), "{}", say());
+        assert_eq!(undo_refusal(Ok(()), "mine", systems, roms), None);
+    }
 
     #[derive(Default)]
     struct Fake {
@@ -754,6 +1009,8 @@ mod tests {
             undone,
             complete,
             identities_done: false,
+            end_due: false,
+            switch: None,
         }
     }
 
