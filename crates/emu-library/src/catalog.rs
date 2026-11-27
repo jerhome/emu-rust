@@ -17,23 +17,13 @@ use crate::systems::SystemInfo;
 
 /// Officials active in the order of `systems.toml`, then custom systems sorted by id. `PartialEq`: a publication
 /// is skipped when the catalog equals the current one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
     systems: Vec<SystemInfo>,
     customs: Vec<CustomSystem>,
     masked: Vec<SystemInfo>,
     reserved: Vec<String>,
     conflicted: Vec<String>,
-}
-
-impl PartialEq for Catalog {
-    fn eq(&self, other: &Self) -> bool {
-        self.systems == other.systems
-            && self.customs == other.customs
-            && self.masked == other.masked
-            && self.reserved == other.reserved
-            && self.conflicted == other.conflicted
-    }
 }
 
 impl Catalog {

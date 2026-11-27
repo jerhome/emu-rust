@@ -749,6 +749,7 @@ version = "7.6.0"
 dependencies = [
  "ctrlc",
  "directories",
+ "emu-runtime",
  "emu-ui",
  "tempfile",
  "tracing",
@@ -824,6 +825,7 @@ dependencies = [
  "glow",
  "glutin",
  "glutin-winit",
+ "libc",
  "png",
  "rtrb",
  "sha2",

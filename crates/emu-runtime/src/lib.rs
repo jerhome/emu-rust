@@ -13,6 +13,7 @@ mod diskorder;
 mod dry_run;
 mod emulator;
 mod error;
+mod exit;
 mod frame;
 mod fsname;
 mod gl;
@@ -49,6 +50,7 @@ pub use crate::dry_run::{
 };
 pub use crate::emulator::{Emulator, EmulatorOptions, FrameStatus, MAX_CONTENT_SIZE};
 pub use crate::error::RuntimeError;
+pub use crate::exit::exit_immediately;
 pub use crate::frame::{FrameRgba, convert_frame};
 pub use crate::gl::{GlWindow, Scaling};
 pub use crate::identity::{GameIdentity, IdentityNotice, IdentityRequest, SaveScope};

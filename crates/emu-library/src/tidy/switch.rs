@@ -90,10 +90,19 @@ fn refused(journal: &Path, reason: TidyRefusal) -> LibraryError {
 /// (ADR 0025 §1).
 pub(super) fn snapshot(after: &Catalog) -> &'static Catalog {
     static LAST: std::sync::Mutex<Option<&'static Catalog>> = std::sync::Mutex::new(None);
-    if after == catalog() {
-        return catalog();
+    snapshot_with(&LAST, catalog(), after)
+}
+
+/// `snapshot` with its own memory of the last leaked copy and its own published catalog (tests).
+pub(super) fn snapshot_with(
+    last: &std::sync::Mutex<Option<&'static Catalog>>,
+    published: &'static Catalog,
+    after: &Catalog,
+) -> &'static Catalog {
+    if after == published {
+        return published;
     }
-    let mut last = LAST
+    let mut last = last
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match *last {

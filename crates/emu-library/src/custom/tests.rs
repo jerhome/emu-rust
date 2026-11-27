@@ -44,7 +44,7 @@ fn strings(items: &[&str]) -> Vec<String> {
 #[test]
 fn the_table_is_injective_and_valid() {
     let machines = machines();
-    assert!(machines.len() >= 100, "{} entries", machines.len());
+    assert!(machines.len() >= 184, "{} entries", machines.len());
     let mut ids = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
     for m in machines {
@@ -95,6 +95,22 @@ fn every_table_name_passes_the_white_list_or_has_a_valid_local_file_stem() {
 }
 
 #[test]
+fn every_database_cited_by_real_core_info_files_has_an_entry() {
+    // `database` fields of real .info files (test data of the study), split on `|` like the catalog does.
+    for field in [
+        "Atari - 2600",
+        "NEC - PC Engine - TurboGrafx 16|NEC - PC Engine SuperGrafx|NEC - PC Engine CD - TurboGrafx-CD",
+    ] {
+        for name in field.split('|') {
+            assert!(known_id(name).is_some(), "{name} has no entry");
+        }
+    }
+    assert_eq!(known_tier("HyperScan"), Some(MachineTier::Disc));
+    assert_eq!(known_tier("Sega - ST-V"), Some(MachineTier::Arcade));
+    assert_eq!(known_id("BK-0010/BK-0011"), Some("bk"));
+}
+
+#[test]
 fn table_lookups() {
     assert_eq!(
         known_id("NEC - PC Engine - TurboGrafx 16"),
@@ -111,10 +127,9 @@ fn table_lookups() {
         Some(MachineTier::Disc)
     );
     assert_eq!(known_tier("Atari - ST"), Some(MachineTier::Computer));
-    assert_eq!(
-        known_tier("Capcom - CP System II"),
-        Some(MachineTier::Arcade)
-    );
+    assert_eq!(known_tier("MAME 2003"), Some(MachineTier::Arcade));
+    // Removed from the provisional table: no libretro name, so no entry.
+    assert_eq!(known_tier("Capcom - CP System II"), None);
     assert_eq!(known_tier("Nobody - Nothing"), None);
 }
 

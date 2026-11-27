@@ -45,6 +45,8 @@ tracing-subscriber = { workspace = true }
 winresource = "0.1"
 
 [dev-dependencies]
+# Types of the dry-run requests built by the integration tests (`tests/dry_run_child.rs`).
+emu-runtime = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

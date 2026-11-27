@@ -2,7 +2,8 @@
 
 Statut : **accepté, amendé pour la fusion le 2026-11-25**, puis **le 2026-11-26** (numérotation 8.x, marque de scan en
 base, journal version 2 : « Amendement du 2026-11-26 » ci-dessous) et **le 2026-11-27** (textes de PD1, fusion des
-données au scan, essai à blanc : « Amendement du 2026-11-27 ») ; les amendements **priment**. Historique :
+données au scan, essai à blanc : « Amendement du 2026-11-27 »), puis **le 2026-11-27, lot PC1** (table des ids :
+« Amendement du 2026-11-27 (PC1) ») ; les amendements **priment**. Historique :
 accepté le 2026-11-25 par l'utilisateur, sur la ligne PC (`wip-7.1`), après la revue indépendante et quatre relectures courtes ;
 réponses aux questions 8.0 et R1-R3 dans `docs/questions-ouvertes.md`).
 Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 et feuille de route (ligne 8.0) ; étude
@@ -144,6 +145,20 @@ sur les amendements précédents. Détail, signatures et tests : design 8.0 §0.
   **bascule acceptée ne purge jamais** les lignes que l'officiel n'accepte pas : listées dans l'aperçu, puis gelées
   jusqu'à « Oublier ses jeux » ou restauration (PB3, §10) ; `custom_games_on_disk` ouvre le lot PB3 ; dossiers
   réservés reconnus à toute profondeur sous `roms/<id>/`, limite acceptée (§12).
+
+## Amendement du 2026-11-27 (PC1) — table des ids relue
+
+Relecture de la table du §3 par l'architecte seul (réponse Q12). Prime sur le §3 et le §2 (« ≈ 165 noms »).
+
+- **Source de la table** : les noms `database` des `.info` de `libretro/libretro-core-info` (commit
+  `eac3a2784d42`, 2026-11-02) : **172 noms** (`""` et `null` écartés ; l'étude en comptait 165), plus **12 vrais noms**
+  de `libretro/libretro-database` (commit `f89f09cbe13f`) qu'aucun `.info` ne cite encore, gardés pour leur id choisi.
+  Total : **184 entrées**. Contenu, règles de choix des ids et des paliers : `docs/design/v8.0-table-ids.md`.
+- La table provisoire (143 entrées) avait 40 noms écrits de mémoire qui n'existent pas chez libretro : ils sont
+  retirés, avec `NEC - PC-8001 - PC-8801` (doublon de `NEC - PC-88`). Rien n'ayant été publié, ce n'est pas un
+  renommage ; la règle « ajout seulement » s'applique à partir du tag de la 8.0.
+- Le test « chacun des noms passe la liste blanche ou a un `dat_file_stem` valide » porte sur les 184 entrées ; seul
+  `BK-0010/BK-0011` est une exception (`/`).
 
 ## Amendements après revue (2026-11-25)
 

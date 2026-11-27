@@ -65,7 +65,8 @@ pub use crate::dos_launch::{
     system_cache_names,
 };
 pub use crate::dry_run::{
-    DryRunCommand, DryRunVerdict, SkipReason, dry_run_child_main, run_dry_run,
+    DRY_RUN_FRAMES, DRY_RUN_TIMEOUT, DryRunCommand, DryRunDir, DryRunVerdict, GameCopyError,
+    MAX_GAME_COPY_BYTES, SkipReason, clean_stale_dry_runs, dry_run_child_main, run_dry_run,
 };
 pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
@@ -89,6 +90,22 @@ pub use emu_assets as assets;
 pub use emu_library as library_db;
 /// Native error box before any window exists (Windows without a console; elsewhere stderr only). ADR 0023 §3.
 pub use emu_runtime::fatal_dialog;
+
+/// Loads the official systems and `<data>/systems/*.toml` and publishes them for `systems()` / `system()` (ADR 0025
+/// §1). First step of the start-up, before [`finish_pending_identities`]; problems of definitions go to the
+/// journal (a broken definition never stops the program). Returns the load for the callers that show the problems.
+pub fn publish_catalog(dirs: &DataDirs) -> library_db::CatalogLoad {
+    let load = library_db::Catalog::load(&dirs.custom_systems);
+    for problem in &load.problems {
+        tracing::warn!(
+            "système personnalisé {} ignoré : {}",
+            problem.file.display(),
+            problem.error
+        );
+    }
+    library_db::install_catalog(load.catalog.clone());
+    load
+}
 
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
 /// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of

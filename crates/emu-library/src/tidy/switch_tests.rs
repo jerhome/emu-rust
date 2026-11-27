@@ -1680,9 +1680,16 @@ fn a_name_already_in_retired_is_never_taken_by_the_next_switch_journal() {
 fn the_same_after_catalog_is_published_once_for_all_its_previews() {
     let fx = Fx::new();
     let after = Catalog::load_without(&fx.systems, "mysnes").catalog;
-    let a = super::switch::snapshot(&after);
-    let b = super::switch::snapshot(&after.clone());
-    assert!(std::ptr::eq(a, b));
+    // Its own memory and a published catalog that differs from `after`: nothing shared with the process.
+    let last = std::sync::Mutex::new(None);
+    let published = Catalog::load(&fx.systems).catalog;
+    assert!(published != after);
+    let published: &'static Catalog = Box::leak(Box::new(published));
+    let a = super::switch::snapshot_with(&last, published, &after);
+    let b = super::switch::snapshot_with(&last, published, &after.clone());
+    assert!(std::ptr::eq(a, b), "the kept copy is reused");
+    assert!(!std::ptr::eq(a, published), "it is not the published one");
+    assert!(*a == after);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -159,12 +159,20 @@ pub enum Command {
     Run(Box<Cli>),
     Library(Box<LibraryCli>),
     Cores(Box<CoresCli>),
-    /// Hidden sub-command: dry run of a core in a child process; the argument is the request file
-    /// (design 8.0 §2.5). Recognised first in `run`, before any initialisation. Parsed by lot PU1.
-    #[allow(dead_code)] // built by lot PU1 (`cli::parse`)
-    DryRunChild(PathBuf),
     Help,
     Version,
+}
+
+/// The hidden argument of the dry-run child (ADR 0025 §5).
+pub const DRY_RUN_CHILD_ARG: &str = "--dry-run-child";
+
+/// The request file when the arguments are exactly `--dry-run-child <file>`: the child of a dry run. Looked for
+/// before anything else, and by this exact shape only (never mixed with other options).
+pub fn dry_run_child_request(args: &[OsString]) -> Option<PathBuf> {
+    match args {
+        [flag, file] if flag.as_os_str() == DRY_RUN_CHILD_ARG => Some(PathBuf::from(file)),
+        _ => None,
+    }
 }
 
 /// `emu-rust <version>[+<commit>]`.
@@ -527,6 +535,25 @@ mod tests {
 
     fn p(args: &[&str]) -> Result<Command, String> {
         parse(args.iter().map(OsString::from))
+    }
+
+    fn child(args: &[&str]) -> Option<PathBuf> {
+        dry_run_child_request(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_dry_run_child_is_recognised_by_its_exact_shape_only() {
+        assert_eq!(
+            child(&["--dry-run-child", "r.toml"]),
+            Some(PathBuf::from("r.toml"))
+        );
+        assert_eq!(child(&["--dry-run-child"]), None);
+        assert_eq!(child(&["--dry-run-child", "r", "--scale", "2"]), None);
+        assert_eq!(child(&["--scale", "2", "--dry-run-child", "r"]), None);
+        assert_eq!(child(&["--list-cores"]), None);
+        assert_eq!(child(&[]), None);
+        // Not a public option: the normal parser refuses it.
+        assert!(p(&["--dry-run-child", "r.toml"]).is_err());
     }
 
     #[test]
