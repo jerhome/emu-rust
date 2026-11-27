@@ -649,3 +649,211 @@ fn a_double_conflict_freezes_the_rows_of_the_extension_the_official_refuses() {
     // The row of the official extension is purged as usual.
     assert_eq!(row_data(&lib, plain), None);
 }
+
+#[test]
+fn frozen_rows_of_an_uncertain_conflict_are_kept_but_not_shown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    fs::write(
+        systems.join("psx.toml"),
+        definition_text("psx", Some("Demo - Not A PlayStation"), "xyz"),
+    )
+    .unwrap();
+    let uncertain = leak(Catalog::load(&systems).catalog);
+    assert!(uncertain.is_conflicted("psx"));
+
+    let lib = Library::open_in_memory().unwrap();
+    let cue = seed_row(&lib, &roms.join("psx").join("Game.cue"), "psx", None);
+    let zip = seed_row(
+        &lib,
+        &roms.join("psx").join("Packed.zip"),
+        "psx",
+        Some("track.cue"),
+    );
+    let mine = seed_row(&lib, &roms.join("psx").join("Mine.xyz"), "psx", None);
+    let packed_mine = seed_row(
+        &lib,
+        &roms.join("psx").join("Mine.zip"),
+        "psx",
+        Some("mine.xyz"),
+    );
+    let other = seed_row(&lib, &roms.join("gb").join("A.gb"), "gb", None);
+
+    // Frozen: the definition does not accept `.cue` (also inside a zip); in the base, not in the library.
+    assert_eq!(visible(&lib, uncertain), [mine, packed_mine, other]);
+    for id in [cue, zip] {
+        assert!(row_data(&lib, id).is_some(), "row {id} kept");
+    }
+
+    // The conflict ends (definition removed by hand): the rows are shown again under the official.
+    fs::remove_file(systems.join("psx.toml")).unwrap();
+    let official = leak(Catalog::load(&systems).catalog);
+    assert_eq!(
+        visible(&lib, official),
+        [cue, zip, mine, packed_mine, other]
+    );
+}
+
+#[test]
+fn frozen_rows_come_back_when_the_definition_is_repaired() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    let valid = definition_text(
+        "snes",
+        Some("Nintendo - Super Nintendo Entertainment System"),
+        "sf1",
+    );
+    let lib = Library::open_in_memory().unwrap();
+    let hack = seed_row(&lib, &roms.join("snes").join("Hack.sf1"), "snes", None);
+    let plain = seed_row(&lib, &roms.join("snes").join("Plain.sfc"), "snes", None);
+
+    fs::write(systems.join("snes.toml"), "not toml [").unwrap();
+    let broken = leak(Catalog::load(&systems).catalog);
+    assert!(broken.is_conflicted("snes"));
+    assert_eq!(visible(&lib, broken), [plain]);
+    assert!(row_data(&lib, hack).is_some());
+
+    fs::write(systems.join("snes.toml"), &valid).unwrap();
+    let repaired = leak(Catalog::load(&systems).catalog);
+    assert_eq!(visible(&lib, repaired), [hack]);
+}
+
+#[test]
+fn rows_accepted_by_the_active_system_of_a_conflicted_id_are_shown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    fs::write(
+        systems.join("psx.toml"),
+        definition_text("psx", Some("Demo - Not A PlayStation"), "xyz"),
+    )
+    .unwrap();
+    let cat = leak(Catalog::load(&systems).catalog);
+    let lib = Library::open_in_memory().unwrap();
+    let mine = seed_row(&lib, &roms.join("psx").join("Mine.xyz"), "psx", None);
+    assert_eq!(visible(&lib, cat), [mine]);
+}
+
+#[test]
+fn a_double_conflict_hides_the_extension_the_official_refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    fs::write(
+        systems.join("snes.toml"),
+        definition_text("snes", Some("Sega - Mega Drive - Genesis"), "xyz"),
+    )
+    .unwrap();
+    let cat = leak(Catalog::load(&systems).catalog);
+    assert!(cat.is_conflicted("snes"));
+    let lib = Library::open_in_memory().unwrap();
+    let frozen = seed_row(&lib, &roms.join("snes").join("Mine.xyz"), "snes", None);
+    let plain = seed_row(&lib, &roms.join("snes").join("Plain.sfc"), "snes", None);
+    assert_eq!(visible(&lib, cat), [plain]);
+    assert!(row_data(&lib, frozen).is_some());
+}
+
+#[test]
+fn a_removed_definition_of_an_official_id_keeps_its_rows_frozen_until_forgotten_or_restored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    let retired = systems.join(".retired");
+    fs::create_dir_all(&systems).unwrap();
+    // InPlace definition of the official `snes` with an extension of its own.
+    let text = definition_text(
+        "snes",
+        Some("Nintendo - Super Nintendo Entertainment System"),
+        "sf1",
+    );
+    fs::write(systems.join("snes.toml"), &text).unwrap();
+    let with = leak(Catalog::load(&systems).catalog);
+    let mut lib = Library::open_in_memory().unwrap();
+    put(&roms.join("snes").join("Hack.sf1"), 1);
+    put(&roms.join("snes").join("Plain.sfc"), 2);
+    scan_in(&mut lib, with, &roms);
+    let hack: i64 = lib
+        .conn
+        .query_row("SELECT id FROM game WHERE path LIKE '%Hack.sf1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    lib.conn
+        .execute(
+            "UPDATE game SET favorite = 1, play_count = 7 WHERE id = ?1",
+            [hack],
+        )
+        .unwrap();
+    lib.conn
+        .execute(
+            "INSERT INTO cover (game, kind, state, path, source, checked_unix)
+             VALUES (?1, 'boxart', 'cached', 'c.png', 'x', 1)",
+            [hack],
+        )
+        .unwrap();
+
+    // « Supprimer »: the definition moves to `.retired/` under a Removed name; the official is active again.
+    fs::create_dir_all(&retired).unwrap();
+    fs::rename(systems.join("snes.toml"), retired.join("snes-100.toml")).unwrap();
+    let after = leak(Catalog::load(&systems).catalog);
+    assert!(!after.system("snes").unwrap().is_custom());
+    assert!(after.is_conflicted("snes"));
+    for _ in 0..2 {
+        scan_in(&mut lib, after, &roms);
+        // Kept with its data and its cover, hidden, asking for nothing.
+        assert_eq!(row_data(&lib, hack), Some(("snes".into(), 1, 7)));
+        let covers: i64 = lib
+            .conn
+            .query_row("SELECT COUNT(*) FROM cover WHERE game = ?1", [hack], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(covers, 1);
+        let shown = visible(&lib, after);
+        assert_eq!(shown.len(), 1);
+        assert!(!shown.contains(&hack));
+    }
+
+    // Restoration: the definition is back, the row is visible again.
+    fs::rename(retired.join("snes-100.toml"), systems.join("snes.toml")).unwrap();
+    let restored = leak(Catalog::load(&systems).catalog);
+    assert!(visible(&lib, restored).contains(&hack));
+
+    // « Oublier » explicit: the frozen row goes, the others stay.
+    lib.forget_system(
+        "snes",
+        crate::ForgetDats::Keep,
+        crate::ForgetScope::Frozen(after),
+    )
+    .unwrap();
+    assert!(row_data(&lib, hack).is_none());
+    assert_eq!(visible(&lib, after).len(), 1);
+}
+
+#[test]
+fn frozen_rows_never_ask_for_covers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    fs::write(
+        systems.join("psx.toml"),
+        definition_text("psx", Some("Demo - Not A PlayStation"), "xyz"),
+    )
+    .unwrap();
+    let cat = leak(Catalog::load(&systems).catalog);
+    let lib = Library::open_in_memory().unwrap();
+    let frozen = seed_row(&lib, &roms.join("psx").join("Game.cue"), "psx", None);
+    let mine = seed_row(&lib, &roms.join("psx").join("Mine.xyz"), "psx", None);
+    let wanted = lib
+        .games_needing_cover_in(cat, crate::CoverKind::Boxart, i64::MAX)
+        .unwrap();
+    assert_eq!(wanted.iter().map(|g| g.0).collect::<Vec<_>>(), [mine]);
+    assert!(!wanted.iter().any(|g| g.0 == frozen));
+}

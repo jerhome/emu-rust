@@ -501,3 +501,15 @@ fn undo_needs_a_confirmation_and_an_idle_page() {
     ui.close();
     assert!(ui.confirm_undo.is_none());
 }
+
+#[test]
+fn the_folders_a_tidying_leaves_alone_are_named_in_the_preview_text() {
+    let line = text::reserved_folders(&["gone".to_owned(), "broken".to_owned()]);
+    assert!(
+        line.contains("roms/gone/") && line.contains("roms/broken/"),
+        "{line}"
+    );
+    assert!(line.contains("laissé tel quel"));
+    // With the official catalog alone no folder is reserved.
+    assert!(plan(&tree(), &[]).reserved_folders.is_empty());
+}

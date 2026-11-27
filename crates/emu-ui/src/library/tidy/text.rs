@@ -104,6 +104,18 @@ pub fn counts(already: u64, ignored: u64) -> String {
     format!("Déjà rangés : {already} · Ignorés (pas des jeux) : {ignored}")
 }
 
+/// Folders of a retired or broken system (ADR 0025 §12): nothing is taken from them nor put in them.
+pub fn reserved_folders(folders: &[String]) -> String {
+    let list = folders
+        .iter()
+        .map(|f| format!("roms/{}/", clean(f)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Dossier d'un système retiré ou en erreur : laissé tel quel ({list}). Rien n'y est pris, rien n'y est posé."
+    )
+}
+
 pub const GROUP_CHOOSE: &str = "Système à choisir";
 pub const GROUP_LEFT: &str = "Laissés en place";
 

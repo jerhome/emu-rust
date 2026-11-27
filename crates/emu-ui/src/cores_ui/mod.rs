@@ -3,6 +3,7 @@
 //! thread except `installed()`, `verified_path()` and `firmware_status()` (a few files, snapshot refreshed only
 //! after an action). BIOS files are only checked, never downloaded.
 
+mod add;
 mod bios;
 mod capture;
 mod import;
@@ -23,6 +24,7 @@ use emu_assets::cores::{
 use emu_assets::http::{HttpClient, HttpConfig, Progress};
 use emu_assets::jobs::{Job, JobEvent, Notify};
 
+pub(crate) use self::add::AddEvent;
 pub(crate) use self::bios::BiosUi;
 pub use self::bios::open_free_bios_manager;
 pub(crate) use self::capture::run_capture;
@@ -206,6 +208,8 @@ pub(crate) struct CoresUi {
     pub(crate) bios: BiosUi,
     /// « Importer un BIOS… » dialog; drawn by the library over any page.
     pub(crate) import: ImportUi,
+    /// « Ajouter un système non testé… ».
+    add: add::AddUi,
 }
 
 impl CoresUi {
@@ -224,6 +228,8 @@ impl CoresUi {
             .inspect_err(|e| tracing::warn!("{e}"))
             .ok();
         ui.bios = BiosUi::new(bios, config.computer.emutos_variant.as_deref());
+        ui.set_cache_dir(dirs.cache_dir());
+        ui.set_content_accepted(config.custom_systems.content_accepted.clone());
         ui
     }
 
@@ -263,6 +269,7 @@ impl CoresUi {
             focus_confirm: false,
             bios: BiosUi::new(None, None),
             import: ImportUi::new(system_dir_for_import, manager_for_import),
+            add: add::AddUi::default(),
         }
     }
 
@@ -491,6 +498,7 @@ impl CoresUi {
                 }
             }
         }
+        self.drive_add(ctx);
     }
 
     /// From the snapshot (installed cores); otherwise computed once (cores not installed).
@@ -630,6 +638,8 @@ impl CoresUi {
                     event = Some(CoresEvent::SetCoreOption { core, key, value });
                 }
             }
+        } else if self.add_open() {
+            self.add_view(ui, escape);
         } else {
             if escape && self.confirm_remove.is_some() {
                 self.confirm_remove = None;
@@ -726,6 +736,9 @@ impl CoresUi {
             }
             if ui.button(text::IMPORT_BUTTON).clicked() {
                 self.import.start(None);
+            }
+            if ui.button(text::ADD_BUTTON).clicked() {
+                self.open_add();
             }
             if ui
                 .add_enabled(

@@ -1256,3 +1256,37 @@ fn custom_games_on_disk_does_not_follow_links() {
             .is_empty()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn custom_games_on_disk_fails_closed_on_an_unreadable_folder() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = std::fs::canonicalize(tmp.path()).unwrap().join("roms");
+    let catalog = custom_catalog(tmp.path());
+    let own = roms.join("zzdemo");
+    put_file(&own.join("A.dmo"), b"1");
+    put_file(&own.join("sub").join("B.dmo"), b"2");
+    let lock = |p: &Path, mode| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    for locked in [own.clone(), own.join("sub")] {
+        lock(&locked, 0o000);
+        // Root can read anything: nothing to prove then.
+        let readable = std::fs::read_dir(&locked).is_ok();
+        let result = custom_games_on_disk(&roms, &catalog, "zzdemo", 10);
+        lock(&locked, 0o755);
+        if !readable {
+            assert!(
+                matches!(result, Err(LibraryError::Io { .. })),
+                "{locked:?}: {result:?}"
+            );
+        }
+    }
+    assert_eq!(
+        custom_games_on_disk(&roms, &catalog, "zzdemo", 10)
+            .unwrap()
+            .len(),
+        2
+    );
+}

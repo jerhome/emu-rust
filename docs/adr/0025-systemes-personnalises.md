@@ -178,6 +178,19 @@ Contrôle du lot PU2 contre le contrat. Prime sur le §2, le §5, le §9 et l'en
 - **Dépendance** (en-tête) : `emu-ui` prend `sha2` (SHA-256 du core pour `dry-runs.toml`), crate déjà utilisée par
   `emu-assets` et `emu-runtime` ; aucune crate nouvelle dans le workspace, graphe inchangé.
 
+## Amendement du 2026-11-27 (PU3) — ajout et Réglages
+
+Contrôle du lot PU3 contre le contrat. Prime sur le §9 et le §13. Détail : design 8.0 §0.13.
+
+- **« Chercher la base d'identification »** (§9) : les fichiers trouvés sont importés pour ce seul système, sans
+  requête de plus que les 3 de la recherche (pas de mise à jour de toutes les DAT).
+- **« Oublier ses jeux »** d'un système retiré (§9) : pas proposé tant qu'un système actif a le même id.
+- **Section des Réglages** : « Systèmes non testés » (le texte dit « Systèmes personnalisés ») ; un core absent de
+  `cores.toml` n'est jamais « recommandé ».
+- **Limites** : fichiers de jaquette des jeux masqués laissés sur le disque par « Effacer toutes les jaquettes » ;
+  fenêtre fermée pendant un essai à blanc : l'enfant vit jusqu'à son chien de garde (35 s), son dossier reste
+  jusqu'au démarrage suivant.
+
 ## Amendements après revue (2026-11-25)
 
 Revue indépendante : `VERDICT : À AMENDER` (1 bloquant, 5 majeurs, 15 mineurs). Changements :

@@ -1042,7 +1042,8 @@ const MAX_DISK_DEPTH: usize = 32;
 /// Uncertain-conflict deletion (ADR 0025 §9): files on disk under `<roms_root>/<id>/` (recursive, links never
 /// followed) that the active custom definition `id` of `catalog` claims — one of its extensions, or a `.zip` with
 /// such an entry —, sorted, at most `limit`. Disk only, never the rows. The UI refuses « Oublier ses jeux et
-/// supprimer » while it is non-empty and shows the list. `Err` if `id` is not an active custom system.
+/// supprimer » while it is non-empty and shows the list. `Err` if `id` is not an active custom system, or if `roms/<id>/` or one of its sub-folders exists but cannot
+/// be listed (fail closed). Extra library roots are not read.
 pub fn custom_games_on_disk(
     roms_root: &Path,
     catalog: &Catalog,
@@ -1069,8 +1070,12 @@ pub fn custom_games_on_disk(
     let mut seen = 0usize;
     let mut stack = vec![(roms_root.join(id), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
+        // Fail closed: a folder that cannot be listed may hold a claimed game, so « no game » would be a lie. Only
+        // a missing folder (never created, or removed meanwhile) is an honest « nothing here ».
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(LibraryError::Io { path: dir, source }),
         };
         for entry in entries.flatten() {
             seen += 1;

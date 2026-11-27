@@ -312,6 +312,9 @@ fn preview(ui: &mut Ui, p: &mut Preview, confirm: &mut Option<UndoAsk>, actions:
     let t = super::totals(&p.plan, &p.checked);
     ui.label(RichText::new(text::summary(t.units, t.files, t.bytes, t.dirs)).strong());
     weak(ui, text::counts(p.plan.already_tidy, p.plan.ignored));
+    if !p.plan.reserved_folders.is_empty() {
+        weak(ui, text::reserved_folders(&p.plan.reserved_folders));
+    }
     let updating = p.updating();
     ui.horizontal(|ui| {
         // Disabled while a choice is pending: the plan may still change.

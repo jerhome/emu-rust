@@ -147,11 +147,11 @@ impl Catalog {
         }
         // Ids whose rows belong to two catalogs at once: an official masked by a definition of the same id, or an
         // official id whose definition is in error. The scan freezes the rows the active system does not accept.
-        // (c) An active official whose `.retired/` keeps a definition `Replaced` by it (a switch accepted in place or
-        // uncertain): the rows the definition alone accepted are frozen, not lost (ADR 0025 §10).
+        // (c) An active official whose `.retired/` keeps a definition of its id, `Replaced` by it (a switch accepted in
+        // place or uncertain) or `Removed` (« Supprimer »): the rows the definition alone accepted are frozen, not
+        // lost, until « Oublier » or a restoration (ADR 0025 §10).
         let replaced = retired
             .iter()
-            .filter(|r| r.why == custom::Retirement::Replaced)
             .map(|r| r.id.clone())
             .filter(|id| systems.iter().any(|s| !s.is_custom() && s.id == *id));
         let conflicted: BTreeSet<String> = masked
@@ -679,9 +679,9 @@ mod tests {
             &def("mine", None, "mn1"),
         );
         let c = Catalog::load(tmp.path()).catalog;
-        // (c): Replaced only, official id only; a Removed one or a non-official id does not count.
-        assert!(c.is_conflicted("snes"));
-        assert!(!c.is_conflicted("gb") && !c.is_conflicted("mine"));
+        // (c): official id only, Replaced or Removed; a non-official id does not count.
+        assert!(c.is_conflicted("snes") && c.is_conflicted("gb"));
+        assert!(!c.is_conflicted("mine"));
         // A definition active again under that id is the ordinary masked case, still conflicted.
         put(tmp.path(), "snes.toml", &text);
         assert!(Catalog::load(tmp.path()).catalog.is_conflicted("snes"));

@@ -2619,10 +2619,23 @@ pub(crate) fn run(
 /// by a definition of the same id, or whose definition is in error) and the active system of that id does not accept
 /// its extension: the row belongs to the other half of the conflict, so it is neither purged nor reclassified.
 fn is_frozen(cat: &Catalog, path: &str, old: &Existing) -> bool {
-    let Some(system) = cat.system(&old.system) else {
+    row_is_frozen(cat, &old.system, path, old.entry.as_deref(), old.is_dir)
+}
+
+/// The predicate of [`is_frozen`], on the stored columns of a row: shared by the scan and by `Library::games`, which
+/// hides the frozen rows (they stay in the base) so that the library never shows nor launches them with the core of
+/// the definition (design v8.0 §0.9 point 11, ADR 0025 §13).
+pub(crate) fn row_is_frozen(
+    cat: &Catalog,
+    system: &str,
+    path: &str,
+    entry: Option<&str>,
+    is_dir: bool,
+) -> bool {
+    let Some(system) = cat.system(system) else {
         return true;
     };
-    cat.is_conflicted(&system.id) && !accepts_row(system, path, old.entry.as_deref(), old.is_dir)
+    cat.is_conflicted(&system.id) && !accepts_row(system, path, entry, is_dir)
 }
 
 /// Whether `system` would have attributed the stored row (path, recorded zip entry, game folder) to itself, read

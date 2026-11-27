@@ -83,6 +83,9 @@ pub use crate::gamepad::{
 pub use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
 pub use crate::keyboard::{KeyMap, KeyboardInput, PadStyle, is_computer_profile, profile_key_for};
 pub use crate::launch_firmware::{FirmwareSetup, prepare_launch_firmware};
+/// Headless driver of the library screen for the tests of `tests/` (not part of the program).
+#[doc(hidden)]
+pub use crate::library::test_support;
 pub use crate::platform::{FolderOutcome, open_folder};
 pub use crate::shutdown::request_shutdown;
 pub use crate::ui::text::sanitize_core_line;
@@ -135,10 +138,15 @@ impl Drop for CatalogPin {
 /// the interface thread, which is also the one that publishes: nothing starts between the check and the
 /// publication.
 pub fn try_publish_catalog(dirs: &DataDirs) -> Option<library_db::CatalogLoad> {
-    if CATALOG_PINS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+    if catalog_pinned() {
         return None;
     }
     Some(publish_catalog(dirs))
+}
+
+/// A scan, a tidying or a DAT update is reading the catalog right now.
+pub(crate) fn catalog_pinned() -> bool {
+    CATALOG_PINS.load(std::sync::atomic::Ordering::SeqCst) > 0
 }
 
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then

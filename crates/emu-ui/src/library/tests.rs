@@ -1780,3 +1780,342 @@ fn journal_opens_from_settings_and_escape_returns() {
     h.key(Key::Escape);
     assert_eq!(h.ui.page, Page::Home);
 }
+
+// ---- Custom systems: settings, publication, add flow (design 8.0 §0.12) ---------------------------------------
+
+#[test]
+fn the_dat_download_holds_the_catalog_like_a_scan() {
+    let h = harness(true);
+    let ctx = egui::Context::default();
+    let download = worker::spawn_dat_download(
+        h.ui.dirs.library_db.clone(),
+        h.ui.dirs.database.clone(),
+        // Nothing listens there: the task fails fast, but the pin is taken when it is spawned.
+        "http://127.0.0.1:9/".to_owned(),
+        emu_assets::http::HttpConfig::default(),
+        notify(&ctx),
+    );
+    assert!(download.pins_catalog());
+    let scan = worker::spawn_scan(h.ui.dirs.library_db.clone(), Vec::new(), notify(&ctx));
+    assert!(scan.pins_catalog());
+    // A plain DAT import reads one system only and never held the catalog.
+    let import = worker::spawn_dat_import(
+        h.ui.dirs.library_db.clone(),
+        PathBuf::from("/nowhere.dat"),
+        None,
+        notify(&ctx),
+    );
+    assert!(!import.pins_catalog());
+}
+
+fn bare_definition(id: &str) -> String {
+    format!(
+        "format = 1\nrender = \"software\"\n[system]\nid = \"{id}\"\nname = \"System {id}\"\nextensions = [\"fic\"]\n\
+         [cores]\nlist = [\"fic_core\"]\n[origin]\ncore = \"fic_core\"\ncreated_by = \"t\"\ncreated_unix = 1\n"
+    )
+}
+
+#[test]
+fn three_hundred_definitions_make_one_line_and_a_folded_list_of_forty_four_names() {
+    let mut h = harness(true);
+    let dir = h.ui.dirs.custom_systems.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..300 {
+        std::fs::write(
+            dir.join(format!("d{i:03}.toml")),
+            bare_definition(&format!("d{i:03}")),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("broken.toml"), "not = [toml").unwrap();
+    h.ui.refresh_custom_systems();
+    let view = h.ui.custom_systems.view.as_ref().unwrap();
+    // 256 files were read, the 44 others are grouped (the broken one sorts among the first).
+    let summary = &view.summary;
+    assert_eq!(
+        summary.too_many.len(),
+        301 - 256,
+        "{}",
+        summary.too_many.len()
+    );
+    assert!(
+        summary
+            .lines
+            .iter()
+            .any(|l| l.starts_with("broken.toml : "))
+    );
+    assert!(
+        summary.lines.len() <= 2,
+        "one line per refused file: {:?}",
+        summary.lines
+    );
+    assert_eq!(
+        text::too_many_definitions(summary.too_many.len(), 256),
+        "45 définitions ignorées au-delà de 256"
+    );
+    // The page draws without panicking, the list folded.
+    h.ui.set_page(Page::Settings);
+    h.frame(Vec::new());
+}
+
+#[test]
+fn the_settings_open_with_a_system_in_error_and_a_retired_one() {
+    let mut h = harness(true);
+    let dir = h.ui.dirs.custom_systems.clone();
+    std::fs::create_dir_all(dir.join(".retired")).unwrap();
+    std::fs::write(dir.join("broken.toml"), "not = [toml").unwrap();
+    std::fs::write(dir.join("fine.toml"), bare_definition("fine")).unwrap();
+    std::fs::write(dir.join(".retired/old-1.toml"), bare_definition("old")).unwrap();
+    h.ui.set_page(Page::Settings);
+    for _ in 0..3 {
+        h.frame(Vec::new());
+    }
+    let view = h.ui.custom_systems.view.as_ref().unwrap();
+    assert_eq!(view.load.catalog.customs().count(), 1);
+    assert_eq!(view.summary.lines.len(), 1);
+    assert_eq!(view.retired.len(), 1);
+}
+
+#[test]
+fn editing_a_definition_validates_it_before_writing_and_asks_for_the_publication() {
+    let mut h = harness(false);
+    let dir = h.ui.dirs.custom_systems.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("fine.toml"), bare_definition("fine")).unwrap();
+    h.ui.refresh_custom_systems();
+    // The catalog of this test is the official one: `fine` is not published, so the edit works on the view.
+    h.ui.set_page(Page::Settings);
+    h.ui.open_edit("fine");
+    // The form draws (focus on the name, then free).
+    h.frame(Vec::new());
+    h.frame(Vec::new());
+    let edit = h.ui.custom_systems.edit.as_mut().expect("the form opens");
+    edit.name = "Renamed / fine".to_owned();
+    edit.extensions = ".FIC, new ,fic".to_owned();
+    edit.igdb = "12".to_owned();
+    h.ui.save_edit(None);
+    assert!(h.ui.custom_systems.edit.is_none(), "saved");
+    assert!(h.ui.publication_waits());
+    let written = std::fs::read_to_string(dir.join("fine.toml")).unwrap();
+    assert!(written.contains("Renamed - fine"), "{written}");
+    assert!(written.contains("igdb = 12"), "{written}");
+    assert!(
+        written.contains(r#"extensions = ["fic", "new"]"#),
+        "{written}"
+    );
+
+    // A refused value stays in the form with its reason; nothing is written.
+    h.ui.open_edit("fine");
+    let edit = h.ui.custom_systems.edit.as_mut().unwrap();
+    edit.extensions = "zip".to_owned();
+    h.ui.save_edit(None);
+    let edit = h.ui.custom_systems.edit.as_ref().expect("still open");
+    assert!(edit.error.is_some());
+    assert!(
+        std::fs::read_to_string(dir.join("fine.toml"))
+            .unwrap()
+            .contains(r#"["fic", "new"]"#)
+    );
+}
+
+#[test]
+fn a_switch_journal_blocks_only_its_own_definition_and_unreadable_journals_block_everything() {
+    use super::custom_systems::switch_refusal;
+    use emu_library::SwitchMove;
+    let open = |custom: &str| {
+        Ok(Some(SwitchMove {
+            custom_id: custom.to_owned(),
+            official_id: "snes".to_owned(),
+        }))
+    };
+    assert!(
+        switch_refusal(open("mine"), "mine")
+            .unwrap()
+            .contains("bascule")
+    );
+    assert!(switch_refusal(open("mine"), "other").is_none());
+    assert!(switch_refusal(Ok(None), "mine").is_none());
+    let failed = Err(emu_library::LibraryError::UnknownSystem("x".to_owned()));
+    assert!(
+        switch_refusal(failed, "mine")
+            .unwrap()
+            .contains("pas pu être lu")
+    );
+    // No journal folder at all: nothing blocks.
+    let h = harness(true);
+    let options = emu_library::TidyOptions::new(&h.ui.dirs.root, &h.ui.dirs.tidy_journals).unwrap();
+    assert_eq!(emu_library::open_switch(&options).unwrap(), None);
+}
+
+fn mock_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+fn loopback_client() -> emu_assets::http::HttpClient {
+    emu_assets::http::HttpClient::new(emu_assets::http::HttpConfig {
+        allow_loopback_http: true,
+        timeout: std::time::Duration::from_secs(10),
+        ..emu_assets::http::HttpConfig::default()
+    })
+    .unwrap()
+}
+
+/// « Chercher la base d'identification »: one request per source at most, a 404 is an absence, the DAT found in a
+/// single source is kept where the DAT update puts its files.
+#[test]
+fn the_database_search_finds_a_dat_in_one_source_only_and_asks_three_times_at_most() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let rt = mock_runtime();
+    let server = rt.block_on(MockServer::start());
+    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    rt.block_on(
+        Mock::given(method("GET"))
+            .and(path("/metadat/tosec/Zz%20-%20Fictional.dat"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dat))
+            .mount(&server),
+    );
+    rt.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .with_priority(5)
+            .mount(&server),
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let base = format!("{}/", server.uri());
+    let found = worker::search_dats(
+        &loopback_client(),
+        &base,
+        tmp.path(),
+        "Zz - Fictional",
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(
+        found.iter().map(|f| f.0).collect::<Vec<_>>(),
+        [emu_library::DatSource::Tosec]
+    );
+    assert!(
+        tmp.path()
+            .join("tosec")
+            .join("Zz - Fictional.dat")
+            .is_file()
+    );
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    assert_eq!(requests.len(), 3, "one request per source, no more");
+
+    // Nothing anywhere: an empty answer, not an error.
+    let rt2 = mock_runtime();
+    let empty = rt2.block_on(MockServer::start());
+    rt2.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&empty),
+    );
+    let none = worker::search_dats(
+        &loopback_client(),
+        &format!("{}/", empty.uri()),
+        tmp.path(),
+        "Zz - Nothing",
+        &|| false,
+    )
+    .unwrap();
+    assert!(none.is_empty());
+
+    // A server error concludes nothing: the search fails and says so.
+    let rt3 = mock_runtime();
+    let broken = rt3.block_on(MockServer::start());
+    rt3.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&broken),
+    );
+    let failed = worker::search_dats(
+        &loopback_client(),
+        &format!("{}/", broken.uri()),
+        tmp.path(),
+        "Zz - Broken",
+        &|| false,
+    );
+    assert!(failed.is_err());
+}
+
+/// Only a 404 means « not there »: a refusal, a limit, a full disk conclude nothing and the search fails.
+#[test]
+fn only_a_404_is_an_absence_in_the_database_search() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let tmp = tempfile::tempdir().unwrap();
+    for status in [403, 429] {
+        let rt = mock_runtime();
+        let server = rt.block_on(MockServer::start());
+        rt.block_on(
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server),
+        );
+        let outcome = worker::search_dats(
+            &loopback_client(),
+            &format!("{}/", server.uri()),
+            tmp.path(),
+            "Zz - Refused",
+            &|| false,
+        );
+        assert!(outcome.is_err(), "{status} must not read as « absent »");
+    }
+    // A full disk: the DAT cannot be written (the destination folder is a file).
+    let rt = mock_runtime();
+    let server = rt.block_on(MockServer::start());
+    rt.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()))
+            .mount(&server),
+    );
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+    let outcome = worker::search_dats(
+        &loopback_client(),
+        &format!("{}/", server.uri()),
+        &blocker,
+        "Zz - Disk",
+        &|| false,
+    );
+    assert!(outcome.is_err(), "an I/O error must not read as « absent »");
+}
+
+#[test]
+fn the_edit_form_turns_into_a_draft_or_says_what_is_wrong() {
+    use super::custom_systems::apply_edit;
+    let draft = emu_library::CustomSystemDraft {
+        id: "fic".into(),
+        name: "Fic".into(),
+        database: None,
+        extensions: vec!["fic".into()],
+        dats: Vec::new(),
+        screenscraper: Some(9),
+        igdb: None,
+        cores: vec!["fic_core".into()],
+        ignored_firmware: Vec::new(),
+        origin: emu_library::DefinitionOrigin {
+            core: "fic_core".into(),
+            info_name: None,
+            created_by: "t".into(),
+            created_unix: 1,
+        },
+    };
+    let done = apply_edit(draft.clone(), "A/B", " .BIN; Rom ,bin", "", " 42 ").unwrap();
+    assert_eq!(done.name, "A-B");
+    assert_eq!(done.extensions, ["bin", "rom"]);
+    assert_eq!((done.screenscraper, done.igdb), (None, Some(42)));
+    assert!(apply_edit(draft.clone(), "A", "fic", "x1", "").is_err());
+    assert!(apply_edit(draft.clone(), "A", "fic", "", "-3").is_err());
+    let mut without_core = draft;
+    without_core.cores.clear();
+    assert!(apply_edit(without_core, "A", "fic", "", "").is_err());
+}

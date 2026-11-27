@@ -1450,13 +1450,23 @@ impl Library {
             .conn
             .prepare(&format!("SELECT {GAME_COLUMNS} FROM game ORDER BY id"))
             .map_err(db_error)?;
-        // Rows of a system absent from the catalog (retired, in error, masked) stay in the base but are hidden.
+        // Rows of a system absent from the catalog (retired, in error, masked), and the frozen rows of an id in
+        // conflict (the active system does not accept them), stay in the base but are hidden: same predicate as
+        // the scan's.
         let mut games: Vec<Game> = stmt
             .query_map([], game_from_row)
             .map_err(db_error)?
             .collect::<Result<Vec<Game>, _>>()
             .map_err(db_error)?;
-        games.retain(|g| cat.system(&g.system).is_some());
+        games.retain(|g| {
+            !crate::scan::row_is_frozen(
+                cat,
+                &g.system,
+                &g.path.to_string_lossy(),
+                g.entry.as_deref(),
+                g.is_dir,
+            )
+        });
         let mut media = load_media(&self.conn, None)?;
         for g in &mut games {
             g.media = media.remove(&g.id.0).unwrap_or_default();
@@ -1565,27 +1575,44 @@ impl Library {
         kind: CoverKind,
         retry_before_unix: i64,
     ) -> Result<Vec<GameId>, LibraryError> {
-        let cat = catalog();
+        self.games_needing_cover_in(catalog(), kind, retry_before_unix)
+    }
+
+    /// [`Library::games_needing_cover`] on a given catalog snapshot.
+    pub(crate) fn games_needing_cover_in(
+        &self,
+        cat: &Catalog,
+        kind: CoverKind,
+        retry_before_unix: i64,
+    ) -> Result<Vec<GameId>, LibraryError> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT g.id, g.system FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
+                "SELECT g.id, g.system, g.path, g.entry, g.is_dir FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
                  WHERE c.game IS NULL OR (c.state = 'missing' AND c.checked_unix < ?2)
                  ORDER BY g.id",
             )
             .map_err(db_error)?;
         let rows = stmt
             .query_map(params![kind_name(kind), retry_before_unix], |r| {
-                Ok((GameId(r.get(0)?), r.get::<_, String>(1)?))
+                Ok((
+                    GameId(r.get(0)?),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, bool>(4)?,
+                ))
             })
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
-        // A hidden row (its system is absent from the catalog) never asks for a cover.
+        // A hidden row (system absent from the catalog, or frozen in a conflict) never asks for a cover.
         Ok(rows
             .into_iter()
-            .filter(|(_, system)| cat.system(system).is_some())
-            .map(|(id, _)| id)
+            .filter(|(_, system, path, entry, is_dir)| {
+                !crate::scan::row_is_frozen(cat, system, path, entry.as_deref(), *is_dir)
+            })
+            .map(|(id, ..)| id)
             .collect())
     }
 

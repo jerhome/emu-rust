@@ -49,6 +49,8 @@ pub(super) struct State {
     pub(super) cleared: Vec<(String, String)>,
     /// SHA-256 of cores already hashed, by (path, size, modification time): a core is hashed once, not at every launch.
     sha_cache: HashMap<(PathBuf, u64, SystemTime), String>,
+    /// The dry-run child: this executable unless a test gives its own (`test_support`).
+    pub(super) command: Option<DryRunCommand>,
 }
 
 impl State {
@@ -63,6 +65,14 @@ impl State {
         self.sha_cache.insert(key, sha.clone());
         Some(sha)
     }
+}
+
+/// The button pressed in a dialog of [`CustomDialog`]: the first one, the second one, or « Annuler ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Pick {
+    Primary,
+    Secondary,
+    Cancel,
 }
 
 /// A dialog of the launch of a custom system.
@@ -261,11 +271,16 @@ impl LibraryUi {
         let system_dir = self.dirs.system.clone();
         let core = request.core_path.clone();
         let game = std::path::PathBuf::from(&key.game);
+        let command = self.custom.command.clone();
         let job = Job::spawn("dry-run", notify(ctx), move |_, cancel| {
             let Some(sha) = core_sha256(&core) else {
                 return (Tried::NotTried(text::NOT_TRIED_FAILED), String::new());
             };
-            let tried = match DryRunCommand::current_exe() {
+            let command = match command {
+                Some(command) => Ok(command),
+                None => DryRunCommand::current_exe(),
+            };
+            let tried = match command {
                 Ok(command) => try_game(&command, &cache, &system_dir, &core, &game, &|| {
                     cancel.is_cancelled()
                 }),
@@ -394,12 +409,6 @@ impl LibraryUi {
 
     /// Dialogs of [`CustomDialog`]. The safe choice has the focus: the try, « Changer de core », « Annuler ».
     pub(super) fn custom_dialog(&mut self, ctx: &egui::Context) {
-        #[derive(PartialEq)]
-        enum Pick {
-            Primary,
-            Secondary,
-            Cancel,
-        }
         let Some(Dialog::Custom(dialog)) = &self.dialog else {
             return;
         };
@@ -484,9 +493,13 @@ impl LibraryUi {
                 }
             });
         });
-        let Some(pick) = pick else {
-            return;
-        };
+        if let Some(pick) = pick {
+            self.resolve_custom(pick, ctx);
+        }
+    }
+
+    /// The answer to the open dialog of [`CustomDialog`] (a button, or Échap = « Annuler »).
+    pub(super) fn resolve_custom(&mut self, pick: Pick, ctx: &egui::Context) {
         let Some(Dialog::Custom(dialog)) = self.dialog.take() else {
             return;
         };
@@ -498,6 +511,8 @@ impl LibraryUi {
                     .content_accepted
                     .insert(request.core.to_string());
                 self.save_config();
+                self.cores
+                    .set_content_accepted(self.config.custom_systems.content_accepted.clone());
                 self.events.push(LibraryEvent::Launch(Box::new(request)));
             }
             (CustomDialog::Untested { request, tried }, Pick::Primary) => match tried {
