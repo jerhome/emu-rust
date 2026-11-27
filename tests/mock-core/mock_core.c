@@ -91,6 +91,32 @@
  *                   image (like dosbox_pure after deinit, ADR 0022). Only a fresh image (a private copy of the
  *                   library) has a clear guard. Read with getenv() at retro_init.
  *
+ * v8.0 protocol (custom systems, ADR 0025; all OFF unless set, default behaviour and image unchanged; read with
+ * getenv() at retro_set_environment, except MOCK_EXTENSIONS which is also read by retro_get_system_info):
+ *   MOCK_HW_RENDER=<ctx>,<maj>,<min>  retro_load_game (after SET_PIXEL_FORMAT) sends SET_HW_RENDER (14) with
+ *                   context_type <ctx> (libretro enum: 1 OPENGL, 2 OPENGLES2, 3 OPENGL_CORE, 4 OPENGLES3,
+ *                   5 OPENGLES_VERSION, 6 VULKAN, 7 D3D11...), version <maj>.<min> (missing numbers = 0),
+ *                   depth/stencil true. The frontend's answer is logged (INFO "mock core: SET_HW_RENDER ctx=C
+ *                   V.V accepted=0|1"). A refusal alone is NOT fatal: the core falls back to software frames
+ *                   (retro_load_game still succeeds). Never calls the core's context_reset itself.
+ *   MOCK_HW_REQUIRED set (with MOCK_HW_RENDER) -> a refused SET_HW_RENDER makes retro_load_game fail (logs ERROR
+ *                   "mock core: hardware rendering required"): the "load refused after a request" case.
+ *   MOCK_HW_FRAME   set -> retro_run sends video_cb((void *)-1, W, H, 0) = RETRO_HW_FRAME_BUFFER_VALID instead of
+ *                   the software frame (audio still produced).
+ *   MOCK_NO_FRAME   set -> retro_run never calls video_cb (no frame at all; audio still produced).
+ *   MOCK_CRASH_AT_FRAME=<n>  retro_run abort()s when the frame counter is >= n (0 = first run).
+ *   MOCK_HANG_AT_FRAME=<n>   retro_run sleeps forever when the frame counter is >= n (0 = first run).
+ *   MOCK_LOG_FLOOD  set -> 5000 INFO log lines (~100 bytes) at retro_load_game and 1000 per retro_run (through the
+ *                   log callback, else stderr): a child whose output pipe is never drained must not block.
+ *   MOCK_DESCRIPTORS set -> retro_load_game sends SET_INPUT_DESCRIPTORS (11) with 300 entries: [0] port 0 JOYPAD id 0
+ *                   "Fire"; [1] id 1 "Jump" + BEL, ESC[31m, U+202E (control and bidi characters); [2] id 2 a
+ *                   300-character text ('A' x 300); [3] id 3 empty text; [4..299] port (i % 2), JOYPAD, index 0,
+ *                   id (i % 16), "Pad button <i>". Terminated by a NULL description as libretro requires.
+ *   MOCK_EXTENSIONS=<list>   valid_extensions of retro_get_system_info (e.g. "pce|sgx|cue"; default "bin|md|mock";
+ *                   at most 255 characters kept).
+ *   MOCK_WRITE_CONTENT set -> retro_load_game appends "mock-wrote\n" to the content file (game->path, when given):
+ *                   a frontend that must not change the game (dry run on a copy) is caught by a changed file.
+ *
  * Behaviour (documented in docs/design/phase2-frontend.md, "Core factice"):
  *  - 64x48 XRGB8888 image computed from a frame counter, a seed (FNV-1a of the content file), the option
  *    `mock_color` and the pad state of port 0. 735 audio frames per run (44100 Hz / 60 fps).
@@ -108,6 +134,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #if defined(_WIN32)
 #define MOCK_API __declspec(dllexport)
@@ -138,6 +167,8 @@
 #define RETRO_PIXEL_FORMAT_XRGB8888 1
 #define RETRO_PIXEL_FORMAT_RGB565 2
 
+#define RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS 11
+#define RETRO_ENVIRONMENT_SET_HW_RENDER 14
 #define RETRO_ENVIRONMENT_GET_CAN_DUPE 3
 #define RETRO_ENVIRONMENT_SET_MESSAGE 6
 #define RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE 13
@@ -1063,6 +1094,134 @@ static void declare_controllers(void) {
     env_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, info);
 }
 
+/* ---- v8.0 protocol (see header): hardware-render request, frames, descriptors, crash / hang, flood ---- */
+#if defined(_WIN32)
+__declspec(dllimport) void __stdcall Sleep(unsigned long ms);
+#endif
+
+struct hw_render_cb {
+    unsigned context_type;
+    void (*context_reset)(void);
+    uintptr_t (*get_current_framebuffer)(void);
+    void *(*get_proc_address)(const char *sym);
+    bool depth, stencil, bottom_left_origin;
+    unsigned version_major, version_minor;
+    bool cache_context;
+    void (*context_destroy)(void);
+    bool debug_context;
+};
+struct input_desc { unsigned port, device, index, id; const char *description; };
+
+static bool hw_on, hw_required_on, hw_frame_on, no_frame_on, flood_on, descriptors_on, write_content_on;
+static unsigned hw_ctx, hw_major, hw_minor;
+static long crash_at = -1, hang_at = -1;
+
+static long env_long(const char *name) {
+    const char *v = getenv(name);
+    char *end = NULL;
+    long n;
+    if (!v || !v[0]) return -1;
+    n = strtol(v, &end, 10);
+    return end == v || n < 0 ? -1 : n;
+}
+
+static void read_v8_env(void) {
+    const char *hw = getenv("MOCK_HW_RENDER");
+    hw_on = hw && hw[0];
+    hw_ctx = hw_major = hw_minor = 0;
+    if (hw_on) {
+        char *end = NULL;
+        hw_ctx = (unsigned)strtoul(hw, &end, 10);
+        if (*end == ',') { hw_major = (unsigned)strtoul(end + 1, &end, 10); }
+        if (*end == ',') { hw_minor = (unsigned)strtoul(end + 1, &end, 10); }
+    }
+    hw_required_on = env_flag("MOCK_HW_REQUIRED");
+    hw_frame_on = env_flag("MOCK_HW_FRAME");
+    no_frame_on = env_flag("MOCK_NO_FRAME");
+    flood_on = env_flag("MOCK_LOG_FLOOD");
+    descriptors_on = env_flag("MOCK_DESCRIPTORS");
+    write_content_on = env_flag("MOCK_WRITE_CONTENT");
+    crash_at = env_long("MOCK_CRASH_AT_FRAME");
+    hang_at = env_long("MOCK_HANG_AT_FRAME");
+}
+
+static void hw_context_reset(void) {}
+static void hw_context_destroy(void) {}
+
+/* Returns false when the core must fail the load (refused and MOCK_HW_REQUIRED). */
+static bool hw_request(void) {
+    static struct hw_render_cb cb;
+    bool accepted;
+    if (!hw_on) return true;
+    memset(&cb, 0, sizeof cb);
+    cb.context_type = hw_ctx;
+    cb.context_reset = hw_context_reset;
+    cb.context_destroy = hw_context_destroy;
+    cb.depth = cb.stencil = true;
+    cb.version_major = hw_major;
+    cb.version_minor = hw_minor;
+    accepted = env_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &cb);
+    if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: SET_HW_RENDER ctx=%u %u.%u accepted=%d\n", hw_ctx, hw_major,
+                       hw_minor, accepted ? 1 : 0);
+    if (!accepted && hw_required_on) {
+        if (log_cb) log_cb(RETRO_LOG_ERROR, "mock core: hardware rendering required\n");
+        return false;
+    }
+    return true;
+}
+
+static void send_descriptors(void) {
+    static struct input_desc descs[301];
+    static char text[300 + 1], names[300][24];
+    unsigned i;
+    if (!descriptors_on) return;
+    memset(text, 'A', 300);
+    text[300] = 0;
+    for (i = 0; i < 300; i++) {
+        descs[i].port = i % 2;
+        descs[i].device = RETRO_DEVICE_JOYPAD;
+        descs[i].index = 0;
+        descs[i].id = i % 16;
+        snprintf(names[i], sizeof names[i], "Pad button %u", i);
+        descs[i].description = names[i];
+    }
+    descs[0].port = 0; descs[0].id = 0; descs[0].description = "Fire";
+    descs[1].port = 0; descs[1].id = 1; descs[1].description = "Jump\a\x1b[31m\xE2\x80\xAE" "end";
+    descs[2].port = 0; descs[2].id = 2; descs[2].description = text;
+    descs[3].port = 0; descs[3].id = 3; descs[3].description = "";
+    memset(&descs[300], 0, sizeof descs[300]); /* NULL description ends the list */
+    env_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descs);
+}
+
+static void write_content(const struct retro_game_info *game) {
+    FILE *f;
+    if (!write_content_on || !game || !game->path) return;
+    f = fopen(game->path, "ab");
+    if (f) { fputs("mock-wrote\n", f); fclose(f); }
+}
+
+static void flood(unsigned lines) {
+    unsigned i;
+    for (i = 0; i < lines; i++) {
+        if (log_cb) log_cb(RETRO_LOG_INFO, "mock core: flood %u ................................................................\n", i);
+        else fprintf(stderr, "mock core: flood %u ................................................................\n", i);
+    }
+}
+
+static void v8_run_hooks(void) {
+    if (crash_at >= 0 && (long)counter >= crash_at) abort();
+    if (hang_at >= 0 && (long)counter >= hang_at) {
+        for (;;) {
+#if defined(_WIN32)
+            Sleep(1000);
+#else
+            sleep(1);
+#endif
+        }
+    }
+    if (flood_on) flood(1000);
+}
+
 /* ---- libretro entry points ---- */
 MOCK_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -1072,6 +1231,7 @@ MOCK_API void retro_set_environment(retro_environment_t cb) {
     env_cb = cb;
     read_protocol_env();
     read_future_env();
+    read_v8_env();
     no_game = no_game_on;
     env_cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
     log.log = NULL;
@@ -1122,7 +1282,12 @@ MOCK_API void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof *info);
     info->library_name = "Mock Core";
     info->library_version = "1.0";
-    info->valid_extensions = "bin|md|mock";
+    {
+        static char ext[256];
+        const char *e = getenv("MOCK_EXTENSIONS");
+        if (e && e[0]) { snprintf(ext, sizeof ext, "%s", e); info->valid_extensions = ext; }
+        else info->valid_extensions = "bin|md|mock";
+    }
     info->need_fullpath = NEED_FULLPATH;
     info->block_extract = false;
 }
@@ -1163,6 +1328,7 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
         return false;
     }
     if (!env_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) return false;
+    if (!hw_request()) return false;
 
     if (!game) {
         loaded_no_game = true; /* no content: seed 0 */
@@ -1216,6 +1382,9 @@ MOCK_API bool retro_load_game(const struct retro_game_info *game) {
     }
     ff_on_load();
     vfs_exercise();
+    send_descriptors();
+    write_content(game);
+    if (flood_on) flood(5000);
     return true;
 }
 
@@ -1256,6 +1425,7 @@ MOCK_API void retro_run(void) {
     poll_protocol_inputs();
     poll_analog();
     future_run_hooks();
+    v8_run_hooks();
     start = (mask >> RETRO_DEVICE_ID_JOYPAD_START) & 1u;
 
     if (counter == 10) {
@@ -1299,6 +1469,11 @@ MOCK_API void retro_run(void) {
     }
     if (mock_visible) draw_registers(frame_pixels);
     if (savedir_on) draw_dirs(frame_pixels);
+    if (no_frame_on) goto frame_done;
+    if (hw_frame_on) {
+        video_cb((const void *)(intptr_t)-1, WIDTH, HEIGHT, 0);
+        goto frame_done;
+    }
 #ifdef PIXEL_16
     for (y = 0; y < HEIGHT; y++) {
         for (x = 0; x < WIDTH; x++) {
@@ -1315,6 +1490,7 @@ MOCK_API void retro_run(void) {
 #else
     video_cb(frame_pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t));
 #endif
+frame_done:
 
     for (i = 0; i < audio_frames; i++) {
         uint32_t n = counter * audio_frames + i;

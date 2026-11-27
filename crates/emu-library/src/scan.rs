@@ -80,13 +80,15 @@ pub struct ScanReport {
     /// Archives holding images of two different computers (`.dsk` and `.d64`): ignored (design v5.0 §3.4).
     pub ignored_mixed_archives: u64,
     /// 7.1 (ADR 0023 §4.5): files moved since the last scan whose row was kept (same `id`, favourite, history,
-    /// covers) instead of being removed and added again.
+    /// covers) instead of being removed and added again. 8.0 (§4.5, design §2.1): also the rows merged into the
+    /// row of the new path when both carried data (the old row is deleted after giving its data).
     pub moved: u64,
     /// 7.6: the previous scan was killed between two batches (its marker was left), so this one purged nothing:
     /// games whose file is missing stay listed until the next scan.
     pub cautious: bool,
-    /// 7.6: the scan marker could not be written or removed. A marker that stays makes every later scan cautious
-    /// (nothing purged): the user should be told to check the folder of the database.
+    /// The legacy `.scanning` file of a 7.6 (8.0 no longer writes it, it only reads it) could not be removed after
+    /// the scan. While it stays, every scan is cautious (nothing purged): the user should be told to check the
+    /// folder of the database. Not about the `scan_pending` marks of the rows, which are always lifted.
     pub marker_failed: bool,
 }
 
@@ -2058,13 +2060,14 @@ fn store(
     );
     conn.execute(
         "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, crc32, sha1, crc32_nh, sha1_nh,
-                           title, identification, pinned, is_dir, region, needs_32x)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                           title, identification, pinned, is_dir, region, needs_32x, scan_pending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)
          ON CONFLICT(path) DO UPDATE SET entry = excluded.entry, system = excluded.system, size = excluded.size,
              file_size = excluded.file_size, mtime_unix = excluded.mtime_unix, crc32 = excluded.crc32,
              sha1 = excluded.sha1, crc32_nh = excluded.crc32_nh, sha1_nh = excluded.sha1_nh,
              title = excluded.title, identification = excluded.identification, pinned = excluded.pinned,
-             is_dir = excluded.is_dir, region = excluded.region, needs_32x = excluded.needs_32x",
+             is_dir = excluded.is_dir, region = excluded.region, needs_32x = excluded.needs_32x,
+             scan_pending = 1",
         params![
             found.key,
             analysis.entry,
@@ -2335,7 +2338,146 @@ fn merge_moved(
     Ok(kept)
 }
 
-/// Name of the "scan in progress" marker: a file next to the database, so the schema does not change.
+/// A vanished row and the marked row with user data that takes over its data (same game).
+struct Heir {
+    /// The vanished row: deleted once its data is given.
+    old: i64,
+    /// The row that stays.
+    new: i64,
+}
+
+/// Pairs of a vanished row (not merged as a moved file) and a marked row with user data that are each other's only
+/// twin. Ambiguous twins give no pair.
+fn heirs_of(
+    conn: &Connection,
+    gone: &[Twin],
+    moved: &HashMap<i64, i64>,
+    with_data: &[String],
+) -> Result<Vec<Heir>, LibraryError> {
+    if with_data.is_empty() {
+        return Ok(Vec::new());
+    }
+    let remaining: Vec<&Twin> = gone.iter().filter(|g| !moved.contains_key(&g.id)).collect();
+    let stay = load_twins(conn, with_data)?;
+    let mut pairs = Vec::new();
+    for old in &remaining {
+        let mut hits = stay.iter().filter(|new| old.same_game(new));
+        let (Some(new), None) = (hits.next(), hits.next()) else {
+            continue;
+        };
+        if remaining.iter().filter(|o| o.same_game(new)).count() == 1 {
+            pairs.push(Heir {
+                old: old.id,
+                new: new.id,
+            });
+        }
+    }
+    Ok(pairs)
+}
+
+/// Carries the user data of row `old` to row `new` (same game): favourite if either has it, play counts added,
+/// latest play date, and the covers `new` does not have. `old` is deleted by the caller (its other covers go
+/// with it). Saves and states live in files named after the game, not in the database.
+fn give_data(tx: &Connection, old: i64, new: i64) -> Result<(), LibraryError> {
+    tx.execute(
+        "UPDATE game SET
+             favorite = MAX(favorite, (SELECT favorite FROM game WHERE id = ?1)),
+             play_count = play_count + (SELECT play_count FROM game WHERE id = ?1),
+             last_played_unix = CASE
+                 WHEN last_played_unix IS NULL THEN (SELECT last_played_unix FROM game WHERE id = ?1)
+                 WHEN (SELECT last_played_unix FROM game WHERE id = ?1) IS NULL THEN last_played_unix
+                 ELSE MAX(last_played_unix, (SELECT last_played_unix FROM game WHERE id = ?1)) END
+         WHERE id = ?2",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    // A "missing" answer of the staying row gives way to a cached cover of the old one (a cached cover never does).
+    tx.execute(
+        "DELETE FROM cover WHERE game = ?2 AND state = 'missing'
+         AND EXISTS (SELECT 1 FROM cover o WHERE o.game = ?1 AND o.kind = cover.kind AND o.state = 'cached')",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    tx.execute(
+        "UPDATE OR IGNORE cover SET game = ?2 WHERE game = ?1",
+        params![old, new],
+    )
+    .map_err(db_error)?;
+    Ok(())
+}
+
+/// Lifts the `scan_pending` marks at the end of a scan, except the ones of `keep` (rows of a killed scan that carry
+/// user data and were not merged: the next scan must still see them to carry the data over). Callers run it in the
+/// transaction that ends the scan, so a crash never leaves the marks half lifted.
+fn lift_marks(conn: &Connection, keep: &[i64]) -> Result<(), LibraryError> {
+    conn.execute(
+        "UPDATE game SET scan_pending = NULL WHERE scan_pending IS NOT NULL",
+        [],
+    )
+    .map_err(db_error)?;
+    let mut remark = conn
+        .prepare_cached("UPDATE game SET scan_pending = 1 WHERE id = ?1")
+        .map_err(db_error)?;
+    for id in keep {
+        remark.execute([id]).map_err(db_error)?;
+    }
+    Ok(())
+}
+
+/// Rows of an earlier, killed scan that this scan may merge (see `select_candidates`).
+#[derive(Default)]
+struct Leftovers {
+    /// Paths of rows without user data: candidates of the moved-file check, like the rows this scan stored.
+    extra: Vec<String>,
+    /// Paths of marked rows that carry user data: they stay and take over the data of their vanished twin.
+    with_data: Vec<String>,
+    /// Ids of every row marked at the start that carries user data (found or not): their mark survives a scan that
+    /// ends without merging them (cancelled, or cautious).
+    data_marks: Vec<i64>,
+}
+
+/// Sorts the rows marked at the start (and, in a cautious scan, every found row) into rows that can be absorbed
+/// (no user data) and rows that must stay (a favourite, a play, a cover). `has_gone`: without a vanished row there
+/// is nothing to merge, only the marks to keep are computed.
+fn select_candidates(
+    conn: &Connection,
+    existing: &HashMap<String, Existing>,
+    seen: &HashSet<String>,
+    marked_at_start: &HashSet<i64>,
+    prudent: bool,
+    has_gone: bool,
+) -> Result<Leftovers, LibraryError> {
+    let mut pristine = conn
+        .prepare_cached(
+            "SELECT 1 FROM game g WHERE id = ?1 AND favorite = 0 AND play_count = 0
+             AND last_played_unix IS NULL AND NOT EXISTS (SELECT 1 FROM cover WHERE game = g.id)",
+        )
+        .map_err(db_error)?;
+    let mut out = Leftovers::default();
+    for (path, old) in existing {
+        let marked = marked_at_start.contains(&old.id);
+        let wanted = has_gone && seen.contains(path) && (prudent || marked);
+        if !(marked || wanted) {
+            continue;
+        }
+        let is_pristine = pristine.exists([old.id]).map_err(db_error)?;
+        if marked && !is_pristine {
+            out.data_marks.push(old.id);
+        }
+        if !wanted {
+            continue;
+        }
+        if is_pristine {
+            out.extra.push(path.clone());
+        } else if marked && !prudent {
+            out.with_data.push(path.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Name of the "scan in progress" marker file of a 7.6: it is no longer written (8.0 marks the rows, `scan_pending`),
+/// but one left behind by a 7.6 still makes the first scan cautious, then it is removed.
 fn marker_path(conn: &Connection) -> Option<PathBuf> {
     let db = conn.path().filter(|p| !p.is_empty())?;
     let mut name = std::ffi::OsString::from(db);
@@ -2343,10 +2485,11 @@ fn marker_path(conn: &Connection) -> Option<PathBuf> {
     Some(PathBuf::from(name))
 }
 
-/// A marker is written before the first batch and removed when the scan ends normally or is cancelled. One that
-/// is still there at the start means the previous scan died between two batches: rows it stored may be the new
-/// side of a file moved by hand whose old row is not merged yet, so this scan only merges and never purges
-/// (the next one purges again). A failed marker write is not fatal: the scan is as safe as before 7.6.
+/// Every row a scan writes carries `scan_pending = 1` until the scan ends normally or is cancelled. Rows still
+/// marked at the start belong to a scan killed between two batches: they may be the new side of a file moved by
+/// hand whose old row is not merged yet, so they join the candidates of the moved-file check (when they carry no
+/// user data) before the usual purge. A `.scanning` file left by a 7.6 makes this scan cautious once (it merges
+/// and never purges) and is then removed.
 pub(crate) fn run(
     conn: &mut Connection,
     options: &ScanOptions,
@@ -2356,15 +2499,10 @@ pub(crate) fn run(
     let marker = marker_path(conn);
     let prudent = marker.as_deref().is_some_and(Path::exists);
     let mut marker_failed = false;
-    if let Some(m) = &marker
-        && let Err(e) = std::fs::write(m, b"scan in progress\n")
-    {
-        tracing::warn!("cannot write the scan marker {}: {e}", m.display());
-        marker_failed = true;
-    }
     let mut result = run_scan(conn, options, cancel, progress, prudent);
-    // Any other error keeps the marker: the scan did not reach its end.
+    // Any other error keeps the legacy file: the scan did not reach its end.
     if matches!(result, Ok(_) | Err(LibraryError::Cancelled))
+        && prudent
         && let Some(m) = &marker
         && let Err(e) = std::fs::remove_file(m)
         && e.kind() != std::io::ErrorKind::NotFound
@@ -2411,6 +2549,16 @@ fn run_scan(
     resolve_media(&mut found, &mut seen, &mut report);
     let existing = load_existing(conn)?;
     let discs = DiscIndex::load(conn)?;
+    // Rows still marked now belong to a scan killed earlier: read before this scan's own batches mark theirs.
+    let marked_at_start: HashSet<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM game WHERE scan_pending = 1")
+            .map_err(db_error)?;
+        stmt.query_map([], |r| r.get(0))
+            .map_err(db_error)?
+            .collect::<Result<_, _>>()
+            .map_err(db_error)?
+    };
     // (row id, region key) of unchanged rows of a disc system whose region was never computed (v5 rows).
     let mut regions: Vec<(i64, &'static str)> = Vec::new();
     // (row id, flag) of unchanged `megacd` rows whose `needs_32x` was never computed (v6 rows) or is `false`
@@ -2554,26 +2702,23 @@ fn run_scan(
         .map(|(path, old)| Twin::of_existing(path, old))
         .collect();
     // Rows stored by this scan: the only ones counted in `report.added`.
-    let mut own_ids = HashSet::new();
-    if prudent {
-        own_ids.extend(load_twins(conn, &inserted)?.iter().map(|t| t.id));
-        // Rows stored by the interrupted scan are not in `inserted`: they are candidates too, but only pristine
-        // ones, because a merge deletes the fresh row without carrying its favourite, history or covers.
-        let mut pristine = conn
-            .prepare_cached(
-                "SELECT 1 FROM game g WHERE path = ?1 AND favorite = 0 AND play_count = 0
-                 AND last_played_unix IS NULL AND NOT EXISTS (SELECT 1 FROM cover WHERE game = g.id)",
-            )
-            .map_err(db_error)?;
-        let mut extra = Vec::new();
-        for path in existing.keys().filter(|p| seen.contains(*p)) {
-            if pristine.exists([path]).map_err(db_error)? {
-                extra.push(path.clone());
-            }
-        }
-        drop(pristine);
-        inserted.extend(extra);
-    }
+    let own_ids: HashSet<i64> = load_twins(conn, &inserted)?.iter().map(|t| t.id).collect();
+    // Rows of an interrupted scan (marked at the start, or any row after a 7.6 `.scanning` file) are candidates too,
+    // but only the ones without user data: a merge deletes the fresh row without carrying its favourite, history
+    // or covers. The marked ones that have data stay, and take over the data of their twin (see `heirs`).
+    let Leftovers {
+        extra,
+        with_data,
+        data_marks,
+    } = select_candidates(
+        conn,
+        &existing,
+        &seen,
+        &marked_at_start,
+        prudent,
+        !gone.is_empty(),
+    )?;
+    inserted.extend(extra);
     let moved = if gone.is_empty() || inserted.is_empty() {
         HashMap::new()
     } else {
@@ -2581,26 +2726,42 @@ fn run_scan(
         merge_moved(conn, &gone, &fresh)?
     };
     report.moved = moved.len() as u64;
-    // A cautious scan also absorbs rows of the interrupted one, which this report never counted as added.
-    let absorbed = if prudent {
-        moved.values().filter(|n| own_ids.contains(n)).count() as u64
-    } else {
-        report.moved
-    };
+    // Only the rows this scan stored were counted as added: absorbing a row of the interrupted one changes nothing.
+    let absorbed = moved.values().filter(|n| own_ids.contains(n)).count() as u64;
     report.added = report.added.saturating_sub(absorbed);
     if cancelled {
+        // The twins of the rows kept marked are not merged: the next scan does it.
+        let tx = conn.transaction().map_err(db_error)?;
+        lift_marks(&tx, &data_marks)?;
+        tx.commit().map_err(db_error)?;
         return Err(LibraryError::Cancelled);
     }
 
+    // A marked row that carries user data is not absorbed, so the row of its vanished file must not be purged with
+    // its own data: when they are each other's only twin, the old row's data goes to the row that stays.
+    let heirs = heirs_of(conn, &gone, &moved, &with_data)?;
+    let merged: HashSet<i64> = heirs.iter().map(|h| h.old).collect();
     let tx = conn.transaction().map_err(db_error)?;
+    for heir in &heirs {
+        give_data(&tx, heir.old, heir.new)?;
+    }
     for (path, old) in existing.iter().filter(|_| !prudent) {
         if seen.contains(path) || kept_rows(path) || moved.contains_key(&old.id) {
             continue;
         }
-        report.removed += tx
+        let deleted = tx
             .execute("DELETE FROM game WHERE id = ?1", [old.id])
             .map_err(db_error)? as u64;
+        // A row whose data went to its twin is a move, not a removal.
+        if merged.contains(&old.id) {
+            report.moved += deleted;
+        } else {
+            report.removed += deleted;
+        }
     }
+    // Same transaction as the purge: the scan has reached its end. A cautious scan merged nothing: the rows with
+    // data keep their mark for the next one.
+    lift_marks(&tx, if prudent { &data_marks } else { &[] })?;
     tx.commit().map_err(db_error)?;
     unclassified.sort_by_key(|(index, _)| *index);
     report.unclassified = unclassified.len() as u64;

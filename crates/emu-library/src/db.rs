@@ -18,11 +18,9 @@ use crate::{
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
 /// v5 (4.0): `game.is_dir` (unpacked DOS game folders). v6 (6.0): `game.region` (disc systems), and the Redump
-/// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs).
-///
-/// Design 8.0: PB0 raises it to **8** (`game.scan_pending`, one migration) together with its tests; PX0 leaves
-/// it at 7 so the migration tests and the existing databases keep working until then.
-pub const SCHEMA_VERSION: u32 = 7;
+/// `serial` / `region` of each `dat_entry`. v7 (7.4): `game.needs_32x` (Sega CD 32X discs). v8 (8.0):
+/// `game.scan_pending` (rows written by a scan that has not ended yet).
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// What `Library::forget_system` does with the DAT rows of the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +266,11 @@ ALTER TABLE dat_entry ADD COLUMN region TEXT;
     // 1 for a Sega CD 32X disc (7.4), 0 for another `megacd` game; NULL until the next scan fills it. Additive.
     r#"
 ALTER TABLE game ADD COLUMN needs_32x INTEGER;
+"#,
+    // 1 for a row written by a scan that has not ended (8.0): a scan killed between two batches leaves them, the
+    // next one merges them like moved files. NULL otherwise. Additive.
+    r#"
+ALTER TABLE game ADD COLUMN scan_pending INTEGER;
 "#,
 ];
 

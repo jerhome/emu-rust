@@ -5,8 +5,9 @@ use std::time::SystemTime;
 
 use emu_libretro::{
     AvInfo, ControllerType, Core, CoreConfig, CoreMessage, CoreOption, CoreOptionCategory,
-    FastForwardOverride, FrontendHandler, GameSource, InputDevice, InputQuery, JOYPAD_ID_MASK,
-    JoypadButton, KeyEvent, KeyModifiers, MemoryKind, RetroKey, SystemInfo, VideoFrame, mouse_id,
+    FastForwardOverride, FrameKind, FrontendHandler, GameSource, HwContextKind, HwRenderRequest,
+    InputDevice, InputQuery, JOYPAD_ID_MASK, JoypadButton, KeyEvent, KeyModifiers, MemoryKind,
+    RetroKey, SystemInfo, VideoFrame, mouse_id,
 };
 
 use crate::audio::{AudioSink, NullSink};
@@ -108,7 +109,12 @@ pub struct Emulator {
     pulses: KeyPulses,
     /// Last `SET_FASTFORWARDING_OVERRIDE` request reported by `Core::run` (env 64).
     fastforward: Option<FastForwardOverride>,
+    /// Consecutive frames without a software buffer since the core asked for hardware rendering.
+    software_gap: u32,
 }
+
+/// Frames in a row without a software buffer, after a hardware request, that mean "hardware rendering".
+const HW_GAP_FRAMES: u32 = 60;
 
 /// Most pulses waiting at once; more are dropped (a menu action repeated faster than it can be played).
 const MAX_QUEUED_PULSES: usize = 16;
@@ -247,6 +253,9 @@ fn restore_sram(core: &mut Core, path: &Path) -> Result<Vec<u8>, RuntimeError> {
     Ok(sram.to_vec())
 }
 
+/// Version (major, minor) reported for a sentinel frame from a core that never sent a hardware render request.
+const UNKNOWN_HW_VERSION: (u32, u32) = (0, 0);
+
 /// Slack over the expected size when reading `.srm` and state files (container header, small mismatches).
 const STATE_READ_MARGIN: usize = 64 * 1024;
 
@@ -266,6 +275,7 @@ impl Emulator {
             ContentSpec::File(rom.to_path_buf()),
             options,
             Limits::DEFAULT,
+            None,
         )
     }
 
@@ -278,7 +288,7 @@ impl Emulator {
         content: ContentSpec,
         options: EmulatorOptions,
     ) -> Result<Self, RuntimeError> {
-        Self::load_with_limits(core, content, options, Limits::DEFAULT)
+        Self::load_with_limits(core, content, options, Limits::DEFAULT, None)
     }
 
     /// 2.1 entry point: same as [`Self::load_content`] with an identity the caller resolved beforehand
@@ -292,14 +302,17 @@ impl Emulator {
         identity: GameIdentity,
         options: EmulatorOptions,
     ) -> Result<Self, RuntimeError> {
-        Self::load_as(core, content, identity, options, Limits::DEFAULT)
+        Self::load_as(core, content, identity, options, Limits::DEFAULT, None)
     }
 
+    /// `copy_dir` replaces the default folder of private core copies (`<cache_dir>/core-copies`); only the dry
+    /// run uses it, with a folder it has checked to be under its scratch folder.
     pub(crate) fn load_with_limits(
         core_path: &Path,
         spec: ContentSpec,
         options: EmulatorOptions,
         limits: Limits,
+        copy_dir: Option<PathBuf>,
     ) -> Result<Self, RuntimeError> {
         let core_id = core_id_from_path(core_path);
         let saves_core_dir = options.save_dir.join(&core_id);
@@ -310,7 +323,7 @@ impl Emulator {
             tracing::warn!("game identity not resolved ({e}): 2.0 name used");
             request.fallback_identity()
         });
-        Self::load_as(core_path, spec, identity, options, limits)
+        Self::load_as(core_path, spec, identity, options, limits, copy_dir)
     }
 
     fn load_as(
@@ -319,6 +332,7 @@ impl Emulator {
         identity: GameIdentity,
         options: EmulatorOptions,
         limits: Limits,
+        copy_dir: Option<PathBuf>,
     ) -> Result<Self, RuntimeError> {
         let core_id = core_id_from_path(core_path);
         let game_name = identity.save_name.clone();
@@ -336,7 +350,7 @@ impl Emulator {
             assets_dir: options.assets_dir,
             variables: options.core_variables,
             provide_vfs: options.provide_vfs,
-            copy_dir: Some(options.cache_dir.join("core-copies")),
+            copy_dir: Some(copy_dir.unwrap_or_else(|| options.cache_dir.join("core-copies"))),
             fastforward_override: options.fastforward_override,
             variable_state_size: options.variable_state_size,
         };
@@ -387,7 +401,11 @@ impl Emulator {
             Some(source) => core.load_game_from(source),
             None => core.load_no_game(),
         }
-        .map_err(RuntimeError::from)
+        // A refused load after a `SET_HW_RENDER` request is "needs hardware rendering", not a generic failure.
+        .map_err(|e| match core.hw_render_request() {
+            Some(request) => RuntimeError::HardwareRenderRequired(request.clone()),
+            None => RuntimeError::from(e),
+        })
         .and_then(|av_info| {
             // Only when the content really is image 0: a generated or user playlist already lists every disk.
             if let Some(media) = prepared
@@ -449,6 +467,7 @@ impl Emulator {
             mouse_polled: false,
             pulses: KeyPulses::default(),
             fastforward: None,
+            software_gap: 0,
         };
         if restore_added_disks {
             crate::added::restore_added(&mut emulator);
@@ -489,6 +508,16 @@ impl Emulator {
 
     pub fn av_info(&self) -> &AvInfo {
         &self.av_info
+    }
+
+    /// The core accepts `retro_load_game(NULL)` (`Core::supports_no_game`).
+    pub(crate) fn supports_no_game(&self) -> bool {
+        self.core.supports_no_game()
+    }
+
+    /// The hardware render request the core made, if any.
+    pub(crate) fn hw_render_request(&self) -> Option<&emu_libretro::HwRenderRequest> {
+        self.core.hw_render_request()
     }
 
     /// Input descriptors of the running core (design 8.0 §2.4; `Core::input_descriptors`).
@@ -533,6 +562,7 @@ impl Emulator {
         };
         let events = result?;
         self.frame_count += 1;
+        self.check_video_kind()?;
 
         if events.av_info_changed
             && let Some(av_info) = self.core.av_info()
@@ -547,6 +577,37 @@ impl Emulator {
             options_changed: events.options_changed,
             fastforward_changed,
         })
+    }
+
+    /// Hardware rendering is refused (8.0): the sentinel frame, or `HW_GAP_FRAMES` frames in a row without a
+    /// software buffer after a request, are `HardwareRenderRequired`. No allocation unless it fails.
+    fn check_video_kind(&mut self) -> Result<(), RuntimeError> {
+        let kind = self.core.take_frame_kind();
+        let request = self.core.hw_render_request();
+        match kind {
+            FrameKind::Software => self.software_gap = 0,
+            FrameKind::HwSentinel => {
+                return Err(RuntimeError::HardwareRenderRequired(
+                    request.cloned().unwrap_or_else(|| {
+                        HwRenderRequest::new(
+                            HwContextKind::Unknown(0),
+                            UNKNOWN_HW_VERSION.0,
+                            UNKNOWN_HW_VERSION.1,
+                        )
+                    }),
+                ));
+            }
+            // `Missing` and any future kind: only a core that asked for hardware rendering is judged.
+            _ => {
+                if let Some(request) = request {
+                    self.software_gap = self.software_gap.saturating_add(1);
+                    if self.software_gap >= HW_GAP_FRAMES {
+                        return Err(RuntimeError::HardwareRenderRequired(request.clone()));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Last frame produced by the core (empty before the first video callback).
@@ -693,7 +754,7 @@ impl Emulator {
         let payload = self.serialize_state()?;
         let header = StateHeader {
             core_id: self.core_id.clone(),
-            core_version: self.core.system_info().library_version.clone(),
+            core_version: self.system_info().library_version.clone(),
             game: self.game_name.clone(),
             created_unix: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -723,7 +784,7 @@ impl Emulator {
             }
             .into());
         }
-        let version = &self.core.system_info().library_version;
+        let version = &self.system_info().library_version;
         if header.core_version != *version {
             tracing::warn!(
                 saved = %header.core_version,

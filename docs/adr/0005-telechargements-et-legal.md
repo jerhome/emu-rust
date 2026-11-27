@@ -1,7 +1,8 @@
 # ADR 0005 — Téléchargements, sources et règles légales
 
-Statut : accepté (2026-11-19) ; amendé le 2026-11-19 (version 1.0) et le **2026-11-21** (AROS intégré au core, SoundFont
-libre, règle « Builtin » : voir les amendements en fin de document, qui prévalent sur le tableau ci-dessous)
+Statut : accepté (2026-11-19) ; amendé le 2026-11-19 (version 1.0), le **2026-11-21** (AROS intégré au core, SoundFont
+libre, règle « Builtin ») et le **2026-11-27** (8.0, cores non examinés) : voir les amendements en fin de document, qui
+prévalent sur le tableau ci-dessous
 
 ## Ce que l'application télécharge
 
@@ -75,3 +76,22 @@ conceptions 3.0 à 6.0. `CLAUDE.md` (contraintes non négociables) porte déjà 
 5. **Notices** : `packaging/THIRD-PARTY-DATA.txt` ne décrit que les données **embarquées** dans le binaire et les
    archives (dérivées de `System.dat`). Ce qui est téléchargé à l'exécution ou intégré à un core (DAT, cores,
    SoundFont, ROM intégrées) est cité dans le README de release et l'écran Cores.
+
+## Amendement 2026-11-27 — version 8.0, cores non examinés (ADR 0025 §7, lot PD1)
+
+La 8.0 permet d'associer à un système personnalisé un core du buildbot **absent de `cores.toml`**, donc jamais
+examiné par emu-rust (ADR 0025). Le dernier alinéa du point 3 de l'amendement du 2026-11-21 devient :
+
+> Un core dont les ROM intégrées n'ont ni licence libre, ni permission, ni acceptation explicite de l'utilisateur
+> n'est pas proposé par défaut **sans acceptation explicite de l'utilisateur, demandée une fois par core**.
+
+- **Core non examiné** (absent de `cores.toml`) : avant son installation pour un système personnalisé, ou son
+  association (core déjà installé ou manuel), l'avertissement « Ce core n'a pas été examiné par emu-rust ; il peut
+  contenir des fichiers système d'origine dont le statut n'est pas vérifié. Usage personnel uniquement. » est montré
+  avec **Accepter** ou **Annuler** ; l'acceptation est mémorisée par core (`[custom_systems] content_accepted`,
+  `config.toml`). Sans elle, le core n'est ni installé ni lancé pour ce système (`LaunchCheck::ContentNotAccepted`).
+- **Cores de `cores.toml`** : rien de nouveau ; ils restent sous la règle « Builtin » ci-dessus (tableau du
+  point 3), y compris mgba (« à vérifier ») et picodrive (vérifié par GV1) : aucune acceptation demandée.
+- **Inchangé** : les cores viennent du seul buildbot officiel (avec leurs `.info`, déjà téléchargés pour l'écran
+  Cores), vérifiés avant chargement (ADR 0013) ; aucun hôte réseau nouveau ; aucun BIOS d'un système personnalisé
+  n'est téléchargé (ADR 0025 §6 : l'utilisateur les importe, état « non vérifiable » sans md5 connu).
