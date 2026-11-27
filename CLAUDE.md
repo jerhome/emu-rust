@@ -99,6 +99,8 @@ qu'il n'existe pas déjà (les crons meurent avec la session).
 - **Pas de pull request** : une branche par version ; quand `fmt`/`clippy`/`test` passent et que `qa-systems`/`reviewer`
   ont validé, la session principale fusionne elle-même dans `main` et pousse (la CI tourne sur `main`).
 - **Les tags (releases) sont validés par l'utilisateur** : jamais de tag sans son accord explicite.
+- **Accord permanent (2026-11-27)** : la session principale commite librement les docs de rétro (skill local
+  `retro` : mesures écrites, `docs/skills-mattpocock.md`, `docs/reprise.md`) ; le push suit la règle des lots.
 - **Numéro de version vérifié à CHAQUE fusion d'une version dans `main`** : la version du workspace
   (`Cargo.toml`, affichée dans le pied de page) doit correspondre à la version fusionnée (ex. 7.3 → `7.3.0`) ;
   sinon, faire corriger par `platform-build` avant de pousser.

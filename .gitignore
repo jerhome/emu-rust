@@ -18,4 +18,5 @@ tests/cores/*
 CLAUDE.local.md
 .claude/*
 !.claude/agents/
+!.claude/skills/
 __pycache__/
