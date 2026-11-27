@@ -4,6 +4,17 @@
 Mis à jour à chaque fin de session. **En début de session : `git fetch` puis lire ce fichier** (règle commune
 d'agents-home, ajoutée après la divergence du 2026-11-25).
 
+## État au 2026-11-27 22:34 (PC du bureau)
+
+- **8.0.0-rc.1 taguée** (v8.0.0-rc.1 → 4fd5d4c, fusion de `wip-8.0` dans `main`, pre-release) : les 25 lots faits
+  sauf l'essai réel **PE1** (par l'utilisateur, guide `docs/guide-essai-8.0.md`, fiche en artifact). **Avant l'essai :
+  copier le dossier de données** (schéma v8 : une 7.x refuse la base). Défaut trouvé à l'essai → correctif en 8.0.x
+  (règle « taguer puis corriger »), puis 8.0.0 stable et ✅ dans la feuille de route.
+- Ensuite : recaler `wip-8.1` sur `main` si l'utilisateur le demande, puis l'utilisateur lance `/emu-rust:implement`
+  (8.1 en flux mattpocock : aucun agent ni Claude n'y touche hors des skills).
+- Dettes 8.0.x : voir la section suivante (mineurs PU3 / PU4, écarts PQ2, chemins absolus dans des messages
+  d'erreur, tests non écrits) ; racines de bibliothèque supplémentaires non vérifiées avant « Oublier ses jeux ».
+
 ## État au 2026-11-27 21:20 (PC du bureau)
 
 - **8.0** (`wip-8.0`, worktree `../emu-rust-wt80`) : 21 lots sur 25. Commits du soir, chacun relu par `reviewer`
