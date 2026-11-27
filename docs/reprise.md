@@ -4,6 +4,21 @@
 Mis à jour à chaque fin de session. **En début de session : `git fetch` puis lire ce fichier** (règle commune
 d'agents-home, ajoutée après la divergence du 2026-11-25).
 
+## État au 2026-11-27 17:54 (PC du bureau)
+
+- **8.0** (`wip-8.0`, worktree `../emu-rust-wt80`) : vague 2 livrée et relue — PB0 (marque de scan en base, schéma
+  v8, fusion des jumelles décidée par l'utilisateur), PA1, PQ1, PF1, PR1, PP1, PD1 + PV3 (ADR 0023 amendée), PB1
+  (catalogue dynamique). Commits 567af6a, fa39c77 (poussés), a0bc806 (PB1, local) et **WIP PB2 non relu** (local).
+  Prochain : relecture de PB2 (reviewer opus) + code-review + qa-systems, puis PB3 (bascule, journal v2), PU1…
+- **8.1** (`wip-8.1`, worktree `../emu-rust-wt81`, partie de `main`) : première version en flux mattpocock —
+  grill (`docs/specs/v8.1-7z-grill.md`), spec (`docs/specs/v8.1-7z-spec.md`), ADR 0027 et design
+  (`docs/design/v8.1-archives-7z.md`) recalés ; CD archivés en 8.1.1. À faire : relecture de l'ADR 0027, puis
+  implement **après la livraison de la 8.0** (recaler `wip-8.1` sur `main`).
+- Skills mattpocock locaux dans `.claude/skills/` (commit 7cd489b sur `main`, local), chargés par `cc` sous le nom
+  `emu-rust:<skill>` ; seul code-review est lancé par Claude, les autres par l'utilisateur.
+- Push de `wip-8.0` refusé par le contrôle des permissions (l'utilisateur l'a lancé avec `!`) : règle de permission
+  à écrire en rétro.
+
 ## État au 2026-11-26, 21 h 20 (PC du bureau)
 
 - **8.0 démarrée** : branche `wip-8.0` (poussée, ea52451) dans le worktree `../emu-rust-wt80` : lot **PX0 fait**
