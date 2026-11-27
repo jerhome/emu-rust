@@ -85,7 +85,7 @@ fn system_names(info: Option<&CoreInfo>) -> Vec<String> {
     for db in info.map_or(&[][..], |i| i.databases.as_slice()) {
         let name = emu_library::systems()
             .iter()
-            .find(|s| &s.database == db)
+            .find(|s| s.libretro_name() == Some(db.as_str()))
             .map_or_else(|| db.clone(), |s| s.name.clone());
         if !names.contains(&name) {
             names.push(name);
@@ -101,7 +101,7 @@ fn served_systems(prefs: &CorePreferences) -> BTreeMap<&CoreId, Vec<String>> {
         let mut names = vec![database.to_lowercase()];
         if let Some(s) = emu_library::systems()
             .iter()
-            .find(|s| s.database == database)
+            .find(|s| s.core_key() == database)
         {
             names.push(s.name.to_lowercase());
             names.push(s.id.to_lowercase());

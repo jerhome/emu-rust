@@ -692,7 +692,7 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
 pub(crate) type RunTask = Task<TidyProgress, Outcome>;
 
 pub(crate) fn spawn_run(dirs: DataDirs, job: Job, notify: Notify) -> RunTask {
-    Task::spawn("tidy-run", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("tidy-run", notify, move |cancel, progress| {
         run_job(&dirs, job, cancel, &mut |p: &TidyProgress| {
             progress(p.clone())
         })

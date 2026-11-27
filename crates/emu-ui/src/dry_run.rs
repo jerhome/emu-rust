@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -88,6 +88,8 @@ pub enum DryRunVerdict {
     HardwareRender(HwRenderRequest),
     LoadFailed(String),
     Skipped(SkipReason),
+    /// The wait was abandoned (`run_dry_run_until`): the child was killed.
+    Cancelled,
     /// The child was not started: it could not be spawned, or a path is not valid UTF-8 (no dry run, only the
     /// « non testé » warning).
     SpawnFailed(String),
@@ -384,12 +386,46 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 // ---------------------------------------------------------------------------------------------------------------
 // Parent
 
+/// Kills and reaps the child when dropped: an early return or a panic of the waiting code never leaves it running.
+struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("the child is taken only by kill()")
+    }
+
+    fn kill(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            // The child may already be gone: both calls can fail harmlessly.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 /// Runs the child with `request` and waits at most `timeout`. The request and result files live in
 /// `request.scratch_dir` (made here when missing).
 pub fn run_dry_run(
     command: &DryRunCommand,
     request: &DryRunRequest,
     timeout: Duration,
+) -> DryRunVerdict {
+    run_dry_run_until(command, request, timeout, &|| false)
+}
+
+/// [`run_dry_run`] that stops waiting, kills the child and returns [`DryRunVerdict::Cancelled`] as soon as
+/// `cancelled()` is true (the user gave up the wait, or the job was dropped).
+pub fn run_dry_run_until(
+    command: &DryRunCommand,
+    request: &DryRunRequest,
+    timeout: Duration,
+    cancelled: &dyn Fn() -> bool,
 ) -> DryRunVerdict {
     let text = match toml::to_string(&RequestFile::from_request(request)) {
         Ok(text) => text,
@@ -417,32 +453,42 @@ pub fn run_dry_run(
         .stderr(Stdio::null())
         .spawn()
     {
-        Ok(child) => child,
+        Ok(child) => ChildGuard(Some(child)),
         Err(e) => return DryRunVerdict::SpawnFailed(e.to_string()),
     };
     let started = Instant::now();
     let status = loop {
-        match child.try_wait() {
+        if cancelled() {
+            child.kill();
+            return DryRunVerdict::Cancelled;
+        }
+        match child.child().try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.kill();
                 return DryRunVerdict::TimedOut;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.kill();
                 return DryRunVerdict::SpawnFailed(e.to_string());
             }
         }
     };
+    let result = || read_bounded(&result_file).and_then(|t| toml::from_str::<ResultFile>(&t).ok());
     if !status.success() {
+        // The watchdog can fire after the result was written, just before the child returns: the result wins.
+        if status.code() == Some(EXIT_WATCHDOG) {
+            return match result() {
+                Some(file) => verdict_of(file.into_report()),
+                None => DryRunVerdict::TimedOut,
+            };
+        }
         return DryRunVerdict::Crashed {
             code: status.code(),
         };
     }
-    match read_bounded(&result_file).and_then(|t| toml::from_str::<ResultFile>(&t).ok()) {
+    match result() {
         Some(file) => verdict_of(file.into_report()),
         None => DryRunVerdict::Crashed { code: Some(0) },
     }

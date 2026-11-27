@@ -680,7 +680,7 @@ pub(crate) fn cover_query(game: &Game) -> Option<CoverQuery> {
         size: game.size,
         crc32: game.crc32,
         sha1: game.sha1,
-        database: info.database.clone(),
+        database: info.libretro_name().unwrap_or_default().to_owned(),
         screenscraper_system: info.screenscraper,
         igdb_platform: info.igdb,
     })

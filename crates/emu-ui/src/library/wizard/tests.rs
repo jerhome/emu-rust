@@ -121,7 +121,7 @@ fn help_anchors_exist_in_the_manual() {
 }
 
 fn first_core(prefs: &CorePreferences, system: &str) -> CoreId {
-    let db = &emu_library::system(system).unwrap().database;
+    let db = emu_library::system(system).unwrap().core_key();
     prefs.for_system(db)[0].clone()
 }
 

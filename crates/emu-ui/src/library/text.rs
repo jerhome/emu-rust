@@ -820,6 +820,86 @@ pub fn cd32x_unmarked(game: &str, same_name: usize) -> String {
     msg
 }
 
+// ---- Systèmes non testés : lancement (ADR 0025 §5, §6, §7) ------------------------------------------------
+
+pub const CUSTOM_ACCEPT_TITLE: &str = "Contenu non vérifié";
+pub const CUSTOM_ACCEPT_YES: &str = "Accepter et continuer";
+pub const CUSTOM_UNTESTED_TITLE: &str = "Système non testé";
+pub const CUSTOM_TRY_AND_LAUNCH: &str = "Essayer puis lancer";
+pub const CUSTOM_LAUNCH: &str = "Lancer";
+pub const CUSTOM_WORKS_FOR_ME: &str = "Ça marche chez moi";
+pub const CUSTOM_TRY_TITLE: &str = "Essai du jeu";
+pub const CUSTOM_TRY_NOTE: &str =
+    "L'essai vérifie le démarrage seulement. Vos fichiers ne sont pas touchés.";
+pub const CUSTOM_TRY_CANCELLED: &str = "Essai annulé : le jeu n'est pas lancé.";
+pub const CUSTOM_FAILED_TITLE: &str = "L'essai du jeu a échoué";
+pub const CUSTOM_CHANGE_CORE: &str = "Changer de core";
+pub const CUSTOM_CHANGE_CORE_HINT: &str =
+    "Choisissez un autre core pour ce système dans « Core utilisé », puis relancez le jeu.";
+pub const CRASH_NOTICE_TITLE: &str = "Arrêt inattendu";
+pub const CUSTOM_BUSY: &str = "Un essai de jeu est déjà en cours.";
+
+pub fn custom_accept_body(core: &str) -> String {
+    format!(
+        "Le core « {} » n'a pas été examiné : il peut contenir des fichiers dont emu-rust ne connaît pas l'origine. \
+         L'utiliser quand même ?",
+        clean(core)
+    )
+}
+
+pub fn custom_untested_body(game: &str, system: &str, core: &str) -> String {
+    format!(
+        "« {} » est un jeu d'un système non testé ({}, core {}). Rien ne garantit qu'il démarre ni que ses \
+         sauvegardes fonctionnent.",
+        clean(game),
+        clean(system),
+        clean(core)
+    )
+}
+
+pub fn custom_try_body(game: &str) -> String {
+    format!(
+        "Essai de « {} » en cours (30 secondes au plus)…",
+        clean(game)
+    )
+}
+
+/// Why no dry run was made: the launch goes on after the warning only.
+pub fn custom_not_tried(why: &str) -> String {
+    format!("Pas d'essai : {why}.")
+}
+
+pub const NOT_TRIED_ARCHIVE: &str = "le jeu est dans une archive";
+pub const NOT_TRIED_SEVERAL_FILES: &str = "le jeu tient en plusieurs fichiers";
+pub const NOT_TRIED_TOO_BIG: &str = "le jeu est trop gros pour être copié";
+pub const NOT_TRIED_FAILED: &str = "l'essai n'a pas pu être préparé";
+
+pub fn custom_failed_crashed(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("Le core s'est arrêté pendant l'essai (code {code})."),
+        None => "Le core s'est arrêté brutalement pendant l'essai.".to_owned(),
+    }
+}
+
+pub const CUSTOM_FAILED_TIMEOUT: &str = "Le core n'a pas fini l'essai en 30 secondes.";
+
+pub fn custom_failed_load(message: &str) -> String {
+    format!("Le core n'a pas pu charger le jeu : {}", clean(message))
+}
+
+pub fn crash_notice(game: &str, core: &str, untested: bool) -> String {
+    let base = format!(
+        "emu-rust s'est arrêté pendant « {} » avec {} : plantage, arrêt forcé ou coupure.",
+        clean(game),
+        clean(core)
+    );
+    if untested {
+        format!("{base} Ce core n'est pas testé pour ce système : essayez-en un autre.")
+    } else {
+        base
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

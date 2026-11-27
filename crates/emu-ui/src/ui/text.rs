@@ -293,6 +293,45 @@ pub fn sanitize_core_line(s: &str) -> String {
         .to_owned()
 }
 
+/// A message that may carry text from a core or a child process, shown to the user: one clean line (control and
+/// format characters become spaces, see [`sanitize_core_line`]) where the data folder `root` is left out of every
+/// path, as the tidy report does (a verbatim `\\?\` prefix and the separator kind do not matter).
+pub(crate) fn display_message(message: &str, root: &std::path::Path) -> String {
+    strip_root_text(message, root, cfg!(windows))
+}
+
+/// A path text with `/` separators and neither the verbatim `\\?\` prefix nor its `UNC` form (`//?/UNC/srv` is
+/// `//srv`).
+fn plain_path_text(s: &str) -> String {
+    s.replace('\\', "/")
+        .replace("//?/UNC/", "//")
+        .replace("//?/", "")
+}
+
+/// [`display_message`] with the case rule given: Windows paths are case-insensitive (drive letter).
+fn strip_root_text(message: &str, root: &std::path::Path, ignore_case: bool) -> String {
+    let line = plain_path_text(&sanitize_core_line(message));
+    let root = plain_path_text(&root.to_string_lossy());
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        return line;
+    }
+    let prefix = format!("{root}/");
+    if ignore_case {
+        // ASCII lower case keeps every byte position: the cut is made on the original text.
+        let (lower, needle) = (line.to_ascii_lowercase(), prefix.to_ascii_lowercase());
+        let mut out = String::new();
+        let mut at = 0;
+        while let Some(i) = lower[at..].find(&needle) {
+            out.push_str(&line[at..at + i]);
+            at += i + needle.len();
+        }
+        out.push_str(&line[at..]);
+        return out;
+    }
+    line.replace(&prefix, "")
+}
+
 // ---- PC-DOS (design v4.0) ---------------------------------------------------------------------------------
 
 pub const DOS_FIRST_LAUNCH: &str = "Menu DOS : Haut / Bas puis Entrée pour lancer un programme · Droite : le lancer automatiquement la prochaine fois";
@@ -983,6 +1022,53 @@ pub fn log_folder_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_displayed_message_is_one_clean_line_without_the_data_folder() {
+        let root = std::path::Path::new("/data/emu");
+        let shown = display_message("cannot open /data/emu/cores/x.so:\nbad\u{202E}elf", root);
+        assert_eq!(shown, "cannot open cores/x.so: bad elf");
+    }
+
+    #[test]
+    fn the_data_folder_is_left_out_whatever_the_separator_or_the_verbatim_prefix() {
+        let root = std::path::Path::new(r"\\?\C:\Users\me\emu");
+        let shown = display_message(r"load C:\Users\me\emu\cores\x.dll failed", root);
+        assert_eq!(shown, "load cores/x.dll failed");
+    }
+
+    #[test]
+    fn a_case_insensitive_cut_never_panics_on_characters_that_change_length() {
+        // `to_lowercase` turns U+0130 into two characters and U+212A (Kelvin) into one shorter one.
+        let root = std::path::Path::new(r"C:\emu");
+        let shown = strip_root_text("\u{130}\u{130}\u{212A} c:/EMU/cores/x", root, true);
+        assert_eq!(shown, "\u{130}\u{130}\u{212A} cores/x");
+    }
+
+    #[test]
+    fn a_unc_root_is_left_out_verbatim_or_not() {
+        for (root, line) in [
+            (
+                r"\\?\UNC\srv\share\emu",
+                r"\\?\UNC\srv\share\emu\cores\x.dll",
+            ),
+            (r"\\srv\share\emu", r"\\srv\share\emu\cores\x.dll"),
+            (r"\\?\UNC\srv\share\emu", r"\\srv\share\emu\cores\x.dll"),
+            (r"\\srv\share\emu", r"\\?\UNC\srv\share\emu\cores\x.dll"),
+        ] {
+            let root = std::path::Path::new(root);
+            for ignore_case in [false, true] {
+                let shown = strip_root_text(&format!("load {line} failed"), root, ignore_case);
+                assert_eq!(shown, "load cores/x.dll failed", "{root:?} {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn another_folder_is_kept_as_it_is() {
+        let root = std::path::Path::new("/data/emu");
+        assert_eq!(display_message("see /tmp/x", root), "see /tmp/x");
+    }
 
     /// The default egui fonts have no arrows nor geometric symbols: they would show as empty squares. Every text
     /// module, the manual and the wizard are checked (comments skipped).

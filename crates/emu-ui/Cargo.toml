@@ -29,6 +29,8 @@ zip = { workspace = true }
 libc = "0.2"
 winit = { workspace = true, features = ["serde"] }
 sys-locale = "0.3"
+# SHA-256 of a core file, the key of the dry-run memory (`dry_run_log`); already built for emu-assets and emu-runtime.
+sha2 = "0.10"
 # Native file dialog (MIT): on Linux the xdg-desktop-portal through libdbus loaded at run time (zenity fallback),
 # no OpenSSL, nothing linked at build time. Docker uses the built-in egui browser instead.
 rfd = "0.18"

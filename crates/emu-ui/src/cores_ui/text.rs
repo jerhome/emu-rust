@@ -349,6 +349,15 @@ pub fn no_core_for_system() -> &'static str {
     "Aucun core connu pour ce système."
 }
 
+/// A custom system whose core wants hardware rendering (planned for 9.0).
+pub fn hardware_render(core: &str) -> String {
+    format!(
+        "Le core « {} » demande un rendu matériel (OpenGL ou Vulkan), prévu en 9.0. Il ne peut pas être lancé \
+         pour l'instant.",
+        crate::ui::text::sanitize_core_line(core)
+    )
+}
+
 // ---- free BIOS (ADR 0015 §2) -------------------------------------------------------------------------------
 
 pub const BIOS_SECTION: &str = "BIOS et SoundFont libres";

@@ -2,4 +2,4 @@
 
 mod addability;
 
-pub use self::addability::{AddWarning, Addability, addability};
+pub use self::addability::{AddWarning, Addability, addability, addability_with};

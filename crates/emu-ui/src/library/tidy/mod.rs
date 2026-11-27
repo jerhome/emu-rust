@@ -311,7 +311,7 @@ impl Preview {
         let job = choice.clone();
         // Leaving the preview drops the task (cancel flag) and the queue with it: no further choice runs. A
         // choice already in `choose_system*` runs to its end: emu-library offers no cancellation there.
-        let task = Task::spawn("tidy-choice", notify, move |cancel, _progress| {
+        let task = Task::spawn_pinning_catalog("tidy-choice", notify, move |cancel, _progress| {
             choice_job(cancel, plan, &job)
         });
         self.choosing = Some((choice, task));
@@ -594,7 +594,7 @@ pub(super) fn spawn_plan(
     prefs: CorePreferences,
     notify: Notify,
 ) -> PlanTask {
-    Task::spawn("tidy-plan", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("tidy-plan", notify, move |cancel, progress| {
         if !roms.is_dir() {
             return Err(text::no_roms_folder(&roms));
         }

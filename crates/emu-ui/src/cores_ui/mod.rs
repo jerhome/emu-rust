@@ -29,7 +29,10 @@ pub(crate) use self::capture::run_capture;
 pub(crate) use self::import::ImportUi;
 #[cfg(test)]
 use self::launch::prepare_launch;
-pub(crate) use self::launch::{GameNeeds, LaunchCheck, choose_game_core, plan_launch, release};
+pub(crate) use self::launch::{
+    CustomLaunchState, CustomStep, GameNeeds, LaunchCheck, choose_game_core, custom_launch_steps,
+    hardware_check, plan_launch, release, without_ignored,
+};
 use self::rows::{Checks, CoreRow, CoreState, RowFilter, Scope, recommended_missing, rows};
 use crate::Config;
 use crate::config::DataDirs;
@@ -73,12 +76,28 @@ pub(crate) fn preferences(config: &CoresConfig) -> CorePreferences {
     for (system, core) in &config.preferred {
         match emu_library::system(system) {
             Some(info) => {
-                overrides.insert(info.database.clone(), core.clone());
+                overrides.insert(info.core_key().to_owned(), core.clone());
             }
             None => tracing::warn!("[cores.preferred] {system} : système inconnu, ignoré"),
         }
     }
-    CorePreferences::builtin().with_overrides(&overrides)
+    let catalog = emu_library::catalog();
+    let customs: Vec<(String, Vec<CoreId>)> = catalog
+        .customs()
+        .filter_map(|custom| {
+            let system = catalog.system(&custom.id)?;
+            let cores = custom.cores.iter().filter_map(|c| CoreId::new(c)).collect();
+            Some((system.core_key().to_owned(), cores))
+        })
+        .collect();
+    let masked: Vec<String> = catalog
+        .masked_official()
+        .iter()
+        .map(|s| s.core_key().to_owned())
+        .collect();
+    CorePreferences::builtin()
+        .with_overrides(&overrides)
+        .with_custom_systems(&customs, &masked)
 }
 
 /// VICE option switching the JiffyDOS ROMs on.
@@ -905,7 +924,7 @@ impl CoresUi {
                 for (system, cores) in systems {
                     let name = emu_library::systems()
                         .iter()
-                        .find(|s| s.database == system)
+                        .find(|s| s.core_key() == system)
                         .map_or_else(|| system.clone(), |s| s.name.clone());
                     let current = self.prefs.for_system(&system).first().cloned();
                     ui.horizontal_wrapped(|ui| {

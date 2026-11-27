@@ -94,10 +94,14 @@ impl PadStyle {
         }
     }
 
-    /// Style of `system` played with `core_id` (design 8.0 §2.5). A custom system takes the core's main style.
-    #[allow(unused_variables)]
+    /// Style of `system` played with `core_id` (design 8.0 §2.5, ADR 0025 §11). A custom system gets the generic
+    /// pad whatever the core; an official one the main style of the core (the content may refine it, see `detect`).
     pub fn for_system(system: &emu_library::SystemInfo, core_id: &str) -> Self {
-        todo!("lot PU2")
+        if system.is_custom() {
+            Self::Generic
+        } else {
+            Self::from_core_id(core_id)
+        }
     }
 
     fn slug(self) -> &'static str {
@@ -313,10 +317,13 @@ fn zip_entry_names(path: &Path) -> Vec<String> {
 
 /// Key of the keyboard profile and of the learned gamepad bindings (`[input.gamepad.bindings.<key>]`, 7.2) for
 /// `system` played with `core_id` (design 8.0 §2.5, A5): a custom system gives `<core>@<id>`; an official one
-/// gives exactly `PadStyle::profile_key`. Replaces the three calls of `profile_key` (lot PU2).
-#[allow(unused_variables)]
+/// gives exactly `PadStyle::profile_key`.
 pub fn profile_key_for(system: &emu_library::SystemInfo, style: PadStyle, core_id: &str) -> String {
-    todo!("lot PU2")
+    if system.is_custom() {
+        format!("{core_id}@{}", system.id)
+    } else {
+        style.profile_key(core_id)
+    }
 }
 
 /// Profiles of computer cores (Atari ST, Amiga, PC, CPC, C64): the keyboard belongs to the emulated machine, so their joystick
@@ -734,6 +741,72 @@ mod tests {
             let style = PadStyle::detect("genesis_plus_gx", &path);
             assert_eq!(style, PadStyle::MegaDrive, "{name}");
             assert_eq!(style.profile_key("genesis_plus_gx"), "genesis_plus_gx");
+        }
+    }
+
+    fn system_of(id: &str, origin: emu_library::SystemOrigin) -> emu_library::SystemInfo {
+        emu_library::SystemInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            extensions: vec!["x".to_owned()],
+            header: None,
+            database: String::new(),
+            screenscraper: None,
+            igdb: None,
+            kind: emu_library::SystemKind::Console,
+            dats: Vec::new(),
+            folder_extensions: Vec::new(),
+            folder_games: false,
+            default_input: emu_library::InputDefault::Keyboard,
+            disc: false,
+            group_discs: true,
+            origin,
+        }
+    }
+
+    #[test]
+    fn a_custom_system_uses_the_generic_pad_whatever_the_core() {
+        let custom = system_of("acme", emu_library::SystemOrigin::Custom);
+        for core in ["genesis_plus_gx", "snes9x", "stella", "mgba"] {
+            assert_eq!(PadStyle::for_system(&custom, core), PadStyle::Generic);
+        }
+    }
+
+    #[test]
+    fn an_official_system_keeps_the_style_of_its_core() {
+        let official = system_of("megadrive", emu_library::SystemOrigin::Official);
+        assert_eq!(
+            PadStyle::for_system(&official, "genesis_plus_gx"),
+            PadStyle::MegaDrive
+        );
+        assert_eq!(
+            PadStyle::for_system(&official, "unknown"),
+            PadStyle::Generic
+        );
+    }
+
+    #[test]
+    fn the_profile_of_a_custom_system_is_core_at_id() {
+        let custom = system_of("atari2600", emu_library::SystemOrigin::Custom);
+        assert_eq!(
+            profile_key_for(&custom, PadStyle::Generic, "stella"),
+            "stella@atari2600"
+        );
+    }
+
+    #[test]
+    fn the_profile_of_an_official_system_is_unchanged() {
+        let official = system_of("mastersystem", emu_library::SystemOrigin::Official);
+        for (style, core) in [
+            (PadStyle::MasterSystem, "genesis_plus_gx"),
+            (PadStyle::MegaDrive, "genesis_plus_gx"),
+            (PadStyle::Nes, "unknown"),
+            (PadStyle::GameBoy, "gambatte"),
+        ] {
+            assert_eq!(
+                profile_key_for(&official, style, core),
+                style.profile_key(core)
+            );
         }
     }
 

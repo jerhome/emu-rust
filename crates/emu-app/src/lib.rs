@@ -284,12 +284,15 @@ fn child_exit_code(code: i32) -> ExitCode {
 }
 
 /// First steps of every start-up with the data directories known (ADR 0025 §1): the catalog of systems is
-/// published, then the interrupted ROM tidying is finished (`recover`), because both read it. A capture
-/// (`--dump-window`) never moves the user's files, so it does not recover.
+/// published, then the interrupted ROM tidying is finished (`recover`), because both read it, then the witnesses
+/// of a launch that stopped are read (ADR 0025 §5). A capture (`--dump-window`) never moves the user's files nor
+/// consumes a witness, so it does not recover.
 fn start_up(dirs: &emu_ui::DataDirs, recover: bool) {
     emu_ui::publish_catalog(dirs);
     if recover {
         emu_ui::finish_pending_identities(dirs);
+        // Before any launch of this process: a marker of the same pid belongs to a dead instance (containers).
+        emu_ui::check_previous_launches(dirs);
     }
 }
 

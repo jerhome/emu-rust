@@ -3,7 +3,7 @@
 Statut : **accepté, amendé pour la fusion le 2026-11-25**, puis **le 2026-11-26** (numérotation 8.x, marque de scan en
 base, journal version 2 : « Amendement du 2026-11-26 » ci-dessous) et **le 2026-11-27** (textes de PD1, fusion des
 données au scan, essai à blanc : « Amendement du 2026-11-27 »), puis **le 2026-11-27, lot PC1** (table des ids :
-« Amendement du 2026-11-27 (PC1) ») ; les amendements **priment**. Historique :
+« Amendement du 2026-11-27 (PC1) ») et **lot PU2** (lancement : « Amendement du 2026-11-27 (PU2) ») ; les amendements **priment**. Historique :
 accepté le 2026-11-25 par l'utilisateur, sur la ligne PC (`wip-7.1`), après la revue indépendante et quatre relectures courtes ;
 réponses aux questions 8.0 et R1-R3 dans `docs/questions-ouvertes.md`).
 Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 et feuille de route (ligne 8.0) ; étude
@@ -159,6 +159,24 @@ Relecture de la table du §3 par l'architecte seul (réponse Q12). Prime sur le 
   renommage ; la règle « ajout seulement » s'applique à partir du tag de la 8.0.
 - Le test « chacun des noms passe la liste blanche ou a un `dat_file_stem` valide » porte sur les 184 entrées ; seul
   `BK-0010/BK-0011` est une exception (`/`).
+
+## Amendement du 2026-11-27 (PU2) — lancement d'un jeu personnalisé
+
+Contrôle du lot PU2 contre le contrat. Prime sur le §2, le §5, le §9 et l'en-tête. Détail : design 8.0 §0.12.
+
+- **`works_for_me`** : paires `<core>@<id>` (même forme que la clé de profil du §11), et non `<id>@<core>` (§2) ;
+  rien n'est publié avant le tag de la 8.0.
+- **Étapes** (§5, §7, §9) : acceptation du contenu (une fois par core, aussi au lancement si elle manque), puis
+  avertissement « non testé » et essai à blanc, puis la partie. « Ça marche chez moi » et un essai déjà réussi
+  sautent avertissement et essai, jamais l'acceptation.
+- **Pas d'essai, avertissement seul** (complète le §5 : plus de 256 Mio, chemin non UTF-8) : jeu en plusieurs
+  fichiers, dossier, archive, échec de préparation de l'essai. L'avertissement revient alors à chaque lancement
+  jusqu'à « Ça marche chez moi ».
+- **« Changer de core »** (§5) ouvre l'écran Cores (« Core utilisé ») ; aucun core n'est choisi à sa place.
+- **SRAM** (§5) : le vidage existant de la 7.x (toutes les 10 s, écrit seulement si la mémoire a changé, atomique)
+  vaut pour tous les systèmes et remplace les « 60 s ».
+- **Dépendance** (en-tête) : `emu-ui` prend `sha2` (SHA-256 du core pour `dry-runs.toml`), crate déjà utilisée par
+  `emu-assets` et `emu-runtime` ; aucune crate nouvelle dans le workspace, graphe inchangé.
 
 ## Amendements après revue (2026-11-25)
 

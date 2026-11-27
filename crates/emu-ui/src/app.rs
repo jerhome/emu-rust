@@ -39,7 +39,7 @@ use crate::game_identity::{ResolvedGame, resolve_game_with, state_load_needs_con
 use crate::game_options::{GameOptions, LoadedGameOptions, effective_core_options_with};
 use crate::gamepad::{GamepadNotice, GamepadSettings, NavKey, PadBackend, PadMap, UnrecognizedPad};
 use crate::hotkeys::{HotkeyAction, SpeedState, core_fast_forward_ratio, step_slot};
-use crate::keyboard::{KeyMap, PadStyle, is_computer_profile};
+use crate::keyboard::{KeyMap, PadStyle, is_computer_profile, profile_key_for};
 use crate::launch_firmware::{GameFacts, firmware_setup_for};
 use crate::pad_mode::{PAD_PORTS, PadMode};
 use crate::shutdown;
@@ -275,6 +275,9 @@ pub(crate) struct App {
     eightbit: EightBitView,
     /// The core's fast-forward request forbids the user's toggle (`inhibit_toggle`).
     fast_load_inhibit: bool,
+    /// Launch witness, removed when the game ends cleanly. Last field on purpose: it is dropped after the
+    /// emulator, whose unload (saves, `retro_unload_game`) is part of the clean end.
+    _launch_marker: Option<crate::crash_guard::LaunchMarker>,
 }
 
 struct FpsMeter {
@@ -323,6 +326,35 @@ fn initial_scale(base_height: u32, aspect: f32, wanted: u32) -> u32 {
         scale += 1;
     }
     scale
+}
+
+/// What the launch witness records: core, system, the game's file name (never a full path), and whether the pair
+/// is an untried one (a custom system whose « Ça marche chez moi » was not said).
+fn launch_what(
+    options: &LaunchOptions,
+    core_id: &str,
+    system: Option<&emu_library::SystemInfo>,
+) -> crate::crash_guard::LaunchWhat {
+    let untested = system.is_some_and(|s| {
+        s.is_custom()
+            && !options
+                .config
+                .custom_systems
+                .works_for_me
+                .contains(&format!("{core_id}@{}", s.id))
+    });
+    let game = options
+        .content
+        .first()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    crate::crash_guard::LaunchWhat {
+        core: core_id.to_owned(),
+        system: system.map_or_else(String::new, |s| s.id.clone()),
+        game,
+        untested,
+    }
 }
 
 pub(crate) fn run(options: LaunchOptions) -> Result<(), UiError> {
@@ -527,6 +559,18 @@ impl App {
                 "--pad-device sans effet : {core_id} ne déclare pas de types de manette"
             );
         }
+        let table_system = typed_id.as_ref().and_then(|id| {
+            crate::launch_firmware::firmware_system_for(&prefs, id, game_database.as_deref())
+        });
+        let system_info = table_system
+            .as_deref()
+            .and_then(|key| emu_library::systems().iter().find(|s| s.core_key() == key));
+        // The witness of the launch (ADR 0025 §5) exists from here to the clean end of the game: a crash in
+        // `retro_load_game` or later leaves it behind, and the next start reports it. Never blocks a launch.
+        let launch_marker = crate::crash_guard::begin_launch(
+            &options.dirs.cache_dir(),
+            &launch_what(&options, &core_id, system_info),
+        );
         let mut emulator = Emulator::load_content_as(
             &options.core,
             spec,
@@ -573,9 +617,6 @@ impl App {
                 mode
             }
         });
-        let table_system = typed_id.as_ref().and_then(|id| {
-            crate::launch_firmware::firmware_system_for(&prefs, id, game_database.as_deref())
-        });
         let featured = typed_id.as_ref().and_then(|id| {
             let system = table_system.clone()?;
             let keys = prefs.featured_options(id, &system);
@@ -615,8 +656,15 @@ impl App {
         } else {
             AudioOutput::null()
         };
-        let style = PadStyle::detect(&core_id, options.content.first().unwrap_or(Path::new("")));
-        let profile = style.profile_key(&core_id);
+        // A custom system plays with the generic pad whatever the core (ADR 0025 §11).
+        let style = match system_info {
+            Some(system) if system.is_custom() => PadStyle::for_system(system, &core_id),
+            _ => PadStyle::detect(&core_id, options.content.first().unwrap_or(Path::new(""))),
+        };
+        let profile = system_info.map_or_else(
+            || style.profile_key(&core_id),
+            |system| profile_key_for(system, style, &core_id),
+        );
         let keymap = options.config.keymap_for(&profile, style);
         tracing::info!(
             "{} touches liées (profil {profile}, manette {style:?}) : {}",
@@ -630,11 +678,6 @@ impl App {
         }
         let now = Instant::now();
         let mut overlay = Overlay::default();
-        let system_info = table_system.as_deref().and_then(|database| {
-            emu_library::systems()
-                .iter()
-                .find(|s| s.database == database)
-        });
         let system_input = system_info.map_or(InputDefault::Keyboard, |s| s.default_input);
         let disc = system_info.is_some_and(|s| s.disc);
         let computer = (options.computer || is_computer_profile(&core_id)).then(|| {
@@ -843,6 +886,7 @@ impl App {
             tape_actions,
             eightbit,
             fast_load_inhibit: false,
+            _launch_marker: launch_marker,
         })
     }
 

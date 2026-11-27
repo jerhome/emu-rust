@@ -15,6 +15,7 @@ mod crash_guard;
 mod custom;
 mod dos_launch;
 mod dry_run;
+mod dry_run_log;
 mod egui_layer;
 mod file_picker;
 mod firmware_hints;
@@ -59,7 +60,8 @@ pub use crate::content::{
     GameContent, LaunchRefusal, content_spec, media_set_name, plan_disc_launch,
 };
 pub use crate::cores_ui::{open_core_manager, open_free_bios_manager};
-pub use crate::custom::{AddWarning, Addability, addability};
+pub use crate::crash_guard::check_previous_launches;
+pub use crate::custom::{AddWarning, Addability, addability, addability_with};
 pub use crate::dos_launch::{
     clear_dos_cache, dos_cli_content, invalidate_core_caches, prepare_dos_snapshot,
     system_cache_names,
@@ -67,6 +69,7 @@ pub use crate::dos_launch::{
 pub use crate::dry_run::{
     DRY_RUN_FRAMES, DRY_RUN_TIMEOUT, DryRunCommand, DryRunDir, DryRunVerdict, GameCopyError,
     MAX_GAME_COPY_BYTES, SkipReason, clean_stale_dry_runs, dry_run_child_main, run_dry_run,
+    run_dry_run_until,
 };
 pub use crate::game_identity::{ResolvedGame, resolve_game, state_load_needs_confirmation};
 #[cfg(feature = "gamepad")]
@@ -105,6 +108,37 @@ pub fn publish_catalog(dirs: &DataDirs) -> library_db::CatalogLoad {
     }
     library_db::install_catalog(load.catalog.clone());
     load
+}
+
+/// Number of live tasks (scan, tidying) that read the catalog of systems.
+static CATALOG_PINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Held by a scan or a tidying task while it runs: the catalog it started with must not change under it
+/// (rows classified under two catalogs, files moved by a plan made with another one; design 8.0 §7).
+pub(crate) struct CatalogPin(());
+
+impl CatalogPin {
+    pub(crate) fn new() -> Self {
+        CATALOG_PINS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for CatalogPin {
+    fn drop(&mut self) {
+        CATALOG_PINS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// [`publish_catalog`] for a running application (after a system was added, removed or restored): `None`, and
+/// nothing changed, while a scan or a tidying runs; the caller asks again once it is over. Tasks are started by
+/// the interface thread, which is also the one that publishes: nothing starts between the check and the
+/// publication.
+pub fn try_publish_catalog(dirs: &DataDirs) -> Option<library_db::CatalogLoad> {
+    if CATALOG_PINS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return None;
+    }
+    Some(publish_catalog(dirs))
 }
 
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
@@ -190,7 +224,7 @@ pub struct LaunchOptions {
     /// `[computer] auto_fast_load` says.
     pub auto_fast_load: bool,
     /// `--pad-device` (`digital` | `dualshock`): pad mode of this run, over the game's and the config's; `None`:
-    /// the usual rule (design v7.0 §2.4). Read by PU2.
+    /// the usual rule (design v7.0 §2.4).
     pub pad_device: Option<String>,
     /// libretro database name of the game's system (library entry); `None` (CLI): found from the content's
     /// extension and header. Chooses the firmware table, the « Réglages » section and the « CD » menu.
@@ -287,4 +321,19 @@ pub fn run_library(options: LibraryOptions) -> Result<(), UiError> {
 /// requests shutdown, or `exit_after_frames` is reached. Must be called on the main thread.
 pub fn run(options: LaunchOptions) -> Result<(), UiError> {
     app::run(options)
+}
+
+#[cfg(test)]
+mod catalog_pin_tests {
+    use super::*;
+
+    #[test]
+    fn the_catalog_is_not_published_while_a_scan_or_tidying_task_pins_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::under(dir.path());
+        let pin = CatalogPin::new();
+        // Other tests may pin too: only the held pin matters here.
+        assert!(try_publish_catalog(&dirs).is_none());
+        drop(pin);
+    }
 }

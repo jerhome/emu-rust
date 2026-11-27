@@ -4,6 +4,7 @@
 
 mod cd32x;
 mod covers;
+mod custom_launch;
 mod dos;
 mod firmware_banner;
 pub(crate) mod firmware_gate;
@@ -153,6 +154,8 @@ enum Dialog {
     },
     /// Files of a shared extension that the scan could not attribute (design v3.0 §3.5.2).
     Unclassified(Vec<PathBuf>),
+    /// Launch of a custom system (« non testé », dry run) or the notice of an interrupted launch.
+    Custom(custom_launch::CustomDialog),
 }
 
 /// What a launch was asked with: enough to start it again after a BIOS import.
@@ -297,6 +300,8 @@ pub(crate) struct LibraryUi {
     /// First-run wizard, drawn instead of the home grid while `Some`.
     wizard: Option<wizard::Wizard>,
     tidy: tidy::TidyUi,
+    /// Dry run and steps of the launches of custom systems.
+    custom: custom_launch::State,
 }
 
 fn now_unix() -> i64 {
@@ -398,8 +403,10 @@ impl LibraryUi {
             advice: None,
             wizard: None,
             tidy: tidy::TidyUi::default(),
+            custom: custom_launch::State::default(),
         };
         ui.reload_games();
+        ui.show_crash_notices();
         ui
     }
 
@@ -810,7 +817,7 @@ impl LibraryUi {
             return;
         };
         let prefs = cores_ui::preferences(&self.config.cores);
-        let database = emu_library::system(&args.system_id).map(|s| s.database.clone());
+        let database = emu_library::system(&args.system_id).map(|s| s.core_key().to_owned());
         let needs_32x = args
             .disc
             .as_ref()
@@ -827,6 +834,14 @@ impl LibraryUi {
             args.ext.as_deref(),
             needs,
         );
+        // A custom system: the BIOS files the user ignored do not stop the launch.
+        let check = match emu_library::system(&args.system_id)
+            .filter(|s| s.is_custom())
+            .and_then(|s| emu_library::catalog().custom(&s.id))
+        {
+            Some(custom) => cores_ui::without_ignored(check, &custom.ignored_firmware),
+            None => check,
+        };
         // Disc systems (design v6.0 §2.1): the discs of the game for this core, a zip refused before anything.
         let core = match &check {
             LaunchCheck::Ready { id, .. }
@@ -940,7 +955,7 @@ impl LibraryUi {
             .get(core.as_str())
             .cloned()
             .unwrap_or_default();
-        let database = emu_library::system(&args.system_id).map(|s| s.database.as_str());
+        let database = emu_library::system(&args.system_id).map(|s| s.core_key());
         let lf = check_launch_firmware(
             &self.dirs.system,
             prefs,
@@ -1141,7 +1156,7 @@ impl LibraryUi {
     fn prefer_core(&mut self, system_db: &str, core: CoreId) {
         let Some(info) = emu_library::systems()
             .iter()
-            .find(|s| s.database == system_db)
+            .find(|s| s.core_key() == system_db)
         else {
             return;
         };
@@ -1330,12 +1345,15 @@ impl LibraryUi {
             }
         } else if self.snapshot_busy() {
             self.snapshot_dialog(&ctx);
+        } else if self.custom_trying() {
+            self.try_dialog(&ctx);
         } else if self.programs_open() {
             self.programs_dialog(&ctx);
         } else {
             self.dialog_ui(&ctx);
         }
         self.gate_dos_launches(&ctx);
+        self.gate_custom_launches();
         std::mem::take(&mut self.events)
     }
 
@@ -1493,6 +1511,9 @@ impl LibraryUi {
         if matches!(self.dialog, Some(Dialog::Firmware3 { .. })) {
             return self.firmware3_dialog(ctx);
         }
+        if matches!(self.dialog, Some(Dialog::Custom(_))) {
+            return self.custom_dialog(ctx);
+        }
         if matches!(
             self.dialog,
             Some(Dialog::ChooseFolder(_) | Dialog::FolderPath { .. } | Dialog::Unclassified(_))
@@ -1547,6 +1568,7 @@ impl LibraryUi {
                 Dialog::Notice(m) => (text::CD32X_TITLE, m.clone()),
                 Dialog::FreeBios { .. }
                 | Dialog::Firmware3 { .. }
+                | Dialog::Custom(_)
                 | Dialog::ChooseFolder(_)
                 | Dialog::FolderPath { .. }
                 | Dialog::Unclassified(_) => (text::LAUNCH_FAILED_TITLE, String::new()),
@@ -1584,6 +1606,7 @@ impl LibraryUi {
                     | Dialog::Notice(_)
                     | Dialog::FreeBios { .. }
                     | Dialog::Firmware3 { .. }
+                    | Dialog::Custom(_)
                     | Dialog::ChooseFolder(_)
                     | Dialog::FolderPath { .. }
                     | Dialog::Unclassified(_) => None,
@@ -1946,7 +1969,7 @@ fn firmware_info(
     FirmwareInfo {
         system: emu_library::systems()
             .iter()
-            .find(|s| s.database == lf.system)
+            .find(|s| s.core_key() == lf.system)
             .map(|s| s.name.clone()),
         region,
         alternatives: alternatives

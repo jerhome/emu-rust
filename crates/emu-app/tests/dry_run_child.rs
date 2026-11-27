@@ -297,6 +297,58 @@ mod with_mock_core {
     }
 
     #[test]
+    fn a_result_written_before_the_watchdog_fired_is_read() {
+        let f = mock_fixture();
+        let dry = DryRunDir::create(&f.cache).unwrap();
+        let script = r#"echo 'outcome = "ran"' > "$(dirname "$1")/result.toml"; exit 4"#;
+        let verdict = run_dry_run(&shell(script), &plain_request(&f, &dry), DRY_RUN_TIMEOUT);
+        assert!(matches!(verdict, DryRunVerdict::Passed(_)), "{verdict:?}");
+    }
+
+    #[test]
+    fn the_watchdog_without_a_result_is_a_timeout() {
+        let f = mock_fixture();
+        let dry = DryRunDir::create(&f.cache).unwrap();
+        let verdict = run_dry_run(&shell("exit 4"), &plain_request(&f, &dry), DRY_RUN_TIMEOUT);
+        assert_eq!(verdict, DryRunVerdict::TimedOut);
+    }
+
+    #[test]
+    fn giving_up_the_wait_kills_the_child() {
+        let f = mock_fixture();
+        let dry = DryRunDir::create(&f.cache).unwrap();
+        let pid_file = f.cache.join("child.pid");
+        // `exec` keeps the pid: the file names the process that must die.
+        let script = format!(r#"echo $$ > '{}'; exec sleep 60"#, pid_file.display());
+        let command = shell(&script);
+        let req = plain_request(&f, &dry);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let started = Instant::now();
+        let verdict = std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                emu_ui::run_dry_run_until(&command, &req, DRY_RUN_TIMEOUT, &|| {
+                    cancel.load(std::sync::atomic::Ordering::Relaxed)
+                })
+            });
+            while !pid_file.exists() && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            waiter.join().unwrap()
+        });
+        assert_eq!(verdict, DryRunVerdict::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let pid = fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the child {pid} is dead");
+    }
+
+    #[test]
     fn a_stale_result_of_an_earlier_run_is_not_read() {
         let f = mock_fixture();
         let dry = DryRunDir::create(&f.cache).unwrap();

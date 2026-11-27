@@ -36,12 +36,30 @@ impl<P: Send + 'static, R: Send + 'static> Task<P, R> {
     where
         F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
     {
+        Self::spawn_inner(name, notify, None, work)
+    }
+
+    /// [`Task::spawn`] for a task that reads the catalog of systems while it runs (scan, tidying): the catalog
+    /// cannot be published (`crate::try_publish_catalog`) until the task ends, whatever the way it ends.
+    pub(crate) fn spawn_pinning_catalog<F>(name: &str, notify: Notify, work: F) -> Self
+    where
+        F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
+    {
+        Self::spawn_inner(name, notify, Some(crate::CatalogPin::new()), work)
+    }
+
+    fn spawn_inner<F>(name: &str, notify: Notify, pin: Option<crate::CatalogPin>, work: F) -> Self
+    where
+        F: FnOnce(&AtomicBool, &mut dyn FnMut(P)) -> R + Send + 'static,
+    {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
         let spawned = thread::Builder::new()
             .name(format!("emu-library-{name}"))
             .spawn(move || {
+                // Held until the work is over (or the thread dies): the pin is released by its `Drop`.
+                let _pin = pin;
                 let mut progress = |p: P| {
                     if tx.send(Event::Progress(p)).is_ok() {
                         notify();
@@ -105,7 +123,7 @@ pub(crate) type ScanTask = Task<ScanProgress, Result<ScanReport, String>>;
 pub(crate) type DatTask = Task<(), Result<(String, u64), String>>;
 
 pub(crate) fn spawn_scan(db: PathBuf, roots: Vec<PathBuf>, notify: Notify) -> ScanTask {
-    Task::spawn("scan", notify, move |cancel, progress| {
+    Task::spawn_pinning_catalog("scan", notify, move |cancel, progress| {
         let mut library = Library::open_existing(&db).map_err(|e| e.to_string())?;
         let options = ScanOptions {
             roots,
@@ -229,6 +247,7 @@ pub(crate) fn download_dats(
     let mut network_errors = 0;
     let jobs: Vec<(&SystemInfo, DatSource)> = catalog
         .iter()
+        .filter(|s| s.libretro_name().is_some())
         .flat_map(|s| s.dats.iter().map(move |d| (s, *d)))
         .collect();
     for (i, (s, source)) in jobs.iter().enumerate() {
@@ -246,7 +265,9 @@ pub(crate) fn download_dats(
             total: jobs.len(),
             system: label.clone(),
         });
-        let dest = dat_file(dest_dir, *source, &s.database);
+        // No libretro name: no request and no file (filtered above).
+        let name = s.libretro_name().unwrap_or_default();
+        let dest = dat_file(dest_dir, *source, &emu_library::dat_file_stem(name));
         let etag = library
             .dat_info_for(&s.id, *source)
             .ok()
@@ -254,7 +275,7 @@ pub(crate) fn download_dats(
             .and_then(|info| info.etag)
             .filter(|_| dest.is_file());
         let base = source_base(base_url, *source);
-        match download_dat(client, &dat_url(&base, &s.database), &dest, etag.as_deref()) {
+        match download_dat(client, &dat_url(&base, name), &dest, etag.as_deref()) {
             Ok(DatDownload::NotModified) => {
                 network_errors = 0;
                 summary.unchanged += 1;

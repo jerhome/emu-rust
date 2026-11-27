@@ -109,7 +109,9 @@ pub(crate) fn detect_dat_system<'a>(
     [dat_name, file_stem].into_iter().find_map(|name| {
         catalog
             .iter()
-            .filter(|s| matches(name.trim(), &s.database))
-            .max_by_key(|s| s.database.len())
+            .filter_map(|s| Some((s, s.libretro_name()?)))
+            .filter(|(_, db)| matches(name.trim(), db))
+            .max_by_key(|(_, db)| db.len())
+            .map(|(s, _)| s)
     })
 }

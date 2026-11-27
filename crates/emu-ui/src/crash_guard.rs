@@ -5,9 +5,6 @@
 //! (the lock follows the open file): another instance never sees an unlocked marker being created. The marker is
 //! removed when the game ends cleanly (`Drop`). At start-up a `.marker` whose lock is free belongs to a process
 //! that died during a launch: it is reported once and removed. A failure never blocks a launch.
-//!
-//! Wired by the launch code (lot PU2): until then nothing calls it outside the tests.
-#![allow(dead_code)]
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -171,8 +168,15 @@ pub(crate) fn orphan_markers(cache: &Path) -> Vec<CrashNotice> {
                 .ok()
                 .and_then(|_| toml::from_str::<MarkerFile>(&text).ok());
             if let Some(marker) = parsed {
+                // The file is the user's to edit: what is shown is cleaned (bidi and control characters).
+                let clean = |s: &str| crate::ui::text::sanitize_core_line(s);
                 notices.push(CrashNotice {
-                    what: marker.what,
+                    what: LaunchWhat {
+                        core: clean(&marker.what.core),
+                        system: clean(&marker.what.system),
+                        game: clean(&marker.what.game),
+                        untested: marker.what.untested,
+                    },
                     started_unix: marker.started_unix,
                 });
             }
@@ -183,6 +187,42 @@ pub(crate) fn orphan_markers(cache: &Path) -> Vec<CrashNotice> {
     }
     notices.sort_by_key(|n| n.started_unix);
     notices
+}
+
+/// Notices of the previous run, read once at start-up and taken by the library when it opens.
+static PENDING: std::sync::Mutex<Vec<CrashNotice>> = std::sync::Mutex::new(Vec::new());
+
+/// Start-up step of the witness (design 8.0 §2.5): the dry-run folders of dead instances are removed, then the
+/// orphan markers are read (and removed). Must run before any [`begin_launch`] of this process: in a container
+/// the pid can be the one of the dead instance. The notices wait for [`take_crash_notices`].
+pub fn check_previous_launches(dirs: &crate::DataDirs) {
+    let notices = read_previous_launches(&dirs.cache_dir());
+    if let Ok(mut pending) = PENDING.lock() {
+        *pending = notices;
+    }
+}
+
+/// [`check_previous_launches`] without the global: the work of one start-up in `cache`.
+fn read_previous_launches(cache: &Path) -> Vec<CrashNotice> {
+    crate::dry_run::clean_stale_dry_runs(cache);
+    let notices = orphan_markers(cache);
+    for n in &notices {
+        tracing::warn!(
+            "la session précédente s'est arrêtée pendant {} avec {} (système {})",
+            n.what.game,
+            n.what.core,
+            n.what.system
+        );
+    }
+    notices
+}
+
+/// The notices found by [`check_previous_launches`]; empty after the first call.
+pub(crate) fn take_crash_notices() -> Vec<CrashNotice> {
+    PENDING
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -253,7 +293,7 @@ mod tests {
     #[test]
     fn a_marker_of_a_dead_process_is_reported_once_with_its_content_and_removed() {
         let cache = tempfile::tempdir().unwrap();
-        let w = what("Jeu \"étrange\"\nligne.bin");
+        let w = what("Jeu \"étrange\".bin");
         dead_marker(cache.path(), 4242, &w, 1_700_000_000);
         let notices = orphan_markers(cache.path());
         assert_eq!(
@@ -265,6 +305,35 @@ mod tests {
         );
         assert!(names(cache.path()).is_empty());
         assert!(orphan_markers(cache.path()).is_empty());
+    }
+
+    #[test]
+    fn what_a_notice_shows_is_cleaned_of_control_and_bidi_characters() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = what("ligne\none\u{202E}gnp.bin");
+        w.core = "co\u{200B}re".into();
+        dead_marker(cache.path(), 4244, &w, 5);
+        let notice = orphan_markers(cache.path()).remove(0);
+        assert_eq!(notice.what.game, "ligne one gnp.bin");
+        assert!(!notice.what.core.contains('\u{200B}'));
+        assert!(!notice.what.game.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn the_start_up_reports_a_dead_marker_before_any_launch_of_this_process() {
+        let cache = tempfile::tempdir().unwrap();
+        // A container: the dead instance had this very pid.
+        dead_marker(cache.path(), std::process::id(), &what("old.bin"), 7);
+        let notices = read_previous_launches(cache.path());
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].what.game, "old.bin");
+        let marker = begin_launch(cache.path(), &what("new.bin")).expect("marker");
+        assert!(
+            read_previous_launches(cache.path()).is_empty(),
+            "ours is alive"
+        );
+        drop(marker);
+        assert!(names(cache.path()).is_empty());
     }
 
     #[test]

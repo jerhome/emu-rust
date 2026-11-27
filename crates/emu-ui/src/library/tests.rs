@@ -1188,6 +1188,17 @@ fn dos_request(dir: &Path, start: Option<&str>) -> LaunchRequest {
     }
 }
 
+/// Design 8.0 §0.12 point 9: a cleared launch that never reached the gate does not clear a later one.
+#[test]
+fn a_stale_cleared_entry_does_not_outlive_the_frame() {
+    let mut h = harness(true);
+    h.ui.custom
+        .cleared
+        .push(("acme_core".to_owned(), "Jeu".to_owned()));
+    h.frame(Vec::new());
+    assert!(h.ui.custom.cleared.is_empty());
+}
+
 /// Design v4.0 §2.1: a folder game is held back while its snapshot is built (job, « Préparation du jeu… »), then
 /// launched; the next launch finds the snapshot current and goes straight through.
 #[test]
