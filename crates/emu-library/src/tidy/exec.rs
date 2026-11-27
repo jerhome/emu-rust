@@ -1061,12 +1061,13 @@ impl<'a> Exec<'a> {
                 _ => return Err(TidyBlock::ChangedSincePlan),
             }
         }
+        let cat = plan.context.cat.get();
         let emptied = |sources: &mut dyn Iterator<Item = &Path>| -> Vec<PathBuf> {
             let mut set = BTreeSet::new();
             for s in sources {
                 for a in ancestors(s) {
                     let top_system =
-                        depth(&a) == 1 && a.to_str().is_some_and(|n| crate::system(n).is_some());
+                        depth(&a) == 1 && a.to_str().is_some_and(|n| cat.system(n).is_some());
                     if !top_system {
                         set.insert(a);
                     }

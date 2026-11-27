@@ -365,7 +365,7 @@ pub fn create_system_folders(roms_root: &Path) -> Result<Vec<PathBuf>, LibraryEr
     };
     std::fs::create_dir_all(roms_root).map_err(|e| io(roms_root, e))?;
     let mut created = Vec::new();
-    for system in crate::systems() {
+    for system in crate::catalog::catalog().systems() {
         let dir = roms_root.join(&system.id);
         if std::fs::symlink_metadata(&dir).is_ok() {
             continue;

@@ -10,10 +10,11 @@ use rusqlite::{
     Connection, DropBehavior, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params,
 };
 
-use crate::systems::{Attribution, attribute};
+use crate::catalog::{Catalog, catalog};
+use crate::systems::{Attribution, attribute_in};
 use crate::{
     Dat, DatSource, DiscRegion, LibraryError, RomHashes, ScanOptions, ScanProgress, ScanReport,
-    SystemInfo, normalize_title, systems_for_extension,
+    SystemInfo, normalize_title,
 };
 
 /// `PRAGMA user_version` written by this code. v4 (3.0): `dat_info` / `dat_entry` keyed by `(system, source)`.
@@ -722,7 +723,7 @@ pub(crate) fn extension_of(path: &Path, entry: Option<&str>) -> Option<String> {
 /// A game pinned by the scan's folder rule (`game.pinned`) stays on its system. Playlists are left to the next
 /// scan (their system comes from their entries); a file of a shared extension no longer found in the DATs keeps
 /// its system as "unknown", and the next scan re-evaluates it (design v3.0 §3.5.2).
-fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
+fn reidentify(cat: &'static Catalog, conn: &Connection, system: &str) -> Result<u64, LibraryError> {
     struct Row {
         id: i64,
         path: String,
@@ -775,27 +776,27 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
             continue;
         }
         // Games of a `folder_games` system are identified from their file lists: the next scan redoes them.
-        if crate::system(&row.system).is_some_and(|s| s.folder_games) {
+        if cat.system(&row.system).is_some_and(|s| s.folder_games) {
             continue;
         }
         // A disc identified by its track CRC or header serial (never stored): the next scan redoes it, the name
         // alone must not undo it here.
-        if crate::system(&row.system).is_some_and(|s| s.disc)
+        if cat.system(&row.system).is_some_and(|s| s.disc)
             && matches!(row.identification.as_str(), "crc32_size" | "serial")
         {
             continue;
         }
         let (candidates, by_dat): (Vec<&SystemInfo>, bool) = if ext == "bin"
-            && (row.system == SEGA_32X || crate::system(&row.system).is_some_and(|s| s.disc))
+            && (row.system == SEGA_32X || cat.system(&row.system).is_some_and(|s| s.disc))
         {
             // Kept as 32X, PlayStation or 3DO by its header (scanner probe): only the DAT of that system
             // re-identifies it.
-            match crate::system(&row.system) {
+            match cat.system(&row.system) {
                 Some(s) if system == row.system => (vec![s], false),
                 _ => continue,
             }
         } else {
-            let all = systems_for_extension(&ext);
+            let all = cat.for_extension(&ext);
             if !all.iter().any(|s| s.id == system) {
                 continue;
             }
@@ -805,7 +806,7 @@ fn reidentify(conn: &Connection, system: &str) -> Result<u64, LibraryError> {
                 .find(|s| row.pinned && s.id == row.system);
             match pinned {
                 Some(p) => (vec![p], false),
-                None => match attribute(&ext, &[]) {
+                None => match attribute_in(cat, &ext, &[]) {
                     Attribution::Folder(s) => (vec![s], false),
                     Attribution::Candidates(c) => (c, false),
                     Attribution::ByDat(c) => (c, true),
@@ -930,7 +931,12 @@ fn dat_region(field: Option<&str>, game: &str) -> Option<DiscRegion> {
 pub(crate) struct DiscIndex(HashMap<String, RedumpSet>);
 
 impl DiscIndex {
+    #[cfg(test)]
     pub fn load(conn: &Connection) -> Result<Self, LibraryError> {
+        Self::load_in(catalog(), conn)
+    }
+
+    pub fn load_in(cat: &Catalog, conn: &Connection) -> Result<Self, LibraryError> {
         let mut index = DiscIndex::default();
         let mut stmt = conn
             .prepare(
@@ -938,7 +944,8 @@ impl DiscIndex {
                  ORDER BY rowid",
             )
             .map_err(db_error)?;
-        for system in crate::systems()
+        for system in cat
+            .systems()
             .iter()
             .filter(|s| s.disc && s.dats.contains(&DatSource::Redump))
         {
@@ -1024,8 +1031,8 @@ fn dat_info_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<DatInfo>>
     }))
 }
 
-fn first_source(system: &str) -> Result<DatSource, LibraryError> {
-    crate::system(system)
+fn first_source(cat: &Catalog, system: &str) -> Result<DatSource, LibraryError> {
+    cat.system(system)
         .and_then(|s| s.dats.first().copied())
         .ok_or_else(|| LibraryError::UnknownSystem(system.to_owned()))
 }
@@ -1112,7 +1119,7 @@ impl Library {
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        let source = first_source(system)?;
+        let source = first_source(catalog(), system)?;
         self.import_dat_source(system, source, dat, etag)
     }
 
@@ -1126,7 +1133,8 @@ impl Library {
         dat: &Dat,
         etag: Option<&str>,
     ) -> Result<u64, LibraryError> {
-        let declared = crate::system(system).is_some_and(|s| s.dats.contains(&source));
+        let cat = catalog();
+        let declared = cat.system(system).is_some_and(|s| s.dats.contains(&source));
         if !declared {
             return Err(LibraryError::UnknownSystem(format!(
                 "{system} ({})",
@@ -1181,9 +1189,9 @@ impl Library {
             params![system, source, to_i64(count)],
         )
         .map_err(db_error)?;
-        reidentify(&tx, system)?;
+        reidentify(cat, &tx, system)?;
         // Disc games are identified from their track size, CRC and header serial (not stored) too.
-        if crate::system(system).is_some_and(|s| s.folder_games || s.disc) {
+        if cat.system(system).is_some_and(|s| s.folder_games || s.disc) {
             // The identification of these games needs their file lists (not stored): an impossible mtime makes
             // the next scan analyse them again, once.
             tx.execute(
@@ -1192,10 +1200,10 @@ impl Library {
             )
             .map_err(db_error)?;
         }
-        if crate::system(system).is_some_and(|s| s.disc) {
+        if cat.system(system).is_some_and(|s| s.disc) {
             // A `.chd` outside any folder is attributed by its name only when one Redump DAT lists it (design
             // v7.0 §3.4): a new Redump DAT may make the name of another disc system's `.chd` ambiguous.
-            for other in crate::systems().iter().filter(|s| s.disc && s.id != system) {
+            for other in cat.systems().iter().filter(|s| s.disc && s.id != system) {
                 tx.execute(
                     "UPDATE game SET mtime_unix = -1
                      WHERE system = ?1 AND pinned = 0 AND lower(path) LIKE '%.chd'",
@@ -1229,6 +1237,7 @@ impl Library {
 
     /// Imported DATs of a system, in `SystemInfo::dats` order (sources the catalog no longer declares last).
     pub fn dat_infos(&self, system: &str) -> Result<Vec<DatInfo>, LibraryError> {
+        let cat = catalog();
         let mut stmt = self
             .conn
             .prepare(&format!(
@@ -1243,7 +1252,7 @@ impl Library {
             .into_iter()
             .flatten()
             .collect();
-        if let Some(info) = crate::system(system) {
+        if let Some(info) = cat.system(system) {
             infos.sort_by_key(|d| info.dat_rank(d.source.id()));
         }
         Ok(infos)
@@ -1251,7 +1260,7 @@ impl Library {
 
     /// DAT of the **first declared source** of the system (2.0 callers; `dat_info_for` for the others).
     pub fn dat_info(&self, system: &str) -> Result<Option<DatInfo>, LibraryError> {
-        match first_source(system) {
+        match first_source(catalog(), system) {
             Ok(source) => self.dat_info_for(system, source),
             Err(_) => Ok(None),
         }

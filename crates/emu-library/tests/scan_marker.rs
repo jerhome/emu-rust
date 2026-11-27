@@ -271,14 +271,17 @@ fn a_cancelled_scan_lifts_the_marks_it_left() {
 }
 
 #[test]
-fn a_clean_cancellation_removes_the_marker() {
+fn a_cancelled_scan_keeps_the_7_6_marker_and_a_finished_one_removes_it() {
     let (fx, mut lib) = interrupted_move();
+    fs::write(marker(&fx.db), b"").unwrap();
     let opts = ScanOptions {
         roots: vec![fx.roms.clone()],
         ..Default::default()
     };
     let r = lib.scan(&opts, &AtomicBool::new(true), &mut |_| {});
     assert!(matches!(r, Err(LibraryError::Cancelled)));
+    assert!(marker(&fx.db).exists());
+    scan(&mut lib, &fx.roms);
     assert!(!marker(&fx.db).exists());
 }
 

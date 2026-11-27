@@ -1,11 +1,12 @@
 //! System catalog, parsed once from the embedded `data/systems.toml` (ADR 0014 §1).
 
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-const CATALOG: &str = include_str!("../data/systems.toml");
+use crate::catalog::Catalog;
+
+pub(crate) const CATALOG: &str = include_str!("../data/systems.toml");
 
 /// Copier / dump header removed before the "headerless" hashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +224,7 @@ enum RawInput {
 /// Parses and validates a catalog: unique non-empty ids, lower-case dot-less extensions, non-empty database,
 /// a non-empty list of distinct DAT sources, `folder_extensions` a subset of `extensions` (`m3u` / `m3u8` excluded: the
 /// system of a playlist comes from its entries).
-fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
+pub(crate) fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
     let raw: RawCatalog = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut ids = HashSet::new();
     let mut out = Vec::with_capacity(raw.system.len());
@@ -309,20 +310,13 @@ fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
     Ok(out)
 }
 
-/// The whole catalog, in file order. The embedded file is checked by a unit test, so parsing cannot fail at run time.
+/// The whole published catalog, in catalog order (officials in file order, then custom systems).
 pub fn systems() -> &'static [SystemInfo] {
-    static SYSTEMS: OnceLock<Vec<SystemInfo>> = OnceLock::new();
-    SYSTEMS.get_or_init(|| {
-        parse_catalog(CATALOG).unwrap_or_else(|e| {
-            // Unreachable in a tested build; an empty catalog keeps the app usable rather than aborting.
-            tracing::error!("embedded systems.toml is invalid: {e}");
-            Vec::new()
-        })
-    })
+    crate::catalog::catalog().systems()
 }
 
 pub fn system(id: &str) -> Option<&'static SystemInfo> {
-    systems().iter().find(|s| s.id == id)
+    crate::catalog::catalog().system(id)
 }
 
 impl SystemInfo {
@@ -372,8 +366,18 @@ pub(crate) enum Attribution {
 
 /// `extension` is lower case without the dot; `folders` are the path components checked against system ids
 /// (exact match, as the 1.0 folder rule).
+#[cfg(test)]
 pub(crate) fn attribute(extension: &str, folders: &[String]) -> Attribution {
-    let all = systems_for_extension(extension);
+    attribute_in(crate::catalog::catalog(), extension, folders)
+}
+
+/// [`attribute`] on a given catalog snapshot.
+pub(crate) fn attribute_in(
+    cat: &'static Catalog,
+    extension: &str,
+    folders: &[String],
+) -> Attribution {
+    let all = cat.for_extension(extension);
     if let Some(s) = all.iter().copied().find(|s| folders.contains(&s.id)) {
         return Attribution::Folder(s);
     }
@@ -392,14 +396,7 @@ pub(crate) fn attribute(extension: &str, folders: &[String]) -> Attribution {
 /// Systems accepting `extension` (case-insensitive, without the dot), in catalog order. Includes the systems that
 /// restrict it to their folder (`SystemInfo::folder_extensions`).
 pub fn systems_for_extension(extension: &str) -> Vec<&'static SystemInfo> {
-    systems()
-        .iter()
-        .filter(|s| {
-            s.extensions
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(extension))
-        })
-        .collect()
+    crate::catalog::catalog().for_extension(extension)
 }
 
 #[cfg(test)]
