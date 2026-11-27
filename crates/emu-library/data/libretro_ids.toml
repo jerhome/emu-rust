@@ -1,0 +1,724 @@
+# Table "libretro database name -> emu-rust id and tier" (ADR 0025 section 3, design 8.0 section 2.1).
+# The id of a machine is the name of its folder roms/<id>/: DEFINITIVE. Entries are only ever ADDED, never renamed.
+# Injective (one id per name, one name per id); the 17 official systems carry their own id. An id of this table is
+# reserved to its own database. Entries added after 8.0 take the reduction of their name (lower-case ASCII letters
+# and digits of the part after the manufacturer, 24 characters) without suffix; the reduction collisions among the
+# names below are settled here, once.
+# tier: cartridge | disc | computer | arcade (palier of ADR 0025 section 9).
+# PROVISIONAL CONTENT: rebuilt without network access from the names of libretro-database; lot PC1 (architect)
+# aligns it with the real set of core-info database fields before the tag.
+
+[[machine]]
+database = "Atari - 2600"
+id = "atari2600"
+tier = "cartridge"
+
+[[machine]]
+database = "Atari - 5200"
+id = "atari5200"
+tier = "cartridge"
+
+[[machine]]
+database = "Atari - 7800"
+id = "atari7800"
+tier = "cartridge"
+
+[[machine]]
+database = "Atari - Jaguar"
+id = "jaguar"
+tier = "cartridge"
+
+[[machine]]
+database = "Atari - Lynx"
+id = "lynx"
+tier = "cartridge"
+
+[[machine]]
+database = "Atari - Jaguar CD"
+id = "jaguarcd"
+tier = "disc"
+
+[[machine]]
+database = "Atari - ST"
+id = "atarist"
+tier = "computer"
+
+[[machine]]
+database = "Bandai - WonderSwan"
+id = "wonderswan"
+tier = "cartridge"
+
+[[machine]]
+database = "Bandai - WonderSwan Color"
+id = "wonderswancolor"
+tier = "cartridge"
+
+[[machine]]
+database = "Bandai - Playdia"
+id = "playdia"
+tier = "disc"
+
+[[machine]]
+database = "Bandai - Super Vision 8000"
+id = "supervision8000"
+tier = "cartridge"
+
+[[machine]]
+database = "Bally - Astrocade"
+id = "astrocade"
+tier = "cartridge"
+
+[[machine]]
+database = "Casio - PV-1000"
+id = "pv1000"
+tier = "cartridge"
+
+[[machine]]
+database = "Casio - PV-2000"
+id = "pv2000"
+tier = "computer"
+
+[[machine]]
+database = "Casio - Loopy"
+id = "loopy"
+tier = "cartridge"
+
+[[machine]]
+database = "Coleco - ColecoVision"
+id = "colecovision"
+tier = "cartridge"
+
+[[machine]]
+database = "Coleco - Adam"
+id = "adam"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - 64"
+id = "c64"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - 128"
+id = "c128"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - Amiga"
+id = "amiga"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - CD32"
+id = "cd32"
+tier = "disc"
+
+[[machine]]
+database = "Commodore - CDTV"
+id = "cdtv"
+tier = "disc"
+
+[[machine]]
+database = "Commodore - Plus-4"
+id = "plus4"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - VIC-20"
+id = "vic20"
+tier = "computer"
+
+[[machine]]
+database = "Commodore - PET"
+id = "pet"
+tier = "computer"
+
+[[machine]]
+database = "Amstrad - CPC"
+id = "cpc"
+tier = "computer"
+
+[[machine]]
+database = "Amstrad - GX4000"
+id = "gx4000"
+tier = "cartridge"
+
+[[machine]]
+database = "Amstrad - PCW"
+id = "pcw"
+tier = "computer"
+
+[[machine]]
+database = "Acorn - BBC Micro"
+id = "bbcmicro"
+tier = "computer"
+
+[[machine]]
+database = "Acorn - Electron"
+id = "electron"
+tier = "computer"
+
+[[machine]]
+database = "Acorn - Archimedes"
+id = "archimedes"
+tier = "computer"
+
+[[machine]]
+database = "Acorn - Atom"
+id = "acornatom"
+tier = "computer"
+
+[[machine]]
+database = "Apple - II"
+id = "apple2"
+tier = "computer"
+
+[[machine]]
+database = "Apple - Macintosh"
+id = "macintosh"
+tier = "computer"
+
+[[machine]]
+database = "Apple - Apple IIGS"
+id = "apple2gs"
+tier = "computer"
+
+[[machine]]
+database = "DOS"
+id = "dos"
+tier = "computer"
+
+[[machine]]
+database = "ScummVM"
+id = "scummvm"
+tier = "computer"
+
+[[machine]]
+database = "Emerson - Arcadia 2001"
+id = "arcadia2001"
+tier = "cartridge"
+
+[[machine]]
+database = "Entex - Adventure Vision"
+id = "adventurevision"
+tier = "cartridge"
+
+[[machine]]
+database = "Epoch - Super Cassette Vision"
+id = "supercassettevision"
+tier = "cartridge"
+
+[[machine]]
+database = "Epoch - Game Pocket Computer"
+id = "gamepocketcomputer"
+tier = "cartridge"
+
+[[machine]]
+database = "Fairchild - Channel F"
+id = "channelf"
+tier = "cartridge"
+
+[[machine]]
+database = "Fujitsu - FM Towns"
+id = "fmtowns"
+tier = "computer"
+
+[[machine]]
+database = "Fujitsu - FM-7"
+id = "fm7"
+tier = "computer"
+
+[[machine]]
+database = "Funtech - Super Acan"
+id = "superacan"
+tier = "cartridge"
+
+[[machine]]
+database = "GCE - Vectrex"
+id = "vectrex"
+tier = "cartridge"
+
+[[machine]]
+database = "Hartung - Game Master"
+id = "gamemaster"
+tier = "cartridge"
+
+[[machine]]
+database = "Interton - VC 4000"
+id = "vc4000"
+tier = "cartridge"
+
+[[machine]]
+database = "LeapFrog - Leapster Learning Game System"
+id = "leapster"
+tier = "cartridge"
+
+[[machine]]
+database = "Magnavox - Odyssey2"
+id = "odyssey2"
+tier = "cartridge"
+
+[[machine]]
+database = "Mattel - Intellivision"
+id = "intellivision"
+tier = "cartridge"
+
+[[machine]]
+database = "Mattel - Aquarius"
+id = "aquarius"
+tier = "computer"
+
+[[machine]]
+database = "Mattel - HyperScan"
+id = "hyperscan"
+tier = "disc"
+
+[[machine]]
+database = "Memotech - MTX"
+id = "mtx"
+tier = "computer"
+
+[[machine]]
+database = "Microsoft - MSX"
+id = "msx"
+tier = "computer"
+
+[[machine]]
+database = "Microsoft - MSX2"
+id = "msx2"
+tier = "computer"
+
+[[machine]]
+database = "Microsoft - Xbox"
+id = "xbox"
+tier = "disc"
+
+[[machine]]
+database = "Microsoft - Xbox 360"
+id = "xbox360"
+tier = "disc"
+
+[[machine]]
+database = "NEC - PC Engine - TurboGrafx 16"
+id = "pcengine"
+tier = "cartridge"
+
+[[machine]]
+database = "NEC - PC Engine SuperGrafx"
+id = "supergrafx"
+tier = "cartridge"
+
+[[machine]]
+database = "NEC - PC Engine CD - TurboGrafx-CD"
+id = "pcenginecd"
+tier = "disc"
+
+[[machine]]
+database = "NEC - PC-FX"
+id = "pcfx"
+tier = "disc"
+
+[[machine]]
+database = "NEC - PC-8001 - PC-8801"
+id = "pc8801"
+tier = "computer"
+
+[[machine]]
+database = "NEC - PC-98"
+id = "pc98"
+tier = "computer"
+
+[[machine]]
+database = "Nintendo - Game & Watch"
+id = "gameandwatch"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Game Boy"
+id = "gb"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Game Boy Advance"
+id = "gba"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Game Boy Color"
+id = "gbc"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo 64"
+id = "n64"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo 64DD"
+id = "n64dd"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo DS"
+id = "nds"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo DSi"
+id = "dsi"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo 3DS"
+id = "n3ds"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo Entertainment System"
+id = "nes"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Family Computer Disk System"
+id = "fds"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Pokemon Mini"
+id = "pokemini"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Super Nintendo Entertainment System"
+id = "snes"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Satellaview"
+id = "satellaview"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Sufami Turbo"
+id = "sufamiturbo"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Virtual Boy"
+id = "virtualboy"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - GameCube"
+id = "gamecube"
+tier = "disc"
+
+[[machine]]
+database = "Nintendo - Wii"
+id = "wii"
+tier = "disc"
+
+[[machine]]
+database = "Nintendo - Wii U"
+id = "wiiu"
+tier = "disc"
+
+[[machine]]
+database = "Nokia - N-Gage"
+id = "ngage"
+tier = "cartridge"
+
+[[machine]]
+database = "Panasonic - 3DO"
+id = "panasonic3do"
+tier = "disc"
+
+[[machine]]
+database = "Philips - CD-i"
+id = "cdi"
+tier = "disc"
+
+[[machine]]
+database = "Philips - Videopac+"
+id = "videopac"
+tier = "cartridge"
+
+[[machine]]
+database = "Philips - P2000"
+id = "p2000"
+tier = "computer"
+
+[[machine]]
+database = "RCA - Studio II"
+id = "studio2"
+tier = "cartridge"
+
+[[machine]]
+database = "SNK - Neo Geo Pocket"
+id = "ngp"
+tier = "cartridge"
+
+[[machine]]
+database = "SNK - Neo Geo Pocket Color"
+id = "ngpc"
+tier = "cartridge"
+
+[[machine]]
+database = "SNK - Neo Geo"
+id = "neogeo"
+tier = "arcade"
+
+[[machine]]
+database = "SNK - Neo Geo CD"
+id = "neogeocd"
+tier = "disc"
+
+[[machine]]
+database = "Sega - SG-1000"
+id = "sg1000"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - SC-3000"
+id = "sc3000"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Master System - Mark III"
+id = "mastersystem"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Mega Drive - Genesis"
+id = "megadrive"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Game Gear"
+id = "gamegear"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - 32X"
+id = "32x"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Mega-CD - Sega CD"
+id = "megacd"
+tier = "disc"
+
+[[machine]]
+database = "Sega - Saturn"
+id = "saturn"
+tier = "disc"
+
+[[machine]]
+database = "Sega - Dreamcast"
+id = "dreamcast"
+tier = "disc"
+
+[[machine]]
+database = "Sega - PICO"
+id = "pico"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Beena"
+id = "beena"
+tier = "cartridge"
+
+[[machine]]
+database = "Sega - Naomi"
+id = "naomi"
+tier = "arcade"
+
+[[machine]]
+database = "Sega - Naomi 2"
+id = "naomi2"
+tier = "arcade"
+
+[[machine]]
+database = "Sega - Chihiro"
+id = "chihiro"
+tier = "arcade"
+
+[[machine]]
+database = "Sharp - X68000"
+id = "x68000"
+tier = "computer"
+
+[[machine]]
+database = "Sharp - X1"
+id = "x1"
+tier = "computer"
+
+[[machine]]
+database = "Sharp - MZ-700"
+id = "mz700"
+tier = "computer"
+
+[[machine]]
+database = "Sharp - MZ-2000"
+id = "mz2000"
+tier = "computer"
+
+[[machine]]
+database = "Sinclair - ZX 81"
+id = "zx81"
+tier = "computer"
+
+[[machine]]
+database = "Sinclair - ZX Spectrum"
+id = "zxspectrum"
+tier = "computer"
+
+[[machine]]
+database = "Sinclair - ZX Spectrum +3"
+id = "zxspectrum3"
+tier = "computer"
+
+[[machine]]
+database = "Sony - PlayStation"
+id = "psx"
+tier = "disc"
+
+[[machine]]
+database = "Sony - PlayStation 2"
+id = "ps2"
+tier = "disc"
+
+[[machine]]
+database = "Sony - PlayStation 3"
+id = "ps3"
+tier = "disc"
+
+[[machine]]
+database = "Sony - PlayStation Portable"
+id = "psp"
+tier = "disc"
+
+[[machine]]
+database = "Sony - PlayStation Vita"
+id = "vita"
+tier = "cartridge"
+
+[[machine]]
+database = "Sony - PocketStation"
+id = "pocketstation"
+tier = "cartridge"
+
+[[machine]]
+database = "Sord - M5"
+id = "m5"
+tier = "cartridge"
+
+[[machine]]
+database = "Tandy - TRS-80 Color Computer"
+id = "coco"
+tier = "computer"
+
+[[machine]]
+database = "Tandy - TRS-80"
+id = "trs80"
+tier = "computer"
+
+[[machine]]
+database = "Texas Instruments - TI-99-4A"
+id = "ti99"
+tier = "computer"
+
+[[machine]]
+database = "The 3DO Company - 3DO"
+id = "3do"
+tier = "disc"
+
+[[machine]]
+database = "Thomson - MOTO"
+id = "moto"
+tier = "computer"
+
+[[machine]]
+database = "Tiger - Game.com"
+id = "gamecom"
+tier = "cartridge"
+
+[[machine]]
+database = "Tiger - R-Zone"
+id = "rzone"
+tier = "cartridge"
+
+[[machine]]
+database = "VTech - CreatiVision"
+id = "creativision"
+tier = "cartridge"
+
+[[machine]]
+database = "VTech - V.Smile"
+id = "vsmile"
+tier = "cartridge"
+
+[[machine]]
+database = "VTech - Socrates"
+id = "socrates"
+tier = "cartridge"
+
+[[machine]]
+database = "Watara - Supervision"
+id = "supervision"
+tier = "cartridge"
+
+[[machine]]
+database = "Welback - Mega Duck"
+id = "megaduck"
+tier = "cartridge"
+
+[[machine]]
+database = "Dragon Data - Dragon 32-64"
+id = "dragon"
+tier = "computer"
+
+[[machine]]
+database = "Capcom - CP System I"
+id = "cps1"
+tier = "arcade"
+
+[[machine]]
+database = "Capcom - CP System II"
+id = "cps2"
+tier = "arcade"
+
+[[machine]]
+database = "Capcom - CP System III"
+id = "cps3"
+tier = "arcade"
+
+[[machine]]
+database = "Cave - CAVE 68000"
+id = "cave"
+tier = "arcade"
+
+[[machine]]
+database = "Sammy - Atomiswave"
+id = "atomiswave"
+tier = "arcade"
+
+[[machine]]
+database = "MAME"
+id = "mame"
+tier = "arcade"
+
+[[machine]]
+database = "FBNeo - Arcade Games"
+id = "fbneo"
+tier = "arcade"
+
+[[machine]]
+database = "Mego - Microvision"
+id = "microvision"
+tier = "cartridge"
+
+[[machine]]
+database = "Nintendo - Nintendo Switch"
+id = "switch"
+tier = "disc"

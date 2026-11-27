@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::custom::DefinitionError;
+
 /// Messages are user-facing French. They never quote file contents (DAT lines are reported by number only).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -38,6 +40,9 @@ pub enum LibraryError {
     /// write a journal is an `Io` error.
     #[error("{path} : journal de rangement illisible : {message}")]
     Journal { path: PathBuf, message: String },
+    /// A custom system definition refused by `validate_custom` (8.0, ADR 0025 §2); nothing was written.
+    #[error("définition de système : {0}")]
+    Definition(DefinitionError),
     /// A readable journal whose state refuses the action (ADR 0023 §4.8, RV3). Nothing was touched.
     #[error("{journal} : {reason}")]
     TidyRefused {

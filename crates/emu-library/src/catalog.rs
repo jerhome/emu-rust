@@ -1,12 +1,14 @@
-//! Dynamic system catalog: official systems plus user definitions (design 8.0 §2.1, ADR 0025 §1).
-//! Lot PB1: official systems only for now; user definitions (`Catalog::load`) arrive with lot PC1, the private
-//! `database` with lot PB4.
-#![allow(unused_variables)]
+//! Dynamic system catalog: official systems plus user definitions (design 8.0 §2.1, ADR 0025 §1). Lot PB1 made the
+//! catalog an immutable snapshot; lot PB2 reads the definitions (`Catalog::load`). The private `database` comes
+//! with lot PB4.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-use crate::custom::{CustomSystem, DefinitionError};
+use crate::custom::{
+    self, Context, CustomSystem, DefinitionError, MAX_DEFINITION_FILES, MAX_RETIRED_READ,
+};
 use crate::systems::SystemInfo;
 
 /// Officials active in the order of `systems.toml`, then custom systems sorted by id. `PartialEq`: a publication
@@ -21,41 +23,107 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn official() -> Catalog {
-        Catalog::from_official(
-            crate::systems::parse_catalog(crate::systems::CATALOG).unwrap_or_else(|e| {
-                // Unreachable in a tested build; an empty catalog keeps the app usable rather than aborting.
-                tracing::error!("embedded systems.toml is invalid: {e}");
-                Vec::new()
-            }),
-        )
-    }
-
-    fn from_official(systems: Vec<SystemInfo>) -> Catalog {
         Catalog {
-            systems,
+            systems: Catalog::official_systems(),
             customs: Vec::new(),
             masked: Vec::new(),
             reserved: Vec::new(),
         }
     }
 
-    /// Official systems plus `<user_dir>/*.toml` (≤ 256 regular files); never fails, problems are reported.
+    /// Official systems plus `<user_dir>/*.toml` (≤ 256 regular files, in name order); never fails, problems are
+    /// reported. A missing or unreadable folder is an empty one.
     pub fn load(user_dir: &Path) -> CatalogLoad {
-        // Definitions are read from `user_dir` by lot PC1; until then the catalog is the official one.
-        CatalogLoad {
-            catalog: Catalog::official(),
-            problems: Vec::new(),
-            pending_switches: Vec::new(),
-        }
+        Catalog::build(Catalog::official_systems(), user_dir)
     }
 
     /// Tests: arbitrary official catalog text (synthetic official system for the switch, ADR 0025 §10).
     pub fn load_with_official(official_toml: &str, user_dir: &Path) -> Result<CatalogLoad, String> {
-        Ok(CatalogLoad {
-            catalog: Catalog::from_official(crate::systems::parse_catalog(official_toml)?),
-            problems: Vec::new(),
-            pending_switches: Vec::new(),
+        Ok(Catalog::build(
+            crate::systems::parse_catalog(official_toml)?,
+            user_dir,
+        ))
+    }
+
+    fn official_systems() -> Vec<SystemInfo> {
+        crate::systems::parse_catalog(crate::systems::CATALOG).unwrap_or_else(|e| {
+            // Unreachable in a tested build; an empty catalog keeps the app usable rather than aborting.
+            tracing::error!("embedded systems.toml is invalid: {e}");
+            Vec::new()
         })
+    }
+
+    fn build(officials: Vec<SystemInfo>, user_dir: &Path) -> CatalogLoad {
+        let mut problems = Vec::new();
+        let mut ctx = Context::officials(officials.iter());
+        let mut loaded: Vec<(SystemInfo, CustomSystem)> = Vec::new();
+        for (stem, path) in definition_files(user_dir) {
+            match custom::load_definition(&path, &stem, &ctx) {
+                Ok(draft) => {
+                    let system = custom::build_system(&draft);
+                    ctx.add_custom(&system);
+                    loaded.push((system, custom::build_custom(&draft, &path)));
+                }
+                Err(error) => problems.push(DefinitionProblem {
+                    file: path,
+                    id: stem,
+                    error,
+                }),
+            }
+        }
+        loaded.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+
+        // A valid definition always stays active; the officials it conflicts with (same id or same database) are
+        // masked (ADR 0025 §10).
+        let mut masked_ids: BTreeSet<String> = BTreeSet::new();
+        let mut pending_switches = Vec::new();
+        for (system, _) in &loaded {
+            let by_id = officials.iter().find(|o| o.id == system.id);
+            let by_database = system
+                .libretro_name()
+                .and_then(|d| officials.iter().find(|o| o.libretro_name() == Some(d)));
+            masked_ids.extend(by_id.iter().chain(by_database.iter()).map(|o| o.id.clone()));
+            let (official, kind) = match (by_id, by_database) {
+                (Some(o), _) if o.libretro_name() == system.libretro_name() => {
+                    (o, SwitchKind::InPlace)
+                }
+                (Some(o), _) => (o, SwitchKind::Uncertain),
+                (None, Some(o)) => (o, SwitchKind::NeedsMove),
+                (None, None) => continue,
+            };
+            pending_switches.push(SwitchProposal {
+                custom_id: system.id.clone(),
+                official: official.clone(),
+                kind,
+            });
+        }
+        let (masked, active): (Vec<SystemInfo>, Vec<SystemInfo>) = officials
+            .into_iter()
+            .partition(|o| masked_ids.contains(&o.id));
+        let mut systems = active;
+        systems.extend(loaded.iter().map(|(s, _)| s.clone()));
+
+        // Folders the tidy leaves alone: retired definitions, definitions in error, masked officials, minus the
+        // ids that are active (ADR 0025 §12).
+        let mut reserved: BTreeSet<String> = custom::retired_customs(user_dir)
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        reserved.extend(problems.iter().map(|p| p.id.clone()));
+        reserved.extend(masked.iter().map(|s| s.id.clone()));
+        for s in &systems {
+            reserved.remove(&s.id);
+        }
+        CatalogLoad {
+            catalog: Catalog {
+                systems,
+                customs: loaded.into_iter().map(|(_, c)| c).collect(),
+                masked,
+                reserved: reserved.into_iter().collect(),
+            },
+            problems,
+            pending_switches,
+        }
     }
 
     pub fn systems(&self) -> &[SystemInfo] {
@@ -98,6 +166,43 @@ impl Catalog {
     pub fn reserved_folders(&self) -> &[String] {
         &self.reserved
     }
+}
+
+/// `(stem, path)` of the `*.toml` entries of `dir`, in name order, at most [`MAX_DEFINITION_FILES`] (the others are
+/// ignored and logged). Directories and links are listed too: reading them reports `NotRegularFile`.
+fn definition_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    "cannot read the custom systems folder {}: {e}",
+                    dir.display()
+                );
+            }
+            return Vec::new();
+        }
+    };
+    // Bounded listing: a folder the user filled with a million files is not walked to its end.
+    let mut files: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .take(MAX_RETIRED_READ * 4)
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".toml").filter(|s| !s.is_empty())?;
+            Some((stem.to_owned(), e.path()))
+        })
+        .collect();
+    files.sort();
+    if files.len() > MAX_DEFINITION_FILES {
+        tracing::warn!(
+            "{} definitions in {}: only the first {MAX_DEFINITION_FILES} are read",
+            files.len(),
+            dir.display()
+        );
+        files.truncate(MAX_DEFINITION_FILES);
+    }
+    files
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -167,6 +272,7 @@ pub fn install_catalog(catalog: Catalog) -> &'static Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::custom::{MAX_DEFINITION_FILES, MAX_DEFINITION_SIZE};
 
     #[test]
     fn official_catalog_has_the_embedded_systems_in_file_order() {
@@ -224,5 +330,301 @@ mod tests {
 
     fn systems_len() -> usize {
         crate::systems().len()
+    }
+
+    fn def(id: &str, database: Option<&str>, ext: &str) -> String {
+        let database = database.map_or(String::new(), |d| format!("database = \"{d}\"\n"));
+        format!(
+            "format = 1\nrender = \"software\"\n\n[system]\nid = \"{id}\"\nname = \"Sys {id}\"\n{database}\
+             extensions = [\"{ext}\"]\ndat = []\n\n[cores]\nlist = [\"demo_core\"]\nignored_firmware = []\n\n\
+             [origin]\ncore = \"demo_core\"\ncreated_by = \"8.0.0\"\ncreated_unix = 1\n"
+        )
+    }
+
+    fn put(dir: &Path, file: &str, text: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+
+    fn ids(c: &Catalog) -> Vec<String> {
+        c.systems().iter().map(|s| s.id.clone()).collect()
+    }
+
+    #[test]
+    fn a_missing_directory_or_a_plain_file_gives_the_official_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in [tmp.path().join("nowhere"), {
+            let f = tmp.path().join("file");
+            std::fs::write(&f, "x").unwrap();
+            f
+        }] {
+            let loaded = Catalog::load(&dir);
+            assert_eq!(loaded.catalog, Catalog::official());
+            assert!(loaded.problems.is_empty() && loaded.pending_switches.is_empty());
+        }
+    }
+
+    #[test]
+    fn customs_follow_the_officials_sorted_by_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(tmp.path(), "zeta.toml", &def("zeta", None, "zz1"));
+        put(
+            tmp.path(),
+            "alpha.toml",
+            &def("alpha", Some("Demo - Alpha"), "aa1"),
+        );
+        let loaded = Catalog::load(tmp.path());
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        let ids = ids(&loaded.catalog);
+        assert_eq!(&ids[..17], &ids_of_official()[..]);
+        assert_eq!(&ids[17..], ["alpha", "zeta"]);
+        assert_eq!(
+            loaded
+                .catalog
+                .customs()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zeta"]
+        );
+        assert!(loaded.catalog.masked_official().is_empty());
+        assert!(loaded.catalog.reserved_folders().is_empty());
+        // Deterministic: the same folder gives an equal catalog (a publication is then skipped).
+        assert_eq!(Catalog::load(tmp.path()).catalog, loaded.catalog);
+    }
+
+    fn ids_of_official() -> Vec<String> {
+        ids(&Catalog::official())
+    }
+
+    #[test]
+    fn only_regular_toml_files_are_definitions() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(tmp.path(), "README.txt", "notes");
+        put(tmp.path(), "good.toml", &def("good", None, "gd1"));
+        put(
+            &tmp.path().join(".retired"),
+            "gone-1.toml",
+            &def("gone", None, "gn1"),
+        );
+        std::fs::create_dir(tmp.path().join("dir.toml")).unwrap();
+        let loaded = Catalog::load(tmp.path());
+        let problems: Vec<(String, DefinitionError)> = loaded
+            .problems
+            .iter()
+            .map(|p| (p.id.clone(), p.error.clone()))
+            .collect();
+        assert_eq!(
+            problems,
+            [("dir".to_owned(), DefinitionError::NotRegularFile)]
+        );
+        assert_eq!(loaded.problems[0].file, tmp.path().join("dir.toml"));
+        assert_eq!(
+            loaded
+                .catalog
+                .customs()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["good"]
+        );
+    }
+
+    #[test]
+    fn the_size_limit_is_64_kio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = def("fits", None, "ft1");
+        let pad = |n: usize| format!("{base}#{}\n", "x".repeat(n - base.len() - 2));
+        put(tmp.path(), "fits.toml", &pad(MAX_DEFINITION_SIZE as usize));
+        let mut over = def("over", None, "ov1");
+        let n = MAX_DEFINITION_SIZE as usize + 1 - over.len() - 2;
+        over = format!("{over}#{}\n", "x".repeat(n));
+        assert_eq!(over.len() as u64, MAX_DEFINITION_SIZE + 1);
+        put(tmp.path(), "over.toml", &over);
+        let loaded = Catalog::load(tmp.path());
+        assert!(loaded.catalog.custom("fits").is_some());
+        assert_eq!(loaded.problems.len(), 1);
+        assert_eq!(loaded.problems[0].id, "over");
+        assert_eq!(loaded.problems[0].error, DefinitionError::TooLarge);
+    }
+
+    #[test]
+    fn at_most_256_definitions_are_read_in_name_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..300 {
+            let id = format!("s{i:03}");
+            put(
+                tmp.path(),
+                &format!("{id}.toml"),
+                &def(&id, Some(&format!("Demo - N{i:03}")), "ex1"),
+            );
+        }
+        let loaded = Catalog::load(tmp.path());
+        assert_eq!(loaded.catalog.customs().count(), MAX_DEFINITION_FILES);
+        assert!(loaded.catalog.custom("s255").is_some());
+        assert!(loaded.catalog.custom("s256").is_none());
+        assert!(loaded.problems.is_empty());
+    }
+
+    #[test]
+    fn the_first_file_by_name_owns_a_shared_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(
+            tmp.path(),
+            "second.toml",
+            &def("second", Some("Demo - Same"), "ex1"),
+        );
+        put(
+            tmp.path(),
+            "first.toml",
+            &def("first", Some("Demo - Same"), "ex1"),
+        );
+        let loaded = Catalog::load(tmp.path());
+        assert!(loaded.catalog.custom("first").is_some());
+        assert!(loaded.catalog.custom("second").is_none());
+        assert_eq!(loaded.problems.len(), 1);
+        assert_eq!(
+            (loaded.problems[0].id.as_str(), &loaded.problems[0].error),
+            ("second", &DefinitionError::DuplicateDatabase)
+        );
+        // The folder of a definition in error is reserved: its games stay where they are.
+        assert_eq!(loaded.catalog.reserved_folders(), ["second"]);
+    }
+
+    #[test]
+    fn a_system_masks_the_official_it_conflicts_with() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Same id, same database: in place.
+        put(
+            tmp.path(),
+            "snes.toml",
+            &def(
+                "snes",
+                Some("Nintendo - Super Nintendo Entertainment System"),
+                "sf1",
+            ),
+        );
+        // Same database, other id: needs a move.
+        put(
+            tmp.path(),
+            "mymd.toml",
+            &def("mymd", Some("Sega - Mega Drive - Genesis"), "md1"),
+        );
+        // Same id, other database: uncertain.
+        put(
+            tmp.path(),
+            "nes.toml",
+            &def("nes", Some("Demo - Another Machine"), "ne1"),
+        );
+        // Same id, no database: uncertain.
+        put(tmp.path(), "gb.toml", &def("gb", None, "gb1"));
+        let loaded = Catalog::load(tmp.path());
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        let kinds: Vec<(&str, &str, SwitchKind)> = loaded
+            .pending_switches
+            .iter()
+            .map(|p| (p.custom_id.as_str(), p.official.id.as_str(), p.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("gb", "gb", SwitchKind::Uncertain),
+                ("mymd", "megadrive", SwitchKind::NeedsMove),
+                ("nes", "nes", SwitchKind::Uncertain),
+                ("snes", "snes", SwitchKind::InPlace),
+            ]
+        );
+        assert!(
+            loaded
+                .pending_switches
+                .iter()
+                .all(|p| !p.official.is_custom())
+        );
+        // The definitions stay active; the officials are hidden (masked), not removed from the data.
+        let masked: Vec<&str> = loaded
+            .catalog
+            .masked_official()
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(masked, ["megadrive", "snes", "nes", "gb"]);
+        for id in ["snes", "nes", "gb"] {
+            assert!(loaded.catalog.system(id).unwrap().is_custom(), "{id}");
+        }
+        assert!(loaded.catalog.system("megadrive").is_none());
+        assert!(loaded.catalog.system("mymd").is_some());
+        assert_eq!(ids(&loaded.catalog).len(), 17 - 4 + 4);
+        // Only the id of a masked official without definition of its id is reserved: the active ids never are.
+        assert_eq!(loaded.catalog.reserved_folders(), ["megadrive"]);
+    }
+
+    #[test]
+    fn the_folders_of_retired_and_broken_systems_are_reserved_unless_the_id_is_active() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retired = tmp.path().join(".retired");
+        put(&retired, "gone-1700000000.toml", &def("gone", None, "gn1"));
+        put(
+            &retired,
+            "old-1700000001.replaced.toml",
+            &def("old", None, "ol1"),
+        );
+        // A retired file of an id that is active again, and of an official id: never reserved.
+        put(
+            &retired,
+            "alive-1700000002.toml",
+            &def("alive", None, "al1"),
+        );
+        put(
+            &retired,
+            "megadrive-1700000003.replaced.toml",
+            &def("megadrive", None, "md1"),
+        );
+        put(&retired, "notaname.bak", "x");
+        put(tmp.path(), "alive.toml", &def("alive", None, "al1"));
+        put(tmp.path(), "broken.toml", "not toml [");
+        put(tmp.path(), "megadrive.toml", "not toml [");
+        let loaded = Catalog::load(tmp.path());
+        assert_eq!(loaded.problems.len(), 2);
+        assert_eq!(loaded.catalog.reserved_folders(), ["broken", "gone", "old"]);
+        assert!(
+            !loaded
+                .catalog
+                .reserved_folders()
+                .iter()
+                .any(|f| f == "megadrive" || f == "alive")
+        );
+    }
+
+    #[test]
+    fn at_most_1024_retired_names_are_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retired = tmp.path().join(".retired");
+        std::fs::create_dir_all(&retired).unwrap();
+        for i in 0..1100 {
+            std::fs::write(retired.join(format!("r{i:04}-1.toml")), "x").unwrap();
+        }
+        let reserved = Catalog::load(tmp.path()).catalog.reserved_folders().len();
+        assert_eq!(reserved, 1024);
+    }
+
+    #[test]
+    fn a_synthetic_official_catalog_drives_the_switch_kinds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let official = "[[system]]\nid = \"synth\"\nname = \"Synthetic\"\nextensions = [\"syn\"]\n\
+                        database = \"Synthetic - Official - Console\"\n";
+        put(
+            tmp.path(),
+            "synth.toml",
+            &def("synth", Some("Synthetic - Official - Console"), "sy1"),
+        );
+        put(
+            tmp.path(),
+            "other.toml",
+            &def("other", Some("Demo - Free"), "ot1"),
+        );
+        let loaded = Catalog::load_with_official(official, tmp.path()).unwrap();
+        assert_eq!(loaded.pending_switches.len(), 1);
+        assert_eq!(loaded.pending_switches[0].kind, SwitchKind::InPlace);
+        // The custom `synth` replaces the official one (masked); customs are sorted by id.
+        assert_eq!(ids(&loaded.catalog), ["other", "synth"]);
+        assert!(loaded.catalog.system("synth").unwrap().is_custom());
     }
 }

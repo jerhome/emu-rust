@@ -765,3 +765,144 @@ fn a_cautious_scan_keeps_the_mark_of_a_row_that_has_data_so_the_next_scan_merges
     assert_eq!((report.moved, report.removed), (1, 0));
     assert_data_merged(&fx, &lib, id);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Cover files that a merge leaves without a row (8.0, give_data)
+
+fn covers_dir(fx: &Fx) -> PathBuf {
+    fx.db.parent().unwrap().join("covers")
+}
+
+fn cover_file(fx: &Fx, rel: &str) -> PathBuf {
+    let path = covers_dir(fx).join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"png").unwrap();
+    path
+}
+
+fn cached(rel: &str) -> CoverState {
+    CoverState::Cached {
+        path: PathBuf::from(rel),
+        source: "libretro".to_owned(),
+    }
+}
+
+/// The vanished row and the row that stays both have a cached cover: the stayer's is kept.
+fn both_have_covers(old_rel: &str, new_rel: &str) -> (Fx, Library, PathBuf, PathBuf) {
+    let (fx, mut lib) = interrupted_move();
+    let old = old_hero(&fx, &lib);
+    let id = keeper_of(&fx, &lib);
+    let old_file = cover_file(&fx, old_rel);
+    let new_file = cover_file(&fx, new_rel);
+    lib.set_cover(old, CoverKind::Boxart, &cached(old_rel))
+        .unwrap();
+    lib.set_cover(id, CoverKind::Boxart, &cached(new_rel))
+        .unwrap();
+    mark(&fx.db, &hero_path(&fx));
+    (fx, lib, old_file, new_file)
+}
+
+#[test]
+fn the_cover_file_of_the_vanished_twin_is_removed_once_the_merge_is_committed() {
+    let (fx, mut lib, old_file, new_file) = both_have_covers("a/old.png", "a/new.png");
+    let report = scan(&mut lib, &fx.roms);
+    assert_eq!((report.moved, report.removed), (1, 0));
+    assert!(!old_file.exists(), "orphan file removed");
+    assert!(new_file.exists(), "the kept cover is untouched");
+    let id = keeper_of(&fx, &lib);
+    assert_eq!(
+        lib.cover(id, CoverKind::Boxart).unwrap().unwrap().state,
+        cached("a/new.png")
+    );
+}
+
+#[test]
+fn a_cover_file_used_by_both_rows_stays() {
+    let (fx, mut lib, old_file, _) = both_have_covers("a/same.png", "a/same.png");
+    scan(&mut lib, &fx.roms);
+    assert!(old_file.exists());
+}
+
+#[test]
+fn a_cover_file_shared_with_another_row_is_kept_by_the_merge() {
+    // Hero.sfc (vanished) and vrac/Hero.sfc (stays) plus an unrelated game that uses the vanished row's file.
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = tmp.path().join("roms");
+    fs::create_dir_all(roms.join("vrac")).unwrap();
+    fs::write(roms.join("Hero.sfc"), noise(4096)).unwrap();
+    fs::write(roms.join("vrac").join("Hero.sfc"), noise(4096)).unwrap();
+    fs::write(roms.join("Other.sfc"), noise(5000)).unwrap();
+    let db = tmp.path().join("library.db");
+    let (mut lib, _) = Library::open(&db).unwrap();
+    scan(&mut lib, &roms);
+    let fx = Fx {
+        _tmp: tmp,
+        db,
+        roms,
+    };
+    let old = old_hero(&fx, &lib);
+    let id = keeper_of(&fx, &lib);
+    let other = lib
+        .games()
+        .unwrap()
+        .into_iter()
+        .find(|g| g.path == fx.roms.join("Other.sfc"))
+        .unwrap();
+    fs::remove_file(fx.roms.join("Hero.sfc")).unwrap();
+    let shared = cover_file(&fx, "a/shared.png");
+    cover_file(&fx, "a/new.png");
+    lib.set_cover(old, CoverKind::Boxart, &cached("a/shared.png"))
+        .unwrap();
+    lib.set_cover(other.id, CoverKind::Boxart, &cached("a/shared.png"))
+        .unwrap();
+    lib.set_cover(id, CoverKind::Boxart, &cached("a/new.png"))
+        .unwrap();
+    mark(&fx.db, &hero_path(&fx));
+    let report = scan(&mut lib, &fx.roms);
+    assert_eq!(report.moved, 1);
+    assert!(shared.exists(), "another row still points to it");
+}
+
+#[test]
+fn a_cover_path_outside_the_covers_folder_is_never_removed() {
+    let (fx, mut lib, _, _) = both_have_covers("a/old.png", "a/new.png");
+    let outside = fx.db.parent().unwrap().join("outside.png");
+    fs::write(&outside, b"keep me").unwrap();
+    let old = lib.games().unwrap();
+    assert_eq!(old.len(), 2);
+    let old_id = old_hero(&fx, &lib);
+    lib.set_cover(old_id, CoverKind::Boxart, &cached("../outside.png"))
+        .unwrap();
+    scan(&mut lib, &fx.roms);
+    assert!(outside.exists());
+    // An absolute path is refused too.
+    let (fx, mut lib, _, _) = both_have_covers("a/old.png", "a/new.png");
+    let old_id = old_hero(&fx, &lib);
+    let absolute = fx.db.parent().unwrap().join("absolute.png");
+    fs::write(&absolute, b"keep me").unwrap();
+    lib.set_cover(
+        old_id,
+        CoverKind::Boxart,
+        &CoverState::Cached {
+            path: absolute.clone(),
+            source: "libretro".into(),
+        },
+    )
+    .unwrap();
+    scan(&mut lib, &fx.roms);
+    assert!(absolute.exists());
+}
+
+#[test]
+fn a_missing_orphan_file_is_not_an_error_and_a_cautious_scan_removes_nothing() {
+    let (fx, mut lib, old_file, _) = both_have_covers("a/old.png", "a/new.png");
+    fs::remove_file(&old_file).unwrap();
+    let report = scan(&mut lib, &fx.roms);
+    assert_eq!(report.moved, 1);
+    // A cautious scan (7.6 file) merges no data: the covers files stay.
+    let (fx, mut lib, old_file, new_file) = both_have_covers("a/old.png", "a/new.png");
+    fs::write(marker(&fx.db), b"left by a 7.6").unwrap();
+    let report = scan(&mut lib, &fx.roms);
+    assert!(report.cautious);
+    assert!(old_file.exists() && new_file.exists());
+}

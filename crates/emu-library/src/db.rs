@@ -32,15 +32,27 @@ pub enum ForgetDats {
     Remove,
 }
 
-/// Contract stubs of design 8.0 §2.1 (PX0); bodies belong to lots PB1 / PB3.
-#[allow(unused_variables)]
 impl Library {
     /// « Oublier ses jeux »: deletes the game rows (and with [`ForgetDats::Remove`] the DAT rows) of a system
-    /// `id`; `Keep` for an uncertain conflict. Explicit action only: removing a system keeps its rows hidden.
+    /// `id`, one transaction; their covers and disk lists go with them (foreign keys). `Keep` for an uncertain
+    /// conflict, whose DAT rows are the official's (ADR 0025 §9). Explicit action only: removing a system keeps its
+    /// rows hidden. Files on disk are never touched; an unknown id is a no-op.
     pub fn forget_system(&mut self, id: &str, dats: ForgetDats) -> Result<(), LibraryError> {
-        todo!("lot PB1")
+        let tx = self.conn.transaction().map_err(db_error)?;
+        tx.execute("DELETE FROM game WHERE system = ?1", [id])
+            .map_err(db_error)?;
+        if dats == ForgetDats::Remove {
+            // The entries follow (ON DELETE CASCADE).
+            tx.execute("DELETE FROM dat_info WHERE system = ?1", [id])
+                .map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)
     }
+}
 
+/// Contract stub of design 8.0 §2.1 (PX0); the body belongs to lot PB3.
+#[allow(unused_variables)]
+impl Library {
     /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to` for **every** row of `from`, one
     /// transaction, same scope forward and undo. Idempotent. Returns the number of rows changed.
     pub fn reassign_system(&mut self, from: &str, to: &str) -> Result<usize, LibraryError> {
@@ -1278,15 +1290,22 @@ impl Library {
     }
 
     pub fn games(&self) -> Result<Vec<Game>, LibraryError> {
+        self.games_in(catalog())
+    }
+
+    /// [`Library::games`] on a given catalog snapshot.
+    pub(crate) fn games_in(&self, cat: &Catalog) -> Result<Vec<Game>, LibraryError> {
         let mut stmt = self
             .conn
             .prepare(&format!("SELECT {GAME_COLUMNS} FROM game ORDER BY id"))
             .map_err(db_error)?;
+        // Rows of a system absent from the catalog (retired, in error, masked) stay in the base but are hidden.
         let mut games: Vec<Game> = stmt
             .query_map([], game_from_row)
             .map_err(db_error)?
-            .collect::<Result<_, _>>()
+            .collect::<Result<Vec<Game>, _>>()
             .map_err(db_error)?;
+        games.retain(|g| cat.system(&g.system).is_some());
         let mut media = load_media(&self.conn, None)?;
         for g in &mut games {
             g.media = media.remove(&g.id.0).unwrap_or_default();
@@ -1395,20 +1414,28 @@ impl Library {
         kind: CoverKind,
         retry_before_unix: i64,
     ) -> Result<Vec<GameId>, LibraryError> {
+        let cat = catalog();
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT g.id FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
+                "SELECT g.id, g.system FROM game g LEFT JOIN cover c ON c.game = g.id AND c.kind = ?1
                  WHERE c.game IS NULL OR (c.state = 'missing' AND c.checked_unix < ?2)
                  ORDER BY g.id",
             )
             .map_err(db_error)?;
-        stmt.query_map(params![kind_name(kind), retry_before_unix], |r| {
-            Ok(GameId(r.get(0)?))
-        })
-        .map_err(db_error)?
-        .collect::<Result<_, _>>()
-        .map_err(db_error)
+        let rows = stmt
+            .query_map(params![kind_name(kind), retry_before_unix], |r| {
+                Ok((GameId(r.get(0)?), r.get::<_, String>(1)?))
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        // A hidden row (its system is absent from the catalog) never asks for a cover.
+        Ok(rows
+            .into_iter()
+            .filter(|(_, system)| cat.system(system).is_some())
+            .map(|(id, _)| id)
+            .collect())
     }
 
     /// Forgets the record of one cover (cached or missing): the game is then "never checked" for `kind`.
@@ -1438,6 +1465,9 @@ impl Library {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod forget_tests;
 
 #[cfg(test)]
 mod tests {

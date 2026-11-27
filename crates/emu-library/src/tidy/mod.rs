@@ -2,6 +2,8 @@
 //! journal written before acting, never overwrites, never renames, never deletes user data, undo and recovery.
 //! Only the roms root is tidied (never `[library] roots`). The scan classifier is reused, not duplicated.
 
+#[cfg(test)]
+mod custom_tests;
 mod exec;
 mod journal;
 mod plan;
@@ -219,6 +221,10 @@ pub struct TidyPlan {
     pub units: Vec<TidyUnit>,
     /// Items directly under the folder of their system (`roms/<id>/…`), never analysed nor moved.
     pub already_tidy: u64,
+    /// Folders `roms/<id>/` the plan leaves as they are: retired, masked or broken systems and ids of the library
+    /// absent from the catalog (ADR 0025 §12), sorted. Nothing is taken from them nor put into them; the preview says
+    /// so (« dossier d'un système retiré ou en erreur : laissé tel quel »).
+    pub reserved_folders: Vec<String>,
     /// Files that are not games (texts, images, executables outside a game folder, empty files…), left in place.
     pub ignored: u64,
     /// The first [`MAX_IGNORED_PATHS`] of them, in walk order: the UI checks them against the known BIOS md5
@@ -359,13 +365,22 @@ impl TidyJournalInfo {
 /// Creates `roms/<id>/` for every system of the catalog, moving nothing. Returns the created ones only. The roms
 /// root itself is created when missing; an existing entry of that name (folder, file or link) is left alone.
 pub fn create_system_folders(roms_root: &Path) -> Result<Vec<PathBuf>, LibraryError> {
+    create_system_folders_in(crate::catalog::catalog(), roms_root)
+}
+
+/// [`create_system_folders`] on a given catalog snapshot: the active systems only, custom ones included; the
+/// folders of retired, masked or broken systems (ADR 0025 §12) are never recreated.
+pub(crate) fn create_system_folders_in(
+    cat: &crate::catalog::Catalog,
+    roms_root: &Path,
+) -> Result<Vec<PathBuf>, LibraryError> {
     let io = |path: &Path, source| LibraryError::Io {
         path: path.to_path_buf(),
         source,
     };
     std::fs::create_dir_all(roms_root).map_err(|e| io(roms_root, e))?;
     let mut created = Vec::new();
-    for system in crate::catalog::catalog().systems() {
+    for system in cat.systems() {
         let dir = roms_root.join(&system.id);
         if std::fs::symlink_metadata(&dir).is_ok() {
             continue;
@@ -406,6 +421,18 @@ impl Library {
         progress: &mut dyn FnMut(&ScanProgress),
     ) -> Result<TidyPlan, LibraryError> {
         plan::run(&self.conn, options, cancel, progress)
+    }
+
+    /// [`Library::plan_tidy`] on a given catalog snapshot (tests: nothing is published).
+    #[cfg(test)]
+    pub(crate) fn plan_tidy_in(
+        &self,
+        cat: &'static crate::catalog::Catalog,
+        options: &TidyOptions,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(&ScanProgress),
+    ) -> Result<TidyPlan, LibraryError> {
+        plan::run_in(&self.conn, cat, options, cancel, progress, None)
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.

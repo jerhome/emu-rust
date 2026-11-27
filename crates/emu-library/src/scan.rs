@@ -2415,7 +2415,22 @@ fn heirs_of(
 /// Carries the user data of row `old` to row `new` (same game): favourite if either has it, play counts added,
 /// latest play date, and the covers `new` does not have. `old` is deleted by the caller (its other covers go
 /// with it). Saves and states live in files named after the game, not in the database.
-fn give_data(tx: &Connection, old: i64, new: i64) -> Result<(), LibraryError> {
+fn give_data(tx: &Connection, old: i64, new: i64) -> Result<Vec<String>, LibraryError> {
+    // Both rows have a cached cover of one kind: the staying row's is kept (below), so the file of the other one
+    // loses its last row when `old` is deleted. Collected here, removed by the caller once the transaction is committed.
+    let orphans: Vec<String> = {
+        let mut stmt = tx
+            .prepare_cached(
+                "SELECT o.path FROM cover o JOIN cover n ON n.game = ?2 AND n.kind = o.kind
+                 WHERE o.game = ?1 AND o.state = 'cached' AND n.state = 'cached'
+                   AND o.path IS NOT NULL AND o.path IS NOT n.path",
+            )
+            .map_err(db_error)?;
+        stmt.query_map(params![old, new], |r| r.get(0))
+            .map_err(db_error)?
+            .collect::<Result<_, _>>()
+            .map_err(db_error)?
+    };
     tx.execute(
         "UPDATE game SET
              favorite = MAX(favorite, (SELECT favorite FROM game WHERE id = ?1)),
@@ -2440,7 +2455,39 @@ fn give_data(tx: &Connection, old: i64, new: i64) -> Result<(), LibraryError> {
         params![old, new],
     )
     .map_err(db_error)?;
-    Ok(())
+    Ok(orphans)
+}
+
+/// Removes the cover files that no row points to any more, after the transaction that dropped their rows. Paths are
+/// relative to `covers/` beside the database; anything else (absolute, `..`, links) is left alone. A failure is
+/// only logged: a stray file costs a few Kio, a failed scan costs the user's patience.
+fn remove_orphan_covers(conn: &Connection, orphans: &[String]) {
+    let Some(root) = conn
+        .path()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| Path::new(p).parent().map(|d| d.join("covers")))
+    else {
+        return;
+    };
+    for rel in orphans {
+        let relative = Path::new(rel);
+        let plain = relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        let in_use = conn
+            .query_row("SELECT 1 FROM cover WHERE path = ?1", [rel], |_| Ok(()))
+            .is_ok();
+        if !plain || relative.as_os_str().is_empty() || in_use {
+            continue;
+        }
+        let file = root.join(relative);
+        if !fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_file()) {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&file) {
+            tracing::warn!("cannot remove the cover file {}: {e}", file.display());
+        }
+    }
 }
 
 /// Lifts the `scan_pending` marks at the end of a scan, except the ones of `keep` (rows of a killed scan that carry
@@ -2547,7 +2594,17 @@ pub(crate) fn run(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<ScanReport, LibraryError> {
-    let cat = catalog();
+    run_in(catalog(), conn, options, cancel, progress)
+}
+
+/// [`run`] on a given catalog snapshot (the public entry point captures the published one).
+pub(crate) fn run_in(
+    cat: &'static Catalog,
+    conn: &mut Connection,
+    options: &ScanOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&ScanProgress),
+) -> Result<ScanReport, LibraryError> {
     let marker = marker_path(conn);
     let prudent = marker.as_deref().is_some_and(Path::exists);
     let mut marker_failed = false;
@@ -2601,7 +2658,19 @@ fn run_scan(
     }
 
     resolve_media(cat, &mut found, &mut seen, &mut report);
-    let existing = load_existing(conn)?;
+    let mut existing = load_existing(conn)?;
+    // Rows of a system absent from the snapshot (definition retired, in error or unreadable, official masked) are
+    // neither modified nor purged, whatever the files say (ADR 0025 §13): they are out of this scan altogether.
+    let frozen: HashSet<String> = existing
+        .iter()
+        .filter(|(_, old)| cat.system(&old.system).is_none())
+        .map(|(path, _)| path.clone())
+        .collect();
+    if !frozen.is_empty() {
+        existing.retain(|path, _| !frozen.contains(path));
+        found.retain(|f| !frozen.contains(&f.key));
+        seen.retain(|key| !frozen.contains(key));
+    }
     let discs = DiscIndex::load_in(cat, conn)?;
     // Rows still marked now belong to a scan killed earlier: read before this scan's own batches mark theirs.
     let marked_at_start: HashSet<i64> = {
@@ -2798,8 +2867,9 @@ fn run_scan(
     let heirs = heirs_of(conn, &gone, &moved, &with_data)?;
     let merged: HashSet<i64> = heirs.iter().map(|h| h.old).collect();
     let tx = conn.transaction().map_err(db_error)?;
+    let mut orphan_covers: Vec<String> = Vec::new();
     for heir in &heirs {
-        give_data(&tx, heir.old, heir.new)?;
+        orphan_covers.extend(give_data(&tx, heir.old, heir.new)?);
     }
     for (path, old) in existing.iter().filter(|_| !prudent) {
         if seen.contains(path) || kept_rows(path) || moved.contains_key(&old.id) {
@@ -2819,6 +2889,7 @@ fn run_scan(
     // data keep their mark for the next one.
     lift_marks(&tx, if prudent { &data_marks } else { &[] })?;
     tx.commit().map_err(db_error)?;
+    remove_orphan_covers(conn, &orphan_covers);
     unclassified.sort_by_key(|(index, _)| *index);
     report.unclassified = unclassified.len() as u64;
     report.unclassified_paths = unclassified
@@ -2830,6 +2901,9 @@ fn run_scan(
     progress(&state);
     Ok(report)
 }
+
+#[cfg(test)]
+mod custom_tests;
 
 #[cfg(test)]
 mod tests {

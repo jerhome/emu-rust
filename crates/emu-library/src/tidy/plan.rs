@@ -2,7 +2,7 @@
 //! units, classification by the scan's classifier with the folder rule neutralised, destinations and blocking
 //! checks. Nothing is written: neither the disk nor the database (SELECT only).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
@@ -47,7 +47,8 @@ pub(crate) struct Fingerprint {
     pub(crate) mtime: i64,
 }
 
-/// The catalog snapshot a plan was computed with (ADR 0025 §1). Not part of the plan's identity (always equal).
+/// The catalog snapshot a plan was computed with (ADR 0025 §1). Part of the identity of a plan: two plans are equal
+/// only when their catalogs are (by value: the same catalog published twice is one catalog).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Snapshot(&'static Catalog);
 
@@ -58,8 +59,8 @@ impl Snapshot {
 }
 
 impl PartialEq for Snapshot {
-    fn eq(&self, _: &Self) -> bool {
-        true
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0) || self.0 == other.0
     }
 }
 
@@ -70,6 +71,8 @@ impl Eq for Snapshot {}
 pub(super) struct PlanContext {
     /// Catalog snapshot taken at the start of the plan.
     pub(super) cat: Snapshot,
+    /// Top-level folders left alone (ADR 0025 §12): never a source, never a destination.
+    pub(super) reserved: BTreeSet<String>,
     /// Canonical roms root.
     pub(super) root: PathBuf,
     /// Device of the root (Unix): a destination or a source on another device is blocked.
@@ -172,6 +175,8 @@ struct Walked {
     /// folders, leftovers): a folder holding one of them is never moved whole.
     others: Vec<PathBuf>,
     already_tidy: u64,
+    /// Reserved folders found at the top of the root (names).
+    reserved: BTreeSet<String>,
     ignored: u64,
     ignored_paths: Vec<PathBuf>,
 }
@@ -215,6 +220,7 @@ fn is_system_id(cat: &Catalog, name: &str) -> bool {
 
 fn walk(
     cat: &'static Catalog,
+    reserved: &BTreeSet<String>,
     options: &TidyOptions,
     cancel: &AtomicBool,
 ) -> Result<Walked, LibraryError> {
@@ -250,9 +256,16 @@ fn walk(
             };
             let top = rel.as_os_str().is_empty();
             if kind.is_symlink() {
-                // A linked `roms/<id>` is a destination matter (`DestinationNotPlainDir`), not a unit.
-                if top && name.to_str().is_some_and(|n| is_system_id(cat, n)) {
-                    continue;
+                // A linked `roms/<id>` is a destination matter (`DestinationNotPlainDir`), not a unit; a reserved
+                // one is left alone.
+                if top && let Some(n) = name.to_str() {
+                    if reserved.contains(n) {
+                        out.reserved.insert(n.to_owned());
+                        continue;
+                    }
+                    if is_system_id(cat, n) {
+                        continue;
+                    }
                 }
                 let to_dir = fs::metadata(abs.join(&name)).is_ok_and(|m| m.is_dir());
                 if to_dir || is_candidate(cat, &child) {
@@ -274,7 +287,10 @@ fn walk(
             }
             if kind.is_dir() {
                 let name = name.to_string_lossy();
-                if top && is_system_id(cat, &name) {
+                if top && reserved.contains(&*name) {
+                    // Retired, masked or broken system, or an id of the library the catalog lacks (ADR 0025 §12).
+                    out.reserved.insert(name.into_owned());
+                } else if top && is_system_id(cat, &name) {
                     out.already_tidy += count_items(&abs.join(&*name));
                 } else if name.ends_with(PART_SUFFIX) || depth >= max_depth {
                     out.others.push(child);
@@ -809,7 +825,7 @@ impl<'w> Builder<'w> {
                 continue;
             }
             let computer = draft.layout == Layout::Flat && draft.files.len() == 1 && {
-                let systems = self.cat.for_extension(&ext);
+                let systems = official_for_extension(self.cat, &ext);
                 !systems.is_empty() && systems.iter().all(|s| s.kind == SystemKind::Computer)
             };
             let disc = !computer && is_console_disc(self.cat, &found_of(file, Vec::new(), false));
@@ -998,6 +1014,15 @@ impl Classified {
     }
 }
 
+/// Systems accepting `ext` that are official: the custom ones only count under their folder (ADR 0025 §12), so they
+/// never change what the tidy decides for a file of an official system, nor are offered as a choice.
+fn official_for_extension<'c>(cat: &'c Catalog, ext: &str) -> Vec<&'c SystemInfo> {
+    cat.for_extension(ext)
+        .into_iter()
+        .filter(|s| !s.is_custom())
+        .collect()
+}
+
 fn ids(systems: &[&SystemInfo]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in systems {
@@ -1058,9 +1083,10 @@ impl Classifier<'_> {
             Err(Failure::Unclassified) => {
                 // Folder-only extension outside its folder (`.chd`, `.cue`, `.hdf`…): the candidates are every system
                 // accepting it, folder-only ones included; a single one is rule 5 (extension of one system).
-                let all = self.cat.for_extension(&ext);
+                let all = official_for_extension(self.cat, &ext);
                 let c = match all.as_slice() {
                     [one] => Classified::sure(&one.id, TidyReason::Extension, stem(&found.path)),
+                    [] => self.custom_extension(&ext, found),
                     _ => Classified::ambiguous(ids(&all)),
                 };
                 return Ok(Some((c, false)));
@@ -1125,7 +1151,7 @@ impl Classifier<'_> {
                     let candidate_ids = if ext == "zip" {
                         ids(candidates)
                     } else {
-                        ids(&self.cat.for_extension(&ext))
+                        ids(&official_for_extension(self.cat, &ext))
                     };
                     self.by_name(candidates, &stem, candidate_ids)?
                 } else {
@@ -1156,7 +1182,7 @@ impl Classifier<'_> {
                     let candidate_ids = if ext == "zip" {
                         ids(candidates)
                     } else {
-                        ids(&self.cat.for_extension(&ext))
+                        ids(&official_for_extension(self.cat, &ext))
                     };
                     self.by_name(candidates, &stem, candidate_ids)?
                 }
@@ -1179,6 +1205,15 @@ impl Classifier<'_> {
             },
         };
         Ok(Some((classified, hashed)))
+    }
+
+    /// A file whose extension no official system takes outside its folder: when exactly one custom system has it, the
+    /// unit is suggested (unchecked, ADR 0025 §12 and Q17); when several have it, it is never proposed.
+    fn custom_extension(&self, ext: &str, found: &Found) -> Classified {
+        match self.cat.for_extension(ext).as_slice() {
+            [one] => Classified::suggested(&one.id, TidyReason::Extension, stem(&found.path)),
+            _ => Classified::status(TidyStatus::Unknown),
+        }
     }
 
     fn bin_header(&self, found: &Found) -> bool {
@@ -1235,11 +1270,24 @@ pub(super) fn run(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<TidyPlan, LibraryError> {
+    run_in(conn, catalog(), options, cancel, progress, None)
+}
+
+/// [`run`] on a given catalog snapshot. `exempt`: a reserved folder (ADR 0025 §12) that is nevertheless a source,
+/// the one case being the switch of a custom system whose own folder is reserved in the catalog « after ».
+pub(super) fn run_in(
+    conn: &Connection,
+    cat: &'static Catalog,
+    options: &TidyOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&ScanProgress),
+    exempt: Option<&str>,
+) -> Result<TidyPlan, LibraryError> {
     scan::clear_probes();
     let root = options.roms_root();
     let root_dev = fs::metadata(root).ok().as_ref().and_then(dev_of);
-    let cat = catalog();
-    let walked = walk(cat, options, cancel)?;
+    let reserved = reserved_set(conn, cat, exempt)?;
+    let walked = walk(cat, &reserved, options, cancel)?;
     let (drafts, ignored) = drafts(cat, &walked, root);
     let mut classifier = Classifier {
         cat,
@@ -1326,17 +1374,22 @@ pub(super) fn run(
             // Known game: the system of its row (its saves live under that system's core).
             unit.known_game = Some(GameId(id));
             unit.title = title;
-            unit.candidates = cat
-                .for_extension(&extension)
-                .iter()
-                .filter(|s| s.id != system)
-                .map(|s| s.id.clone())
-                .collect();
-            m.choosable = !unit.candidates.is_empty();
-            m.base = TidyStatus::Sure(TidyReason::Library);
-            unit.system = Some(system.clone());
-            m.row_system = Some(system);
-            state.identified += 1;
+            if cat.system(&system).is_none() {
+                // Its system is not in the catalog (retired, in error, masked): nothing is put into `roms/<id>/`
+                // of a system that is absent (ADR 0025 §12); the game stays where it is.
+                m.base = TidyStatus::Unknown;
+            } else {
+                unit.candidates = official_for_extension(cat, &extension)
+                    .iter()
+                    .filter(|s| s.id != system)
+                    .map(|s| s.id.clone())
+                    .collect();
+                m.choosable = !unit.candidates.is_empty();
+                m.base = TidyStatus::Sure(TidyReason::Library);
+                unit.system = Some(system.clone());
+                m.row_system = Some(system);
+                state.identified += 1;
+            }
         } else {
             let (found, kind) = match &draft.kind {
                 DraftKind::GameDir(i) => {
@@ -1412,11 +1465,13 @@ pub(super) fn run(
     let mut plan = TidyPlan {
         units,
         already_tidy: walked.already_tidy,
+        reserved_folders: walked.reserved.iter().cloned().collect(),
         ignored: ignored_count,
         ignored_paths,
         meta,
         context: PlanContext {
             cat: Snapshot(cat),
+            reserved,
             root: root.to_path_buf(),
             root_dev,
             max_file_size: options.max_file_size(),
@@ -1427,6 +1482,29 @@ pub(super) fn run(
     state.current = None;
     progress(&state);
     Ok(plan)
+}
+
+/// Folders the plan leaves alone: the catalog's reserved ids (retired, broken, masked) plus the ids of the library's
+/// rows that the catalog lacks, minus `exempt` (ADR 0025 §12). An active id is never reserved.
+fn reserved_set(
+    conn: &Connection,
+    cat: &Catalog,
+    exempt: Option<&str>,
+) -> Result<BTreeSet<String>, LibraryError> {
+    let mut reserved: BTreeSet<String> = cat.reserved_folders().iter().cloned().collect();
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT system FROM game")
+        .map_err(db_error)?;
+    let in_library = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    reserved.extend(in_library.into_iter().filter(|id| cat.system(id).is_none()));
+    if let Some(id) = exempt {
+        reserved.remove(id);
+    }
+    Ok(reserved)
 }
 
 fn dos_id(cat: &Catalog) -> String {
@@ -1665,7 +1743,7 @@ fn check(
     for folder in created {
         for c in folder.components().skip(1) {
             let name = c.as_os_str().to_string_lossy();
-            if is_system_id(context.cat.get(), &name) {
+            if is_system_id(context.cat.get(), &name) || context.reserved.contains(&*name) {
                 return Some(TidyBlock::FolderNamedLikeSystem {
                     name: name.into_owned(),
                 });
