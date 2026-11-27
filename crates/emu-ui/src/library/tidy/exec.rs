@@ -681,6 +681,7 @@ pub(crate) fn demo_outcome(dirs: &DataDirs) -> Outcome {
         undone: false,
         complete: true,
         identities_done: true,
+        end_due: false,
         switch: None,
     })));
     out.root = Some(root);
@@ -760,6 +761,7 @@ mod tests {
             undone,
             complete,
             identities_done: false,
+            end_due: false,
             switch: None,
         }
     }

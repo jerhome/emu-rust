@@ -17,13 +17,23 @@ use crate::systems::SystemInfo;
 
 /// Officials active in the order of `systems.toml`, then custom systems sorted by id. `PartialEq`: a publication
 /// is skipped when the catalog equals the current one.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Catalog {
     systems: Vec<SystemInfo>,
     customs: Vec<CustomSystem>,
     masked: Vec<SystemInfo>,
     reserved: Vec<String>,
     conflicted: Vec<String>,
+}
+
+impl PartialEq for Catalog {
+    fn eq(&self, other: &Self) -> bool {
+        self.systems == other.systems
+            && self.customs == other.customs
+            && self.masked == other.masked
+            && self.reserved == other.reserved
+            && self.conflicted == other.conflicted
+    }
 }
 
 impl Catalog {
@@ -40,7 +50,13 @@ impl Catalog {
     /// Official systems plus `<user_dir>/*.toml` (≤ 256 regular files, in name order); never fails, problems are
     /// reported. A missing or unreadable folder is an empty one.
     pub fn load(user_dir: &Path) -> CatalogLoad {
-        Catalog::build(Catalog::official_systems(), user_dir)
+        Catalog::build(Catalog::official_systems(), user_dir, None)
+    }
+
+    /// The catalog « after » of a switch with move (`plan_switch`'s `after`): [`Catalog::load`] as if
+    /// `<user_dir>/<custom_id>.toml` (exact name) were not there; the file is not touched.
+    pub fn load_without(user_dir: &Path, custom_id: &str) -> CatalogLoad {
+        Catalog::build(Catalog::official_systems(), user_dir, Some(custom_id))
     }
 
     /// Tests: arbitrary official catalog text (synthetic official system for the switch, ADR 0025 §10).
@@ -48,6 +64,7 @@ impl Catalog {
         Ok(Catalog::build(
             crate::systems::parse_catalog(official_toml)?,
             user_dir,
+            None,
         ))
     }
 
@@ -59,12 +76,12 @@ impl Catalog {
         })
     }
 
-    fn build(officials: Vec<SystemInfo>, user_dir: &Path) -> CatalogLoad {
+    fn build(officials: Vec<SystemInfo>, user_dir: &Path, skip: Option<&str>) -> CatalogLoad {
         let mut problems = Vec::new();
         let officials_ids: BTreeSet<String> = officials.iter().map(|o| o.id.clone()).collect();
         let mut ctx = Context::officials(officials.iter());
         let mut loaded: Vec<(SystemInfo, CustomSystem)> = Vec::new();
-        let (files, ignored) = definition_files(user_dir);
+        let (files, ignored) = definition_files(user_dir, skip);
         problems.extend(ignored.into_iter().map(|(id, file)| DefinitionProblem {
             file,
             id,
@@ -131,10 +148,8 @@ impl Catalog {
 
         // Folders the tidy leaves alone: retired definitions, definitions in error, masked officials, minus the
         // ids that are active (ADR 0025 §12).
-        let mut reserved: BTreeSet<String> = custom::retired_customs(user_dir)
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
+        let retired = custom::retired_customs(user_dir);
+        let mut reserved: BTreeSet<String> = retired.iter().map(|r| r.id.clone()).collect();
         reserved.extend(problems.iter().map(|p| p.id.clone()));
         reserved.extend(masked.iter().map(|s| s.id.clone()));
         for s in &systems {
@@ -142,12 +157,20 @@ impl Catalog {
         }
         // Ids whose rows belong to two catalogs at once: an official masked by a definition of the same id, or an
         // official id whose definition is in error. The scan freezes the rows the active system does not accept.
+        // (c) An active official whose `.retired/` keeps a definition `Replaced` by it (a switch accepted in place or
+        // uncertain): the rows the definition alone accepted are frozen, not lost (ADR 0025 §10).
+        let replaced = retired
+            .iter()
+            .filter(|r| r.why == custom::Retirement::Replaced)
+            .map(|r| r.id.clone())
+            .filter(|id| systems.iter().any(|s| !s.is_custom() && s.id == *id));
         let conflicted: BTreeSet<String> = masked
             .iter()
             .map(|o| o.id.clone())
             .filter(|id| systems.iter().any(|s| s.is_custom() && s.id == *id))
             .chain(problems.iter().map(|p| p.id.clone()))
             .filter(|id| officials_ids.contains(id))
+            .chain(replaced)
             .collect();
         CatalogLoad {
             catalog: Catalog {
@@ -204,7 +227,8 @@ impl Catalog {
     }
 
     /// Official ids whose games may sit under another definition of the system: an official masked by a definition
-    /// of the same id, or an official id whose definition is in error. The scan neither purges nor reclassifies
+    /// of the same id, an official id whose definition is in error, or an active official whose `.retired/` keeps a
+    /// `Replaced` definition of that id. The scan neither purges nor reclassifies
     /// the rows of such an id that the active system does not accept (ADR 0025 §13).
     pub fn is_conflicted(&self, id: &str) -> bool {
         self.conflicted.iter().any(|c| c == id)
@@ -217,7 +241,7 @@ type DefinitionFile = (String, PathBuf);
 /// The `*.toml` entries of `dir` in name order: the first [`MAX_DEFINITION_FILES`] to read, and the
 /// others (reported as problems, at most [`MAX_DEFINITION_LISTING`] kept: the smallest names, whatever the order the
 /// file system lists them in). Directories and links are listed too: reading them reports `NotRegularFile`.
-fn definition_files(dir: &Path) -> (Vec<DefinitionFile>, Vec<DefinitionFile>) {
+fn definition_files(dir: &Path, skip: Option<&str>) -> (Vec<DefinitionFile>, Vec<DefinitionFile>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -239,6 +263,9 @@ fn definition_files(dir: &Path) -> (Vec<DefinitionFile>, Vec<DefinitionFile>) {
         let Some(stem) = name.strip_suffix(".toml").filter(|s| !s.is_empty()) else {
             continue;
         };
+        if skip == Some(stem) {
+            continue;
+        }
         names.insert((stem.to_owned(), e.path()));
         if names.len() > MAX_DEFINITION_LISTING {
             names.pop_last();
@@ -260,7 +287,7 @@ fn definition_files(dir: &Path) -> (Vec<DefinitionFile>, Vec<DefinitionFile>) {
 
 /// Number of `*.toml` entries of `dir` that count against [`MAX_DEFINITION_FILES`].
 pub(crate) fn definition_count(dir: &Path) -> usize {
-    let (files, ignored) = definition_files(dir);
+    let (files, ignored) = definition_files(dir, None);
     files.len() + ignored.len()
 }
 
@@ -400,6 +427,8 @@ mod tests {
         )
     }
 
+    const SNES_DATABASE: &str = "Nintendo - Super Nintendo Entertainment System";
+
     fn put(dir: &Path, file: &str, text: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(file), text).unwrap();
@@ -407,6 +436,54 @@ mod tests {
 
     fn ids(c: &Catalog) -> Vec<String> {
         c.systems().iter().map(|s| s.id.clone()).collect()
+    }
+
+    #[test]
+    fn load_without_ignores_one_definition_by_its_exact_name_and_touches_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(
+            tmp.path(),
+            "mysnes.toml",
+            &def("mysnes", Some(SNES_DATABASE), "xyz"),
+        );
+        put(tmp.path(), "other.toml", &def("other", None, "oth"));
+        let with = Catalog::load(tmp.path()).catalog;
+        assert!(with.system("mysnes").is_some() && with.masked_official().len() == 1);
+        let without = Catalog::load_without(tmp.path(), "mysnes");
+        assert!(without.problems.is_empty() && without.pending_switches.is_empty());
+        let c = without.catalog;
+        assert!(c.system("mysnes").is_none() && c.system("snes").is_some());
+        assert!(c.masked_official().is_empty());
+        assert!(c.custom("other").is_some());
+        // The file is still there; another id, a different case or a missing id change nothing.
+        assert!(tmp.path().join("mysnes.toml").is_file());
+        for id in ["nothing", "MYSNES", "mysnes.toml"] {
+            assert_eq!(Catalog::load_without(tmp.path(), id).catalog, with, "{id}");
+        }
+    }
+
+    #[test]
+    fn load_without_skips_the_definition_before_the_limit_of_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..=MAX_DEFINITION_FILES {
+            put(tmp.path(), &format!("a{i:04}.toml"), "x");
+        }
+        // One file too many: reported. Without the first of them, the last one fits.
+        let with = Catalog::load(tmp.path());
+        assert_eq!(
+            with.problems
+                .iter()
+                .filter(|p| p.error == DefinitionError::TooManyDefinitions)
+                .count(),
+            1
+        );
+        let without = Catalog::load_without(tmp.path(), "a0000");
+        assert!(
+            !without
+                .problems
+                .iter()
+                .any(|p| p.error == DefinitionError::TooManyDefinitions)
+        );
     }
 
     #[test]
@@ -542,7 +619,7 @@ mod tests {
         for i in (0..MAX_DEFINITION_LISTING + 10).rev() {
             std::fs::write(tmp.path().join(format!("x{i:05}.toml")), "x").unwrap();
         }
-        let (files, ignored) = definition_files(tmp.path());
+        let (files, ignored) = definition_files(tmp.path(), None);
         assert_eq!(files.len(), MAX_DEFINITION_FILES);
         assert_eq!(files.len() + ignored.len(), MAX_DEFINITION_LISTING);
         assert_eq!(files[0].0, "x00000");
@@ -593,6 +670,33 @@ mod tests {
         // Masked through its database only: its rows are those of an absent system, not a conflict.
         assert!(!c.is_conflicted("megadrive") && !c.is_conflicted("mymd"));
         assert!(!c.is_conflicted("snes"));
+    }
+
+    #[test]
+    fn an_active_official_with_a_replaced_definition_of_its_id_is_conflicted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retired = tmp.path().join(".retired");
+        let text = def("snes", Some("Demo - Other"), "ne1");
+        put(&retired, "snes-100.replaced.toml", &text);
+        put(
+            &retired,
+            "gb-100.toml",
+            &def("gb", Some("Demo - Other"), "ne1"),
+        );
+        put(
+            &retired,
+            "mine-100.replaced.toml",
+            &def("mine", None, "mn1"),
+        );
+        let c = Catalog::load(tmp.path()).catalog;
+        // (c): Replaced only, official id only; a Removed one or a non-official id does not count.
+        assert!(c.is_conflicted("snes"));
+        assert!(!c.is_conflicted("gb") && !c.is_conflicted("mine"));
+        // A definition active again under that id is the ordinary masked case, still conflicted.
+        put(tmp.path(), "snes.toml", &text);
+        assert!(Catalog::load(tmp.path()).catalog.is_conflicted("snes"));
+        // The folder `roms/snes/` stays an active system folder, not a reserved one.
+        assert!(!c.reserved_folders().contains(&"snes".to_owned()));
     }
 
     #[test]

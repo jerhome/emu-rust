@@ -1030,3 +1030,214 @@ fn restoring_is_refused_at_the_limit_like_a_creation() {
     restore_custom(&dir, &removed, &Catalog::load(&dir).catalog).unwrap();
     assert!(dir.join("aaa.toml").exists());
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Idempotent move (ADR 0023, amendment of 2026-11-27, step (2)) and the files of a custom system on disk
+
+fn put_file(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn a_move_whose_destination_alone_exists_is_already_done() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (tmp.path().join("a.toml"), tmp.path().join("b.toml"));
+    put_file(&to, b"kept");
+    move_no_overwrite(&from, &to).unwrap();
+    assert_eq!(std::fs::read(&to).unwrap(), b"kept");
+    // Neither side: nothing to move is an error, not a success.
+    std::fs::remove_file(&to).unwrap();
+    assert!(move_no_overwrite(&from, &to).is_err());
+}
+
+#[test]
+fn a_move_interrupted_after_the_link_is_finished_by_the_next_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (tmp.path().join("a.toml"), tmp.path().join("b.toml"));
+    put_file(&from, b"definition");
+    // The state a crash between the link and the removal leaves: two names of one file.
+    std::fs::hard_link(&from, &to).unwrap();
+    move_no_overwrite(&from, &to).unwrap();
+    assert_eq!(names_in(tmp.path()), ["b.toml"]);
+    assert_eq!(std::fs::read(&to).unwrap(), b"definition");
+}
+
+#[test]
+fn a_move_between_two_identical_copies_removes_the_source_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (tmp.path().join("a.toml"), tmp.path().join("b.toml"));
+    put_file(&from, b"same bytes");
+    put_file(&to, b"same bytes");
+    move_no_overwrite(&from, &to).unwrap();
+    assert_eq!(names_in(tmp.path()), ["b.toml"]);
+}
+
+#[test]
+fn a_move_onto_a_different_file_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (tmp.path().join("a.toml"), tmp.path().join("b.toml"));
+    put_file(&from, b"mine");
+    put_file(&to, b"other");
+    let err = move_no_overwrite(&from, &to).unwrap_err();
+    assert!(matches!(err, LibraryError::Io { .. }), "{err:?}");
+    assert_eq!(std::fs::read(&from).unwrap(), b"mine");
+    assert_eq!(std::fs::read(&to).unwrap(), b"other");
+}
+
+#[test]
+fn a_destination_of_another_case_is_a_taken_place_never_already_done() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (tmp.path().join("a.toml"), tmp.path().join("b.toml"));
+    // Same content: a different case is still no « already done », whatever the file system.
+    put_file(&from, b"same");
+    put_file(&tmp.path().join("B.toml"), b"same");
+    assert!(move_no_overwrite(&from, &to).is_err());
+    assert!(from.exists());
+    assert_eq!(names_in(tmp.path()), ["B.toml", "a.toml"]);
+    // The source under another case is not the source either.
+    std::fs::remove_file(tmp.path().join("B.toml")).unwrap();
+    let wrong = tmp.path().join("A.toml");
+    assert!(move_no_overwrite(&wrong, &to).is_err());
+    assert!(from.exists() && !to.exists());
+}
+
+fn no_links(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+#[test]
+fn without_hard_links_the_copy_goes_through_a_temporary_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let from = tmp.path().join("systems").join("zzdemo.toml");
+    let to = tmp
+        .path()
+        .join("systems")
+        .join(".retired")
+        .join("zzdemo-5.replaced.toml");
+    put_file(&from, b"definition");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    // An orphan temporary of an earlier crash is replaced, never taken for the destination.
+    put_file(&to.with_file_name(".zzdemo.emu-rust-tmp"), b"torn");
+    move_no_overwrite_with(&from, &to, &no_links, &|p| std::fs::remove_file(p)).unwrap();
+    assert_eq!(std::fs::read(&to).unwrap(), b"definition");
+    assert!(!from.exists());
+    assert_eq!(names_in(to.parent().unwrap()), ["zzdemo-5.replaced.toml"]);
+}
+
+#[test]
+fn without_hard_links_a_crash_before_the_removal_is_finished_by_the_next_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (from, to) = (
+        tmp.path().join("zzdemo.toml"),
+        tmp.path().join("kept").join("zzdemo.toml"),
+    );
+    put_file(&from, b"definition");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    let failing_remove = |_: &Path| Err(std::io::Error::other("crash"));
+    assert!(move_no_overwrite_with(&from, &to, &no_links, &failing_remove).is_err());
+    // The destination is whole, the source still there, no temporary left behind.
+    assert_eq!(std::fs::read(&to).unwrap(), b"definition");
+    assert!(from.exists());
+    assert_eq!(names_in(to.parent().unwrap()), ["zzdemo.toml"]);
+    move_no_overwrite_with(&from, &to, &no_links, &|p| std::fs::remove_file(p)).unwrap();
+    assert!(!from.exists());
+    assert_eq!(std::fs::read(&to).unwrap(), b"definition");
+}
+
+fn custom_catalog(tmp: &Path) -> Catalog {
+    let dir = tmp.join("systems");
+    let mut d = draft();
+    d.id = "zzdemo".into();
+    d.extensions = strings(&["dmo", "xyz"]);
+    write_custom(&dir, &d, &Catalog::load(&dir).catalog).unwrap();
+    Catalog::load(&dir).catalog
+}
+
+fn zip_with(path: &Path, entries: &[&str]) {
+    use std::io::Write as _;
+    let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for name in entries {
+        w.start_file(*name, options).unwrap();
+        w.write_all(b"data").unwrap();
+    }
+    w.finish().unwrap();
+}
+
+#[test]
+fn custom_games_on_disk_lists_the_files_the_definition_claims() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = std::fs::canonicalize(tmp.path()).unwrap().join("roms");
+    let catalog = custom_catalog(tmp.path());
+    let own = roms.join("zzdemo");
+    put_file(&own.join("B.DMO"), b"1");
+    put_file(&own.join("sub").join("deep").join("a.xyz"), b"2");
+    put_file(&own.join("notes.txt"), b"3");
+    put_file(&own.join("readme"), b"4");
+    zip_with(&own.join("pack.zip"), &["x/y.dmo"]);
+    zip_with(&own.join("other.zip"), &["x/y.bin", "z.txt"]);
+    std::fs::write(own.join("broken.zip"), b"not a zip").unwrap();
+    // Another folder, even with the same extension, is not under `roms/zzdemo/`.
+    put_file(&roms.join("snes").join("c.dmo"), b"5");
+    let found = custom_games_on_disk(&roms, &catalog, "zzdemo", 100).unwrap();
+    let expected: Vec<PathBuf> = vec![
+        own.join("B.DMO"),
+        own.join("pack.zip"),
+        own.join("sub").join("deep").join("a.xyz"),
+    ];
+    assert_eq!(found, expected);
+    // The bound keeps the first ones in order.
+    assert_eq!(
+        custom_games_on_disk(&roms, &catalog, "zzdemo", 2).unwrap(),
+        expected[..2]
+    );
+    assert!(
+        custom_games_on_disk(&roms, &catalog, "zzdemo", 0)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn custom_games_on_disk_needs_an_active_custom_system() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = tmp.path().join("roms");
+    let catalog = custom_catalog(tmp.path());
+    // An official id, an unknown id.
+    for id in ["snes", "nothere"] {
+        assert!(
+            custom_games_on_disk(&roms, &catalog, id, 10).is_err(),
+            "{id}"
+        );
+    }
+    // The folder may be missing: nothing on disk.
+    assert!(
+        custom_games_on_disk(&roms, &catalog, "zzdemo", 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_games_on_disk_does_not_follow_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = std::fs::canonicalize(tmp.path()).unwrap().join("roms");
+    let catalog = custom_catalog(tmp.path());
+    put_file(&tmp.path().join("outside").join("a.dmo"), b"1");
+    std::fs::create_dir_all(roms.join("zzdemo")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("outside"), roms.join("zzdemo").join("link"))
+        .unwrap();
+    std::os::unix::fs::symlink(
+        tmp.path().join("outside").join("a.dmo"),
+        roms.join("zzdemo").join("b.dmo"),
+    )
+    .unwrap();
+    assert!(
+        custom_games_on_disk(&roms, &catalog, "zzdemo", 10)
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -316,6 +316,7 @@ fn the_source_of_a_switch_is_exempt_from_the_reservation() {
         &AtomicBool::new(false),
         &mut |_| {},
         Some("gone"),
+        None,
     )
     .unwrap();
     assert!(plan.reserved_folders.is_empty());

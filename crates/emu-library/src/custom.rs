@@ -183,7 +183,7 @@ fn is_valid_extension(ext: &str) -> bool {
 }
 
 /// `[a-z0-9_-]{1,64}`: the syntax of a core id (`emu_assets::CoreId`).
-fn is_valid_core_id(id: &str) -> bool {
+pub(crate) fn is_valid_core_id(id: &str) -> bool {
     is_lower_token(id, 1..=MAX_CORE_ID, b"_-")
 }
 
@@ -436,31 +436,145 @@ fn invalid(path: &Path, message: &str) -> LibraryError {
     )
 }
 
-/// Moves `from` to `to` without ever overwriting: a hard link then the removal of the first name; an exclusive
-/// copy where the file system has no links. Refuses an existing `to` (nothing changes then). Never deletes data:
-/// the source goes away only once the target holds it.
+/// Moves `from` to `to` without ever overwriting, and finishes an interrupted move (ADR 0023, amendment of
+/// 2026-11-27, step (2)). Names are compared exactly, byte for byte (`Path::exists` also answers for another case
+/// on Windows and macOS). Only `to` present: already done. Both present and identical (one file, or the same
+/// content, a definition being at most 64 Kio): the source is removed. Both present and different, or a name of
+/// another case in the way: error (« place prise »), nothing changes. Only `from` present: a hard link then the
+/// removal of the first name; where the file system has no links, a copy to a temporary name of the destination
+/// folder, synced, then placed. Never deletes data: the source goes away only once the target holds it.
 pub(crate) fn move_no_overwrite(from: &Path, to: &Path) -> Result<(), LibraryError> {
-    match fs::hard_link(from, to) {
-        Ok(()) => fs::remove_file(from).map_err(|e| io_error(from, e)),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(io_error(to, e)),
-        Err(_) => {
-            let mut source = fs::File::open(from).map_err(|e| io_error(from, e))?;
-            let mut target = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(to)
-                .map_err(|e| io_error(to, e))?;
-            let copied = std::io::copy(&mut source, &mut target)
-                .and_then(|_| target.sync_all())
-                .map_err(|e| io_error(to, e));
-            if let Err(e) = copied {
-                // Our own partial copy: the source is untouched.
-                let _ = fs::remove_file(to);
-                return Err(e);
-            }
-            fs::remove_file(from).map_err(|e| io_error(from, e))
+    move_no_overwrite_with(from, to, &|a, b| fs::hard_link(a, b), &|p| {
+        fs::remove_file(p)
+    })
+}
+
+/// [`move_no_overwrite`] through `link` and `remove` (fault injection of the switch end, no-link file systems).
+pub(crate) fn move_no_overwrite_with(
+    from: &Path,
+    to: &Path,
+    link: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+    remove: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Result<(), LibraryError> {
+    let taken = |at: &Path| {
+        io_error(
+            at,
+            std::io::Error::new(std::io::ErrorKind::AlreadyExists, "place déjà prise"),
+        )
+    };
+    match (
+        exact_entry(from).map_err(|e| io_error(from, e))?,
+        exact_entry(to).map_err(|e| io_error(to, e))?,
+    ) {
+        (false, true) => return Ok(()),
+        (false, false) => {
+            return Err(io_error(
+                from,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ));
+        }
+        (true, true) => {
+            return if same_definition(from, to) {
+                remove(from).map_err(|e| io_error(from, e))
+            } else {
+                Err(taken(to))
+            };
+        }
+        (true, false) => {}
+    }
+    if folded_entry_exists(to).map_err(|e| io_error(to, e))? {
+        return Err(taken(to));
+    }
+    match link(from, to) {
+        Ok(()) => return remove(from).map_err(|e| io_error(from, e)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(io_error(to, e)),
+        Err(_) => {}
+    }
+    // No hard links here: copy next to the destination under a name the catalog ignores, then place it.
+    let temporary = to.with_file_name(format!(".{}.emu-rust-tmp", id_of_name(to)));
+    let _ = remove(&temporary);
+    let copied = (|| {
+        let mut source = fs::File::open(from)?;
+        let mut target = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        std::io::copy(&mut source, &mut target)?;
+        target.sync_all()
+    })();
+    let placed = copied.and_then(|()| match link(&temporary, to) {
+        Ok(()) => remove(&temporary),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        // No atomic « rename without overwriting » in std: the name was checked free just above, and the tidy
+        // lock keeps emu-rust itself out of the window.
+        Err(_) if folded_entry_exists(to)? => {
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+        }
+        Err(_) => fs::rename(&temporary, to),
+    });
+    if let Err(e) = placed {
+        // Our own temporary: the source is untouched.
+        let _ = remove(&temporary);
+        return Err(io_error(to, e));
+    }
+    remove(from).map_err(|e| io_error(from, e))
+}
+
+/// The id a definition file name stands for (`zzdemo-5.replaced.toml`, `zzdemo.toml`): names the temporary copy.
+fn id_of_name(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("definition");
+    match parse_retired_name(name) {
+        Some((id, _, _)) => id,
+        None => name.strip_suffix(".toml").unwrap_or(name).to_owned(),
+    }
+}
+
+/// A directory entry of that exact name (never a different case), `false` for a missing folder.
+pub(crate) fn exact_entry(path: &Path) -> std::io::Result<bool> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(false);
+    };
+    entries_named(dir, |found| found == name)
+}
+
+/// An entry that is not `path` but whose name differs from it only by the case of ASCII letters.
+fn folded_entry_exists(path: &Path) -> std::io::Result<bool> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(false);
+    };
+    let wanted = name.to_string_lossy().to_ascii_lowercase();
+    entries_named(dir, |found| {
+        found != name && found.to_string_lossy().to_ascii_lowercase() == wanted
+    })
+}
+
+fn entries_named(dir: &Path, matches: impl Fn(&std::ffi::OsStr) -> bool) -> std::io::Result<bool> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        if matches(&entry?.file_name()) {
+            return Ok(true);
         }
     }
+    Ok(false)
+}
+
+/// The two files are one file, or two regular files of at most 64 Kio with the same bytes.
+fn same_definition(a: &Path, b: &Path) -> bool {
+    if !is_regular_file(a) || !is_regular_file(b) {
+        return false;
+    }
+    if same_file::is_same_file(a, b).unwrap_or(false) {
+        return true;
+    }
+    let small = |p: &Path| fs::metadata(p).is_ok_and(|m| m.len() <= MAX_DEFINITION_SIZE);
+    small(a) && small(b) && matches!((fs::read(a), fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 fn is_regular_file(path: &Path) -> bool {
@@ -474,7 +588,7 @@ pub(crate) fn retired_dir(dir: &Path) -> PathBuf {
 
 /// `<id>-<unix>.toml` or `<id>-<unix>.replaced.toml`, id `[a-z0-9]{1,24}`, `unix` in canonical decimal: the only
 /// names `.retired/` accepts.
-fn parse_retired_name(name: &str) -> Option<(String, Retirement, u64)> {
+pub(crate) fn parse_retired_name(name: &str) -> Option<(String, Retirement, u64)> {
     let (stem, why) = if let Some(stem) = name.strip_suffix(".replaced.toml") {
         (stem, Retirement::Replaced)
     } else {
@@ -918,6 +1032,87 @@ pub fn restore_custom(
     let to = dir.join(format!("{id}.toml"));
     move_no_overwrite(retired, &to)?;
     Ok(to)
+}
+
+/// Entries examined at most by [`custom_games_on_disk`] (a folder the user may fill), and per `.zip`.
+const MAX_DISK_ENTRIES: usize = 200_000;
+const MAX_ZIP_NAMES: usize = 10_000;
+/// Depth below `roms/<id>/` at most (the scan's own bound is lower).
+const MAX_DISK_DEPTH: usize = 32;
+
+/// Uncertain-conflict deletion (ADR 0025 §9): files on disk under `<roms_root>/<id>/` (recursive, links never
+/// followed) that the active custom definition `id` of `catalog` claims — one of its extensions, or a `.zip` with
+/// such an entry —, sorted, at most `limit`. Disk only, never the rows. The UI refuses « Oublier ses jeux et
+/// supprimer » while it is non-empty and shows the list. `Err` if `id` is not an active custom system.
+pub fn custom_games_on_disk(
+    roms_root: &Path,
+    catalog: &Catalog,
+    id: &str,
+    limit: usize,
+) -> Result<Vec<PathBuf>, LibraryError> {
+    let system = catalog
+        .system(id)
+        .filter(|s| s.is_custom())
+        .ok_or_else(|| LibraryError::UnknownSystem(id.to_owned()))?;
+    let claims = |name: &str| {
+        Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| {
+                system
+                    .extensions
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(ext))
+            })
+    };
+    // The smallest `limit` paths, whatever the order the file system lists them in.
+    let mut found: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut seen = 0usize;
+    let mut stack = vec![(roms_root.join(id), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > MAX_DISK_ENTRIES {
+                break;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                if depth < MAX_DISK_DEPTH {
+                    stack.push((path, depth + 1));
+                }
+            } else if kind.is_file() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let hit = claims(&name)
+                    || (name.to_ascii_lowercase().ends_with(".zip")
+                        && zip_has_claimed(&path, &claims));
+                if hit {
+                    found.insert(path);
+                    if found.len() > limit {
+                        found.pop_last();
+                    }
+                }
+            }
+        }
+    }
+    Ok(found.into_iter().collect())
+}
+
+fn zip_has_claimed(path: &Path, claims: &dyn Fn(&str) -> bool) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return false;
+    };
+    (0..archive.len().min(MAX_ZIP_NAMES))
+        .filter_map(|i| archive.name_for_index(i)?.ok())
+        .any(|name| !name.ends_with('/') && claims(&name))
 }
 
 /// Display name proposed at creation: forbidden characters → « - », spaces collapsed, ≤ 64.

@@ -9,6 +9,8 @@ mod journal;
 mod plan;
 mod relocate;
 mod switch;
+#[cfg(test)]
+mod switch_tests;
 mod sys;
 
 use std::path::{Path, PathBuf};
@@ -35,6 +37,9 @@ pub struct TidyOptions {
     max_file_size: u64,
     /// Lower-case file names of known firmware (BIOS): such a file is never a unit, it stays in place.
     firmware_names: Vec<String>,
+    /// The custom systems folder (`<data>/systems`), given by the caller: a switch with move reads and checks the
+    /// names of `.retired/` there. Never deduced from a catalog; unknown, the switch is refused.
+    systems_dir: Option<PathBuf>,
 }
 
 impl TidyOptions {
@@ -57,7 +62,20 @@ impl TidyOptions {
             max_depth: defaults.max_depth,
             max_file_size: defaults.max_file_size,
             firmware_names: Vec::new(),
+            systems_dir: None,
         })
+    }
+
+    /// The custom systems folder: required by `plan_switch` and `apply_switch` (without it
+    /// `Err(UnknownSystem(custom_id))`) and by the undo of a switch journal after its `F` (without it
+    /// `TidyRefused { SwitchNotReversible }`, nothing moved).
+    pub fn with_systems_dir(mut self, systems_dir: &Path) -> Self {
+        self.systems_dir = Some(systems_dir.to_path_buf());
+        self
+    }
+
+    pub(crate) fn systems_dir(&self) -> Option<&Path> {
+        self.systems_dir.as_deref()
     }
 
     /// File names of the known firmware (`firmware.toml`, `required_firmware` of emu-assets: this crate does not
@@ -230,6 +248,11 @@ pub struct TidyPlan {
     /// The first [`MAX_IGNORED_PATHS`] of them, in walk order: the UI checks them against the known BIOS md5
     /// (« Importer un BIOS… »), which this crate does not know.
     pub ignored_paths: Vec<PathBuf>,
+    /// `plan_switch` only, else empty: rows of the custom id that the official system does not accept, stored
+    /// paths sorted; the preview lists them as « gardés, masqués, jusqu'à Oublier ses jeux » (ADR 0025 §10).
+    pub switch_frozen: Vec<String>,
+    /// `plan_switch` only: the switch this plan is for.
+    switch: Option<SwitchMove>,
     /// One entry per unit (same index): files as analysed, layout and status before the destination checks.
     meta: Vec<plan::UnitMeta>,
     context: plan::PlanContext,
@@ -351,14 +374,18 @@ pub struct TidyJournalInfo {
     pub identities_done: bool,
     /// `Some` for a switch journal (version 2): the UI words its undo differently.
     pub switch: Option<SwitchMove>,
+    /// A switch journal whose end (`F`) is due: `complete_switch` first, no undo (`SwitchPending`).
+    pub end_due: bool,
 }
 
-pub use switch::{KeysChoice, PendingSwitch, SwitchChoices, SwitchDirection, SwitchMove};
+pub use switch::{
+    KeysChoice, PendingSwitch, SwitchChoices, SwitchDirection, SwitchMove, open_switch,
+};
 
 impl TidyJournalInfo {
     /// « Annuler le dernier rangement » may be offered for it (closed run, not undone).
     pub fn can_undo(&self) -> bool {
-        self.complete && !self.undone
+        self.complete && !self.undone && !self.end_due
     }
 }
 
@@ -432,7 +459,7 @@ impl Library {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(&ScanProgress),
     ) -> Result<TidyPlan, LibraryError> {
-        plan::run_in(&self.conn, cat, options, cancel, progress, None)
+        plan::run_in(&self.conn, cat, options, cancel, progress, None, None)
     }
 
     /// Moves the `selected` units (ids of `Sure` / `Suggested` / resolved units). Journal first, never overwrites.

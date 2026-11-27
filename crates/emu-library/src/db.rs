@@ -32,15 +32,122 @@ pub enum ForgetDats {
     Remove,
 }
 
+/// Which rows of a system [`Library::forget_system`] removes.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ForgetScope<'a> {
+    /// Every row of the id (a retired system).
+    All,
+    /// Uncertain conflict (ADR 0025 §9): only the rows of `id` that the active custom definition `id` of the
+    /// catalog claims **and** that the masked official of that id does not accept; official games and shared
+    /// extensions are kept with their data.
+    ClaimedBy(&'a Catalog),
+    /// Switch accepted (ADR 0025 §10): only the rows of `id` that the scan freezes in the catalog (id in conflict,
+    /// row not accepted by its active system).
+    Frozen(&'a Catalog),
+}
+
+/// Which rows [`Library::reassign_system`] rewrites.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ReassignScope<'a> {
+    All,
+    /// Only the rows of `from` that the system accepts (path extension, recorded `.zip` entry, game folder): the
+    /// scan's frozen-row test, shared.
+    AcceptedBy(&'a SystemInfo),
+}
+
+/// What the stored rows of a system need to be judged by [`crate::scan::accepts_row`].
+struct RowKey {
+    id: i64,
+    path: String,
+    entry: Option<String>,
+    is_dir: bool,
+}
+
+fn row_keys(conn: &Connection, system: &str) -> Result<Vec<RowKey>, LibraryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, path, entry, is_dir FROM game WHERE system = ?1 ORDER BY path")
+        .map_err(db_error)?;
+    stmt.query_map([system], |r| {
+        Ok(RowKey {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            entry: r.get(2)?,
+            is_dir: r.get::<_, i64>(3)? != 0,
+        })
+    })
+    .map_err(db_error)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(db_error)
+}
+
+fn accepts(system: &SystemInfo, key: &RowKey) -> bool {
+    crate::scan::accepts_row(system, &key.path, key.entry.as_deref(), key.is_dir)
+}
+
 impl Library {
-    /// « Oublier ses jeux »: deletes the game rows (and with [`ForgetDats::Remove`] the DAT rows) of a system
-    /// `id`, one transaction; their covers and disk lists go with them (foreign keys). `Keep` for an uncertain
-    /// conflict, whose DAT rows are the official's (ADR 0025 §9). Explicit action only: removing a system keeps its
-    /// rows hidden. Files on disk are never touched; an unknown id is a no-op.
-    pub fn forget_system(&mut self, id: &str, dats: ForgetDats) -> Result<(), LibraryError> {
+    /// « Oublier ses jeux »: deletes the game rows selected by `scope` (and with [`ForgetDats::Remove`] the DAT
+    /// rows) of a system `id`, one transaction; their covers and disk lists go with them (foreign keys). `Keep`
+    /// for an uncertain conflict, whose DAT rows are the official's (ADR 0025 §9). Explicit action only: removing a
+    /// system keeps its rows hidden. Files on disk are never touched; an unknown id is a no-op. `Err` if
+    /// `ClaimedBy` and `id` is not an active custom system masking an official one of the same id.
+    pub fn forget_system(
+        &mut self,
+        id: &str,
+        dats: ForgetDats,
+        scope: ForgetScope<'_>,
+    ) -> Result<(), LibraryError> {
+        // The scope is checked against the catalog first; the rows are read inside the transaction, so a scan
+        // cannot add or change one between the selection and the delete.
+        let claim = match scope {
+            ForgetScope::ClaimedBy(cat) => {
+                let custom = cat.system(id).filter(|s| s.is_custom());
+                let official = cat.masked_official().iter().find(|o| o.id == id);
+                let (Some(custom), Some(official)) = (custom, official) else {
+                    return Err(LibraryError::UnknownSystem(id.to_owned()));
+                };
+                Some((custom, official))
+            }
+            _ => None,
+        };
         let tx = self.conn.transaction().map_err(db_error)?;
-        tx.execute("DELETE FROM game WHERE system = ?1", [id])
-            .map_err(db_error)?;
+        let doomed: Option<Vec<i64>> = match scope {
+            ForgetScope::All => None,
+            ForgetScope::ClaimedBy(_) => {
+                let (custom, official) =
+                    claim.ok_or_else(|| LibraryError::UnknownSystem(id.to_owned()))?;
+                Some(
+                    row_keys(&tx, id)?
+                        .iter()
+                        .filter(|k| accepts(custom, k) && !accepts(official, k))
+                        .map(|k| k.id)
+                        .collect(),
+                )
+            }
+            ForgetScope::Frozen(cat) => Some(match cat.system(id) {
+                Some(active) if cat.is_conflicted(id) => row_keys(&tx, id)?
+                    .iter()
+                    .filter(|k| !accepts(active, k))
+                    .map(|k| k.id)
+                    .collect(),
+                _ => Vec::new(),
+            }),
+        };
+        match doomed {
+            None => {
+                tx.execute("DELETE FROM game WHERE system = ?1", [id])
+                    .map_err(db_error)?;
+            }
+            Some(rows) => {
+                let mut delete = tx
+                    .prepare("DELETE FROM game WHERE id = ?1 AND system = ?2")
+                    .map_err(db_error)?;
+                for row in rows {
+                    delete.execute(params![row, id]).map_err(db_error)?;
+                }
+            }
+        }
         if dats == ForgetDats::Remove {
             // The entries follow (ON DELETE CASCADE).
             tx.execute("DELETE FROM dat_info WHERE system = ?1", [id])
@@ -48,15 +155,59 @@ impl Library {
         }
         tx.commit().map_err(db_error)
     }
-}
 
-/// Contract stub of design 8.0 §2.1; the body belongs to lot PB3.
-#[allow(unused_variables)]
-impl Library {
-    /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to` for **every** row of `from`, one
-    /// transaction, same scope forward and undo. Idempotent. Returns the number of rows changed.
-    pub fn reassign_system(&mut self, from: &str, to: &str) -> Result<usize, LibraryError> {
-        todo!("lot PB3")
+    /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to`, one transaction. Forward:
+    /// `AcceptedBy(official)` (the official system of the built-in table, masked or not): the rows it does not
+    /// accept keep `from`, a retired id, so they stay frozen and hidden. Undo: `All` (the frozen rows never moved).
+    /// Idempotent. Returns the number of rows changed.
+    pub fn reassign_system(
+        &mut self,
+        from: &str,
+        to: &str,
+        scope: ReassignScope<'_>,
+    ) -> Result<usize, LibraryError> {
+        let tx = self.conn.transaction().map_err(db_error)?;
+        let rows: Option<Vec<i64>> = match scope {
+            ReassignScope::All => None,
+            ReassignScope::AcceptedBy(system) => Some(
+                row_keys(&tx, from)?
+                    .iter()
+                    .filter(|k| accepts(system, k))
+                    .map(|k| k.id)
+                    .collect(),
+            ),
+        };
+        let changed = match rows {
+            None => tx
+                .execute("UPDATE game SET system = ?2 WHERE system = ?1", [from, to])
+                .map_err(db_error)?,
+            Some(rows) => {
+                let mut update = tx
+                    .prepare("UPDATE game SET system = ?3 WHERE id = ?1 AND system = ?2")
+                    .map_err(db_error)?;
+                let mut n = 0;
+                for row in rows {
+                    n += update.execute(params![row, from, to]).map_err(db_error)?;
+                }
+                n
+            }
+        };
+        tx.commit().map_err(db_error)?;
+        Ok(changed)
+    }
+
+    /// Rows of `id` that `official` does not accept (same test), stored paths sorted: what a switch leaves frozen.
+    /// Read by `plan_switch` (`TidyPlan::switch_frozen`) and by the UI for an in-place or uncertain switch.
+    pub fn switch_frozen_rows(
+        &self,
+        id: &str,
+        official: &SystemInfo,
+    ) -> Result<Vec<String>, LibraryError> {
+        Ok(row_keys(&self.conn, id)?
+            .into_iter()
+            .filter(|k| !accepts(official, k))
+            .map(|k| k.path)
+            .collect())
     }
 }
 

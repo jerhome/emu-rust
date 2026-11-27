@@ -536,7 +536,10 @@ proposé par défaut **sans acceptation explicite de l'utilisateur, demandée un
   Toutes sont idempotentes.
 - **Bascule en place ou incertaine acceptée** : étapes communes seules, sans journal. Même id ⇒ même dossier, mêmes
   lignes (favoris, historique, jaquettes) : **aucun fichier déplacé**. Elle est **définitive** : une définition
-  retirée par bascule ne se restaure pas (§9).
+  retirée par bascule ne se restaure pas (§9). **Bascule avec déplacement sans aucune unité** (aucun jeu à déplacer
+  sous `roms/<id perso>/` ; contrôle du lot PB3) : traitée de même, sans journal ni annulation, lignes réécrites
+  (`AcceptedBy(officiel)`) **avant** le retrait de la définition (`Replaced`) ; une coupure entre les deux laisse la
+  définition active et la bascule proposée, relance idempotente (design 8.0 §0.10, point 5).
 - **Bascule avec déplacement** (réponse Q5) : elle passe par **le rangement** de la 7.1 (ADR 0023), qu'elle
   précise. **Principe** (relecture courte, M1) : le système des lignes ne change **qu'en une fois**, avec la
   définition, quand **toutes** les unités sont à destination (ou toutes revenues) ; à aucun moment un jeu n'est

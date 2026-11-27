@@ -179,6 +179,10 @@ Windows) :
   destination tronquée, prise à tort pour une « place prise » puis gardée comme fichier retiré. Un temporaire orphelin
   est supprimé à la reprise (`complete_switch`, avant les cas ci-dessous). `systems/.retired/` et `systems/`
   synchronisés **avant** `F`.
+  **Limite acceptée** (relecture PB3, m2) : sur ce volume sans liens (FAT, exFAT), le renommage du temporaire
+  peut écraser un fichier qu'un **processus extérieur** crée sous le nom final entre le contrôle et le renommage ;
+  le verrou du rangement n'exclut qu'emu-rust lui-même. Pas d'`unsafe` ni de dépendance ajoutés pour fermer cette
+  fenêtre (design 8.0 §0.10).
 - **Existence par nom exact** : lecture du dossier et comparaison des noms octet par octet (sous Windows et macOS,
   `Path::exists` répond aussi pour une autre casse) ; un nom qui ne diffère que par la casse compte comme une place
   prise, jamais comme « déjà fait ».
@@ -192,7 +196,9 @@ Windows) :
   l'aller jusqu'à son `E`, ou son `F` s'il est dû (aller en cours, fin due), et de même pour l'annulation : les
   Réglages **refusent** de créer, modifier, supprimer ou restaurer la définition `<id perso>` (« une bascule est en
   cours » / « à terminer ») ; c'est ce qui rend sûre la règle « déjà fait » de l'étape (2). Un journal clos sans fin
-  due (bascule incomplète, faite, annulée) ne bloque plus rien. Test en PB3 (refus de l'API) et PU4 (interface).
+  due (bascule incomplète, faite, annulée) ne bloque plus rien. L'API est `open_switch(&TidyOptions)` (contrôle
+  du lot PB3) : les Réglages la consultent avant toute écriture, `write_custom`, `retire_custom` et `restore_custom`
+  ne la contrôlent pas (ils ignorent le dossier des journaux). Test en PB3 (`open_switch`) et PU4 (interface).
 - **Seule exception : échec « place prise »** (PV3, majeur 1) — à l'aller, définition active et fichier retiré présents
   et différents ; à l'annulation, `systems/<id perso>.toml` présent et différent du retiré. Le bandeau propose alors
   « Retirer ce système et terminer la bascule » : la définition active est retirée par `retire_custom(…,

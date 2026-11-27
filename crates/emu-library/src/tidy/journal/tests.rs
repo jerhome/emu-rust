@@ -194,7 +194,8 @@ fn unsafe_paths_and_bad_numbers_are_never_written_nor_read() {
     }
     let t = format!("{base}M 0 18446744073709551615 9223372036854775807 a b\n");
     assert!(parse(t.as_bytes()).is_ok(), "largest values are accepted");
-    assert!(parse(b"emu-rust tidy 2\nR /x\n").is_err());
+    // Version 2 exists since 8.0 (see `switch_tests`); another one is still unknown.
+    assert!(parse(b"emu-rust tidy 3\nR /x\n").is_err());
     assert!(parse(b"emu-rust tidy 1\nR relative\n").is_err());
     assert!(parse(b"emu-rust tidy 1\nR /x\n\xff\n").is_err());
     assert!(parse(b"garbage").is_err());

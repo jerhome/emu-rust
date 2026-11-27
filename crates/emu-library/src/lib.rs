@@ -22,15 +22,15 @@ pub use crate::catalog::{
 pub use crate::custom::{
     ARCHIVE_EXTENSIONS, CUSTOM_FORMAT, CustomSystem, CustomSystemDraft, DISC_EXTENSIONS_8_0,
     DefinitionError, DefinitionOrigin, MAX_DEFINITION_FILES, MAX_DEFINITION_SIZE, MachineTier,
-    PLAYLIST_EXTENSIONS, RetiredSystem, Retirement, cartridge_extensions, dat_file_stem,
-    is_reserved_id, is_safe_relative_path, known_id, known_tier, normalize_name, proposed_id,
-    restore_custom, retire_custom, retired_customs, retired_file_name, validate_custom,
-    write_custom,
+    PLAYLIST_EXTENSIONS, RetiredSystem, Retirement, cartridge_extensions, custom_games_on_disk,
+    dat_file_stem, is_reserved_id, is_safe_relative_path, known_id, known_tier, normalize_name,
+    proposed_id, restore_custom, retire_custom, retired_customs, retired_file_name,
+    validate_custom, write_custom,
 };
 pub use crate::dat::{Dat, DatEntry, MAX_DAT_SIZE, load_dat_file, parse_clrmamepro};
 pub use crate::db::{
-    CoverKind, CoverRecord, CoverState, DatInfo, ForgetDats, Game, GameId, Identification, Library,
-    OpenOutcome, SCHEMA_VERSION,
+    CoverKind, CoverRecord, CoverState, DatInfo, ForgetDats, ForgetScope, Game, GameId,
+    Identification, Library, OpenOutcome, ReassignScope, SCHEMA_VERSION,
 };
 pub use crate::disc::{
     BinKind, CD_32X_PROBE_LEN, DISC_EXTENSIONS, DiscFormat, DiscInfo, DiscRegion, cue_references,
@@ -49,5 +49,5 @@ pub use crate::tidy::{
     AbsoluteMoves, KeysChoice, MAX_IGNORED_PATHS, PendingSwitch, SwitchChoices, SwitchDirection,
     SwitchMove, TidyBlock, TidyExtraName, TidyJournalInfo, TidyMove, TidyOptions, TidyPlan,
     TidyProgress, TidyReason, TidyReport, TidySection, TidyStatus, TidyUnit, create_system_folders,
-    last_tidy,
+    last_tidy, open_switch,
 };

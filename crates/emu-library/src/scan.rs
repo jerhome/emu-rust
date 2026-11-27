@@ -989,6 +989,23 @@ fn pin_agrees(cat: &'static Catalog, old: &Existing, found: &Found) -> bool {
     let Some(ext) = extension_of(&found.path, old.entry.as_deref()) else {
         return true;
     };
+    // A game moved under the folder of an official system that a definition masks (a switch with move stopped
+    // before its end, ADR 0025 §10): its row keeps its system, it is not re-attributed from the folder.
+    if cat
+        .masked_official()
+        .iter()
+        .any(|o| found.folders.contains(&o.id))
+        && cat.system(&old.system).is_some_and(|s| {
+            accepts_row(
+                s,
+                &found.path.to_string_lossy(),
+                old.entry.as_deref(),
+                false,
+            )
+        })
+    {
+        return true;
+    }
     if ext == "zip" {
         // A DOS archive (no launched entry): only the folder rule can have changed.
         return cat.system(&old.system).is_some_and(|s| s.folder_games)
@@ -2605,18 +2622,26 @@ fn is_frozen(cat: &Catalog, path: &str, old: &Existing) -> bool {
     let Some(system) = cat.system(&old.system) else {
         return true;
     };
-    if !cat.is_conflicted(&system.id) {
-        return false;
+    cat.is_conflicted(&system.id) && !accepts_row(system, path, old.entry.as_deref(), old.is_dir)
+}
+
+/// Whether `system` would have attributed the stored row (path, recorded zip entry, game folder) to itself, read
+/// from the row alone, never from the disk: the test shared by the scan's frozen rows, the switch and « Oublier ses
+/// jeux » (ADR 0025 §10, §13). A zip is judged by its entry, an unknown entry is not accepted.
+pub(crate) fn accepts_row(
+    system: &SystemInfo,
+    path: &str,
+    entry: Option<&str>,
+    is_dir: bool,
+) -> bool {
+    if is_dir {
+        return system.folder_games;
     }
-    if old.is_dir {
-        return !system.folder_games;
-    }
-    // A zip is judged by its entry; an unknown entry is not accepted (nothing is lost by waiting).
     let name = match lower_ext(Path::new(path)).as_deref() {
-        Some("zip") => old.entry.as_deref().map(Path::new),
+        Some("zip") => entry.map(Path::new),
         _ => Some(Path::new(path)),
     };
-    !name.and_then(lower_ext).is_some_and(|ext| {
+    name.and_then(lower_ext).is_some_and(|ext| {
         system
             .extensions
             .iter()

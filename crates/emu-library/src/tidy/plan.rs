@@ -14,7 +14,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::journal::{fold_path, same_place};
 use super::{
-    MAX_IGNORED_PATHS, TidyBlock, TidyMove, TidyOptions, TidyPlan, TidyReason, TidyStatus, TidyUnit,
+    MAX_IGNORED_PATHS, SwitchMove, TidyBlock, TidyMove, TidyOptions, TidyPlan, TidyReason,
+    TidyStatus, TidyUnit,
 };
 use crate::catalog::{Catalog, catalog};
 use crate::db::{DiscIndex, NameIndex, db_error, identify};
@@ -179,10 +180,17 @@ struct Walked {
     reserved: BTreeSet<String>,
     ignored: u64,
     ignored_paths: Vec<PathBuf>,
+    /// A switch plan: the only top folder it counts ignored files of (`roms/<custom id>/`).
+    scope: Option<String>,
 }
 
 impl Walked {
     fn ignore(&mut self, rel: PathBuf) {
+        if let Some(folder) = &self.scope
+            && !under_folder(&rel, folder)
+        {
+            return;
+        }
         self.ignored += 1;
         if self.ignored_paths.len() < MAX_IGNORED_PATHS {
             self.ignored_paths.push(rel);
@@ -232,9 +240,13 @@ fn walk(
     reserved: &BTreeSet<String>,
     options: &TidyOptions,
     cancel: &AtomicBool,
+    scope: Option<&str>,
 ) -> Result<Walked, LibraryError> {
     let (root, max_depth) = (options.roms_root(), options.max_depth());
-    let mut out = Walked::default();
+    let mut out = Walked {
+        scope: scope.map(str::to_owned),
+        ..Walked::default()
+    };
     let mut stack = vec![(PathBuf::new(), 0usize)];
     while let Some((rel, depth)) = stack.pop() {
         if scan::is_cancelled(cancel) {
@@ -1261,13 +1273,36 @@ fn playlist_candidates(cat: &Catalog, found: &Found, entries: &[scan::EntryCheck
     }
 }
 
-/// `(id, system, title)` of the library row stored at `key`.
-fn known_row(conn: &Connection, key: &str) -> Result<Option<(i64, String, String)>, LibraryError> {
-    conn.prepare_cached("SELECT id, system, title FROM game WHERE path = ?1")
+/// A library row stored at a key: what the plan needs of it.
+struct KnownRow {
+    id: i64,
+    system: String,
+    title: String,
+    entry: Option<String>,
+    is_dir: bool,
+}
+
+fn known_row(conn: &Connection, key: &str) -> Result<Option<KnownRow>, LibraryError> {
+    conn.prepare_cached("SELECT id, system, title, entry, is_dir FROM game WHERE path = ?1")
         .map_err(db_error)?
-        .query_row([key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_row([key], |r| {
+            Ok(KnownRow {
+                id: r.get(0)?,
+                system: r.get(1)?,
+                title: r.get(2)?,
+                entry: r.get(3)?,
+                is_dir: r.get::<_, i64>(4)? != 0,
+            })
+        })
         .optional()
         .map_err(db_error)
+}
+
+/// `rel` is `<custom>` or lives under it, the folder compared without the case of ASCII letters.
+fn under_folder(rel: &Path, folder: &str) -> bool {
+    rel.components().next().is_some_and(
+        |c| matches!(c, std::path::Component::Normal(n) if n.to_string_lossy().eq_ignore_ascii_case(folder)),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1279,11 +1314,14 @@ pub(super) fn run(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
 ) -> Result<TidyPlan, LibraryError> {
-    run_in(conn, catalog(), options, cancel, progress, None)
+    run_in(conn, catalog(), options, cancel, progress, None, None)
 }
 
 /// [`run`] on a given catalog snapshot. `exempt`: a reserved folder (ADR 0025 §12) that is nevertheless a source,
 /// the one case being the switch of a custom system whose own folder is reserved in the catalog « after ».
+/// `switch` (with `exempt` = its custom id): the plan of a switch with move, which keeps only the units under
+/// `roms/<custom id>/` that the official system takes (design 8.0 §2.1): the rows of the custom id follow the
+/// official system when it accepts them, and the units it does not accept stay out of the plan.
 pub(super) fn run_in(
     conn: &Connection,
     cat: &'static Catalog,
@@ -1291,12 +1329,19 @@ pub(super) fn run_in(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&ScanProgress),
     exempt: Option<&str>,
+    switch: Option<&SwitchMove>,
 ) -> Result<TidyPlan, LibraryError> {
     scan::clear_probes();
     let root = options.roms_root();
     let root_dev = fs::metadata(root).ok().as_ref().and_then(dev_of);
     let reserved = reserved_set(conn, cat, exempt)?;
-    let walked = walk(cat, &reserved, options, cancel)?;
+    let walked = walk(
+        cat,
+        &reserved,
+        options,
+        cancel,
+        switch.map(|sw| sw.custom_id.as_str()),
+    )?;
     let (drafts, ignored) = drafts(cat, &walked, root);
     let mut classifier = Classifier {
         cat,
@@ -1329,6 +1374,12 @@ pub(super) fn run_in(
             DraftKind::Odd(rel) => (rel.clone(), root.join(rel)),
             _ => (files[0].rel.clone(), files[0].abs.clone()),
         };
+        if let Some(sw) = switch
+            && !(under_folder(&rel, &sw.custom_id)
+                && files.iter().all(|f| under_folder(&f.rel, &sw.custom_id)))
+        {
+            continue;
+        }
         state.files_seen += 1;
         state.current = Some(primary_abs.clone());
         let extension = match &draft.kind {
@@ -1373,7 +1424,7 @@ pub(super) fn run_in(
         };
         if let Some(block) = draft.block.clone() {
             m.base = TidyStatus::Blocked(block);
-        } else if let Some((id, system, title)) = scan_root
+        } else if let Some(row) = scan_root
             .join(&rel)
             .to_str()
             .map(|key| known_row(conn, key))
@@ -1381,18 +1432,33 @@ pub(super) fn run_in(
             .flatten()
         {
             // Known game: the system of its row (its saves live under that system's core).
-            unit.known_game = Some(GameId(id));
-            unit.title = title;
+            unit.known_game = Some(GameId(row.id));
+            unit.title = row.title.clone();
+            let mut system = row.system.clone();
+            if let Some(sw) = switch.filter(|sw| sw.custom_id == system) {
+                // The row follows the official system when it accepts it; else it stays, frozen, out of the plan.
+                let accepted = cat.system(&sw.official_id).is_some_and(|o| {
+                    scan::accepts_row(o, &rel.to_string_lossy(), row.entry.as_deref(), row.is_dir)
+                });
+                if !accepted {
+                    continue;
+                }
+                system.clone_from(&sw.official_id);
+            }
             if cat.system(&system).is_none() {
                 // Its system is not in the catalog (retired, in error, masked): nothing is put into `roms/<id>/`
                 // of a system that is absent (ADR 0025 §12); the game stays where it is.
                 m.base = TidyStatus::Unknown;
             } else {
-                unit.candidates = official_for_extension(cat, &extension)
-                    .iter()
-                    .filter(|s| s.id != system)
-                    .map(|s| s.id.clone())
-                    .collect();
+                unit.candidates = if switch.is_some() {
+                    Vec::new()
+                } else {
+                    official_for_extension(cat, &extension)
+                        .iter()
+                        .filter(|s| s.id != system)
+                        .map(|s| s.id.clone())
+                        .collect()
+                };
                 m.choosable = !unit.candidates.is_empty();
                 m.base = TidyStatus::Sure(TidyReason::Library);
                 unit.system = Some(system.clone());
@@ -1447,6 +1513,25 @@ pub(super) fn run_in(
                     if let Some(t) = c.title.filter(|t| !t.is_empty()) {
                         unit.title = t;
                     }
+                    if let Some(sw) = switch {
+                        // A file the library does not know yet: it goes to the official system when that is
+                        // what the analysis says, or one of the choices of an ambiguous unit; else it stays.
+                        let blocked = matches!(m.base, TidyStatus::Blocked(_));
+                        let takes = unit.system.as_deref() == Some(sw.official_id.as_str())
+                            || unit.candidates.contains(&sw.official_id);
+                        if !blocked && !takes {
+                            ignored_extra.push(rel.clone());
+                            continue;
+                        }
+                        if m.base == TidyStatus::Ambiguous {
+                            m.base = TidyStatus::Sure(TidyReason::Extension);
+                        }
+                        if !blocked {
+                            unit.system = Some(sw.official_id.clone());
+                        }
+                        unit.candidates.clear();
+                        m.choosable = false;
+                    }
                 }
             }
         }
@@ -1457,26 +1542,34 @@ pub(super) fn run_in(
             progress(&state);
         }
     }
+    // A switch plan speaks of `roms/<custom id>/` only (design 8.0 §0.10): what it ignores there stays in that
+    // folder (files the official system does not recognize, links, firmware, unreadable names).
     let mut ignored_paths: Vec<PathBuf> = walked.ignored_paths.clone();
     let mut ignored_count = walked.ignored;
-    for i in ignored {
+    let in_scope = |rel: &Path| switch.is_none_or(|sw| under_folder(rel, &sw.custom_id));
+    let later = ignored
+        .iter()
+        .map(|&i| walked.files[i].rel.as_path())
+        .chain(ignored_extra.iter().map(PathBuf::as_path))
+        .filter(|rel| in_scope(rel));
+    for rel in later {
         ignored_count += 1;
         if ignored_paths.len() < MAX_IGNORED_PATHS {
-            ignored_paths.push(walked.files[i].rel.clone());
-        }
-    }
-    for rel in ignored_extra {
-        ignored_count += 1;
-        if ignored_paths.len() < MAX_IGNORED_PATHS {
-            ignored_paths.push(rel);
+            ignored_paths.push(rel.to_path_buf());
         }
     }
     let mut plan = TidyPlan {
         units,
-        already_tidy: walked.already_tidy,
+        already_tidy: if switch.is_some() {
+            0
+        } else {
+            walked.already_tidy
+        },
         reserved_folders: walked.reserved.iter().cloned().collect(),
         ignored: ignored_count,
         ignored_paths,
+        switch_frozen: Vec::new(),
+        switch: switch.cloned(),
         meta,
         context: PlanContext {
             cat: Snapshot(cat),
@@ -1495,7 +1588,7 @@ pub(super) fn run_in(
 
 /// Folders the plan leaves alone: the catalog's reserved ids (retired, broken, masked) plus the ids of the library's
 /// rows that the catalog lacks, minus `exempt` (ADR 0025 §12). An active id is never reserved.
-fn reserved_set(
+pub(super) fn reserved_set(
     conn: &Connection,
     cat: &Catalog,
     exempt: Option<&str>,
