@@ -17,7 +17,8 @@ pub const USAGE: &str = "Usage : emu-rust                         ouvre la bibli
                          \x20      emu-rust [--data-dir DIR] [--no-audio] [--no-gamepad] [--wizard]\n\
                          \x20                [--screen library|library-settings|library-help|library-log|cores|\n\
                          \x20                          library-launch|library-tidy|library-tidy-report|\n\
-                         \x20                          library-tidy-undo|wizard]\n\
+                         \x20                          library-tidy-undo|wizard|custom-add|custom-sheet|\n\
+                         \x20                          custom-settings|switch-banner|switch-preview]\n\
                          \x20                [--dump-window sortie.png]\n\
                          \x20      emu-rust [--data-dir DIR] --list-cores | --refresh-cores | --update-cores\n\
                          \x20      emu-rust [--data-dir DIR] --install-core <ID|recommended> [--install-core ...]\n\
@@ -314,11 +315,17 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, Strin
                     "library-tidy-report" => ScreenArg::Library(LibraryScreen::TidyReport),
                     "library-tidy-undo" => ScreenArg::Library(LibraryScreen::TidyUndo),
                     "wizard" => ScreenArg::Library(LibraryScreen::Wizard),
+                    "custom-add" => ScreenArg::Library(LibraryScreen::CustomAdd),
+                    "custom-sheet" => ScreenArg::Library(LibraryScreen::CustomSheet),
+                    "custom-settings" => ScreenArg::Library(LibraryScreen::CustomSettings),
+                    "switch-banner" => ScreenArg::Library(LibraryScreen::SwitchBanner),
+                    "switch-preview" => ScreenArg::Library(LibraryScreen::SwitchPreview),
                     _ => {
                         return Err(
                             "--screen attend menu, keys, options, disks, computer, vkbd, journal, library, \
                                     library-settings, library-help, library-log, library-launch, library-tidy, \
-                                    library-tidy-report, library-tidy-undo, wizard ou cores"
+                                    library-tidy-report, library-tidy-undo, wizard, custom-add, custom-sheet, \
+                                    custom-settings, switch-banner, switch-preview ou cores"
                                 .into(),
                         );
                     }
@@ -828,6 +835,11 @@ mod tests {
             ("library-tidy", LibraryScreen::Tidy),
             ("library-tidy-report", LibraryScreen::TidyReport),
             ("library-tidy-undo", LibraryScreen::TidyUndo),
+            ("custom-add", LibraryScreen::CustomAdd),
+            ("custom-sheet", LibraryScreen::CustomSheet),
+            ("custom-settings", LibraryScreen::CustomSettings),
+            ("switch-banner", LibraryScreen::SwitchBanner),
+            ("switch-preview", LibraryScreen::SwitchPreview),
         ] {
             let Command::Library(l) = p(&["--screen", arg]).unwrap() else {
                 panic!()

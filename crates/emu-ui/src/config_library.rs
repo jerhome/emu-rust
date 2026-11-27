@@ -104,6 +104,154 @@ pub struct CoresConfig {
     pub extra: toml::Table,
 }
 
+/// What a switch to an official system changes in the user's settings (ADR 0025 §10, steps a and b): the
+/// definition being replaced, the official system, and the cores of the definition (the first one is the user's).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SwitchTarget<'a> {
+    pub custom_id: &'a str,
+    pub official: &'a emu_library::SystemInfo,
+    pub cores: &'a [String],
+    /// First core of the official system in `cores.toml` (`None`: unknown).
+    pub official_first_core: Option<&'a str>,
+}
+
+/// Bound of the keyboard profile kept for the undo (the journal header takes 16 Kio at most).
+const PRIOR_PROFILE_MAX: usize = 16 * 1024;
+
+#[derive(Serialize, Deserialize)]
+struct KeyMapText {
+    keys: crate::keyboard::KeyMap,
+}
+
+fn keymap_text(map: &crate::keyboard::KeyMap) -> Option<String> {
+    let text = toml::to_string(&KeyMapText { keys: map.clone() }).ok()?;
+    (text.len() <= PRIOR_PROFILE_MAX).then_some(text)
+}
+
+fn keymap_from_text(text: &str) -> Option<crate::keyboard::KeyMap> {
+    toml::from_str::<KeyMapText>(text).ok().map(|t| t.keys)
+}
+
+impl crate::Config {
+    /// `(custom key, official key)` of the profiles of each core of the definition.
+    fn switch_profile_keys(target: &SwitchTarget<'_>) -> Vec<(String, String)> {
+        target
+            .cores
+            .iter()
+            .map(|core| {
+                let style = crate::PadStyle::for_system(target.official, core);
+                (
+                    format!("{core}@{}", target.custom_id),
+                    crate::profile_key_for(target.official, style, core),
+                )
+            })
+            .collect()
+    }
+
+    /// The official profile of a core exists and differs from the user's: the switch asks which one to keep.
+    pub(crate) fn switch_keys_conflict(&self, target: &SwitchTarget<'_>) -> bool {
+        let keyboard = &self.input.keyboard;
+        let pads = &self.input.gamepad.bindings;
+        Self::switch_profile_keys(target)
+            .iter()
+            .any(|(custom, official)| {
+                keyboard
+                    .get(custom)
+                    .zip(keyboard.get(official))
+                    .is_some_and(|(a, b)| a != b)
+                    || pads
+                        .get(custom)
+                        .zip(pads.get(official))
+                        .is_some_and(|(a, b)| a != b)
+            })
+    }
+
+    /// What the undo needs: the core preference of the official id and the keyboard profile of the user's core.
+    pub(crate) fn switch_prior(
+        &self,
+        target: &SwitchTarget<'_>,
+    ) -> (Option<Vec<String>>, Option<String>) {
+        let preference = self
+            .cores
+            .preferred
+            .get(&target.official.id)
+            .map(|core| vec![core.clone()]);
+        let profile = Self::switch_profile_keys(target)
+            .first()
+            .and_then(|(_, official)| self.input.keyboard.get(official))
+            .and_then(keymap_text);
+        (preference, profile)
+    }
+
+    /// Steps (a) keys and (b) core of a switch. Idempotent. The official profile is created from the user's one
+    /// when it does not exist; when both exist and differ, `keys` decides (`KeepUser` overwrites). The user's core
+    /// stays first for the official system when it is not the one of `cores.toml`.
+    pub(crate) fn apply_switch(
+        &mut self,
+        target: &SwitchTarget<'_>,
+        keys: emu_library::KeysChoice,
+    ) {
+        let overwrite = matches!(keys, emu_library::KeysChoice::KeepUser);
+        for (custom, official) in Self::switch_profile_keys(target) {
+            if let Some(mine) = self.input.keyboard.get(&custom).cloned()
+                && (overwrite || !self.input.keyboard.contains_key(&official))
+            {
+                self.input.keyboard.insert(official.clone(), mine);
+            }
+            if let Some(mine) = self.input.gamepad.bindings.get(&custom).cloned()
+                && (overwrite || !self.input.gamepad.bindings.contains_key(&official))
+            {
+                self.input.gamepad.bindings.insert(official, mine);
+            }
+        }
+        if let (Some(user), Some(first)) = (target.cores.first(), target.official_first_core)
+            && user != first
+        {
+            self.cores
+                .preferred
+                .insert(target.official.id.clone(), user.clone());
+        }
+    }
+
+    /// What the undo of a switch gives back: the core preference and the keyboard profile of before.
+    pub(crate) fn undo_switch(
+        &mut self,
+        target: &SwitchTarget<'_>,
+        prior_preference: Option<&[String]>,
+        prior_profile: Option<&str>,
+    ) {
+        match prior_preference.and_then(<[String]>::first) {
+            Some(core) => {
+                self.cores
+                    .preferred
+                    .insert(target.official.id.clone(), core.clone());
+            }
+            None => {
+                // Only the preference the switch wrote (the user's core), never one chosen since.
+                if target.cores.first() == self.cores.preferred.get(&target.official.id) {
+                    self.cores.preferred.remove(&target.official.id);
+                }
+            }
+        }
+        let Some((custom, official)) = Self::switch_profile_keys(target).into_iter().next() else {
+            return;
+        };
+        match prior_profile {
+            Some(text) => {
+                if let Some(map) = keymap_from_text(text) {
+                    self.input.keyboard.insert(official, map);
+                }
+            }
+            None => {
+                // The official profile was absent: remove the copy, not a profile the user changed since.
+                if self.input.keyboard.get(&official) == self.input.keyboard.get(&custom) {
+                    self.input.keyboard.remove(&official);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +338,113 @@ gb = "sameboy"
         assert_eq!(d.library_db, std::path::Path::new("/d/library.sqlite"));
         assert!(d.cores.starts_with("/d/cores"));
         assert_eq!(d.database, std::path::Path::new("/d/database/no-intro"));
+    }
+
+    mod switch {
+        use emu_library::{Catalog, KeysChoice, SystemInfo};
+
+        use super::*;
+        use crate::keyboard::KeyMap;
+
+        fn snes() -> SystemInfo {
+            Catalog::official().system("snes").unwrap().clone()
+        }
+
+        fn map(key: winit::keyboard::KeyCode) -> KeyMap {
+            let mut m = KeyMap::default();
+            m.bind(key, 0, emu_runtime::JoypadButton::A);
+            m
+        }
+
+        fn target<'a>(official: &'a SystemInfo, cores: &'a [String]) -> SwitchTarget<'a> {
+            SwitchTarget {
+                custom_id: "mysnes",
+                official,
+                cores,
+                official_first_core: Some("snes9x"),
+            }
+        }
+
+        #[test]
+        fn the_official_profile_is_created_from_the_users_one_when_it_is_absent() {
+            let (official, cores) = (snes(), vec!["snes9x".to_owned()]);
+            let mut cfg = Config::default();
+            cfg.set_keymap("snes9x@mysnes", map(winit::keyboard::KeyCode::KeyQ));
+            assert!(!cfg.switch_keys_conflict(&target(&official, &cores)));
+            cfg.apply_switch(&target(&official, &cores), KeysChoice::Copy);
+            assert_eq!(
+                cfg.input.keyboard.get("snes9x"),
+                Some(&map(winit::keyboard::KeyCode::KeyQ))
+            );
+        }
+
+        #[test]
+        fn a_different_official_profile_is_a_conflict_and_the_choice_decides() {
+            let (official, cores) = (snes(), vec!["snes9x".to_owned()]);
+            let (mine, theirs) = (
+                map(winit::keyboard::KeyCode::KeyQ),
+                map(winit::keyboard::KeyCode::KeyW),
+            );
+            let mut cfg = Config::default();
+            cfg.set_keymap("snes9x@mysnes", mine.clone());
+            cfg.set_keymap("snes9x", theirs.clone());
+            assert!(cfg.switch_keys_conflict(&target(&official, &cores)));
+            let mut official_wins = cfg.clone();
+            official_wins.apply_switch(&target(&official, &cores), KeysChoice::KeepOfficial);
+            assert_eq!(official_wins.input.keyboard.get("snes9x"), Some(&theirs));
+            cfg.apply_switch(&target(&official, &cores), KeysChoice::KeepUser);
+            assert_eq!(cfg.input.keyboard.get("snes9x"), Some(&mine));
+        }
+
+        #[test]
+        fn the_users_core_stays_first_only_when_it_is_not_the_official_one() {
+            let official = snes();
+            let mut cfg = Config::default();
+            let same = vec!["snes9x".to_owned()];
+            cfg.apply_switch(&target(&official, &same), KeysChoice::Copy);
+            assert!(cfg.cores.preferred.is_empty());
+            let other = vec!["bsnes".to_owned(), "snes9x".to_owned()];
+            cfg.apply_switch(&target(&official, &other), KeysChoice::Copy);
+            assert_eq!(cfg.cores.preferred["snes"], "bsnes");
+            // Idempotent: a resumed switch changes nothing more.
+            let again = cfg.clone();
+            cfg.apply_switch(&target(&official, &other), KeysChoice::Copy);
+            assert_eq!(cfg, again);
+        }
+
+        #[test]
+        fn the_undo_gives_back_the_preference_and_the_profile_of_before() {
+            let (official, cores) = (snes(), vec!["bsnes".to_owned()]);
+            let theirs = map(winit::keyboard::KeyCode::KeyW);
+            let mut cfg = Config::default();
+            cfg.set_keymap("bsnes@mysnes", map(winit::keyboard::KeyCode::KeyQ));
+            cfg.set_keymap("bsnes", theirs.clone());
+            cfg.cores.preferred.insert("snes".into(), "snes9x".into());
+            let t = target(&official, &cores);
+            let (preference, profile) = cfg.switch_prior(&t);
+            assert_eq!(preference.as_deref(), Some(&["snes9x".to_owned()][..]));
+            assert!(profile.is_some());
+            cfg.apply_switch(&t, KeysChoice::KeepUser);
+            assert_eq!(cfg.cores.preferred["snes"], "bsnes");
+            cfg.undo_switch(&t, preference.as_deref(), profile.as_deref());
+            assert_eq!(cfg.cores.preferred["snes"], "snes9x");
+            assert_eq!(cfg.input.keyboard.get("bsnes"), Some(&theirs));
+        }
+
+        #[test]
+        fn the_undo_removes_a_copied_profile_but_not_one_changed_since() {
+            let (official, cores) = (snes(), vec!["bsnes".to_owned()]);
+            let t = target(&official, &cores);
+            let mut cfg = Config::default();
+            cfg.set_keymap("bsnes@mysnes", map(winit::keyboard::KeyCode::KeyQ));
+            cfg.apply_switch(&t, KeysChoice::Copy);
+            let mut changed = cfg.clone();
+            changed.set_keymap("bsnes", map(winit::keyboard::KeyCode::KeyE));
+            cfg.undo_switch(&t, None, None);
+            assert!(!cfg.input.keyboard.contains_key("bsnes"));
+            assert!(!cfg.cores.preferred.contains_key("snes"));
+            changed.undo_switch(&t, None, None);
+            assert!(changed.input.keyboard.contains_key("bsnes"));
+        }
     }
 }

@@ -1244,3 +1244,23 @@ mod tests {
         );
     }
 }
+
+/// « A — Tir »: the name of the button on the pad, then the one the core gave it (control of a custom system).
+pub fn button_with_name(button: &str, core_name: Option<&str>) -> String {
+    match core_name {
+        Some(name) if !name.is_empty() => format!("{button} — {name}"),
+        _ => button.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod button_name_tests {
+    use super::button_with_name;
+
+    #[test]
+    fn the_name_of_the_core_follows_the_button_and_its_absence_leaves_it_alone() {
+        assert_eq!(button_with_name("A", Some("Tir")), "A — Tir");
+        assert_eq!(button_with_name("A", None), "A");
+        assert_eq!(button_with_name("A", Some("")), "A");
+    }
+}

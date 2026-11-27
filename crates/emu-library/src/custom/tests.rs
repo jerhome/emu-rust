@@ -1290,3 +1290,39 @@ fn custom_games_on_disk_fails_closed_on_an_unreadable_folder() {
         2
     );
 }
+
+#[test]
+fn clean_text_removes_every_invisible_format_character() {
+    let dirty = "a\u{00AD}b\u{200B}c\u{200C}d\u{200D}e\u{2060}f\u{2064}g\u{FEFF}h\u{061C}i\u{202E}j\u{2067}k\u{0007}l";
+    assert_eq!(clean_text(dirty), "abcdefghijkl");
+}
+
+#[test]
+fn local_dat_stems_never_are_windows_device_names() {
+    for name in ["CON", "nul", "Com1", "LPT9", "aux", "PRN", "CONIN$"] {
+        let stem = dat_file_stem(name);
+        assert!(!is_windows_device_name(&stem), "{name} -> {stem}");
+        assert_ne!(stem, name);
+        assert_eq!(stem, dat_file_stem(name), "stable");
+    }
+    assert_eq!(dat_file_stem("Console"), "Console");
+}
+
+#[test]
+fn custom_games_on_disk_fails_closed_past_the_entry_bound() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = std::fs::canonicalize(tmp.path()).unwrap().join("roms");
+    let catalog = custom_catalog(tmp.path());
+    let own = roms.join("zzdemo");
+    for i in 0..5 {
+        put_file(&own.join(format!("g{i}.dmo")), b"1");
+    }
+    assert_eq!(
+        custom_games_on_disk_bounded(&roms, &catalog, "zzdemo", 10, 5)
+            .unwrap()
+            .len(),
+        5
+    );
+    let result = custom_games_on_disk_bounded(&roms, &catalog, "zzdemo", 10, 4);
+    assert!(matches!(result, Err(LibraryError::Io { .. })), "{result:?}");
+}

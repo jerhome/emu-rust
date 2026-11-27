@@ -13,7 +13,7 @@ use super::*;
 use emu_assets::Secret;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
 fn game(id: i64, system: &str, path: &str, entry: Option<&str>) -> Game {
@@ -128,7 +128,7 @@ fn harness(capture: bool) -> Harness {
     {
         let (mut db, _) = Library::open(&dirs.library_db).unwrap();
         let options = ScanOptions {
-            roots: vec![repo_root().join("tests/data/roms")],
+            roots: vec![repo_root().join("tests").join("data").join("roms")],
             ..ScanOptions::default()
         };
         db.scan(&options, &AtomicBool::new(false), &mut |_| {})
@@ -379,7 +379,14 @@ fn dat_download_imports_then_uses_etag_only_when_the_file_exists() {
         .build()
         .unwrap();
     let server = rt.block_on(MockServer::start());
-    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    let dat = std::fs::read(
+        repo_root()
+            .join("tests")
+            .join("data")
+            .join("dat")
+            .join("sample.dat"),
+    )
+    .unwrap();
     let gb = "/metadat/no-intro/Nintendo%20-%20Game%20Boy.dat";
     rt.block_on(
         Mock::given(method("GET"))
@@ -455,7 +462,7 @@ fn dat_download_imports_then_uses_etag_only_when_the_file_exists() {
 #[test]
 fn first_scan_without_dat_offers_the_download_once() {
     let mut h = harness(false);
-    h.ui.config.library.roots = vec![repo_root().join("tests/data/roms")];
+    h.ui.config.library.roots = vec![repo_root().join("tests").join("data").join("roms")];
     h.frame(Vec::new());
     assert!(!h.ui.has_dat);
     h.ui.start_scan(&h.ctx.clone());
@@ -920,7 +927,14 @@ fn dat_download_fetches_each_source_of_each_system() {
         .build()
         .unwrap();
     let server = rt.block_on(MockServer::start());
-    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    let dat = std::fs::read(
+        repo_root()
+            .join("tests")
+            .join("data")
+            .join("dat")
+            .join("sample.dat"),
+    )
+    .unwrap();
     for p in [
         "/metadat/tosec/Atari%20-%20ST.dat",
         "/metadat/tosec/Commodore%20-%20Amiga.dat",
@@ -968,9 +982,19 @@ fn dat_download_fetches_each_source_of_each_system() {
         requests.iter().all(|r| !r.url.path().contains("no-intro")),
         "no No-Intro request for computers"
     );
-    assert!(tmp.path().join("tosec/Atari - ST.dat").is_file());
-    assert!(tmp.path().join("tosec/Commodore - Amiga.dat").is_file());
-    assert!(tmp.path().join("libretro/Commodore - Amiga.dat").is_file());
+    assert!(tmp.path().join("tosec").join("Atari - ST.dat").is_file());
+    assert!(
+        tmp.path()
+            .join("tosec")
+            .join("Commodore - Amiga.dat")
+            .is_file()
+    );
+    assert!(
+        tmp.path()
+            .join("libretro")
+            .join("Commodore - Amiga.dat")
+            .is_file()
+    );
     use emu_library::DatSource;
     assert!(
         db.dat_info_for("amiga", DatSource::Tosec)
@@ -1040,7 +1064,7 @@ fn several_rom_folders_ask_which_one() {
 #[test]
 fn missing_kickstart_warns_once_then_launches_with_aros() {
     let mut h = harness(false);
-    let game = h.ui.dirs.root.join("roms/amiga/Game.adf");
+    let game = h.ui.dirs.root.join("roms").join("amiga").join("Game.adf");
     std::fs::create_dir_all(game.parent().unwrap()).unwrap();
     std::fs::write(&game, vec![0u8; 1024]).unwrap();
     let prefs = cores_ui::preferences(&h.ui.config.cores);
@@ -1205,7 +1229,7 @@ fn a_stale_cleared_entry_does_not_outlive_the_frame() {
 fn dos_folder_launch_waits_for_its_snapshot() {
     let mut h = harness(true);
     h.frame(Vec::new());
-    let dir = h._tmp.path().join("roms/dos/Jeu");
+    let dir = h._tmp.path().join("roms").join("dos").join("Jeu");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("GAME.EXE"), vec![1u8; 300_000]).unwrap();
     h.ui.events
@@ -1228,7 +1252,13 @@ fn dos_folder_launch_waits_for_its_snapshot() {
         "{launched:?}"
     );
     assert!(!h.ui.snapshot_busy());
-    assert!(h.ui.dirs.cache_dir().join("dosbox_pure/Jeu.zip").is_file());
+    assert!(
+        h.ui.dirs
+            .cache_dir()
+            .join("dosbox_pure")
+            .join("Jeu.zip")
+            .is_file()
+    );
     h.ui.events
         .push(LibraryEvent::Launch(Box::new(dos_request(&dir, None))));
     assert_eq!(
@@ -1249,7 +1279,7 @@ fn dos_folder_launch_waits_for_its_snapshot() {
 fn dos_snapshot_can_be_cancelled_with_the_keyboard() {
     let mut h = harness(true);
     h.frame(Vec::new());
-    let dir = h._tmp.path().join("roms/dos/Gros");
+    let dir = h._tmp.path().join("roms").join("dos").join("Gros");
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..40 {
         std::fs::write(dir.join(format!("F{i}.DAT")), vec![0u8; 1 << 20]).unwrap();
@@ -1271,7 +1301,7 @@ fn dos_snapshot_can_be_cancelled_with_the_keyboard() {
     }
     assert!(!h.ui.snapshot_busy());
     // Either cancelled in time (no launch, no residue) or already finished (launch): never a half snapshot.
-    let zip = h.ui.dirs.cache_dir().join("dosbox_pure/Gros.zip");
+    let zip = h.ui.dirs.cache_dir().join("dosbox_pure").join("Gros.zip");
     assert_eq!(events.is_empty(), !zip.exists(), "{events:?}");
 }
 
@@ -1309,7 +1339,7 @@ fn dos_cache_size_and_clear() {
 fn dos_programs_dialog_by_keyboard() {
     let mut h = harness(false);
     h.frame(Vec::new());
-    let dir = h._tmp.path().join("roms/dos/Jeu");
+    let dir = h._tmp.path().join("roms").join("dos").join("Jeu");
     std::fs::create_dir_all(&dir).unwrap();
     for f in ["SETUP.EXE", "go.exe", "README.TXT"] {
         std::fs::write(dir.join(f), b"MZ").unwrap();
@@ -1527,7 +1557,7 @@ fn cover_status_counts_games_not_searches() {
     let tmp = tempfile::tempdir().unwrap();
     let mut db = Library::open_in_memory().unwrap();
     let options = ScanOptions {
-        roots: vec![repo_root().join("tests/data/roms")],
+        roots: vec![repo_root().join("tests").join("data").join("roms")],
         ..ScanOptions::default()
     };
     db.scan(&options, &AtomicBool::new(false), &mut |_| {})
@@ -1865,7 +1895,11 @@ fn the_settings_open_with_a_system_in_error_and_a_retired_one() {
     std::fs::create_dir_all(dir.join(".retired")).unwrap();
     std::fs::write(dir.join("broken.toml"), "not = [toml").unwrap();
     std::fs::write(dir.join("fine.toml"), bare_definition("fine")).unwrap();
-    std::fs::write(dir.join(".retired/old-1.toml"), bare_definition("old")).unwrap();
+    std::fs::write(
+        dir.join(".retired").join("old-1.toml"),
+        bare_definition("old"),
+    )
+    .unwrap();
     h.ui.set_page(Page::Settings);
     for _ in 0..3 {
         h.frame(Vec::new());
@@ -1919,6 +1953,32 @@ fn editing_a_definition_validates_it_before_writing_and_asks_for_the_publication
 }
 
 #[test]
+fn a_form_saved_after_its_system_was_deleted_writes_nothing() {
+    let mut h = harness(false);
+    let dir = h.ui.dirs.custom_systems.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("fine.toml"), bare_definition("fine")).unwrap();
+    h.ui.refresh_custom_systems();
+    h.ui.set_page(Page::Settings);
+    h.ui.open_edit("fine");
+    // The system is deleted while the form is open (the end of a search of the form would save it again).
+    emu_library::retire_custom(&dir, "fine", emu_library::Retirement::Removed, 5).unwrap();
+    h.ui.refresh_custom_systems();
+    h.ui.save_edit(None);
+    let edit =
+        h.ui.custom_systems
+            .edit
+            .as_ref()
+            .expect("the form stays open");
+    assert_eq!(edit.error.as_deref(), Some(text::EDIT_DEFINITION_GONE));
+    assert!(
+        !dir.join("fine.toml").exists(),
+        "the definition is not written back"
+    );
+    assert!(!h.ui.publication_waits());
+}
+
+#[test]
 fn a_switch_journal_blocks_only_its_own_definition_and_unreadable_journals_block_everything() {
     use super::custom_systems::switch_refusal;
     use emu_library::SwitchMove;
@@ -1947,6 +2007,29 @@ fn a_switch_journal_blocks_only_its_own_definition_and_unreadable_journals_block
     assert_eq!(emu_library::open_switch(&options).unwrap(), None);
 }
 
+#[test]
+fn retiring_the_definition_in_the_way_asks_for_the_catalog_publication() {
+    use super::tidy::switch::{EndBlock, EndDue};
+    let mut h = harness(false);
+    let systems = h.ui.dirs.custom_systems.clone();
+    std::fs::create_dir_all(&systems).unwrap();
+    std::fs::write(systems.join("mine.toml"), "format = 1\n").unwrap();
+    h.ui.refresh_custom_systems();
+    h.ui.custom_systems.view.as_mut().unwrap().end_due = Some(EndDue {
+        switch: emu_library::SwitchMove {
+            custom_id: "mine".to_owned(),
+            official_id: "snes".to_owned(),
+        },
+        retired_name: "mine-1.toml".to_owned(),
+        block: EndBlock::PlaceTaken,
+    });
+    assert!(!h.ui.publication_waits());
+    let ctx = h.ctx.clone();
+    h.ui.remove_and_end_switch(&ctx, "mine");
+    assert!(!systems.join("mine.toml").exists(), "definition retired");
+    assert!(h.ui.publication_waits(), "the catalog is to be published");
+}
+
 fn mock_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -1973,7 +2056,14 @@ fn the_database_search_finds_a_dat_in_one_source_only_and_asks_three_times_at_mo
 
     let rt = mock_runtime();
     let server = rt.block_on(MockServer::start());
-    let dat = std::fs::read(repo_root().join("tests/data/dat/sample.dat")).unwrap();
+    let dat = std::fs::read(
+        repo_root()
+            .join("tests")
+            .join("data")
+            .join("dat")
+            .join("sample.dat"),
+    )
+    .unwrap();
     rt.block_on(
         Mock::given(method("GET"))
             .and(path("/metadat/tosec/Zz%20-%20Fictional.dat"))

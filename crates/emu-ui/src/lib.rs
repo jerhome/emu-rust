@@ -24,6 +24,7 @@ mod game_options;
 mod gamepad;
 mod help;
 mod hotkeys;
+mod input_descriptors;
 mod keyboard;
 mod launch_firmware;
 mod library;
@@ -151,8 +152,10 @@ pub(crate) fn catalog_pinned() -> bool {
 
 /// Finishes the ROM tidying of earlier runs (ADR 0023 §4.5): `Library::recover_tidy`, then
 /// `emu_runtime::relocate_identities` + `Library::mark_tidy_identities` for every journal of
-/// `Library::pending_tidy_identities`. Called before the library opens and before a direct launch; problems go
-/// to the journal, never fatal. Runs on the calling thread, before the window exists, on purpose.
+/// `Library::pending_tidy_identities`, and the end of a switch to an official system that was cut (`pending_switch`:
+/// keys and core from the journal header, then `complete_switch`, never a question). Called before the library opens
+/// and before a direct launch; problems go to the journal, never fatal. Runs on the calling thread, before the window
+/// exists, on purpose. The settings file may have changed: read it after this call.
 pub fn finish_pending_identities(dirs: &DataDirs) {
     use crate::library::tidy::exec;
     if !exec::recovery_needed(dirs) {
@@ -161,6 +164,15 @@ pub fn finish_pending_identities(dirs: &DataDirs) {
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let out = exec::run_job(dirs, exec::Job::Recovery, &cancel, &mut |_| {});
     exec::log_outcome(&out);
+    if let Some(done) = &out.switched {
+        // The end of a switch changed the definitions and the settings file: the catalog is published again, and the
+        // caller reads the settings after this call.
+        tracing::info!(
+            "bascule vers {} terminée au démarrage",
+            done.switch.official_id
+        );
+        publish_catalog(dirs);
+    }
 }
 
 /// Version shown by the footer and `--version` (workspace version).
@@ -291,6 +303,16 @@ pub enum LibraryScreen {
     /// The same sample report with the « Annuler le dernier rangement » confirmation open
     /// (`--screen library-tidy-undo`).
     TidyUndo,
+    /// « Ajouter un système non testé » : la liste des cores, avec des cores d'exemple (`--screen custom-add`).
+    CustomAdd,
+    /// La fiche d'un core d'exemple (`--screen custom-sheet`).
+    CustomSheet,
+    /// Réglages > Systèmes non testés, avec des définitions d'exemple (`--screen custom-settings`).
+    CustomSettings,
+    /// Le bandeau de proposition de bascule vers un système officiel (`--screen switch-banner`).
+    SwitchBanner,
+    /// L'aperçu d'une bascule (`--screen switch-preview`).
+    SwitchPreview,
     /// Launches the first game of the library (`--screen library-launch`) and captures the game window after a
     /// few frames, or the launch dialog (core to install, BIOS missing…) when the game cannot start.
     Launch,

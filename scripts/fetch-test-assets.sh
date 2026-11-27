@@ -27,8 +27,9 @@
 #     build-158) PS-EXE triangle and clut-cache; 240p Test Suite PS1 (filipalac, GPL-2.0, release 19122020) cue + bin.
 #     No 3DO disc exists under a free licence (every disc embeds the proprietary Portfolio OS): none is fetched.
 #   - 8.0 (custom systems): stella, mednafen_pce_fast and flycast cores (TOFU); Berta and Butterflies v1.00 NTSC en (vandalton,
-#     MIT, 4 KiB Atari 2600 homebrew) and chipce8 1.0.2 (trapexit, MIT, PC Engine HuCard homebrew, 123392 bytes; it embeds
-#     freely redistributable CHIP-8 programs, no commercial content). flycast: core only, no content (hardware rendering,
+#     MIT, 4 KiB Atari 2600 homebrew) and 240p Test Suite PC Engine / TurboGrafx-16 HuCard 1.10 (GPL-2.0,
+#     ArtemioUrbina/240pTestSuite, same repository and licence as the Mega Drive and SNES suites; 262144 bytes, only the
+#     .pce member is extracted). chipce8 was dropped: it embeds CHIP-8 programs of unproven provenance. flycast: core only, no content (hardware rendering,
 #     "not addable" case). No BIOS, no commercial ROM, ever.
 set -euo pipefail
 
@@ -568,9 +569,12 @@ fetch_custom() {
     # vandalton/BertaAndButterflies (LICENSE = MIT, (c) 2024 vandalton), release v1.00: Atari 2600 4 KiB cartridge (.bin).
     fetch_file 'https://github.com/vandalton/BertaAndButterflies/releases/download/v1.00/berta-and-butterflies.v1.00.ntsc.en.bin' \
         a2600/berta-and-butterflies.v1.00.ntsc.en.bin 3e0efbbf4aba069cbe06d5bf2795c2110914aa40e378743cfcc40321aae3928d
-    # trapexit/chipce8 (LICENSE = MIT, (c) 2014 Antonio SJ Musumeci), release 1.0.2: PC Engine HuCard (.pce), 123392 bytes.
-    fetch_file 'https://github.com/trapexit/chipce8/releases/download/1.0.2/chipce8-1.0.2.pce' \
-        pce/chipce8-1.0.2.pce 531cf9e7124e5333b8020c43321bed1d6f6101226221b09e675ab6bcce680cde
+    # 240p Test Suite PC Engine / TurboGrafx-16 1.10 HuCard (GPL-2.0, ArtemioUrbina/240pTestSuite, zip published
+    # 2019-10-30 on SourceForge): the zip holds the HuCard image and its GPL source; only the .pce is installed.
+    fetch_zip 'https://sourceforge.net/projects/testsuite240p/files/OldFiles/PCE-TG16-SCD/240pSuite_1.10_HuCard.zip/download' \
+        3edcb149858fbe344582775659edeedd21c5f62a8cce0b452923201476629ff1 "$roms_dir/pce/240pSuite-PCE-1.10-HuCard.zip"
+    install_exact "$roms_dir/pce/240pSuite-PCE-1.10-HuCard.zip" 240pSuite.pce "$roms_dir/pce/240pSuite-PCE-1.10.pce" \
+        5ecc11cd8bbc1844d6b603f8f5847f753d922273c563b06ee7f9da01cd7b8768
 }
 
 fetch_rom "$ROM_URL" "$ROM_ZIP_SHA256" "$ROM_ZIP_NAME" "$ROM_NAME" "$ROM_NAME" "$ROM_SHA256"

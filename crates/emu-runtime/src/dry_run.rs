@@ -2,7 +2,8 @@
 //!
 //! Runs in-process and is meant for the child only: no window, no GL, no audio output, no pacing. Everything the
 //! core and the frontend write (saves, states, working copies, extracted content) goes under `scratch_dir`; the
-//! only other writable place is the core's own use of `system_dir` (the caller hands a copy).
+//! only other place is `system_dir`, which is the real one: the core reads its BIOS from it and the frontend
+//! writes nothing there itself.
 
 use std::path::{Path, PathBuf};
 

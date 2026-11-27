@@ -185,11 +185,26 @@ Contrôle du lot PU3 contre le contrat. Prime sur le §9 et le §13. Détail : d
 - **« Chercher la base d'identification »** (§9) : les fichiers trouvés sont importés pour ce seul système, sans
   requête de plus que les 3 de la recherche (pas de mise à jour de toutes les DAT).
 - **« Oublier ses jeux »** d'un système retiré (§9) : pas proposé tant qu'un système actif a le même id.
+  *Remplacé par l'amendement PU4* (proposé, limité aux lignes gelées).
 - **Section des Réglages** : « Systèmes non testés » (le texte dit « Systèmes personnalisés ») ; un core absent de
   `cores.toml` n'est jamais « recommandé ».
 - **Limites** : fichiers de jaquette des jeux masqués laissés sur le disque par « Effacer toutes les jaquettes » ;
   fenêtre fermée pendant un essai à blanc : l'enfant vit jusqu'à son chien de garde (35 s), son dossier reste
   jusqu'au démarrage suivant.
+
+## Amendement du 2026-11-27 (PU4) — bascule
+
+Contrôle du lot PU4 contre le contrat. Prime sur le §10, le §11 et l'amendement PU3. Détail : design 8.0 §0.14.
+
+- **« Oublier ses jeux »** (§9, §10) : proposé pour chaque système retiré, remplacé compris ; si un système actif a
+  le même id, seules les lignes gelées sont oubliées (`ForgetScope::Frozen`), jamais celles du système actif.
+- **Cas incertain, « Non »** (§10) : ferme le bandeau pour la session ; la question revient au démarrage suivant.
+- **Noms des boutons du core** (§11) : affichés dans l'écran des touches en jeu ; la page des manettes de la
+  bibliothèque ne liste que les systèmes officiels et n'en montre pas.
+- **Annulation** (§10.4, §10.5) : le refus d'avance dit sa raison exacte. **Limites** : le « profil de touches
+  officiel antérieur » est le profil clavier du premier core de la définition (attributions manette et profils des
+  autres cores écrasés par « Garder vos touches » non rendus) ; après « Oublier ses jeux » d'une bascule avec
+  déplacement, l'annulation restaure la définition sans ses DAT importés.
 
 ## Amendements après revue (2026-11-25)
 

@@ -4,8 +4,10 @@
 use std::path::PathBuf;
 
 use egui::{Button, Key, RichText, ScrollArea, Ui};
+use emu_library::{KeysChoice, SwitchProposal};
 
-use super::exec::{self, Job, Outcome, RunKind};
+use super::exec::{self, Job, Outcome, RunKind, SwitchRun};
+use super::switch::{self, SwitchMode, SwitchPreview};
 use super::{Choice, Group, Preview, RowKind, Stage, UndoAsk, row_kind, selectable, text};
 use crate::library::{ERROR, Level, LibraryUi, Page, WARNING, notify, weak};
 
@@ -25,6 +27,9 @@ enum Action {
     ConfirmUndo,
     CancelUndo,
     StopRun,
+    SwitchKeys(KeysChoice),
+    SwitchStart,
+    RetryEnd,
 }
 
 impl LibraryUi {
@@ -63,6 +68,7 @@ impl LibraryUi {
             self.dirs.library_db.clone(),
             self.dirs.root.join("roms"),
             self.dirs.tidy_journals.clone(),
+            self.dirs.custom_systems.clone(),
             self.cores.manager().cloned(),
             crate::cores_ui::preferences(&self.config.cores),
             notify(ctx),
@@ -73,6 +79,65 @@ impl LibraryUi {
         };
         self.tidy.focus_first = true;
         self.set_page(Page::Tidy);
+    }
+
+    /// « Basculer » of the banner or of the settings: the analysis of the switch starts and the page opens. Same
+    /// refusals as the tidy (a switch moves files and rewrites rows).
+    pub(in crate::library) fn start_switch(&mut self, ctx: &egui::Context, custom_id: &str) {
+        if self.capture || self.tidy.busy() {
+            return;
+        }
+        if let Some(msg) = super::refusal(self.tidy_busy_state()) {
+            self.set_status(msg.to_owned(), Level::Warn);
+            return;
+        }
+        let Some(proposal) = self
+            .custom_systems
+            .view
+            .as_ref()
+            .and_then(|v| {
+                v.load
+                    .pending_switches
+                    .iter()
+                    .find(|p| p.custom_id == custom_id)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.start_switch_analysis(ctx, proposal);
+    }
+
+    pub(in crate::library) fn start_switch_analysis(
+        &mut self,
+        ctx: &egui::Context,
+        proposal: SwitchProposal,
+    ) {
+        let task = switch::spawn_switch_plan(self.dirs.clone(), proposal, notify(ctx));
+        self.tidy.back_to = Some(if self.page == Page::Settings {
+            Page::Settings
+        } else {
+            Page::Home
+        });
+        self.tidy.stage = Stage::SwitchAnalysing {
+            task,
+            progress: None,
+        };
+        self.tidy.focus_first = true;
+        self.set_page(Page::Tidy);
+    }
+
+    /// The switch (or its undo) reached its end: the settings file changed, the catalog is to be published, then
+    /// the library is scanned again under it.
+    fn after_switch(&mut self) {
+        match crate::config::Config::load(&self.dirs.config_file) {
+            Ok(config) => self.config = config,
+            Err(e) => tracing::warn!("réglages relus après la bascule : {e}"),
+        }
+        self.reload_games();
+        self.request_catalog_publication(Some(
+            crate::library::custom_systems::AfterPublish::Rescan,
+        ));
     }
 
     /// Capture mode is still analysing (the window is captured once the preview is there).
@@ -96,6 +161,20 @@ impl LibraryUi {
         }
     }
 
+    /// The end of a switch is run again (`Job::Recovery`) on the tidy page, which shows its report.
+    pub(in crate::library) fn start_end_run(&mut self, ctx: &egui::Context) {
+        if self.tidy.busy() {
+            return;
+        }
+        self.tidy.back_to = Some(if self.page == Page::Home {
+            Page::Home
+        } else {
+            Page::Settings
+        });
+        self.set_page(Page::Tidy);
+        self.start_run(Job::Recovery, ctx);
+    }
+
     /// « Ranger » / « Annuler le dernier rangement »: same refusals as the analysis, then the worker.
     fn start_run(&mut self, job: Job, ctx: &egui::Context) {
         self.tidy.confirm_undo = None;
@@ -117,8 +196,9 @@ impl LibraryUi {
     }
 
     fn leave_tidy(&mut self) {
+        let back = self.tidy.back_to.take().unwrap_or(Page::Settings);
         self.tidy.close();
-        self.set_page(Page::Settings);
+        self.set_page(back);
     }
 
     pub(in crate::library) fn tidy_page(&mut self, ui: &mut Ui) {
@@ -133,9 +213,18 @@ impl LibraryUi {
         }
         if was_running && let Stage::Report(outcome) = &self.tidy.stage {
             exec::log_outcome(outcome);
-            // Rows were relocated by the run: reload them, then rescan so that the library matches the disk.
-            self.reload_games();
-            self.start_scan(ui.ctx());
+            if exec::settings_may_have_changed(outcome) {
+                self.after_switch();
+            } else {
+                // Rows were relocated by the run: reload them, then rescan so that the library matches the disk.
+                self.reload_games();
+                self.start_scan(ui.ctx());
+            }
+        }
+        if let Some(analysis) = self.tidy.switch_ready.take() {
+            let preview = SwitchPreview::new(*analysis, &self.config, &self.dirs);
+            self.tidy.stage = Stage::Switch(Box::new(preview));
+            self.tidy.focus_first = true;
         }
         let running = matches!(self.tidy.stage, Stage::Running { .. });
         if let Stage::Preview(p) = &mut self.tidy.stage
@@ -162,7 +251,16 @@ impl LibraryUi {
                 if back.clicked() {
                     actions.push(Action::Back);
                 }
-                ui.heading(text::TITLE);
+                ui.heading(
+                    if matches!(
+                        self.tidy.stage,
+                        Stage::Switch(_) | Stage::SwitchAnalysing { .. }
+                    ) {
+                        text::SWITCH_TITLE
+                    } else {
+                        text::TITLE
+                    },
+                );
             });
             ui.separator();
             match &mut self.tidy.stage {
@@ -185,6 +283,20 @@ impl LibraryUi {
                     }
                 }
                 Stage::Preview(p) => preview(ui, p, &mut self.tidy.confirm_undo, &mut actions),
+                Stage::SwitchAnalysing { progress, .. } => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!(
+                            "{}{}",
+                            text::SWITCH_ANALYSING,
+                            text::analysing(progress.as_ref().map_or(0, |p| p.files_seen))
+                        ));
+                    });
+                    if ui.button(text::STOP).clicked() {
+                        actions.push(Action::Stop);
+                    }
+                }
+                Stage::Switch(sp) => switch_preview(ui, sp, focus_first, &mut actions),
                 Stage::Running {
                     progress,
                     undo,
@@ -228,10 +340,28 @@ impl LibraryUi {
                     self.leave_tidy();
                     return;
                 }
-                Action::Stop => {
-                    if let Stage::Analysing { task, .. } = &self.tidy.stage {
-                        task.cancel();
+                Action::Stop => match &self.tidy.stage {
+                    Stage::Analysing { task, .. } => task.cancel(),
+                    Stage::SwitchAnalysing { task, .. } => task.cancel(),
+                    _ => {}
+                },
+                Action::SwitchKeys(keys) => {
+                    if let Stage::Switch(sp) = &mut self.tidy.stage {
+                        sp.keys = keys;
                     }
+                }
+                Action::SwitchStart => {
+                    if let Stage::Switch(sp) = &self.tidy.stage
+                        && sp.can_start()
+                        && let Some(job) = switch_job(sp, &self.config, &self.dirs)
+                    {
+                        let ctx = ui.ctx().clone();
+                        self.start_run(job, &ctx);
+                    }
+                }
+                Action::RetryEnd => {
+                    let ctx = ui.ctx().clone();
+                    self.start_run(Job::Recovery, &ctx);
                 }
                 Action::Retry => {
                     // Refused (scan, download…): the report stays on screen.
@@ -329,6 +459,7 @@ fn preview(ui: &mut Ui, p: &mut Preview, confirm: &mut Option<UndoAsk>, actions:
         }
     });
     undo_section(ui, &p.last, confirm, actions);
+    end_due_section(ui, &p.last, actions);
     if updating > 0 {
         weak(ui, text::APPLY_UPDATING);
     }
@@ -492,13 +623,27 @@ fn undo_section(
     confirm: &mut Option<UndoAsk>,
     actions: &mut Vec<Action>,
 ) {
+    if let (Some(reason), Some(info)) = (&last.undo_refusal, last.info.as_ref())
+        && info.can_undo()
+    {
+        crate::copyable::message(ui, WARNING, reason);
+        return;
+    }
     let (Some(_), Some(info)) = (last.undo_target(), last.info.as_ref()) else {
         return;
     };
+    let switch = info.switch.is_some();
     match confirm {
         Some(ask) if ask.journal == info.path => {
             ui.group(|ui| {
-                ui.colored_label(WARNING, text::undo_confirm(ask.moved, ask.unix));
+                ui.colored_label(
+                    WARNING,
+                    if switch {
+                        text::switch_undo_confirm(ask.moved, ask.unix)
+                    } else {
+                        text::undo_confirm(ask.moved, ask.unix)
+                    },
+                );
                 ui.horizontal(|ui| {
                     let no = ui.button(text::UNDO_CONFIRM_NO);
                     if std::mem::take(&mut ask.focus) {
@@ -514,7 +659,14 @@ fn undo_section(
             });
         }
         _ => {
-            if ui.button(text::UNDO).clicked() {
+            if ui
+                .button(if switch {
+                    text::SWITCH_UNDO
+                } else {
+                    text::UNDO
+                })
+                .clicked()
+            {
                 actions.push(Action::AskUndo(UndoAsk {
                     journal: info.path.clone(),
                     moved: info.moved,
@@ -546,6 +698,7 @@ fn report(
         RunKind::Tidy => text::REPORT_TIDY,
         RunKind::Undo => text::REPORT_UNDO,
         RunKind::Recovery => text::REPORT_RECOVERY,
+        RunKind::Switch => text::SWITCH_REPORT,
     };
     ui.label(RichText::new(title).strong());
     ui.horizontal(|ui| {
@@ -557,7 +710,11 @@ fn report(
             actions.push(Action::Retry);
         }
     });
+    if let Some(line) = exec::switched_line(out) {
+        ui.colored_label(INFO, line);
+    }
     undo_section(ui, &out.last, confirm, actions);
+    end_due_section(ui, &out.last, actions);
     last_tidy_lines(ui, &out.last);
     for m in &out.messages {
         crate::copyable::message(ui, WARNING, &exec::shown_message(out, m));
@@ -611,4 +768,151 @@ fn report(
                 &exec::report_text(out),
             );
         });
+}
+
+/// The job of « Basculer »: choices and what the undo gives back read from the settings now.
+fn switch_job(
+    sp: &SwitchPreview,
+    config: &crate::config::Config,
+    dirs: &crate::config::DataDirs,
+) -> Option<Job> {
+    let run = match sp.mode {
+        SwitchMode::WithMoves => SwitchRun::WithMoves(Box::new(sp.analysis.plan.clone()?)),
+        SwitchMode::NoUnits => SwitchRun::Direct { rows_move: true },
+        SwitchMode::InPlace => SwitchRun::Direct { rows_move: false },
+        SwitchMode::Blocked => return None,
+    };
+    Some(Job::Switch {
+        switch: sp.switch_move(),
+        official: Box::new(sp.analysis.proposal.official.clone()),
+        choices: sp.choices(config, dirs),
+        run,
+    })
+}
+
+fn name_list(ui: &mut Ui, items: &[String]) {
+    let (shown, more) = SwitchPreview::listed(items);
+    for item in shown {
+        ui.label(RichText::new(text::path(std::path::Path::new(item))).monospace());
+    }
+    if more > 0 {
+        weak(ui, text::and_more(more));
+    }
+}
+
+/// Preview of a switch to an official system (ADR 0025 §10): what changes, then the question about the keys, then
+/// the buttons. The safe button (« Plus tard ») holds the focus.
+fn switch_preview(
+    ui: &mut Ui,
+    sp: &mut SwitchPreview,
+    focus_first: bool,
+    actions: &mut Vec<Action>,
+) {
+    let official = sp.analysis.proposal.official.name.clone();
+    let custom_id = sp.analysis.proposal.custom_id.clone();
+    let kind = sp.analysis.proposal.kind;
+    ui.label(RichText::new(&official).strong());
+    weak(ui, text::switch_intro(&official, kind));
+    match sp.mode {
+        SwitchMode::WithMoves => {
+            if let Some(plan) = &sp.analysis.plan {
+                let files: usize = plan.units.iter().map(|u| u.moves.len()).sum();
+                ui.label(text::switch_units(plan.units.len(), files));
+            }
+            weak(ui, text::SWITCH_UNDOABLE);
+        }
+        SwitchMode::NoUnits | SwitchMode::InPlace => weak(ui, text::SWITCH_DEFINITIVE),
+        SwitchMode::Blocked => {
+            ui.colored_label(WARNING, RichText::new(text::SWITCH_BLOCKED_TITLE).strong());
+            if let Some(plan) = &sp.analysis.plan {
+                for unit in plan
+                    .units
+                    .iter()
+                    .filter(|u| row_kind(u) == RowKind::Left)
+                    .take(20)
+                {
+                    if let emu_library::TidyStatus::Blocked(b) = &unit.status {
+                        crate::copyable::message(
+                            ui,
+                            WARNING,
+                            &format!(
+                                "{} : {}",
+                                text::path(std::path::Path::new(&unit.title)),
+                                text::block(b)
+                            ),
+                        );
+                    }
+                }
+            }
+            weak(ui, text::SWITCH_BLOCKED_HINT);
+        }
+    }
+    if !sp.analysis.frozen.is_empty() {
+        ui.add_space(4.0);
+        ui.colored_label(
+            INFO,
+            text::switch_frozen(sp.analysis.frozen.len(), &official),
+        );
+        name_list(ui, &sp.analysis.frozen);
+    }
+    if let Some(plan) = sp.analysis.plan.as_ref().filter(|p| p.ignored > 0) {
+        ui.add_space(4.0);
+        weak(
+            ui,
+            text::switch_ignored(
+                usize::try_from(plan.ignored).unwrap_or(usize::MAX),
+                &custom_id,
+                &official,
+            ),
+        );
+        name_list(ui, &sp.analysis.ignored);
+    }
+    if sp.conflict {
+        ui.add_space(4.0);
+        ui.label(text::SWITCH_KEYS_TITLE);
+        for (keys, label) in [
+            (KeysChoice::KeepUser, text::SWITCH_KEYS_USER),
+            (KeysChoice::KeepOfficial, text::SWITCH_KEYS_OFFICIAL),
+        ] {
+            if ui.radio(sp.keys == keys, label).clicked() {
+                actions.push(Action::SwitchKeys(keys));
+            }
+        }
+    }
+    weak(ui, text::SWITCH_CORE_NOTE);
+    end_due_section(ui, &sp.analysis.last, actions);
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let later = ui.button(if kind == emu_library::SwitchKind::Uncertain {
+            text::SWITCH_NOT_THIS_ONE
+        } else {
+            text::SWITCH_LATER
+        });
+        if focus_first {
+            later.request_focus();
+        }
+        if later.clicked() {
+            actions.push(Action::Back);
+        }
+        let start = if kind == emu_library::SwitchKind::Uncertain {
+            text::SWITCH_UNCERTAIN_YES
+        } else {
+            text::SWITCH_START
+        };
+        if ui.add_enabled(sp.can_start(), Button::new(start)).clicked() {
+            actions.push(Action::SwitchStart);
+        }
+    });
+}
+
+/// A switch whose end is due blocks the tidy and its undo: the reason, and the button that retries the end.
+fn end_due_section(ui: &mut Ui, last: &exec::LastTidy, actions: &mut Vec<Action>) {
+    if !last.info.as_ref().is_some_and(|i| i.end_due) {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.colored_label(WARNING, text::SWITCH_END_DUE);
+    if ui.button(text::SWITCH_END_RETRY).clicked() {
+        actions.push(Action::RetryEnd);
+    }
 }

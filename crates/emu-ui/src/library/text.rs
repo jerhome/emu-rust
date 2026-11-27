@@ -913,6 +913,8 @@ pub const CUSTOM_PROBLEMS_TITLE: &str = "Systèmes en erreur";
 pub const CUSTOM_RETIRED_TITLE: &str = "Systèmes retirés";
 pub const CUSTOM_RESTORE: &str = "Restaurer";
 pub const CUSTOM_FORGET: &str = "Oublier ses jeux";
+pub const EDIT_DEFINITION_GONE: &str =
+    "Ce système a été supprimé entre-temps : rien n'est enregistré. Fermez le formulaire.";
 pub const CUSTOM_WAITING_PUBLICATION: &str =
     "Le changement s'appliquera à la fin du scan ou du rangement en cours.";
 pub const CUSTOM_BUSY_TASK: &str =
@@ -1028,7 +1030,16 @@ pub fn uncertain_games_body(id: &str, files: &[String], more: bool) -> String {
 pub const OPEN_GAMES_FOLDER: &str = "Ouvrir le dossier";
 pub const CONFIRM_FORGET_TITLE: &str = "Oublier les jeux du système";
 
-pub fn confirm_forget_body(id: &str) -> String {
+/// `frozen_only`: a system with this id is active, so only the games it does not recognize are forgotten.
+pub fn confirm_forget_body(id: &str, frozen_only: bool) -> String {
+    if frozen_only {
+        return format!(
+            "Un système actif porte le même identifiant que « {} » : seuls les jeux qu'il ne reconnaît pas (gardés, \
+             masqués) sont oubliés dans la bibliothèque, favoris, historique et jaquettes compris ; ses propres jeux \
+             ne sont pas touchés. Vos fichiers ne sont pas touchés. Cette action est définitive.",
+            clean(id)
+        );
+    }
     format!(
         "Oublier tous les jeux de « {} » dans la bibliothèque (favoris, historique et jaquettes compris) ? \
          Vos fichiers ne sont pas touchés. Cette action est définitive.",

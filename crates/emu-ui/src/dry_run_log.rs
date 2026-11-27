@@ -4,7 +4,7 @@
 //! the cost is one more dry run, never a failure.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -104,22 +104,7 @@ fn read_bounded(path: &Path) -> Option<String> {
 }
 
 fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    // The process id in the name: two instances never write the same temporary file.
-    let tmp = path.with_extension(format!("toml.tmp-{}", std::process::id()));
-    let written = fs::File::create(&tmp).and_then(|mut f| {
-        f.write_all(text.as_bytes())?;
-        f.flush()
-    });
-    match written.and_then(|()| fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
+    emu_runtime::write_atomic(path, text.as_bytes(), emu_runtime::FileMode::Default)
 }
 
 /// Lower-case hex SHA-256 of a file (a core: a few megabytes); `None` when it cannot be read.

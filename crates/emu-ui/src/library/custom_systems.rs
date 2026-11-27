@@ -15,6 +15,8 @@ use emu_library::{
 };
 
 use super::settings::help_anchor;
+use super::tidy::switch::{EndBlock, EndDue};
+use super::tidy::text as tidy_text;
 use super::worker::FoundDat;
 use super::{Dialog, Level, LibraryUi, notify, text, weak};
 use crate::cores_ui;
@@ -60,9 +62,9 @@ pub(super) struct RetiredRow {
     pub replaced_by: Option<String>,
     /// « Restaurer »: only a definition the user removed, and only while no definition has its id again.
     pub can_restore: bool,
-    /// « Oublier ses jeux »: only for a definition the user removed (a replaced one has no button, ADR 0025 §9),
-    /// and not while an active system has this id (an official one: its rows are the official's own, they must
-    /// never be forgotten here).
+    /// « Oublier ses jeux »: offered for every retired definition (a replaced one included, ADR 0025 §10). While an
+    /// active system has this id (an official one, or the definition recreated), only the rows it does not accept
+    /// are forgotten (`ForgetScope::Frozen`): its own rows are never touched; see [`forget_plan`].
     pub can_forget: bool,
 }
 
@@ -77,8 +79,7 @@ pub(super) fn retired_rows(retired: Vec<RetiredSystem>, catalog: &Catalog) -> Ve
             RetiredRow {
                 can_restore: retired.why == Retirement::Removed
                     && catalog.custom(&retired.id).is_none(),
-                can_forget: retired.why == Retirement::Removed
-                    && catalog.system(&retired.id).is_none(),
+                can_forget: true,
                 replaced_by,
                 retired,
             }
@@ -103,6 +104,16 @@ fn replaced_by_name(file: &Path, catalog: &Catalog) -> Option<String> {
         .chain(catalog.masked_official())
         .find(|s| !s.is_custom() && s.libretro_name() == Some(database))
         .map(|s| s.name.clone())
+}
+
+/// What « Oublier ses jeux » of a retired definition forgets, from the catalog read now: the whole system when no
+/// active system has its id, else only the frozen rows (the DAT imports stay: they are the active system's).
+pub(super) fn forget_plan<'a>(catalog: &'a Catalog, id: &str) -> (ForgetDats, ForgetScope<'a>) {
+    if catalog.system(id).is_some() {
+        (ForgetDats::Keep, ForgetScope::Frozen(catalog))
+    } else {
+        (ForgetDats::Remove, ForgetScope::All)
+    }
 }
 
 /// How a definition is deleted.
@@ -198,11 +209,13 @@ pub(super) struct View {
     pub(super) load: CatalogLoad,
     pub(super) summary: ProblemSummary,
     pub(super) retired: Vec<RetiredRow>,
+    /// A switch whose end keeps failing (banner, « Retirer ce système et terminer la bascule »).
+    pub(super) end_due: Option<EndDue>,
 }
 
 /// What happens once a due publication of the catalog has gone through.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum AfterPublish {
+pub(in crate::library) enum AfterPublish {
     /// Systems were added: their folders, a scan, the notice.
     Added {
         names: Vec<String>,
@@ -210,6 +223,8 @@ pub(super) enum AfterPublish {
         /// Folders `roms/<id>/` that were already there (their files are scanned).
         existing: Vec<String>,
     },
+    /// A switch ended (or was undone): the library is scanned again under the new catalog.
+    Rescan,
     /// The definition now lists the DAT sources of the search: import the files it saved (no request).
     ImportDats {
         id: String,
@@ -275,9 +290,14 @@ pub(super) struct State {
     publish_due: bool,
     after: Vec<AfterPublish>,
     pub(super) edit: Option<Edit>,
+    /// A capture (`--screen custom-settings`) keeps the page scrolled to this section (the layout settles over its
+    /// few frames).
+    pub(super) scroll_here: bool,
 }
 
 enum Action {
+    Switch(String),
+    RemoveAndEnd(String),
     Edit(String),
     Delete(String),
     Restore(String),
@@ -295,11 +315,56 @@ impl LibraryUi {
         let load = Catalog::load(&self.dirs.custom_systems);
         let summary = summarize_problems(&load.problems);
         let retired = retired_rows(retired_customs(&self.dirs.custom_systems), &load.catalog);
+        let end_due = self.read_end_due();
         self.custom_systems.view = Some(View {
             load,
             summary,
             retired,
+            end_due,
         });
+    }
+
+    /// The switch whose end is due, read from the journals (none without a library or a tidy journal folder).
+    fn read_end_due(&self) -> Option<EndDue> {
+        if !self.dirs.tidy_journals.is_dir() {
+            return None;
+        }
+        let db = self.db.as_ref()?;
+        let options = TidyOptions::new(&self.dirs.root, &self.dirs.tidy_journals)
+            .ok()?
+            .with_systems_dir(&self.dirs.custom_systems);
+        super::tidy::switch::read_end_due(db, &options, &self.dirs)
+    }
+
+    /// « Retirer ce système et terminer la bascule »: the definition in the way is retired (`Removed`, never deleted,
+    /// restorable later), then the end of the switch is run again at once.
+    pub(super) fn remove_and_end_switch(&mut self, ctx: &egui::Context, id: &str) {
+        if self.capture || self.library_busy() {
+            return;
+        }
+        let Some(due) = self
+            .custom_systems
+            .view
+            .as_ref()
+            .and_then(|v| v.end_due.clone())
+        else {
+            return;
+        };
+        if due.switch.custom_id != id || due.block != EndBlock::PlaceTaken {
+            return;
+        }
+        if let Err(e) = retire_custom(
+            &self.dirs.custom_systems,
+            id,
+            Retirement::Removed,
+            now_unix(),
+        ) {
+            self.set_status(text::custom_write_failed(&e.to_string()), Level::Warn);
+            return;
+        }
+        // Published whatever the end does: the definition is gone from the catalog even if the end fails or is refused.
+        self.request_catalog_publication(None);
+        self.start_end_run(ctx);
     }
 
     /// A definition was written, retired or restored (or « Recalculer »): the catalog is published as soon as no
@@ -308,6 +373,22 @@ impl LibraryUi {
         self.custom_systems.publish_due = true;
         self.custom_systems.after.extend(after);
         self.refresh_custom_systems();
+    }
+
+    /// The switch proposals of the catalog load that the user did not close in this session (the banner).
+    pub(super) fn visible_switch_proposals(&self) -> Vec<SwitchProposal> {
+        self.custom_systems
+            .view
+            .as_ref()
+            .map(|v| {
+                v.load
+                    .pending_switches
+                    .iter()
+                    .filter(|p| !self.tidy.dismissed.contains(&p.custom_id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn publication_waits(&self) -> bool {
@@ -345,6 +426,7 @@ impl LibraryUi {
 
     fn after_publication(&mut self, after: AfterPublish, ctx: &egui::Context) {
         match after {
+            AfterPublish::Rescan => self.start_scan(ctx),
             AfterPublish::ImportDats {
                 id,
                 database,
@@ -618,11 +700,14 @@ impl LibraryUi {
         if !self.can_forget_retired(id) {
             return;
         }
+        // Read again: an id that became active since the page was drawn must not lose its own games.
+        let catalog = Catalog::load(&self.dirs.custom_systems).catalog;
+        let (dats, scope) = forget_plan(&catalog, id);
         let Some(db) = self.db.as_mut() else {
             self.set_status(text::CUSTOM_NO_LIBRARY.to_owned(), Level::Warn);
             return;
         };
-        match db.forget_system(id, ForgetDats::Remove, ForgetScope::All) {
+        match db.forget_system(id, dats, scope) {
             Ok(()) => {
                 self.set_status(text::custom_forgotten(id), Level::Info);
                 self.reload_games();
@@ -701,6 +786,13 @@ impl LibraryUi {
         let Some(view) = &self.custom_systems.view else {
             return;
         };
+        // Deleted while the form was open (a job of the form can end later): never written again.
+        if view.load.catalog.custom(&id).is_none() {
+            if let Some(edit) = &mut self.custom_systems.edit {
+                edit.error = Some(text::EDIT_DEFINITION_GONE.to_owned());
+            }
+            return;
+        }
         let written = validate_custom(&draft, &view.load.catalog, false)
             .map_err(LibraryError::Definition)
             .and_then(|()| write_custom(&self.dirs.custom_systems, &draft, &view.load.catalog));
@@ -887,6 +979,13 @@ impl LibraryUi {
         };
         let mut action = None;
         let busy_edit = self.custom_systems.edit.is_some();
+        // « Supprimer » waits for the search or the recalculation of the form: its result would write the definition
+        // back.
+        let editing = self
+            .custom_systems
+            .edit
+            .as_ref()
+            .is_some_and(|e| e.job.is_some());
         let rows: Vec<(String, String, Vec<String>)> = view
             .load
             .catalog
@@ -903,9 +1002,41 @@ impl LibraryUi {
         if rows.is_empty() {
             weak(ui, text::CUSTOM_SYSTEMS_NONE);
         }
+        let switches: Vec<String> = view
+            .load
+            .pending_switches
+            .iter()
+            .map(|p| p.custom_id.clone())
+            .collect();
+        let end_due = view.end_due.clone();
+        if let Some(due) = &end_due {
+            ui.colored_label(
+                super::WARNING,
+                tidy_text::switch_end_banner(&due.switch.custom_id, due.block, &due.retired_name),
+            );
+        }
         for (id, name, cores) in &rows {
             ui.horizontal_wrapped(|ui| {
                 ui.label(text::custom_system_line(name, id, cores));
+                if switches.contains(id)
+                    && ui
+                        .add_enabled(
+                            !busy_edit && !self.capture,
+                            Button::new(tidy_text::SWITCH_SETTINGS_BUTTON),
+                        )
+                        .clicked()
+                {
+                    action = Some(Action::Switch(id.clone()));
+                }
+                if end_due
+                    .as_ref()
+                    .is_some_and(|d| d.switch.custom_id == *id && d.block == EndBlock::PlaceTaken)
+                    && ui
+                        .add_enabled(!self.capture, Button::new(tidy_text::SWITCH_REMOVE_AND_END))
+                        .clicked()
+                {
+                    action = Some(Action::RemoveAndEnd(id.clone()));
+                }
                 if ui
                     .add_enabled(!busy_edit && !self.capture, Button::new(text::CUSTOM_EDIT))
                     .clicked()
@@ -913,7 +1044,7 @@ impl LibraryUi {
                     action = Some(Action::Edit(id.clone()));
                 }
                 if ui
-                    .add_enabled(!self.capture, Button::new(text::CUSTOM_DELETE))
+                    .add_enabled(!self.capture && !editing, Button::new(text::CUSTOM_DELETE))
                     .clicked()
                 {
                     action = Some(Action::Delete(id.clone()));
@@ -984,7 +1115,12 @@ impl LibraryUi {
             action = Some(Action::OpenFolder);
         }
         self.edit_form(ui, ctx);
+        if self.custom_systems.scroll_here {
+            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+        }
         match action {
+            Some(Action::Switch(id)) => self.start_switch(ctx, &id),
+            Some(Action::RemoveAndEnd(id)) => self.remove_and_end_switch(ctx, &id),
             Some(Action::Edit(id)) => self.open_edit(&id),
             Some(Action::Delete(id)) => self.ask_delete(&id),
             Some(Action::Restore(id)) => self.restore_custom_system(&id),
@@ -1170,7 +1306,13 @@ impl LibraryUi {
                 ),
                 Confirm::Forget { id } => (
                     text::CONFIRM_FORGET_TITLE,
-                    text::confirm_forget_body(id),
+                    text::confirm_forget_body(
+                        id,
+                        self.custom_systems
+                            .view
+                            .as_ref()
+                            .is_some_and(|v| v.load.catalog.system(id).is_some()),
+                    ),
                     Some(text::CONFIRM_FORGET_YES),
                     text::CONFIRM_CANCEL,
                     false,
@@ -1317,17 +1459,26 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_the_games_of_an_active_id_is_never_offered() {
+    fn forgetting_the_games_of_an_active_id_only_forgets_the_frozen_ones() {
         // `snes` is an official id: a retired definition of that id shares the official's rows.
+        let official = Catalog::official();
         let rows = retired_rows(
             vec![
                 retired("snes", Retirement::Removed),
                 retired("gone", Retirement::Removed),
+                retired("swapped", Retirement::Replaced),
             ],
-            &Catalog::official(),
+            &official,
         );
-        assert!(!rows[0].can_forget);
-        assert!(rows[1].can_forget);
+        assert!(rows.iter().all(|r| r.can_forget), "offered for each one");
+        assert!(matches!(
+            forget_plan(&official, "snes"),
+            (ForgetDats::Keep, ForgetScope::Frozen(_))
+        ));
+        assert!(matches!(
+            forget_plan(&official, "gone"),
+            (ForgetDats::Remove, ForgetScope::All)
+        ));
     }
 
     fn proposal(id: &str, kind: SwitchKind) -> SwitchProposal {

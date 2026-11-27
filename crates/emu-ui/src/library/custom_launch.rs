@@ -362,8 +362,16 @@ impl LibraryUi {
                 request.warnings.push(text::custom_not_tried(why));
                 self.clear_and_launch(request);
             }
-            Tried::Verdict(DryRunVerdict::Passed(_)) => {
+            Tried::Verdict(DryRunVerdict::Passed(report)) => {
                 if !self.capture {
+                    // What the core calls its buttons, for the keys screen of the game that follows.
+                    if let Err(e) = crate::input_descriptors::save(
+                        &self.dirs.cache_dir(),
+                        request.core.as_str(),
+                        &report.descriptors,
+                    ) {
+                        tracing::warn!("noms des boutons non gardés : {e}");
+                    }
                     let mut log = DryRunLog::load(&self.dirs.cache_dir());
                     if let Err(e) = log.record(key, super::now_unix().try_into().unwrap_or(0)) {
                         tracing::warn!("essai à blanc non mémorisé : {e}");

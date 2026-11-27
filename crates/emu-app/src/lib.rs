@@ -143,6 +143,7 @@ fn build_options(cli: cli::Cli) -> Result<emu_ui::LaunchOptions, String> {
     let (dirs, config) = prepare(cli.data_dir, cli.system_dir, cli.save_dir)?;
     // The game's path may be one an interrupted ROM tidying moved (ADR 0023 §4.5); a capture never moves files.
     start_up(&dirs, cli.dump_window.is_none());
+    let config = reread_config(&dirs, config);
     let core = match cli.core {
         cli::CoreSpec::Path(path) => path,
         cli::CoreSpec::Managed(id) => cores_cli::managed_core_path(&id, &dirs, &config)?,
@@ -296,6 +297,16 @@ fn start_up(dirs: &emu_ui::DataDirs, recover: bool) {
     }
 }
 
+/// The end of a cut switch (`start_up`) rewrites the settings file: what the interface keeps in memory must be what is
+/// on the disk, or its next save would undo the switch. A file that cannot be read keeps the configuration loaded
+/// before (locked defaults).
+fn reread_config(dirs: &emu_ui::DataDirs, loaded: emu_ui::Config) -> emu_ui::Config {
+    if loaded.is_locked() {
+        return loaded;
+    }
+    emu_ui::Config::load(&dirs.config_file).unwrap_or(loaded)
+}
+
 /// The whole program; `flavor` says which executable runs it.
 pub fn run(flavor: Flavor) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -356,6 +367,7 @@ pub fn run(flavor: Flavor) -> ExitCode {
             Ok((dirs, config)) => {
                 // An interrupted ROM tidying is finished before the library opens (ADR 0023 §4.5).
                 start_up(&dirs, l.dump_window.is_none());
+                let config = reread_config(&dirs, config);
                 install_signal_handler();
                 report(
                     flavor,

@@ -19,20 +19,30 @@ use mock_core::Variant;
 /// One core session at a time, and the environment is process-wide.
 static SESSION: Mutex<()> = Mutex::new(());
 
-/// Runs `body` with the given variables set, then removes them.
+/// Removes the variables when dropped, also when the test body panics.
+struct EnvGuard(Vec<String>);
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for k in &self.0 {
+            // SAFETY: still serialised by `SESSION` (the guard is dropped before the lock guard).
+            unsafe { std::env::remove_var(k) };
+        }
+    }
+}
+
+/// Runs `body` with the given variables set, then removes them (even if `body` panics).
 fn with_env<T>(vars: &[(&str, &str)], body: impl FnOnce(&Path) -> T) -> T {
-    let _guard = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    // A panicking test poisons the lock; the guard below already cleaned up, so the poison is harmless.
+    let _lock = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = EnvGuard(Vec::new());
     for (k, v) in vars {
         // SAFETY: serialised by `SESSION`; no other thread of this binary touches the environment.
         unsafe { std::env::set_var(k, v) };
+        guard.0.push((*k).to_string());
     }
     let lib = mock_core::build(Variant::Default);
-    let out = body(&lib);
-    for (k, _) in vars {
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(k) };
-    }
-    out
+    body(&lib)
 }
 
 fn options(root: &Path) -> EmulatorOptions {
@@ -349,9 +359,10 @@ fn copy_dir_inside_scratch_is_accepted_for_a_probe_and_for_a_run() {
 fn the_private_core_copy_lands_in_the_accepted_copy_dir() {
     // A library that stays mapped after unloading (nodelete) is reloaded from a private copy: the first dry run
     // loads it directly, the second one must write its copy under the accepted copy_dir, and nowhere else.
-    let _guard = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = SESSION.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: serialised by `SESSION`; no other thread of this binary touches the environment.
     unsafe { std::env::set_var("MOCK_REFUSE_REINIT", "1") };
+    let _env = EnvGuard(vec!["MOCK_REFUSE_REINIT".to_string()]);
     let lib = mock_core::build(Variant::NoDelete);
     let tmp = tempfile::tempdir().unwrap();
     let content = rom(tmp.path());
@@ -363,8 +374,6 @@ fn the_private_core_copy_lands_in_the_accepted_copy_dir() {
             private.clone(),
         )));
     }
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("MOCK_REFUSE_REINIT") };
     for report in &reports {
         assert_eq!(report.outcome, DryRunOutcome::Ran, "{report:?}");
     }

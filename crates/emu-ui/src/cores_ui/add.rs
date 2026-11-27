@@ -13,7 +13,8 @@ use emu_assets::jobs::{Job, JobEvent};
 use emu_library::CustomSystemDraft;
 use emu_runtime::DryRunReport;
 
-use super::{CoresUi, InstallState, RowAction, text};
+use super::rows::Checks;
+use super::{CoresUi, InstallState, RowAction, Snapshot, text};
 use crate::custom::{
     AddRow, AddWarning, Addability, Machine, MachineState, ProbeFailure, add_rows, drafts_for,
     probe_core, probe_outcome,
@@ -68,6 +69,8 @@ pub(super) struct AddUi {
     command: Option<DryRunCommand>,
     /// `<data>/cache`: where the probe's folder is made. Without it the probe is not run.
     cache_dir: Option<PathBuf>,
+    /// Sample cores of a capture (`--screen custom-add`): every core counts as downloadable.
+    demo: bool,
 }
 
 impl Default for AddUi {
@@ -82,6 +85,7 @@ impl Default for AddUi {
             events: Vec::new(),
             command: None,
             cache_dir: None,
+            demo: false,
         }
     }
 }
@@ -122,6 +126,28 @@ impl CoresUi {
         self.add.error = None;
     }
 
+    /// `--screen custom-add` / `custom-sheet`: sample cores (nothing is installed, no network), the list or the
+    /// sheet of the first one.
+    pub(crate) fn open_add_demo(&mut self, sheet: bool) {
+        let infos = demo_infos();
+        self.snapshot = Some(Snapshot {
+            installed: Vec::new(),
+            infos,
+            catalog: None,
+            checks: Checks::default(),
+        });
+        self.dirty = false;
+        self.add.demo = true;
+        self.open_add();
+        if sheet && let Some(row) = self.add_rows_now(true).into_iter().next() {
+            let checked = default_checked(&row.machines);
+            self.add.stage = Stage::Sheet {
+                core: row.core,
+                checked,
+            };
+        }
+    }
+
     pub(crate) fn add_open(&self) -> bool {
         !matches!(self.add.stage, Stage::Closed)
     }
@@ -149,8 +175,9 @@ impl CoresUi {
             return Vec::new();
         };
         let installed: BTreeSet<&CoreId> = snapshot.installed.iter().map(|c| &c.id).collect();
+        let demo = self.add.demo;
         let downloadable = |id: &CoreId| {
-            installed.contains(id)
+            demo || installed.contains(id)
                 || snapshot
                     .catalog
                     .as_ref()
@@ -632,6 +659,43 @@ impl CoresUi {
             job,
         }
     }
+}
+
+/// `.info` files of the sample cores of a capture: machines emu-rust has not tested, one with the hardware rendering
+/// refusal, one with a BIOS.
+fn demo_infos() -> std::collections::BTreeMap<CoreId, CoreInfo> {
+    const SAMPLES: [(&str, &str); 4] = [
+        (
+            "vecx",
+            "display_name = \"GCE - Vectrex (VecX)\"\nlicense = \"GPLv3\"\ncategories = \"Emulator\"\n\
+             database = \"GCE - Vectrex\"\nsupported_extensions = \"bin|vec\"\n",
+        ),
+        (
+            "o2em",
+            "display_name = \"Magnavox - Odyssey2 (O2EM)\"\nlicense = \"Artistic License\"\n\
+             categories = \"Emulator\"\ndatabase = \"Magnavox - Odyssey2\"\nsupported_extensions = \"bin\"\n\
+             firmware_count = 1\nfirmware0_desc = \"o2rom.bin\"\nfirmware0_path = \"o2rom.bin\"\n\
+             firmware0_opt = \"false\"\n",
+        ),
+        (
+            "fuse",
+            "display_name = \"Sinclair - ZX Spectrum (Fuse)\"\nlicense = \"GPLv3\"\ncategories = \"Emulator\"\n\
+             database = \"Sinclair - ZX Spectrum\"\nsupported_extensions = \"tzx|tap|z80\"\n",
+        ),
+        (
+            "pcsx2",
+            "display_name = \"Sony - PlayStation 2 (LRPS2)\"\nlicense = \"GPLv2\"\ncategories = \"Emulator\"\n\
+             database = \"Sony - PlayStation 2\"\nsupported_extensions = \"iso|chd\"\n\
+             required_hw_api = \"OpenGL Core >= 3.3\"\n",
+        ),
+    ];
+    SAMPLES
+        .iter()
+        .filter_map(|(id, text)| {
+            let id = CoreId::new(id)?;
+            Some((id.clone(), emu_assets::cores::parse_info(id, text).ok()?))
+        })
+        .collect()
 }
 
 #[cfg(test)]

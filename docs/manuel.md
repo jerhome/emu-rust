@@ -80,10 +80,25 @@ rien n'est garanti pour eux.
   le dossier `roms/<identifiant>/` ne sont pas touchés, et les jeux restent dans la bibliothèque, masqués.
   **Systèmes retirés** : **Restaurer** les fait revenir ; **Oublier ses jeux** les retire pour de bon de la
   bibliothèque (jamais les fichiers). Un système retiré par une bascule vers un système officiel est listé « remplacé
-  par… » sans bouton **Restaurer** ni **Oublier ses jeux**. Si l'identifiant du système est celui d'un système
-  officiel, le retrait compte comme un conflit : les jeux propres à la définition restent masqués jusqu'à **Oublier
-  ses jeux** (pas proposé tant qu'un système actif a le même identifiant) ou **Restaurer**, et la
-  suppression avec oubli est refusée tant qu'un de ces jeux reste dans `roms/<identifiant>/` : déplacez-les.
+  par… » sans bouton **Restaurer** (seule l'annulation de la bascule le rend), mais **Oublier ses jeux** y est
+  proposé. Si l'identifiant du système est celui d'un système officiel, le retrait compte comme un conflit : les jeux
+  propres à la définition restent masqués jusqu'à **Oublier ses jeux** ou **Restaurer**, et **Oublier ses jeux**
+  n'oublie alors que ces jeux-là (ceux que le système actif ne reconnaît pas) : les jeux du système officiel ne sont
+  jamais touchés. La suppression avec oubli est refusée tant qu'un de ces jeux reste dans `roms/<identifiant>/` :
+  déplacez-les.
+- **Bascule vers un système officiel** : quand une version d'emu-rust prend en charge officiellement un système que
+  vous aviez ajouté, un bandeau en bas de la bibliothèque (et un bouton **Basculer…** dans les Réglages) le propose.
+  Jamais de bascule automatique. L'aperçu dit ce qui change avant toute action. Trois cas : **même dossier** (aucun
+  fichier déplacé, définitive), **autre dossier** (les jeux sont rangés dans le dossier du système officiel par le
+  rangement ; annulable tant que vous ne rangez rien d'autre avec **Annuler la bascule…**) et **incertain** (un
+  système officiel porte le même nom de dossier : « est-ce la même machine ? » ; sans réponse positive rien
+  ne change). Vos touches (si celles du système officiel diffèrent, vous choisissez lesquelles garder) et le core que
+  vous utilisiez (il reste le premier choix) sont repris. Les jeux que le système officiel ne reconnaît pas sont
+  gardés, masqués, jusqu'à **Oublier ses jeux**. Si la fenêtre se ferme ou le courant s'arrête en cours de route, la
+  fin de la bascule se fait au démarrage suivant, sans question ; si elle ne peut pas se faire, le bandeau dit
+  pourquoi (par exemple : **Retirer ce système et terminer la bascule**).
+- **Noms des boutons** : le core d'un système non testé annonce parfois le nom de ses boutons (« Tir », « Saut ») ;
+  l'écran des touches les affiche à côté de A, B, X, Y une fois le core essayé ou joué une fois.
 - **Systèmes en erreur** : une définition illisible est listée avec la raison et ses jeux restent intacts. Au-delà de
   256 définitions, les suivantes sont ignorées : une seule ligne le dit, la liste est repliée.
 - **Limite** : un core qui demande le rendu matériel est refusé (« prévu en 9.0 »), même s'il ne l'exigeait qu'en

@@ -422,6 +422,7 @@ pub fn journal_line(kind: super::exec::RunKind, line: &str) -> String {
         super::exec::RunKind::Tidy => "Rangement des ROMs",
         super::exec::RunKind::Undo => "Annulation du rangement",
         super::exec::RunKind::Recovery => "Reprise du rangement",
+        super::exec::RunKind::Switch => "Bascule de système",
     };
     format!("{what} : {line}")
 }
@@ -456,3 +457,151 @@ fn io_hint(message: &str) -> Option<&'static str> {
 
 pub const SHARING_HINT: &str = "fichier ouvert par un autre programme : fermez-le, puis relancez le rangement \
                                 (le jeu est resté à sa place)";
+
+// ---- switch to an official system (ADR 0025 §10) ------------------------------------------------------------
+
+pub const SWITCH_TITLE: &str = "Basculer vers le système officiel";
+pub const SWITCH_ANALYSING: &str = "Analyse de la bascule… ";
+pub const SWITCH_START: &str = "Basculer";
+pub const SWITCH_START_RECOMMENDED: &str = "Basculer (recommandé)";
+pub const SWITCH_LATER: &str = "Plus tard";
+pub const SWITCH_NOT_THIS_ONE: &str = "Non, ce n'est pas la même machine";
+pub const SWITCH_UNCERTAIN_YES: &str = "Oui, basculer";
+pub const SWITCH_REPORT: &str = "Rapport de la bascule";
+pub const SWITCH_BANNER_DISMISS: &str = "Fermer";
+pub const SWITCH_SETTINGS_BUTTON: &str = "Basculer…";
+pub const SWITCH_KEYS_TITLE: &str = "Vos touches et celles du système officiel sont différentes :";
+pub const SWITCH_KEYS_USER: &str = "Garder vos touches";
+pub const SWITCH_KEYS_OFFICIAL: &str = "Garder celles du système officiel";
+pub const SWITCH_CORE_NOTE: &str = "Votre core reste le premier choix pour ce système ; le core recommandé reste \
+                                    disponible dans l'écran Cores.";
+pub const SWITCH_BLOCKED_TITLE: &str = "Jeux à régler avant de basculer :";
+pub const SWITCH_BLOCKED_HINT: &str = "La bascule n'est pas proposée tant qu'il en reste : réglez-les (déplacez, \
+                                       renommez ou supprimez ces fichiers), puis relancez la bascule.";
+pub const SWITCH_NO_OFFICIAL: &str = "Système officiel introuvable : bascule impossible.";
+pub const SWITCH_JOURNAL_OPEN: &str = "Une bascule est déjà en cours : terminez-la d'abord.";
+
+pub fn switch_banner(official: &str) -> String {
+    format!("emu-rust prend désormais en charge {official} officiellement.")
+}
+
+pub fn switch_banner_uncertain(name: &str) -> String {
+    format!(
+        "Une machine officielle porte le même nom de dossier que « {name} » : est-ce la même machine ?"
+    )
+}
+
+pub fn switch_intro(official: &str, kind: emu_library::SwitchKind) -> String {
+    match kind {
+        emu_library::SwitchKind::NeedsMove => format!(
+            "Vos jeux de ce système seront rangés dans le dossier de {official} par le rangement, puis le système \
+             personnalisé sera retiré."
+        ),
+        emu_library::SwitchKind::Uncertain => format!(
+            "Le dossier est le même que celui de {official} : si c'est la même machine, vos jeux, favoris et \
+             jaquettes restent tels quels et le système personnalisé est retiré."
+        ),
+        _ => format!(
+            "Le dossier est déjà celui de {official} : aucun fichier n'est déplacé ; vos jeux, favoris et jaquettes \
+             restent tels quels et le système personnalisé est retiré."
+        ),
+    }
+}
+
+pub const SWITCH_DEFINITIVE: &str = "Cette bascule est définitive : le système personnalisé retiré ne se restaure \
+                                     pas.";
+pub const SWITCH_UNDOABLE: &str = "Annulable tant que vous ne rangez rien d'autre : « Annuler le dernier \
+                                   rangement » remet les jeux en place et restaure le système personnalisé. Les \
+                                   jaquettes renommées ne sont pas défaites (elles se retéléchargent sur action).";
+
+pub fn switch_units(units: usize, files: usize) -> String {
+    format!("{units} jeu(x) à déplacer ({files} fichier(s)).")
+}
+
+pub fn switch_frozen(n: usize, official: &str) -> String {
+    format!(
+        "{n} jeu(x) que {official} ne reconnaît pas : gardés, masqués, jusqu'à « Oublier ses jeux » (Réglages)."
+    )
+}
+
+pub fn switch_ignored(n: usize, custom_id: &str, official: &str) -> String {
+    format!("{n} fichier(s) restent dans roms/{custom_id}/ : {official} ne les reconnaît pas.")
+}
+
+pub fn switch_done(official: &str) -> String {
+    format!("Bascule faite : {official} est maintenant pris en charge officiellement.")
+}
+
+pub fn switch_undone(custom: &str) -> String {
+    format!("Bascule annulée : le système personnalisé « {custom} » est de retour.")
+}
+
+pub fn switch_incomplete(n: usize, custom_id: &str) -> String {
+    format!(
+        "Bascule incomplète : {n} jeu(x) restent dans roms/{custom_id}/ ; résolvez-les puis relancez la bascule."
+    )
+}
+
+pub fn switch_end_failed(reason: &str) -> String {
+    format!(
+        "La fin de la bascule n'a pas pu se faire : {reason}. Elle sera retentée au prochain démarrage ; aucun \
+         rangement ni aucune annulation n'est possible d'ici là."
+    )
+}
+
+pub const SWITCH_CONFIG_LOCKED: &str =
+    "le fichier des réglages est invalide : il n'est pas réécrit";
+pub const SWITCH_CONFIG_TOO_LARGE: &str = "le fichier des réglages est trop gros";
+
+pub fn switch_settings_failed(reason: &str) -> String {
+    format!(
+        "Touches et core non repris ({reason}) : la fin de la bascule est repoussée au prochain démarrage."
+    )
+}
+
+pub const SWITCH_INTERRUPTED: &str =
+    "Bascule interrompue : relancez la bascule pour déplacer les jeux restants.";
+pub fn switch_end_banner(custom_id: &str, block: super::switch::EndBlock, retired: &str) -> String {
+    use super::switch::EndBlock;
+    let why = match block {
+        EndBlock::PlaceTaken => format!("systems/{custom_id}.toml existe déjà"),
+        EndBlock::RetiredMissing => {
+            format!(
+                "fichier retiré introuvable : remettez systems/.retired/{retired} puis relancez"
+            )
+        }
+        EndBlock::Other => "voir le Journal".to_owned(),
+    };
+    format!("Bascule de « {custom_id} » à terminer : {why}.")
+}
+
+pub const SWITCH_END_DUE: &str = "Une bascule attend sa fin : relancez-la ci-dessous.";
+pub const SWITCH_END_RETRY: &str = "Terminer la bascule";
+pub const SWITCH_REMOVE_AND_END: &str = "Retirer ce système et terminer la bascule";
+
+pub const SWITCH_UNDO: &str = "Annuler la bascule…";
+pub const SWITCH_UNDO_REFUSED_UNIT: &str = "Annulation de la bascule impossible : un jeu ne peut pas revenir (fichier \
+                                            changé ou place d'origine occupée).";
+pub const SWITCH_UNDO_REFUSED_MISSING: &str = "Annulation de la bascule impossible : le fichier retiré du système \
+                                               personnalisé est introuvable, remettez-le dans systems/.retired/.";
+
+pub fn switch_undo_recreated(id: &str) -> String {
+    format!(
+        "Annulation de la bascule impossible : le système personnalisé a été recréé, supprimez d'abord le \
+         système ({}).",
+        clean(id)
+    )
+}
+
+pub fn switch_undo_confirm(moved: u64, unix: i64) -> String {
+    format!(
+        "Annuler la bascule du {} ({moved} fichier(s) déplacé(s)) ? Les jeux reviennent à leur place d'origine et \
+         le système personnalisé est restauré. Une seule annulation est possible, et elle ne peut pas être \
+         arrêtée en cours de route.",
+        local_date(unix)
+    )
+}
+
+pub fn and_more(n: usize) -> String {
+    format!("… et {n} autre(s)")
+}

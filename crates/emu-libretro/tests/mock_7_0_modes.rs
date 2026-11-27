@@ -3,12 +3,15 @@
 // `std::env::set_var` is `unsafe` (edition 2024).
 #![allow(unsafe_code)]
 //! 7.0 behaviours of the mock core: `MOCK_CONTROLLERS` (SET_CONTROLLER_INFO, 35) and the log of
-//! `retro_set_controller_port_device`. `MOCK_*` variables are process-global: a single test runs the scenarios.
+//! `retro_set_controller_port_device`. `MOCK_*` variables are process-global: a single test runs the scenarios,
+//! under [`EnvVarGuard`].
 
 #[path = "../../../tests/support/mock_core.rs"]
 mod mock_core;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use emu_libretro::{Core, CoreConfig, FrontendHandler, InputQuery, VideoFrame};
 
@@ -45,6 +48,51 @@ fn config(dir: &Path) -> CoreConfig {
     }
 }
 
+/// Serializes the tests of this binary that touch `MOCK_*` variables (process-global).
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Holds [`ENV_LOCK`] and restores one environment variable to its initial value on drop, panic included, so a
+/// failing scenario never leaks `MOCK_*` into the next test of the binary.
+struct EnvVarGuard {
+    name: &'static str,
+    initial: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl EnvVarGuard {
+    fn new(name: &'static str) -> Self {
+        // A poisoned lock only means another test panicked; its own guard has already restored the variable.
+        let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            name,
+            initial: std::env::var_os(name),
+            _lock: lock,
+        }
+    }
+
+    fn set(&self, value: &str) {
+        // SAFETY: `ENV_LOCK` is held, so no other test of this binary reads or writes the environment.
+        unsafe { std::env::set_var(self.name, value) };
+    }
+
+    fn remove(&self) {
+        // SAFETY: as in `set`.
+        unsafe { std::env::remove_var(self.name) };
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: as in `set`; the lock field is released only after this body runs.
+        unsafe {
+            match &self.initial {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
 fn log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("saves/mock-controllers.txt")).unwrap_or_default()
 }
@@ -52,11 +100,12 @@ fn log(dir: &Path) -> String {
 #[cfg(unix)]
 #[test]
 fn controller_info_and_device_log() {
+    // Declared first so it drops last: the variable is restored after every core is unloaded, even on panic.
+    let controllers = EnvVarGuard::new("MOCK_CONTROLLERS");
     let lib = mock_core::build(mock_core::Variant::Default);
 
     // Default: nothing declared, nothing logged.
-    // SAFETY: the only test of this binary; no other thread touches the environment.
-    unsafe { std::env::remove_var("MOCK_CONTROLLERS") };
+    controllers.remove();
     let dir = out_dir("default");
     let mut core = Core::load(&lib, config(&dir)).unwrap();
     // Without a game the call is refused (the cores only honour it between `retro_load_game` and unload).
@@ -71,8 +120,7 @@ fn controller_info_and_device_log() {
 
     // Declared 1 / 517 (PS1 style): visible on ports 0 and 1, none on port 2; the frontend puts JOYPAD on 0 and 1
     // after load, then switches port 0 to the DualShock id.
-    // SAFETY: as above.
-    unsafe { std::env::set_var("MOCK_CONTROLLERS", "1,517") };
+    controllers.set("1,517");
     let dir = out_dir("ps1");
     let mut core = Core::load(&lib, config(&dir)).unwrap();
     core.load_game(&dir.join("game.mock")).unwrap();
@@ -92,12 +140,9 @@ fn controller_info_and_device_log() {
     assert!(text.ends_with("port=0 device=517\n"), "{text}");
     drop(core);
 
-    // SAFETY: as above.
-    unsafe { std::env::set_var("MOCK_CONTROLLERS", "1,261") };
+    controllers.set("1,261");
     let dir = out_dir("swan");
     let mut core = Core::load(&lib, config(&dir)).unwrap();
     core.load_game(&dir.join("game.mock")).unwrap();
     assert_eq!(core.controller_types(1)[1].id, 261);
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("MOCK_CONTROLLERS") };
 }

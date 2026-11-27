@@ -300,6 +300,7 @@ impl Fixture {
             soundfont_hint: false,
             eightbit: &self.eightbit,
             pad_dualshock: self.pad_dualshock,
+            pad_names: &[],
         };
         let mut actions = Vec::new();
         self.ctx

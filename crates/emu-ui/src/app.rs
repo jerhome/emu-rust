@@ -265,6 +265,10 @@ pub(crate) struct App {
     pad_devices: Option<PadDevices>,
     /// Current pad mode on ports 0 and 1; `None` without `pad_devices`.
     pad_mode: Option<PadMode>,
+    /// Names the core gave to the buttons of its pad (the keys screen shows them for a generic pad).
+    pad_names: Vec<(emu_runtime::JoypadButton, String)>,
+    /// The game belongs to a custom system: the names of the buttons are kept in the cache at the end.
+    custom_system: bool,
     featured: Option<Featured>,
     soundfont_hint: bool,
     /// System of CDs (`disc = true`): the disk menu and its messages say « CD ».
@@ -397,6 +401,7 @@ impl Standalone {
         };
         app.teardown();
         app.flush_sram();
+        app.save_input_descriptors();
         app.save_config();
         app.log_audio_stats();
         let mut outcome = app.error.take().map_or(Ok(()), Err);
@@ -661,6 +666,16 @@ impl App {
             Some(system) if system.is_custom() => PadStyle::for_system(system, &core_id),
             _ => PadStyle::detect(&core_id, options.content.first().unwrap_or(Path::new(""))),
         };
+        let custom_system = system_info.is_some_and(|s| s.is_custom());
+        let pad_names = if style == PadStyle::Generic {
+            crate::input_descriptors::names_for(
+                emulator.input_descriptors(),
+                &options.dirs.cache_dir(),
+                &core_id,
+            )
+        } else {
+            Vec::new()
+        };
         let profile = system_info.map_or_else(
             || style.profile_key(&core_id),
             |system| profile_key_for(system, style, &core_id),
@@ -880,6 +895,8 @@ impl App {
             },
             pad_devices,
             pad_mode,
+            pad_names,
+            custom_system,
             featured,
             soundfont_hint,
             disc,
@@ -931,6 +948,7 @@ impl App {
         self.capture(CaptureEvent::FocusLost);
         self.audio.set_paused(true);
         self.flush_sram();
+        self.save_input_descriptors();
         self.save_config();
         self.save_game_options();
         self.log_audio_stats();
@@ -1447,6 +1465,24 @@ impl App {
         }
         self.egui = None;
         self.window = None;
+    }
+
+    /// End of a game of a custom system: the names the core gave to its buttons are kept (cache; never an error).
+    fn save_input_descriptors(&self) {
+        if !self.custom_system
+            || self.options.dump_window.is_some()
+            || self.options.screen.is_some()
+        {
+            return;
+        }
+        let core = &self.core_id;
+        if let Err(e) = crate::input_descriptors::save(
+            &self.options.dirs.cache_dir(),
+            core,
+            self.emulator.input_descriptors(),
+        ) {
+            tracing::warn!("noms des boutons non gardés : {e}");
+        }
     }
 
     fn flush_sram(&mut self) {
@@ -2262,6 +2298,7 @@ impl App {
                 soundfont_hint: self.soundfont_hint,
                 eightbit: &self.eightbit,
                 pad_dualshock: self.pad_mode.map(|m| m == PadMode::DualShock),
+                pad_names: &self.pad_names,
             };
             self.overlay.vkbd_open = vkbd_open;
             let overlay = &mut self.overlay;

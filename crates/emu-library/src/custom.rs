@@ -169,7 +169,16 @@ fn clip(s: &str) -> String {
 
 fn is_unsafe_text_char(c: char) -> bool {
     c.is_control()
-        || matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
 }
 
 /// Displayed text (`info_name`, `created_by`): control and bidirectional characters removed, nothing else changed.
@@ -1042,13 +1051,24 @@ const MAX_DISK_DEPTH: usize = 32;
 /// Uncertain-conflict deletion (ADR 0025 §9): files on disk under `<roms_root>/<id>/` (recursive, links never
 /// followed) that the active custom definition `id` of `catalog` claims — one of its extensions, or a `.zip` with
 /// such an entry —, sorted, at most `limit`. Disk only, never the rows. The UI refuses « Oublier ses jeux et
-/// supprimer » while it is non-empty and shows the list. `Err` if `id` is not an active custom system, or if `roms/<id>/` or one of its sub-folders exists but cannot
-/// be listed (fail closed). Extra library roots are not read.
+/// supprimer » while it is non-empty and shows the list. `Err` if `id` is not an active custom system, if
+/// `roms/<id>/` or one of its sub-folders exists but cannot be listed or holds an unreadable entry, or if more than
+/// [`MAX_DISK_ENTRIES`] entries are met (fail closed: never a partial list). Extra library roots are not read.
 pub fn custom_games_on_disk(
     roms_root: &Path,
     catalog: &Catalog,
     id: &str,
     limit: usize,
+) -> Result<Vec<PathBuf>, LibraryError> {
+    custom_games_on_disk_bounded(roms_root, catalog, id, limit, MAX_DISK_ENTRIES)
+}
+
+fn custom_games_on_disk_bounded(
+    roms_root: &Path,
+    catalog: &Catalog,
+    id: &str,
+    limit: usize,
+    max_entries: usize,
 ) -> Result<Vec<PathBuf>, LibraryError> {
     let system = catalog
         .system(id)
@@ -1077,10 +1097,18 @@ pub fn custom_games_on_disk(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(source) => return Err(LibraryError::Io { path: dir, source }),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            // Fail closed: an entry that cannot be read, or more entries than the bound, may hide a claimed game.
+            let entry = entry.map_err(|source| LibraryError::Io {
+                path: dir.clone(),
+                source,
+            })?;
             seen += 1;
-            if seen > MAX_DISK_ENTRIES {
-                break;
+            if seen > max_entries {
+                return Err(LibraryError::Io {
+                    path: dir,
+                    source: std::io::Error::other("too many entries to list"),
+                });
             }
             let Ok(kind) = entry.file_type() else {
                 continue;
@@ -1192,6 +1220,10 @@ pub fn dat_file_stem(database: &str) -> String {
         .chars()
         .map(|c| if is_label_char(c) { c } else { '_' })
         .collect();
+    // `CON`, `NUL.txt`, `COM1`…: a reserved device name gets a stable `_` prefix.
+    if is_windows_device_name(&stem) {
+        stem.insert(0, '_');
+    }
     while stem.contains("..") {
         stem = stem.replace("..", "._");
     }

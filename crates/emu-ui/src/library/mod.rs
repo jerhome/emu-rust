@@ -6,6 +6,7 @@ mod cd32x;
 mod covers;
 mod custom_launch;
 mod custom_systems;
+mod demo;
 mod dos;
 mod firmware_banner;
 pub(crate) mod firmware_gate;
@@ -417,6 +418,8 @@ impl LibraryUi {
             custom_systems: custom_systems::State::default(),
         };
         ui.reload_games();
+        // The switch banner reads the catalog load (`pending_switches`).
+        ui.refresh_custom_systems();
         ui.show_crash_notices();
         ui
     }
@@ -1315,6 +1318,9 @@ impl LibraryUi {
         }
         if std::mem::take(&mut self.tidy.pending) {
             self.start_tidy(&ctx);
+        }
+        if std::mem::take(&mut self.tidy.pending_switch) {
+            self.start_first_proposed_switch(&ctx);
         }
         self.relaunch_after_install();
         self.apply_add_events();

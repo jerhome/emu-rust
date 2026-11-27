@@ -124,7 +124,8 @@ fn deleting_hides_the_games_restoring_brings_them_back_and_forgetting_removes_th
 }
 
 #[test]
-fn a_replaced_definition_is_listed_without_restore_and_an_active_id_cannot_be_forgotten() {
+fn a_replaced_definition_is_listed_without_restore_and_forgetting_an_active_id_is_offered_for_its_frozen_rows()
+ {
     let _guard = lock();
     let root = root();
     let retired = root.dirs.custom_systems.join(".retired");
@@ -146,16 +147,16 @@ fn a_replaced_definition_is_listed_without_restore_and_an_active_id_cannot_be_fo
     let find = |id: &str| rows.iter().find(|r| r.0 == id).cloned().unwrap();
     assert_eq!(
         find("mysnes"),
-        ("mysnes".to_owned(), false, false),
-        "replaced: neither restore nor forget"
+        ("mysnes".to_owned(), false, true),
+        "replaced: no restore, but its games can be forgotten (ADR 0025 §10)"
     );
     assert_eq!(find("gone"), ("gone".to_owned(), true, true));
     assert_eq!(
         find("snes"),
-        ("snes".to_owned(), true, false),
-        "the rows of that id are the official system's: never forgotten from here"
+        ("snes".to_owned(), true, true),
+        "offered, but only the frozen rows of that id go (its own rows are the official system's)"
     );
-    assert_eq!(h.ask_forget("snes"), DialogKind::None);
+    assert_eq!(h.ask_forget("snes"), DialogKind::Forget);
     // Restoring a replaced one is refused even if asked.
     h.restore("mysnes");
     assert!(!root.dirs.custom_systems.join("mysnes.toml").exists());
