@@ -1,5 +1,5 @@
 //! Switch with move: a custom system replaced by an official one through the tidy (design 8.0 §2.1 and §2.6,
-//! ADR 0025 §10; journal version 2). Contract stubs (PX0): the bodies belong to lot PB3.
+//! ADR 0025 §10; journal version 2). Contract stubs: the bodies belong to lot PB3.
 #![allow(unused_variables)]
 
 use std::path::{Path, PathBuf};

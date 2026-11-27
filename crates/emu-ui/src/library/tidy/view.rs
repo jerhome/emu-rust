@@ -274,7 +274,7 @@ impl LibraryUi {
                         && p.can_apply()
                     {
                         let job = Job::Apply {
-                            plan: p.plan.clone(),
+                            plan: Box::new(p.plan.clone()),
                             selected: p.checked.iter().copied().collect(),
                         };
                         let ctx = ui.ctx().clone();

@@ -1,6 +1,6 @@
-//! The tidy with custom systems (lot PB2, ADR 0025 §12, design 8.0 §4 « Rangement »): suggested units, reserved
-//! folders, official outcomes unchanged. Catalogs come from \`Catalog::load\` and go to \`plan_tidy_in\` /
-//! \`plan::run_in\`: nothing here publishes a catalog.
+//! The tidy with custom systems (ADR 0025 §12, design 8.0 §4 « Rangement »): suggested units, reserved
+//! folders, official outcomes unchanged. Catalogs come from `Catalog::load` and go to `plan_tidy_in` /
+//! `plan::run_in`: nothing here publishes a catalog.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,8 +36,8 @@ fn draft(id: &str, database: &str, extensions: &[&str]) -> CustomSystemDraft {
     }
 }
 
-/// A \`systems/\` folder: five active custom systems (some extensions shared with official systems, \`shr\` shared
-/// by two of them), \`gone\` retired, \`broken.toml\` invalid.
+/// A `systems/` folder: five active custom systems (some extensions shared with official systems, `shr` shared
+/// by two of them), `gone` retired, `broken.toml` invalid.
 fn systems_dir(root: &Path) -> PathBuf {
     let dir = root.join("systems");
     for d in [
@@ -63,7 +63,8 @@ struct Fx {
 
 fn fx() -> Fx {
     let tmp = tempfile::tempdir().unwrap();
-    let roms = tmp.path().join("roms");
+    // Canonical like `TidyOptions` roots (`/var` is a link to `/private/var` on macOS).
+    let roms = fs::canonicalize(tmp.path()).unwrap().join("roms");
     fs::create_dir(&roms).unwrap();
     let cat = leak(Catalog::load(&systems_dir(tmp.path())).catalog);
     assert_eq!(cat.customs().count(), 5);
@@ -174,7 +175,7 @@ fn custom_systems_change_no_outcome_of_the_official_systems() {
 #[test]
 fn a_folder_only_official_extension_stays_sure_when_a_custom_system_claims_it_too() {
     let fx = fx();
-    // \`hdf\` is Amiga-only outside its folder in the official catalog; dmofour claims it under its folder.
+    // `hdf` is Amiga-only outside its folder in the official catalog; dmofour claims it under its folder.
     write(&fx.roms.join("Hard.hdf"), &noise(3000, 3));
     let lib = Library::open_in_memory().unwrap();
     let with = fx.plan_in(&lib, fx.cat);
@@ -203,11 +204,11 @@ fn a_known_game_keeps_its_system_and_is_never_offered_a_custom_one() {
     assert_eq!(custom.status, TidyStatus::Sure(TidyReason::Library));
     assert_eq!(custom.system.as_deref(), Some("dmoone"));
     assert!(custom.candidates.is_empty());
-    // \`gb\` is also an extension of the custom \`dmotwo\`: not a choice (only \`gbc\`, as without it).
+    // `gb` is also an extension of the custom `dmotwo`: not a choice (only `gbc`, as without it).
     let official_game = unit(&plan, "Known.gb");
     assert_eq!(official_game.candidates, ["gbc"]);
     assert_eq!(official_game.system.as_deref(), Some("gb"));
-    // A row whose system is absent from the catalog stays where it is: nothing is put into \`roms/ghost/\`.
+    // A row whose system is absent from the catalog stays where it is: nothing is put into `roms/ghost/`.
     let ghost = unit(&plan, "Ghost.gb");
     assert!(ghost.moves.is_empty(), "{ghost:#?}");
     assert_eq!(ghost.status, TidyStatus::Unknown);
@@ -217,7 +218,7 @@ fn a_known_game_keeps_its_system_and_is_never_offered_a_custom_one() {
 #[test]
 fn a_custom_system_is_never_a_choice_for_an_ambiguous_unit() {
     let fx = fx();
-    // \`.bin\` of an official system and of a custom one: only the official candidates, as without it.
+    // `.bin` of an official system and of a custom one: only the official candidates, as without it.
     write(&fx.roms.join("Raw.bin"), &noise(2048, 7));
     let lib = Library::open_in_memory().unwrap();
     let mut plan = fx.plan_in(&lib, fx.cat);
@@ -243,7 +244,7 @@ fn folders_of_retired_broken_and_unknown_systems_are_left_alone() {
     write(&fx.roms.join("gb").join("Pocket.gb"), &noise(2048, 13));
     write(&fx.roms.join("loose.gb"), &noise(2048, 14));
     let lib = Library::open_in_memory().unwrap();
-    // \`orphan\` is an id of the library that the catalog does not have.
+    // `orphan` is an id of the library that the catalog does not have.
     insert_game(
         &lib,
         &fx.options().scan_root().join("elsewhere").join("x.gb"),
@@ -263,21 +264,19 @@ fn folders_of_retired_broken_and_unknown_systems_are_left_alone() {
     assert!(plain.units.len() > 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symbolic_link_named_like_a_reserved_folder_is_left_alone_too() {
-    #[cfg(unix)]
-    {
-        let fx = fx();
-        write(
-            &fx.tmp.path().join("elsewhere").join("x.gb"),
-            &noise(2048, 15),
-        );
-        std::os::unix::fs::symlink(fx.tmp.path().join("elsewhere"), fx.roms.join("gone")).unwrap();
-        let lib = Library::open_in_memory().unwrap();
-        let plan = fx.plan_in(&lib, fx.cat);
-        assert!(plan.units.is_empty(), "{:#?}", plan.units);
-        assert_eq!(plan.reserved_folders, ["gone"]);
-    }
+    let fx = fx();
+    write(
+        &fx.tmp.path().join("elsewhere").join("x.gb"),
+        &noise(2048, 15),
+    );
+    std::os::unix::fs::symlink(fx.tmp.path().join("elsewhere"), fx.roms.join("gone")).unwrap();
+    let lib = Library::open_in_memory().unwrap();
+    let plan = fx.plan_in(&lib, fx.cat);
+    assert!(plan.units.is_empty(), "{:#?}", plan.units);
+    assert_eq!(plan.reserved_folders, ["gone"]);
 }
 
 #[test]
@@ -356,4 +355,63 @@ fn a_plan_is_only_equal_to_a_plan_of_the_same_catalog() {
     assert_eq!(a, fx.plan_in(&lib, fx.cat));
     let other = fx.plan_in(&lib, official());
     assert_ne!(a, other, "the snapshot is part of the identity of a plan");
+}
+
+#[test]
+fn a_reserved_folder_written_in_another_case_is_reserved_too() {
+    let fx = fx();
+    write(&fx.roms.join("GONE").join("Game.gon"), &noise(2048, 20));
+    write(&fx.roms.join("Gone").join("Disc.bin"), &noise(2048, 21));
+    write(&fx.roms.join("Broken").join("Game.dmo"), &noise(2048, 22));
+    let lib = Library::open_in_memory().unwrap();
+    let plan = fx.plan_in(&lib, fx.cat);
+    assert_eq!(plan.reserved_folders, ["broken", "gone"]);
+    assert!(plan.units.is_empty(), "{:#?}", plan.units);
+    assert_eq!(plan.ignored, 0);
+}
+
+#[test]
+fn restoring_a_retired_system_finds_all_its_games_again() {
+    let fx = fx();
+    let games = ["A.gon", "B.gon", "C.gon"];
+    for (i, name) in games.iter().enumerate() {
+        write(
+            &fx.roms.join("gone").join(name),
+            &noise(2048, 30 + i as u32),
+        );
+    }
+    let systems = fx.tmp.path().join("systems");
+    let mut lib = Library::open_in_memory().unwrap();
+    // Reserved while retired: nothing is taken, nothing is put there.
+    let plan = fx.plan_in(&lib, fx.cat);
+    assert_eq!(plan.reserved_folders, ["gone"]);
+    assert!(plan.units.is_empty(), "{:#?}", plan.units);
+
+    let retired = systems.join(".retired").join("gone-1700000000.toml");
+    crate::custom::restore_custom(&systems, &retired, &Catalog::load(&systems).catalog).unwrap();
+    let back = leak(Catalog::load(&systems).catalog);
+    assert!(back.system("gone").is_some());
+    let plan = fx.plan_in(&lib, back);
+    assert!(plan.reserved_folders.is_empty());
+    assert!(plan.units.is_empty(), "{:#?}", plan.units);
+
+    let options = crate::ScanOptions {
+        roots: vec![fx.roms.clone()],
+        ..crate::ScanOptions::default()
+    };
+    crate::scan::run_in(
+        back,
+        &mut lib.conn,
+        &options,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap();
+    let found: i64 = lib
+        .conn
+        .query_row("SELECT COUNT(*) FROM game WHERE system = 'gone'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(found, games.len() as i64);
 }

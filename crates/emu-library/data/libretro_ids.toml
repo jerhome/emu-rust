@@ -5,8 +5,8 @@
 # and digits of the part after the manufacturer, 24 characters) without suffix; the reduction collisions among the
 # names below are settled here, once.
 # tier: cartridge | disc | computer | arcade (palier of ADR 0025 section 9).
-# PROVISIONAL CONTENT: rebuilt without network access from the names of libretro-database; lot PC1 (architect)
-# aligns it with the real set of core-info database fields before the tag.
+# PROVISIONAL CONTENT: rebuilt without network access from the names of libretro-database; it is to be aligned
+# with the real set of core-info database fields before the tag.
 
 [[machine]]
 database = "Atari - 2600"

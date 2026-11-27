@@ -1,5 +1,4 @@
 //! Custom system definitions (design 8.0 §2.1, ADR 0025): `<data>/systems/<id>.toml`, validation, retirement.
-//! Bodies written by lot PB2.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -124,12 +123,16 @@ pub(crate) fn machines() -> &'static [Machine] {
     &table().machines
 }
 
+/// `len` bytes of lower-case ASCII letters and digits, plus `extra`.
+fn is_lower_token(s: &str, len: std::ops::RangeInclusive<usize>, extra: &[u8]) -> bool {
+    len.contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || extra.contains(&b))
+}
+
 /// `[a-z0-9]{1,24}`.
 pub(crate) fn is_valid_id_syntax(id: &str) -> bool {
-    (1..=MAX_ID).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    is_lower_token(id, 1..=MAX_ID, b"")
 }
 
 fn is_windows_device_id(id: &str) -> bool {
@@ -176,18 +179,12 @@ fn clean_text(s: &str) -> String {
 
 /// `[a-z0-9]{1,8}`.
 fn is_valid_extension(ext: &str) -> bool {
-    (1..=MAX_EXTENSION).contains(&ext.len())
-        && ext
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    is_lower_token(ext, 1..=MAX_EXTENSION, b"")
 }
 
 /// `[a-z0-9_-]{1,64}`: the syntax of a core id (`emu_assets::CoreId`).
 fn is_valid_core_id(id: &str) -> bool {
-    (1..=MAX_CORE_ID).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    is_lower_token(id, 1..=MAX_CORE_ID, b"_-")
 }
 
 /// `CON`, `PRN`, `AUX`, `NUL`, `COM0-9`, `LPT0-9` (also with `¹²³`), `CONIN$`, `CONOUT$`, in any case, alone or
@@ -401,7 +398,7 @@ pub(crate) fn build_system(draft: &CustomSystemDraft) -> SystemInfo {
         folder_extensions: extensions.clone(),
         extensions,
         header: None,
-        // Empty until lot PB4 makes the field private (design 8.0 A10): `libretro_name()` is then `None`.
+        // Empty while the field is public (design 8.0 A10): `libretro_name()` is then `None`.
         database: draft.database.clone().unwrap_or_default(),
         screenscraper: draft.screenscraper,
         igdb: draft.igdb,
@@ -743,17 +740,17 @@ pub fn write_custom(
         },
     };
     let text = toml::to_string(&raw).map_err(|e| invalid(dir, &e.to_string()))?;
-    fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
-    let target = dir.join(format!("{}.toml", draft.id));
-    if creating && fs::symlink_metadata(&target).is_ok() {
-        return Err(io_error(
-            &target,
-            std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+    if creating && crate::catalog::definition_count(dir) >= MAX_DEFINITION_FILES {
+        return Err(LibraryError::Definition(
+            DefinitionError::TooManyDefinitions,
         ));
     }
+    fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
+    remove_stale_temporaries(dir, &draft.id);
+    let target = dir.join(format!("{}.toml", draft.id));
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let temporary = dir.join(format!(
-        ".{}.tmp-{}-{}",
+        "{TEMPORARY_PREFIX}{}{TEMPORARY_INFIX}{}-{}",
         draft.id,
         std::process::id(),
         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -765,13 +762,53 @@ pub fn write_custom(
             .open(&temporary)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temporary, &target)
+        let placed = if creating {
+            // Never overwrites a file that appeared since the catalog was read (the user's own definition).
+            match move_no_overwrite(&temporary, &target) {
+                Ok(()) => Ok(()),
+                Err(LibraryError::Io { source, .. }) => Err(source),
+                Err(other) => Err(std::io::Error::other(other.to_string())),
+            }
+        } else {
+            fs::rename(&temporary, &target)
+        };
+        placed?;
+        sync_dir(dir);
+        Ok::<(), std::io::Error>(())
     })();
     if let Err(e) = written {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(&target, e));
     }
     Ok(target)
+}
+
+const TEMPORARY_PREFIX: &str = ".";
+const TEMPORARY_INFIX: &str = ".tmp-";
+
+/// Temporaries `.<id>.tmp-*` left by a process that died between the write and the move: never definitions.
+fn remove_stale_temporaries(dir: &Path, id: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{TEMPORARY_PREFIX}{id}{TEMPORARY_INFIX}");
+    for e in entries.flatten().take(MAX_RETIRED_READ * 4) {
+        if e.file_name().to_string_lossy().starts_with(&prefix)
+            && e.file_type().is_ok_and(|t| t.is_file())
+        {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Makes the new name durable (Unix: a directory can be synced; elsewhere nothing to do).
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -847,7 +884,7 @@ pub fn retired_customs(dir: &Path) -> Vec<RetiredSystem> {
     out
 }
 
-/// Restores a retired definition to `<dir>/<id>.toml`.
+/// Restores a retired definition to `<dir>/<id>.toml`. Like a creation, refused at the limit of definition files.
 pub fn restore_custom(
     dir: &Path,
     retired: &Path,
@@ -871,6 +908,11 @@ pub fn restore_custom(
         return Err(invalid(
             retired,
             "un système actif porte déjà cet identifiant",
+        ));
+    }
+    if crate::catalog::definition_count(dir) >= MAX_DEFINITION_FILES {
+        return Err(LibraryError::Definition(
+            DefinitionError::TooManyDefinitions,
         ));
     }
     let to = dir.join(format!("{id}.toml"));
@@ -1065,4 +1107,6 @@ pub enum DefinitionError {
     UnsafeFirmwarePath(String),
     #[error("trop de fichiers de firmware")]
     TooManyFirmware,
+    #[error("trop de définitions : fichier ignoré")]
+    TooManyDefinitions,
 }

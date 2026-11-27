@@ -1,4 +1,4 @@
-//! The synthetic definitions of `tests/tools/mkcustom.py` (lot PQ1) loaded by `Catalog::load` (lot PB2): every case
+//! The synthetic definitions of `tests/tools/mkcustom.py` loaded by `Catalog::load`: every case
 //! of its manifest gives the expected systems and errors. Public API only; no test publishes a catalog.
 //!
 //! Three expectations of the manifest are corrected here, each one with the reason (design 8.0, ADR 0025):
@@ -18,17 +18,16 @@ use std::sync::OnceLock;
 use emu_library::{Catalog, DefinitionError, SwitchKind};
 use serde_json::Value;
 
-/// Generated once per test binary (the only subprocess); `None` without python3.
-fn data() -> Option<&'static (PathBuf, Value)> {
-    static DATA: OnceLock<Option<(PathBuf, Value)>> = OnceLock::new();
+/// Generated once per test binary (the only subprocess). python3 is required: the tests are ignored on Windows
+/// (`cfg_attr`), where it is not part of the runners, and fail loudly elsewhere rather than pass without checking.
+fn data() -> &'static (PathBuf, Value) {
+    static DATA: OnceLock<(PathBuf, Value)> = OnceLock::new();
     DATA.get_or_init(|| {
         let python = Command::new("python3")
             .args(["-I", "-c", "pass"])
             .output()
             .is_ok_and(|o| o.status.success());
-        if !python {
-            return None;
-        }
+        assert!(python, "python3 is required by these tests");
         let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::create_dir_all(base).unwrap();
         let old = std::time::Duration::from_secs(3600);
@@ -44,7 +43,12 @@ fn data() -> Option<&'static (PathBuf, Value)> {
         let root = base.join(format!("mkcustom-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let out = root.join("gen");
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/tools/mkcustom.py");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("tools")
+            .join("mkcustom.py");
         let status = Command::new("python3")
             .arg("-I")
             .arg(script)
@@ -54,9 +58,8 @@ fn data() -> Option<&'static (PathBuf, Value)> {
         assert!(status.success(), "mkcustom.py failed");
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
-        Some((out, manifest))
+        (out, manifest)
     })
-    .as_ref()
 }
 
 fn variant(error: &DefinitionError) -> String {
@@ -73,11 +76,9 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "needs python3")]
 fn every_definition_case_of_the_manifest_loads_as_expected() {
-    let Some((root, manifest)) = data() else {
-        eprintln!("python3 unavailable: skipped");
-        return;
-    };
+    let (root, manifest) = data();
     let cases = manifest["definitions"].as_array().unwrap();
     assert!(cases.len() >= 70, "{} cases", cases.len());
     let mut seen = 0;
@@ -133,8 +134,9 @@ fn every_definition_case_of_the_manifest_loads_as_expected() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "needs python3")]
 fn a_newer_format_keeps_the_file_intact_and_a_pcengine_with_another_database_is_reserved() {
-    let Some((root, _)) = data() else { return };
+    let (root, _) = data();
     let dir = root.join("definitions").join("e-newer-format");
     let before = fs::read(dir.join("fmt2.toml")).unwrap();
     let loaded = Catalog::load(&dir);
@@ -168,8 +170,9 @@ fn a_newer_format_keeps_the_file_intact_and_a_pcengine_with_another_database_is_
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "needs python3")]
 fn conflict_cases_give_the_documented_switch_kinds() {
-    let Some((root, _)) = data() else { return };
+    let (root, _) = data();
     let kind = |case: &str, custom: &str| -> (SwitchKind, Vec<String>, Vec<String>) {
         let loaded = Catalog::load(&root.join("definitions").join(case));
         let p = loaded
@@ -223,10 +226,9 @@ fn conflict_cases_give_the_documented_switch_kinds() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "needs python3")]
 fn the_trees_of_the_manifest_give_the_documented_reserved_folders() {
-    let Some((root, manifest)) = data() else {
-        return;
-    };
+    let (root, manifest) = data();
     let trees = manifest["trees"].as_array().unwrap();
     let load = |case: &str| {
         let t = trees

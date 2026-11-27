@@ -1,4 +1,4 @@
-//! « Oublier ses jeux » (lot PB2, ADR 0025 §9): the only way rows of a system are removed on request.
+//! « Oublier ses jeux » (ADR 0025 §9): the only way rows of a system are removed on request.
 
 use super::*;
 
@@ -47,10 +47,10 @@ fn dat(lib: &Library, system: &str) {
 /// Systems \`ghost\` (two games, covers, disks, DAT), \`gh\` and \`gb\` (one game each, DAT).
 fn seeded() -> Library {
     let lib = Library::open_in_memory().unwrap();
-    let g1 = game(&lib, "/r/a.x", "ghost");
-    game(&lib, "/r/b.x", "ghost");
-    game(&lib, "/r/c.x", "gh");
-    game(&lib, "/r/d.gb", "gb");
+    let g1 = game(&lib, "r-a.x", "ghost");
+    game(&lib, "r-b.x", "ghost");
+    game(&lib, "r-c.x", "gh");
+    game(&lib, "r-d.gb", "gb");
     lib.conn
         .execute(
             "INSERT INTO cover (game, kind, state, path, source, checked_unix) VALUES (?1, 'boxart', 'cached', 'a/b.png', 'libretro', 1)",
@@ -59,7 +59,7 @@ fn seeded() -> Library {
         .unwrap();
     lib.conn
         .execute(
-            "INSERT INTO game_media (game_id, idx, path) VALUES (?1, 0, '/r/disk0.x')",
+            "INSERT INTO game_media (game_id, idx, path) VALUES (?1, 0, 'r-disk0.x')",
             [g1],
         )
         .unwrap();

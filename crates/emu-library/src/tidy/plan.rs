@@ -218,6 +218,15 @@ fn is_system_id(cat: &Catalog, name: &str) -> bool {
     cat.system(name).is_some()
 }
 
+/// The reserved id `name` stands for: ids are lower-case ASCII, but a folder of another case names the same one on
+/// the case-insensitive file systems (Windows, macOS).
+fn reserved_match<'r>(reserved: &'r BTreeSet<String>, name: &str) -> Option<&'r str> {
+    reserved
+        .iter()
+        .find(|r| r.eq_ignore_ascii_case(name))
+        .map(String::as_str)
+}
+
 fn walk(
     cat: &'static Catalog,
     reserved: &BTreeSet<String>,
@@ -259,8 +268,8 @@ fn walk(
                 // A linked `roms/<id>` is a destination matter (`DestinationNotPlainDir`), not a unit; a reserved
                 // one is left alone.
                 if top && let Some(n) = name.to_str() {
-                    if reserved.contains(n) {
-                        out.reserved.insert(n.to_owned());
+                    if let Some(id) = reserved_match(reserved, n) {
+                        out.reserved.insert(id.to_owned());
                         continue;
                     }
                     if is_system_id(cat, n) {
@@ -287,9 +296,9 @@ fn walk(
             }
             if kind.is_dir() {
                 let name = name.to_string_lossy();
-                if top && reserved.contains(&*name) {
+                if let Some(id) = reserved_match(reserved, &name).filter(|_| top) {
                     // Retired, masked or broken system, or an id of the library the catalog lacks (ADR 0025 §12).
-                    out.reserved.insert(name.into_owned());
+                    out.reserved.insert(id.to_owned());
                 } else if top && is_system_id(cat, &name) {
                     out.already_tidy += count_items(&abs.join(&*name));
                 } else if name.ends_with(PART_SUFFIX) || depth >= max_depth {
@@ -1743,7 +1752,9 @@ fn check(
     for folder in created {
         for c in folder.components().skip(1) {
             let name = c.as_os_str().to_string_lossy();
-            if is_system_id(context.cat.get(), &name) || context.reserved.contains(&*name) {
+            if is_system_id(context.cat.get(), &name)
+                || reserved_match(&context.reserved, &name).is_some()
+            {
                 return Some(TidyBlock::FolderNamedLikeSystem {
                     name: name.into_owned(),
                 });

@@ -1,4 +1,4 @@
-//! Unit tests of the pure parts of the definitions (lot PB2): validation, names, ids, extensions, table.
+//! Unit tests of the pure parts of the definitions: validation, names, ids, extensions, table.
 
 use super::*;
 use crate::catalog::Catalog;
@@ -775,6 +775,50 @@ fn a_new_definition_never_overwrites_a_file_and_an_edit_replaces_it() {
 }
 
 #[test]
+fn a_new_definition_leaves_no_temporary_and_clears_the_ones_a_dead_process_left() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("systems");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".zzdemo.tmp-1-0"), "half written").unwrap();
+    std::fs::write(dir.join(".other.tmp-1-0"), "not ours").unwrap();
+    write_custom(&dir, &draft(), &Catalog::load(&dir).catalog).unwrap();
+    assert_eq!(names_in(&dir), [".other.tmp-1-0", "zzdemo.toml"]);
+}
+
+#[test]
+fn a_new_definition_is_refused_at_the_limit_but_an_edit_is_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("systems");
+    write_one(&dir, "zzdemo", "Demo - One");
+    for i in 1..MAX_DEFINITION_FILES {
+        std::fs::write(dir.join(format!("junk{i:03}.toml")), "x").unwrap();
+    }
+    assert_eq!(names_in(&dir).len(), MAX_DEFINITION_FILES);
+    let catalog = Catalog::load(&dir).catalog;
+    let mut other = draft();
+    other.id = "newone".into();
+    other.database = Some("Demo - New".into());
+    let err = write_custom(&dir, &other, &catalog).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            LibraryError::Definition(DefinitionError::TooManyDefinitions)
+        ),
+        "{err:?}"
+    );
+    assert!(!dir.join("newone.toml").exists());
+    assert_eq!(names_in(&dir).len(), MAX_DEFINITION_FILES);
+    let mut edited = draft();
+    edited.name = "Renamed".into();
+    write_custom(&dir, &edited, &catalog).unwrap();
+    assert!(
+        std::fs::read_to_string(dir.join("zzdemo.toml"))
+            .unwrap()
+            .contains("Renamed")
+    );
+}
+
+#[test]
 fn displayed_text_is_cleaned_when_written() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = draft();
@@ -959,4 +1003,30 @@ fn only_a_custom_system_has_a_draft() {
         CustomSystemDraft::from_custom(&loaded.catalog, "nothere"),
         None
     );
+}
+
+#[test]
+fn restoring_is_refused_at_the_limit_like_a_creation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("systems");
+    write_one(&dir, "aaa", "Demo - One");
+    let removed = retire_custom(&dir, "aaa", Retirement::Removed, 1_700_000_000).unwrap();
+    for i in 0..MAX_DEFINITION_FILES {
+        std::fs::write(dir.join(format!("junk{i:03}.toml")), "x").unwrap();
+    }
+    let catalog = Catalog::load(&dir).catalog;
+    let err = restore_custom(&dir, &removed, &catalog).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            LibraryError::Definition(DefinitionError::TooManyDefinitions)
+        ),
+        "{err:?}"
+    );
+    assert!(removed.exists());
+    assert!(!dir.join("aaa.toml").exists());
+    // One place freed: the restore goes through.
+    std::fs::remove_file(dir.join("junk000.toml")).unwrap();
+    restore_custom(&dir, &removed, &Catalog::load(&dir).catalog).unwrap();
+    assert!(dir.join("aaa.toml").exists());
 }

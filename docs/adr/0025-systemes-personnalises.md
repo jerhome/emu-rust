@@ -111,6 +111,40 @@ Ces points priment sur le texte et sur les amendements précédents.
   le fichier retiré manque ; marque de scan gardée sur les lignes avec données après un scan annulé ou prudent.
   §10.4 et §10.5 corrigés en place.
 
+## Amendement du 2026-11-27 (soir) — relecture du lot PB2
+
+Choix sûrs et réversibles tranchés par la session principale, signalés à l'utilisateur ; ils priment sur le texte et
+sur les amendements précédents. Détail, signatures et tests : design 8.0 §0.9, §2.1, §2.6, §4.
+
+- **Lignes d'un id en conflit gelées** (M1) : quand deux systèmes ont pu écrire des lignes sous un même id — officiel
+  masqué par une définition de même id, ou définition en erreur portant l'id d'un officiel actif —, une ligne de cet
+  id que le système actif n'attribuerait pas (extension du chemin, entrées d'un `.zip`) n'est jamais purgée ni
+  déclassée : elle est gelée comme une ligne de système absent (§13). Sans cela, un `psx.toml` incertain limité à
+  `xyz` ferait purger les jeux PS1, favoris et historique compris.
+- **Double conflit** (id d'un officiel A, `database` d'un officiel B) : définition refusée au chargement
+  (`DuplicateDatabase`), B n'est pas masqué (§10).
+- **« Restaurer » et `Replaced`** : `restore_custom` accepte les deux natures (l'annulation d'une bascule restaure un
+  `Replaced`) ; c'est l'interface qui ne propose « Restaurer » que pour `Removed` (§9).
+- **Borne de 256 définitions** : chaque fichier au-delà devient un problème `TooManyDefinitions`, affiché comme les
+  autres, son id réservé au rangement ; une nouvelle définition est refusée à la borne ; listage borné, trié avant
+  troncature (§2).
+- **Dossiers réservés comparés sans tenir compte de la casse ASCII** (Windows, macOS ; §12).
+- **Suppression en conflit incertain** : le contrôle « aucun jeu sous `roms/<id>/` » porte sur les fichiers du disque
+  que la définition revendique (`custom_games_on_disk`, emu-library, en tête de PB3) ; dialogue en PU3 (§9).
+- **« Oublier ses jeux » en conflit incertain** : n'oublie que les lignes revendiquées par la définition et que
+  l'officiel masqué n'accepte pas (`ForgetScope::ClaimedBy`, lot PB3, avant PU3 ; §9).
+- **Problèmes `TooManyDefinitions` regroupés** dans l'interface : une ligne « N définitions ignorées au-delà de
+  256 », liste repliée (PU3).
+- **Annulation et dossiers réservés** (PB3) : une annulation ne prend ni ne pose rien dans un dossier réservé et ne le
+  retire jamais, même vide ; seuls les deux dossiers d'une bascule en sont exemptés (ADR 0023, amendement du
+  2026-11-27).
+- **Relecture PB2, tour 2** (code de référence) : un `.zip` d'un id en conflit est jugé sur l'entrée enregistrée en
+  base, jamais sur le disque (zip disparu à entrée acceptée : purgé ; sans entrée connue : gelé) ; les **lignes
+  gelées sont masquées** dans la bibliothèque et non lançables avec le core de la définition (PU3, §13) ; une
+  **bascule acceptée ne purge jamais** les lignes que l'officiel n'accepte pas : listées dans l'aperçu, puis gelées
+  jusqu'à « Oublier ses jeux » ou restauration (PB3, §10) ; `custom_games_on_disk` ouvre le lot PB3 ; dossiers
+  réservés reconnus à toute profondeur sous `roms/<id>/`, limite acceptée (§12).
+
 ## Amendements après revue (2026-11-25)
 
 Revue indépendante : `VERDICT : À AMENDER` (1 bloquant, 5 majeurs, 15 mineurs). Changements :
@@ -258,7 +292,9 @@ L'application en publie un nouvel **instantané** à chaque changement ; `catalo
   created_unix = 1764028800
   ```
 
-- **Lecture bornée** : au plus 256 fichiers `*.toml` lus dans `<data>/systems/` (au-delà : ignorés, signalé) ;
+- **Lecture bornée** : au plus 256 fichiers `*.toml` lus dans `<data>/systems/`, les premiers par nom après un
+  listage lui-même borné (au-delà : non lus, un problème `TooManyDefinitions` par fichier, affiché comme les autres,
+  id réservé au rangement ; amendement du 2026-11-27 soir) ; une nouvelle définition est refusée à la borne ;
   fichiers **réguliers** seulement (`symlink_metadata` : ni lien, ni FIFO, ni périphérique) ; lecture par
   `take(64 Kio + 1)`, plus grand ⇒ `TooLarge`.
 - **Validation** (fichier local mais modifiable à la main : donnée non fiable) : `deny_unknown_fields` ;
@@ -457,18 +493,26 @@ proposé par défaut **sans acceptation explicite de l'utilisateur, demandée un
   apparaîtraient sous une autre machine, dont le core pourrait les lancer et y écrire des sauvegardes. La
   suppression ordinaire est donc refusée. Le dialogue propose « Oublier ses jeux et supprimer » ou « Annuler »
   (défaut) ; la première est **refusée tant qu'un fichier de jeu de ce système reste sous `roms/<id>/`** (liste
-  montrée, « Ouvrir le dossier » ; l'utilisateur les déplace ailleurs). Elle oublie alors les **lignes des jeux
-  seulement** (`forget_system(id, ForgetDats::Keep)` : les DAT de cet id sont aussi ceux de l'officiel), puis
-  retire la définition. Question R2 (`docs/questions-ouvertes.md`).
+  montrée, « Ouvrir le dossier » ; l'utilisateur les déplace ailleurs). Contrôle sur le disque, pas sur les lignes :
+  fichiers que la définition revendique (ses extensions, `.zip` à entrée reconnue), `custom_games_on_disk`. Elle oublie alors les **lignes des jeux
+  seulement** (`forget_system(id, ForgetDats::Keep, ForgetScope::ClaimedBy(catalogue))` : les DAT de cet id sont
+  aussi ceux de l'officiel), puis retire la définition. **Portée** (amendement du 2026-11-27 soir, lot PB3) : seules
+  les lignes que la définition revendique (extension du chemin, entrées d'un `.zip`) **et** que l'officiel masqué
+  n'accepte pas sont oubliées ; celles que l'officiel accepte (ses jeux d'avant, extension partagée) sont gardées
+  avec leurs données et réapparaissent sous lui (même logique que les lignes gelées du §13). Question R2 (`docs/questions-ouvertes.md`).
 - **« Restaurer »** ne propose que les définitions retirées par l'utilisateur (`Retirement::Removed`) ; une
   définition retirée par une bascule (`Replaced`, nom `<id>-<unix>.replaced.toml`) est listée « remplacée par
   (officiel) », sans bouton : la restaurer masquerait de nouveau l'officiel et cacherait les jeux basculés (m4) ;
-  seule l'annulation du rangement (§10) la rend.
+  seule l'annulation du rangement (§10) la rend. La primitive `restore_custom` accepte donc les deux natures (elle
+  sert à cette annulation) ; le choix du bouton est celui de l'interface, d'après `RetiredSystem::why`.
 
 ### 10. Bascule vers un système officiel (Q16)
 
 - **Conflit** : une définition **valide** dont l'id **ou** la `database` est celle d'un système officiel **reste
   active**, l'officiel est **masqué** (absent du catalogue publié) et `CatalogLoad::pending_switches` le signale.
+  **Double conflit** (id d'un officiel A **et** `database` d'un autre officiel B) : la définition est refusée au
+  chargement (`DuplicateDatabase`, « en erreur »), B n'est jamais masqué ; A reste actif et les lignes de l'id en
+  conflit suivent le §13.
   Tant que la définition est active, **sa liste de cores prime** sur celle de `cores.toml` pour sa clé
   (`with_custom_systems` remplace la clé quand l'officiel est masqué) : rien ne change en silence avant la bascule.
 - **Nature du conflit** (`SwitchKind`) : **en place** = même id et même `database` (cas normal, §3) ;
@@ -561,6 +605,15 @@ proposé par défaut **sans acceptation explicite de l'utilisateur, demandée un
   le même core ne les change donc pas. Le risque est qu'une **version future** les ajoute à un core déjà utilisé :
   un test d'`emu-assets` fige ces clés par core (instantané) ; le modifier impose à la version concernée une
   migration des sauvegardes (rangement ADR 0023), règle rappelée dans le design.
+- **Lignes que l'officiel n'accepte pas** (relecture PB2, tour 2, M-a ; choix sûr de la session principale, lot PB3) :
+  après une bascule acceptée (définition → `.retired/`, `Replaced`), les lignes dont l'extension (ou l'entrée de
+  `.zip` enregistrée) n'est connue que de la définition seraient purgées au scan suivant. Elles sont **listées dans
+  l'aperçu** de la bascule (« gardés, masqués, jusqu'à Oublier ses jeux »), puis restent **gelées** (masquées, jamais
+  purgées automatiquement) jusqu'à « Oublier ses jeux » explicite (ligne « remplacé par… » des systèmes retirés) ou
+  restauration de la définition (annulation du rangement). Avec déplacement, la fin de bascule ne réécrit que les
+  lignes que l'officiel accepte : les autres gardent l'id perso, retiré ; en place ou incertaine, l'id officiel actif
+  dont `.retired/` garde une définition `Replaced` de même id est un id en conflit (§13). Signatures et tests :
+  design 8.0 §2.1, §2.6, §4.
 - La 8.0 livre et teste les trois cas avec un catalogue officiel et un `cores.toml` synthétiques ; aucune version
   8.0 ne déclenche de bascule réelle.
 
@@ -592,6 +645,11 @@ proposé par défaut **sans acceptation explicite de l'utilisateur, demandée un
   Liste : `Catalog::reserved_folders()` (déjà diminuée des ids actifs) plus les ids de la base absents du
   catalogue. Sans cela, ses fichiers seraient classés un par un (un `.bin` vers la Mega Drive) et « Restaurer » ne
   retrouverait plus les jeux (contraire à la réponse Q1). « Créer les dossiers des systèmes » ne les recrée pas.
+  Un dossier `roms/<nom>/` correspond à un id (minuscules) quand `nom` lui est égal **sans tenir compte de la casse
+  ASCII** (systèmes de fichiers de Windows et macOS), pour la réservation comme pour l'exemption. **Limite
+  acceptée** (relecture PB2, tour 2) : le contrôle d'une unité reconnaît un dossier réservé à **toute profondeur**
+  sous `roms/<id>/` (un sous-dossier de jeu `Ghost/` est bloqué si `ghost` est réservé), comme un id actif depuis la
+  7.x ; l'unité est seulement bloquée et l'aperçu dit pourquoi.
 - **Glisser-déposer (7.2.1)** : sa conception appellera le même classement, instantané pris au dépôt.
 
 ### 13. Schéma, données, ordre de démarrage
@@ -602,6 +660,15 @@ proposé par défaut **sans acceptation explicite de l'utilisateur, demandée un
 - **Le scan ne supprime ni ne modifie jamais les lignes dont le système est absent de l'instantané** (définition
   en erreur, dossier illisible, système masqué ou retiré) ; elles ne sont pas affichées. Seul « Oublier ses jeux »
   (`forget_system`) les retire.
+- **Id en conflit** (amendement du 2026-11-27 soir) : officiel masqué par une définition de même id, définition en
+  erreur portant l'id d'un officiel actif, ou (PB3) officiel actif dont `.retired/` garde une définition `Replaced`
+  de même id (§10). Une ligne de cet id que le système actif n'attribuerait pas (extension du chemin ; pour un
+  `.zip`, entrée enregistrée en base, l'archive n'étant pas ouverte) est traitée comme une ligne de système absent :
+  ni modifiée, ni purgée. Un `.zip` disparu dont l'entrée enregistrée est acceptée suit donc la règle ordinaire
+  (purgé) ; un `.zip` sans entrée connue est gelé. Les autres lignes de l'id suivent la règle ordinaire.
+  **Décision de la session principale (relecture PB2, tour 2)** : ces lignes gelées **restent en base mais sont
+  masquées** dans la bibliothèque et ne sont **jamais lancées avec le core de la définition** (même prédicat que le
+  scan) ; réalisé en PU3 (aujourd'hui `games_in` ne filtre que les systèmes absents du catalogue).
 - **Ordre de démarrage**, interface et modes ligne de commande (`library`, `cores`) : chargement et publication du
   catalogue, **puis** reprise du journal de rangement, **puis** fin de bascule en attente (`pending_switch` :
   touches et core d'après l'en-tête, `complete_switch`, nouvelle publication), **puis** identités du rangement, construction des préférences de

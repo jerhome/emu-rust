@@ -1,6 +1,5 @@
-//! Dynamic system catalog: official systems plus user definitions (design 8.0 §2.1, ADR 0025 §1). Lot PB1 made the
-//! catalog an immutable snapshot; lot PB2 reads the definitions (`Catalog::load`). The private `database` comes
-//! with lot PB4.
+//! Dynamic system catalog: official systems plus user definitions (design 8.0 §2.1, ADR 0025 §1): an immutable
+//! snapshot, read from the definitions folder by `Catalog::load`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -9,6 +8,11 @@ use std::sync::{OnceLock, RwLock};
 use crate::custom::{
     self, Context, CustomSystem, DefinitionError, MAX_DEFINITION_FILES, MAX_RETIRED_READ,
 };
+
+/// Names of `*.toml` kept from the definitions folder before the limit of [`MAX_DEFINITION_FILES`]: the extra ones
+/// are reported (and their folders reserved), so a folder the user filled with a million files is not walked to
+/// the end of what is kept.
+const MAX_DEFINITION_LISTING: usize = MAX_RETIRED_READ * 4;
 use crate::systems::SystemInfo;
 
 /// Officials active in the order of `systems.toml`, then custom systems sorted by id. `PartialEq`: a publication
@@ -19,6 +23,7 @@ pub struct Catalog {
     customs: Vec<CustomSystem>,
     masked: Vec<SystemInfo>,
     reserved: Vec<String>,
+    conflicted: Vec<String>,
 }
 
 impl Catalog {
@@ -28,6 +33,7 @@ impl Catalog {
             customs: Vec::new(),
             masked: Vec::new(),
             reserved: Vec::new(),
+            conflicted: Vec::new(),
         }
     }
 
@@ -55,10 +61,30 @@ impl Catalog {
 
     fn build(officials: Vec<SystemInfo>, user_dir: &Path) -> CatalogLoad {
         let mut problems = Vec::new();
+        let officials_ids: BTreeSet<String> = officials.iter().map(|o| o.id.clone()).collect();
         let mut ctx = Context::officials(officials.iter());
         let mut loaded: Vec<(SystemInfo, CustomSystem)> = Vec::new();
-        for (stem, path) in definition_files(user_dir) {
-            match custom::load_definition(&path, &stem, &ctx) {
+        let (files, ignored) = definition_files(user_dir);
+        problems.extend(ignored.into_iter().map(|(id, file)| DefinitionProblem {
+            file,
+            id,
+            error: DefinitionError::TooManyDefinitions,
+        }));
+        for (stem, path) in files {
+            let loaded_draft = custom::load_definition(&path, &stem, &ctx).and_then(|draft| {
+                // An official id and the database of another official system: two masked officials for one
+                // definition, never accepted (the other official would vanish without a word).
+                let by_id = officials.iter().find(|o| o.id == draft.id);
+                let by_database = draft
+                    .database
+                    .as_deref()
+                    .and_then(|d| officials.iter().find(|o| o.libretro_name() == Some(d)));
+                match (by_id, by_database) {
+                    (Some(a), Some(b)) if a.id != b.id => Err(DefinitionError::DuplicateDatabase),
+                    _ => Ok(draft),
+                }
+            });
+            match loaded_draft {
                 Ok(draft) => {
                     let system = custom::build_system(&draft);
                     ctx.add_custom(&system);
@@ -114,12 +140,22 @@ impl Catalog {
         for s in &systems {
             reserved.remove(&s.id);
         }
+        // Ids whose rows belong to two catalogs at once: an official masked by a definition of the same id, or an
+        // official id whose definition is in error. The scan freezes the rows the active system does not accept.
+        let conflicted: BTreeSet<String> = masked
+            .iter()
+            .map(|o| o.id.clone())
+            .filter(|id| systems.iter().any(|s| s.is_custom() && s.id == *id))
+            .chain(problems.iter().map(|p| p.id.clone()))
+            .filter(|id| officials_ids.contains(id))
+            .collect();
         CatalogLoad {
             catalog: Catalog {
                 systems,
                 customs: loaded.into_iter().map(|(_, c)| c).collect(),
                 masked,
                 reserved: reserved.into_iter().collect(),
+                conflicted: conflicted.into_iter().collect(),
             },
             problems,
             pending_switches,
@@ -166,11 +202,22 @@ impl Catalog {
     pub fn reserved_folders(&self) -> &[String] {
         &self.reserved
     }
+
+    /// Official ids whose games may sit under another definition of the system: an official masked by a definition
+    /// of the same id, or an official id whose definition is in error. The scan neither purges nor reclassifies
+    /// the rows of such an id that the active system does not accept (ADR 0025 §13).
+    pub fn is_conflicted(&self, id: &str) -> bool {
+        self.conflicted.iter().any(|c| c == id)
+    }
 }
 
-/// `(stem, path)` of the `*.toml` entries of `dir`, in name order, at most [`MAX_DEFINITION_FILES`] (the others are
-/// ignored and logged). Directories and links are listed too: reading them reports `NotRegularFile`.
-fn definition_files(dir: &Path) -> Vec<(String, PathBuf)> {
+/// `(stem, path)` of a definition file.
+type DefinitionFile = (String, PathBuf);
+
+/// The `*.toml` entries of `dir` in name order: the first [`MAX_DEFINITION_FILES`] to read, and the
+/// others (reported as problems, at most [`MAX_DEFINITION_LISTING`] kept: the smallest names, whatever the order the
+/// file system lists them in). Directories and links are listed too: reading them reports `NotRegularFile`.
+fn definition_files(dir: &Path) -> (Vec<DefinitionFile>, Vec<DefinitionFile>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -180,29 +227,41 @@ fn definition_files(dir: &Path) -> Vec<(String, PathBuf)> {
                     dir.display()
                 );
             }
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
-    // Bounded listing: a folder the user filled with a million files is not walked to its end.
-    let mut files: Vec<(String, PathBuf)> = entries
-        .flatten()
-        .take(MAX_RETIRED_READ * 4)
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let stem = name.strip_suffix(".toml").filter(|s| !s.is_empty())?;
-            Some((stem.to_owned(), e.path()))
-        })
-        .collect();
-    files.sort();
-    if files.len() > MAX_DEFINITION_FILES {
+    // Sorted set cut at its largest name: bounded memory, and the same files kept for any listing order.
+    let mut names: BTreeSet<DefinitionFile> = BTreeSet::new();
+    for e in entries.flatten() {
+        let Ok(name) = e.file_name().into_string() else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".toml").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        names.insert((stem.to_owned(), e.path()));
+        if names.len() > MAX_DEFINITION_LISTING {
+            names.pop_last();
+        }
+    }
+    let mut files: Vec<DefinitionFile> = names.into_iter().collect();
+    let ignored = if files.len() > MAX_DEFINITION_FILES {
         tracing::warn!(
             "{} definitions in {}: only the first {MAX_DEFINITION_FILES} are read",
             files.len(),
             dir.display()
         );
-        files.truncate(MAX_DEFINITION_FILES);
-    }
-    files
+        files.split_off(MAX_DEFINITION_FILES)
+    } else {
+        Vec::new()
+    };
+    (files, ignored)
+}
+
+/// Number of `*.toml` entries of `dir` that count against [`MAX_DEFINITION_FILES`].
+pub(crate) fn definition_count(dir: &Path) -> usize {
+    let (files, ignored) = definition_files(dir);
+    files.len() + ignored.len()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -376,8 +435,9 @@ mod tests {
         let loaded = Catalog::load(tmp.path());
         assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
         let ids = ids(&loaded.catalog);
-        assert_eq!(&ids[..17], &ids_of_official()[..]);
-        assert_eq!(&ids[17..], ["alpha", "zeta"]);
+        let officials = Catalog::official().systems().len();
+        assert_eq!(&ids[..officials], &ids_of_official()[..]);
+        assert_eq!(&ids[officials..], ["alpha", "zeta"]);
         assert_eq!(
             loaded
                 .catalog
@@ -461,7 +521,78 @@ mod tests {
         assert_eq!(loaded.catalog.customs().count(), MAX_DEFINITION_FILES);
         assert!(loaded.catalog.custom("s255").is_some());
         assert!(loaded.catalog.custom("s256").is_none());
-        assert!(loaded.problems.is_empty());
+        // Each file beyond the limit is reported, and its folder is left alone by the tidy.
+        assert_eq!(loaded.problems.len(), 300 - MAX_DEFINITION_FILES);
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .all(|p| p.error == DefinitionError::TooManyDefinitions)
+        );
+        assert_eq!(loaded.problems[0].id, "s256");
+        assert_eq!(loaded.problems[0].file, tmp.path().join("s256.toml"));
+        let reserved = loaded.catalog.reserved_folders();
+        assert_eq!(reserved.len(), 300 - MAX_DEFINITION_FILES);
+        assert!(reserved.iter().any(|r| r == "s256") && reserved.iter().any(|r| r == "s299"));
+    }
+
+    #[test]
+    fn the_names_kept_past_the_limit_do_not_depend_on_the_listing_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in (0..MAX_DEFINITION_LISTING + 10).rev() {
+            std::fs::write(tmp.path().join(format!("x{i:05}.toml")), "x").unwrap();
+        }
+        let (files, ignored) = definition_files(tmp.path());
+        assert_eq!(files.len(), MAX_DEFINITION_FILES);
+        assert_eq!(files.len() + ignored.len(), MAX_DEFINITION_LISTING);
+        assert_eq!(files[0].0, "x00000");
+        assert_eq!(
+            ignored.last().map(|i| i.0.as_str()),
+            Some(format!("x{:05}", MAX_DEFINITION_LISTING - 1).as_str())
+        );
+    }
+
+    #[test]
+    fn an_official_id_with_the_database_of_another_official_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        // id of snes, database of the Mega Drive: two officials would be masked by one file.
+        put(
+            tmp.path(),
+            "snes.toml",
+            &def("snes", Some("Sega - Mega Drive - Genesis"), "sf1"),
+        );
+        let loaded = Catalog::load(tmp.path());
+        assert_eq!(loaded.problems.len(), 1);
+        assert_eq!(loaded.problems[0].error, DefinitionError::DuplicateDatabase);
+        assert!(loaded.pending_switches.is_empty());
+        assert!(loaded.catalog.masked_official().is_empty());
+        assert!(!loaded.catalog.system("snes").unwrap().is_custom());
+        assert!(loaded.catalog.system("megadrive").is_some());
+        // The id of a definition in error that is an official one is in conflict; so is a masked official.
+        assert!(loaded.catalog.is_conflicted("snes"));
+        assert!(!loaded.catalog.is_conflicted("megadrive"));
+    }
+
+    #[test]
+    fn conflicted_ids_are_the_officials_sharing_their_id_with_a_definition() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(
+            tmp.path(),
+            "nes.toml",
+            &def("nes", Some("Demo - Other"), "ne1"),
+        );
+        put(
+            tmp.path(),
+            "mymd.toml",
+            &def("mymd", Some("Sega - Mega Drive - Genesis"), "md1"),
+        );
+        put(tmp.path(), "gb.toml", "not toml [");
+        let loaded = Catalog::load(tmp.path());
+        let c = &loaded.catalog;
+        assert!(c.is_conflicted("nes") && c.is_conflicted("gb"));
+        // Masked through its database only: its rows are those of an absent system, not a conflict.
+        assert!(!c.is_conflicted("megadrive") && !c.is_conflicted("mymd"));
+        assert!(!c.is_conflicted("snes"));
     }
 
     #[test]
@@ -551,7 +682,10 @@ mod tests {
         }
         assert!(loaded.catalog.system("megadrive").is_none());
         assert!(loaded.catalog.system("mymd").is_some());
-        assert_eq!(ids(&loaded.catalog).len(), 17 - 4 + 4);
+        assert_eq!(
+            ids(&loaded.catalog).len(),
+            Catalog::official().systems().len()
+        );
         // Only the id of a masked official without definition of its id is reserved: the active ids never are.
         assert_eq!(loaded.catalog.reserved_folders(), ["megadrive"]);
     }
@@ -598,11 +732,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let retired = tmp.path().join(".retired");
         std::fs::create_dir_all(&retired).unwrap();
-        for i in 0..1100 {
+        for i in 0..MAX_RETIRED_READ + 76 {
             std::fs::write(retired.join(format!("r{i:04}-1.toml")), "x").unwrap();
         }
         let reserved = Catalog::load(tmp.path()).catalog.reserved_folders().len();
-        assert_eq!(reserved, 1024);
+        assert_eq!(reserved, MAX_RETIRED_READ);
     }
 
     #[test]

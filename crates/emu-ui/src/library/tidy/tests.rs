@@ -455,7 +455,15 @@ fn run_job_tidies_then_undoes_and_offers_undo_once() {
         .collect();
     assert_eq!(selected.len(), 2);
     let cancel = AtomicBool::new(false);
-    let out = run_job(&dirs, Job::Apply { plan, selected }, &cancel, &mut |_| {});
+    let out = run_job(
+        &dirs,
+        Job::Apply {
+            plan: Box::new(plan),
+            selected,
+        },
+        &cancel,
+        &mut |_| {},
+    );
     assert_eq!(out.kind, RunKind::Tidy);
     assert!(out.messages.is_empty(), "{:?}", out.messages);
     assert_eq!(out.report.as_ref().unwrap().moved.len(), 2);

@@ -2417,7 +2417,8 @@ fn heirs_of(
 /// with it). Saves and states live in files named after the game, not in the database.
 fn give_data(tx: &Connection, old: i64, new: i64) -> Result<Vec<String>, LibraryError> {
     // Both rows have a cached cover of one kind: the staying row's is kept (below), so the file of the other one
-    // loses its last row when `old` is deleted. Collected here, removed by the caller once the transaction is committed.
+    // loses its last row when `old` is deleted. Collected here, removed by the caller once the transaction is
+    // committed.
     let orphans: Vec<String> = {
         let mut stmt = tx
             .prepare_cached(
@@ -2597,6 +2598,32 @@ pub(crate) fn run(
     run_in(catalog(), conn, options, cancel, progress)
 }
 
+/// A row the scan leaves alone: its system is absent from the snapshot, or its id is in conflict (an official masked
+/// by a definition of the same id, or whose definition is in error) and the active system of that id does not accept
+/// its extension: the row belongs to the other half of the conflict, so it is neither purged nor reclassified.
+fn is_frozen(cat: &Catalog, path: &str, old: &Existing) -> bool {
+    let Some(system) = cat.system(&old.system) else {
+        return true;
+    };
+    if !cat.is_conflicted(&system.id) {
+        return false;
+    }
+    if old.is_dir {
+        return !system.folder_games;
+    }
+    // A zip is judged by its entry; an unknown entry is not accepted (nothing is lost by waiting).
+    let name = match lower_ext(Path::new(path)).as_deref() {
+        Some("zip") => old.entry.as_deref().map(Path::new),
+        _ => Some(Path::new(path)),
+    };
+    !name.and_then(lower_ext).is_some_and(|ext| {
+        system
+            .extensions
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&ext))
+    })
+}
+
 /// [`run`] on a given catalog snapshot (the public entry point captures the published one).
 pub(crate) fn run_in(
     cat: &'static Catalog,
@@ -2661,9 +2688,10 @@ fn run_scan(
     let mut existing = load_existing(conn)?;
     // Rows of a system absent from the snapshot (definition retired, in error or unreadable, official masked) are
     // neither modified nor purged, whatever the files say (ADR 0025 §13): they are out of this scan altogether.
+    // Same for the rows of an id in conflict that the active system does not accept (see `is_frozen`).
     let frozen: HashSet<String> = existing
         .iter()
-        .filter(|(_, old)| cat.system(&old.system).is_none())
+        .filter(|(path, old)| is_frozen(cat, path, old))
         .map(|(path, _)| path.clone())
         .collect();
     if !frozen.is_empty() {

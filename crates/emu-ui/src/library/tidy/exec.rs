@@ -278,8 +278,13 @@ pub(crate) fn saves_overridden(dirs: &DataDirs) -> bool {
 /// What the worker runs.
 #[derive(Debug, Clone)]
 pub(crate) enum Job {
-    Apply { plan: TidyPlan, selected: Vec<u32> },
-    Undo { journal: PathBuf },
+    Apply {
+        plan: Box<TidyPlan>,
+        selected: Vec<u32>,
+    },
+    Undo {
+        journal: PathBuf,
+    },
     Recovery,
 }
 
@@ -320,7 +325,7 @@ pub(crate) fn run_job(
     };
     let result = match &job {
         Job::Apply { plan, selected } => {
-            Some(library.apply_tidy(&options, plan, selected, cancel, progress))
+            Some(library.apply_tidy(&options, plan.as_ref(), selected, cancel, progress))
         }
         Job::Undo { journal } => Some(library.undo_tidy(&options, journal, cancel, progress)),
         Job::Recovery => None,

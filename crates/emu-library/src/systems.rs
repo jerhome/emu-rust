@@ -325,7 +325,7 @@ impl SystemInfo {
     }
 
     /// libretro name: DAT file, thumbnails folder. `None` for a custom system without one (empty `database`
-    /// until lot PB4 makes the field private, design 8.0 A10).
+    /// while the field is public, design 8.0 A10).
     pub fn libretro_name(&self) -> Option<&str> {
         Some(self.database.as_str()).filter(|d| !d.is_empty())
     }

@@ -1,5 +1,5 @@
-//! Scan with custom systems (lot PB2): non-regression of the official systems, games under a custom folder, rows of
-//! a system absent from the snapshot. Catalogs come from \`Catalog::load\` and go to \`run_in\`: nothing here publishes
+//! Scan with custom systems: non-regression of the official systems, games under a custom folder, rows of
+//! a system absent from the snapshot. Catalogs come from `Catalog::load` and go to `run_in`: nothing here publishes
 //! a catalog (ADR 0025 §1).
 
 use std::collections::BTreeMap;
@@ -106,7 +106,7 @@ fn scan_in(lib: &mut Library, cat: &'static Catalog, root: &Path) -> ScanReport 
     .unwrap()
 }
 
-/// \`path relative to root -> (system, identification, pinned)\` of every row, hidden ones included.
+/// `path relative to root -> (system, identification, pinned)` of every row, hidden ones included.
 fn rows(lib: &Library, root: &Path) -> BTreeMap<String, (String, String, bool)> {
     let mut stmt = lib
         .conn
@@ -185,7 +185,7 @@ fn a_game_under_the_folder_of_a_custom_system_belongs_to_it() {
         &roms.join("dmoone").join("Packed.zip"),
         &[("inner.dmo", blob(2))],
     );
-    // \`.bin\` is an extension of the Mega Drive too: the folder decides.
+    // `.bin` is an extension of the Mega Drive too: the folder decides.
     put(&roms.join("dmoone").join("Raw.bin"), 3);
     put(&roms.join("megadrive").join("Raw.bin"), 4);
     put(&roms.join("dmotwo").join("Hero.gb"), 5);
@@ -359,4 +359,293 @@ fn hidden_rows_do_not_ask_for_covers() {
         .map(|id| lib.game(*id).unwrap().unwrap().system)
         .collect();
     assert_eq!(systems_of, ["gb"]);
+}
+
+/// Text of a definition file written by hand (`write_custom` refuses an id of an official system).
+fn definition_text(id: &str, database: Option<&str>, ext: &str) -> String {
+    let database = database.map_or(String::new(), |d| format!("database = \"{d}\"\n"));
+    format!(
+        "format = 1\nrender = \"software\"\n\n[system]\nid = \"{id}\"\nname = \"Sys {id}\"\n{database}\
+         extensions = [\"{ext}\"]\ndat = []\n\n[cores]\nlist = [\"demo_core\"]\nignored_firmware = []\n\n\
+         [origin]\ncore = \"demo_core\"\ncreated_by = \"8.0.0\"\ncreated_unix = 1\n"
+    )
+}
+
+/// A row of `system` at `path` with a favourite and a play history (what a purge would lose).
+fn seed_row(lib: &Library, path: &Path, system: &str, entry: Option<&str>) -> i64 {
+    lib.conn
+        .execute(
+            "INSERT INTO game (path, entry, system, size, file_size, mtime_unix, title, identification,
+                               favorite, play_count, last_played_unix)
+             VALUES (?1, ?2, ?3, 10, 10, 1, 'T', 'unknown', 1, 7, 99)",
+            params![path.to_string_lossy(), entry, system],
+        )
+        .unwrap();
+    lib.conn.last_insert_rowid()
+}
+
+fn row_data(lib: &Library, id: i64) -> Option<(String, i64, i64)> {
+    lib.conn
+        .query_row(
+            "SELECT system, favorite, play_count FROM game WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok()
+}
+
+#[test]
+fn a_definition_taking_an_official_id_never_costs_the_rows_of_that_official() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    // psx.toml: id of an official system, other database, an extension of its own: an uncertain conflict.
+    fs::write(
+        systems.join("psx.toml"),
+        definition_text("psx", Some("Demo - Not A PlayStation"), "xyz"),
+    )
+    .unwrap();
+    let cat = leak(Catalog::load(&systems).catalog);
+    assert!(cat.system("psx").unwrap().is_custom());
+    assert!(cat.is_conflicted("psx"));
+
+    let mut lib = Library::open_in_memory().unwrap();
+    put(&roms.join("psx").join("Game.cue"), 1);
+    put(&roms.join("psx").join("Mine.xyz"), 2);
+    let cue = seed_row(&lib, &roms.join("psx").join("Game.cue"), "psx", None);
+    let chd = seed_row(&lib, &roms.join("psx").join("Gone.chd"), "psx", None);
+    let zip = seed_row(
+        &lib,
+        &roms.join("psx").join("Packed.zip"),
+        "psx",
+        Some("track.iso"),
+    );
+    let folder = seed_row(&lib, &roms.join("psx").join("Hybrid"), "psx", None);
+    lib.conn
+        .execute("UPDATE game SET is_dir = 1 WHERE id = ?1", [folder])
+        .unwrap();
+    for _ in 0..2 {
+        let report = scan_in(&mut lib, cat, &roms);
+        assert_eq!(report.removed, 0, "{report:?}");
+        for id in [cue, chd, zip, folder] {
+            assert_eq!(row_data(&lib, id), Some(("psx".into(), 1, 7)), "row {id}");
+        }
+    }
+    // The extension the definition does accept is scanned as usual, under the definition.
+    assert_eq!(rows(&lib, &roms)["psx/Mine.xyz"].0, "psx");
+}
+
+#[test]
+fn a_definition_in_error_with_an_official_id_keeps_the_rows_of_the_definition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    let valid = definition_text(
+        "snes",
+        Some("Nintendo - Super Nintendo Entertainment System"),
+        "sf1",
+    );
+    fs::write(systems.join("snes.toml"), &valid).unwrap();
+    let working = leak(Catalog::load(&systems).catalog);
+    assert!(working.system("snes").unwrap().is_custom());
+
+    let mut lib = Library::open_in_memory().unwrap();
+    put(&roms.join("snes").join("Hack.sf1"), 1);
+    scan_in(&mut lib, working, &roms);
+    let hack: i64 = lib
+        .conn
+        .query_row("SELECT id FROM game", [], |r| r.get(0))
+        .unwrap();
+    lib.conn
+        .execute(
+            "UPDATE game SET favorite = 1, play_count = 7 WHERE id = ?1",
+            [hack],
+        )
+        .unwrap();
+    // A row of the official extension whose file is gone is purged as usual: only the other half is frozen.
+    let plain = seed_row(&lib, &roms.join("snes").join("Gone.sfc"), "snes", None);
+
+    // The file becomes invalid: the official snes is active again and does not accept `sf1`.
+    fs::write(systems.join("snes.toml"), "not toml [").unwrap();
+    let loaded = Catalog::load(&systems);
+    assert_eq!(loaded.problems.len(), 1);
+    let broken = leak(loaded.catalog);
+    assert!(!broken.system("snes").unwrap().is_custom());
+    for _ in 0..2 {
+        scan_in(&mut lib, broken, &roms);
+        assert_eq!(row_data(&lib, hack), Some(("snes".into(), 1, 7)));
+    }
+    assert_eq!(row_data(&lib, plain), None);
+}
+
+#[test]
+fn a_folder_of_an_absent_system_is_reported_like_an_unknown_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    put(&roms.join("ghost").join("New.gb"), 1);
+    put(&roms.join("misc").join("New.gb"), 1);
+    // An extension no system has is not a candidate: not in the report either way.
+    put(&roms.join("ghost").join("Game.ghs"), 2);
+    put(&roms.join("misc").join("Game.ghs"), 2);
+    let mut lib = Library::open_in_memory().unwrap();
+    let report = scan_in(&mut lib, official(), &roms);
+    let mut kept: Vec<String> = rows(&lib, &roms).into_keys().collect();
+    kept.sort();
+    // Same outcome under `roms/ghost/` (no such system) as under `roms/misc/`.
+    assert_eq!(kept, ["ghost/New.gb", "misc/New.gb"], "{report:?}");
+    assert_eq!(report.unclassified, 0);
+}
+
+/// Cached boxart recorded for `id`, with a path that need not exist (only the record is looked at).
+fn cache_cover(lib: &mut Library, id: i64, roms: &Path) {
+    lib.set_cover(
+        crate::GameId(id),
+        crate::CoverKind::Boxart,
+        &crate::CoverState::Cached {
+            path: roms.join("cover.png"),
+            source: "test".into(),
+        },
+    )
+    .unwrap();
+}
+
+fn cover_kept(lib: &Library, id: i64) -> bool {
+    matches!(
+        lib.cover(crate::GameId(id), crate::CoverKind::Boxart)
+            .unwrap()
+            .map(|r| r.state),
+        Some(crate::CoverState::Cached { .. })
+    )
+}
+
+fn visible(lib: &Library, cat: &'static Catalog) -> Vec<i64> {
+    let mut ids: Vec<i64> = lib.games_in(cat).unwrap().iter().map(|g| g.id.0).collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn removing_the_conflicting_definition_by_hand_shows_the_rows_again_under_the_official() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    fs::write(
+        systems.join("psx.toml"),
+        definition_text("psx", Some("Demo - Not A PlayStation"), "xyz"),
+    )
+    .unwrap();
+    let uncertain = leak(Catalog::load(&systems).catalog);
+    assert!(uncertain.is_conflicted("psx"));
+
+    let mut lib = Library::open_in_memory().unwrap();
+    put(&roms.join("psx").join("Game.cue"), 1);
+    put(&roms.join("psx").join("Game.chd"), 2);
+    let cue = seed_row(&lib, &roms.join("psx").join("Game.cue"), "psx", None);
+    let chd = seed_row(&lib, &roms.join("psx").join("Game.chd"), "psx", None);
+    cache_cover(&mut lib, cue, &roms);
+    scan_in(&mut lib, uncertain, &roms);
+    // Frozen under the definition: nothing lost, cover included.
+    assert_eq!(row_data(&lib, cue), Some(("psx".into(), 1, 7)));
+    assert_eq!(row_data(&lib, chd), Some(("psx".into(), 1, 7)));
+    assert!(cover_kept(&lib, cue));
+
+    fs::remove_file(systems.join("psx.toml")).unwrap();
+    let loaded = Catalog::load(&systems);
+    assert!(loaded.problems.is_empty());
+    let official = leak(loaded.catalog);
+    assert!(!official.is_conflicted("psx"));
+    let report = scan_in(&mut lib, official, &roms);
+    assert_eq!(report.removed, 0, "{report:?}");
+    for id in [cue, chd] {
+        assert_eq!(row_data(&lib, id), Some(("psx".into(), 1, 7)), "row {id}");
+        assert!(visible(&lib, official).contains(&id), "row {id} visible");
+    }
+    assert!(cover_kept(&lib, cue));
+}
+
+#[test]
+fn a_repaired_definition_accepts_its_frozen_rows_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    let valid = definition_text(
+        "snes",
+        Some("Nintendo - Super Nintendo Entertainment System"),
+        "sf1",
+    );
+    fs::write(systems.join("snes.toml"), &valid).unwrap();
+    let working = leak(Catalog::load(&systems).catalog);
+    let mut lib = Library::open_in_memory().unwrap();
+    put(&roms.join("snes").join("Hack.sf1"), 1);
+    scan_in(&mut lib, working, &roms);
+    let hack: i64 = lib
+        .conn
+        .query_row("SELECT id FROM game", [], |r| r.get(0))
+        .unwrap();
+    lib.conn
+        .execute(
+            "UPDATE game SET favorite = 1, play_count = 7 WHERE id = ?1",
+            [hack],
+        )
+        .unwrap();
+    cache_cover(&mut lib, hack, &roms);
+
+    fs::write(systems.join("snes.toml"), "not toml [").unwrap();
+    let broken = leak(Catalog::load(&systems).catalog);
+    scan_in(&mut lib, broken, &roms);
+    assert_eq!(row_data(&lib, hack), Some(("snes".into(), 1, 7)));
+    assert!(cover_kept(&lib, hack));
+
+    fs::write(systems.join("snes.toml"), &valid).unwrap();
+    let repaired = leak(Catalog::load(&systems).catalog);
+    assert!(repaired.system("snes").unwrap().is_custom());
+    scan_in(&mut lib, repaired, &roms);
+    assert_eq!(row_data(&lib, hack), Some(("snes".into(), 1, 7)));
+    assert!(visible(&lib, repaired).contains(&hack), "accepted again");
+    assert!(cover_kept(&lib, hack));
+}
+
+#[test]
+fn a_double_conflict_freezes_the_rows_of_the_extension_the_official_refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roms = roms(&tmp);
+    let systems = tmp.path().join("systems");
+    fs::create_dir_all(&systems).unwrap();
+    // Id of snes, database of the Mega Drive: DuplicateDatabase, no official masked.
+    fs::write(
+        systems.join("snes.toml"),
+        definition_text("snes", Some("Sega - Mega Drive - Genesis"), "xyz"),
+    )
+    .unwrap();
+    let loaded = Catalog::load(&systems);
+    assert_eq!(loaded.problems.len(), 1);
+    assert_eq!(
+        loaded.problems[0].error,
+        crate::DefinitionError::DuplicateDatabase
+    );
+    let cat = leak(loaded.catalog);
+    assert!(cat.is_conflicted("snes"));
+    assert!(!cat.system("snes").unwrap().is_custom());
+    assert!(cat.system("megadrive").is_some());
+
+    let mut lib = Library::open_in_memory().unwrap();
+    // One `.xyz` row whose file is gone, one whose file is present, one official row whose file is gone.
+    put(&roms.join("snes").join("Here.xyz"), 1);
+    let gone = seed_row(&lib, &roms.join("snes").join("Gone.xyz"), "snes", None);
+    let here = seed_row(&lib, &roms.join("snes").join("Here.xyz"), "snes", None);
+    let plain = seed_row(&lib, &roms.join("snes").join("Gone.sfc"), "snes", None);
+    cache_cover(&mut lib, gone, &roms);
+    for _ in 0..2 {
+        scan_in(&mut lib, cat, &roms);
+        for id in [gone, here] {
+            assert_eq!(row_data(&lib, id), Some(("snes".into(), 1, 7)), "row {id}");
+        }
+        assert!(cover_kept(&lib, gone));
+    }
+    // The row of the official extension is purged as usual.
+    assert_eq!(row_data(&lib, plain), None);
 }

@@ -159,9 +159,10 @@ def definition_cases(special):
                                          extensions='["m%02d"]' % (i % 100)) for i in range(256)},
        ["s%03d" % i for i in range(256)])
     many = {"t%03d.toml" % i: d(id=q("t%03d" % i), database=q("Demo - Many - %03d" % i)) for i in range(300)}
-    c.append(("many-300", many, dict(ok=sorted("t%03d" % i for i in range(256)), errors=[]),
+    c.append(("many-300", many, dict(ok=sorted("t%03d" % i for i in range(256)),
+                   errors=[dict(id="t%03d" % i, error="TooManyDefinitions") for i in range(256, 300)]),
               dict(ignored=sorted("t%03d.toml" % i for i in range(256, 300)),
-                   note="the 256 first by name are read; the other 44 are ignored and reported")))
+                   note="the 256 first by name are read; each of the other 44 is a TooManyDefinitions problem")))
 
     err("e-syntax", {"bad.toml": "format = 1\n[system\nid = \n"}, [dict(id="bad", error="Syntax")])
     err("e-unknown-field", {"unk.toml": d(id=q("unk")).replace("[origin]", "surprise = 1\n\n[origin]")},

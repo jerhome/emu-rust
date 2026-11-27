@@ -18,7 +18,7 @@ MKCUSTOM = os.path.join(HERE, "mkcustom.py")
 VARIANTS = {"Syntax", "TooLarge", "NotRegularFile", "NewerFormat", "UnsupportedRender", "InvalidId", "ReservedId",
             "IdNotFileName", "DuplicateId", "DuplicateDatabase", "InvalidName", "InvalidDatabase", "NoExtension",
             "InvalidExtension", "ForbiddenExtension", "UnsupportedDat", "NoCore", "TooManyCores", "InvalidCore",
-            "InvalidOrigin", "UnsafeFirmwarePath", "TooManyFirmware"}
+            "InvalidOrigin", "UnsafeFirmwarePath", "TooManyFirmware", "TooManyDefinitions"}
 SPECIAL = os.name == "posix"
 
 

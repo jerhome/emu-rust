@@ -50,7 +50,7 @@ impl Library {
     }
 }
 
-/// Contract stub of design 8.0 §2.1 (PX0); the body belongs to lot PB3.
+/// Contract stub of design 8.0 §2.1; the body belongs to lot PB3.
 #[allow(unused_variables)]
 impl Library {
     /// Switch end (ADR 0025 §10.3, §10.5): `game.system` `from` → `to` for **every** row of `from`, one

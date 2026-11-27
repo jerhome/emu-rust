@@ -225,6 +225,15 @@ Windows) :
   rattachés à l'officiel depuis `roms/<id perso>/`, dossier réservé au rangement (ADR 0025 §12) : **le rapport et
   le guide d'essai disent de les déplacer à la main vers `roms/<id officiel>/`, puis de relancer le scan**
   (réponse R1 a)).
+- **Annulation et dossiers réservés** (relecture du lot PB2, 2026-11-27 soir ; ADR 0025 §12) : l'annulation d'un
+  journal, version 1 comprise et même écrit avant qu'un dossier ne devienne réservé, ne prend **rien** dans un
+  dossier `roms/<id>/` réservé de l'instantané courant et n'y pose rien : une telle unité reste entière où elle est
+  et figure au rapport (§4.6) ; pour un journal de bascule, `check_switch_undo` la compte comme une unité qui ne peut
+  revenir (refus avant toute action). Un dossier réservé n'est **jamais** retiré par l'annulation, même vide (§4.6 :
+  « dossiers créés retirés s'ils sont vides » ne s'y applique pas). Seuls exemptés, pour un journal de bascule :
+  `roms/<id perso>/` et `roms/<id officiel>/`. Noms comparés sans tenir compte de la casse ASCII. Le déplacement
+  de la définition (étape (2)) est idempotent selon les « Cas » ci-dessus : `move_no_overwrite` retire la source
+  quand la destination identique est déjà là. Tests : design 8.0 §2.6.
 - **Retour à une 7.x** : un binaire 7.x refuse en entier un journal version 2 (en-tête exact `emu-rust tidy 1`
   attendu) et refuse alors tout rangement et toute annulation **tant que ce fichier est présent** dans
   `<data>/rangement/`, même si un journal version 1 plus récent existe ; il ne le purge jamais. Revenir à une 7.x
