@@ -1,7 +1,8 @@
 # ADR 0025 — Version 8.0 : systèmes personnalisés (systèmes libretro non testés)
 
 Statut : **accepté, amendé pour la fusion le 2026-11-25**, puis **le 2026-11-26** (numérotation 8.x, marque de scan en
-base, journal version 2 : « Amendement du 2026-11-26 » ci-dessous ; les amendements **priment**). Historique :
+base, journal version 2 : « Amendement du 2026-11-26 » ci-dessous) et **le 2026-11-27** (textes de PD1, fusion des
+données au scan, essai à blanc : « Amendement du 2026-11-27 ») ; les amendements **priment**. Historique :
 accepté le 2026-11-25 par l'utilisateur, sur la ligne PC (`wip-7.1`), après la revue indépendante et quatre relectures courtes ;
 réponses aux questions 8.0 et R1-R3 dans `docs/questions-ouvertes.md`).
 Périmètre : `docs/specs/v7.1-v8.0-utilisateur.md` §8.0 et feuille de route (ligne 8.0) ; étude
@@ -10,9 +11,9 @@ recommandé partout, sauf **Q15** (export / import d'une définition : **report�
 8.4, palier CD) et **Q16** (un système devenu officiel : la définition de l'utilisateur **reste en place**, emu-rust
 **propose la bascule, recommandée** ; jeux, sauvegardes et touches conservés). Essais :
 `docs/plan-essais-8x-9x.md`.
-Précise ADR 0001 (un core par processus), 0005 (règle « Builtin », amendement à écrire : lot PD1), 0013 (cores
+Précise ADR 0001 (un core par processus), 0005 (règle « Builtin », amendée le 2026-11-27 : lot PD1), 0013 (cores
 manuels, `.info`, BIOS), 0014 (catalogue, DAT, jaquettes), 0022 (pas de processus enfant par partie), 0023
-(rangement ; journal en version 2 pour la bascule, amendement à écrire : lot PD1). Conception et découpage :
+(rangement ; journal en version 2 pour la bascule, amendée le 2026-11-27 : lot PD1). Conception et découpage :
 `docs/design/v8.0-systemes-personnalises.md`.
 **Graphe des crates inchangé. Aucune dépendance de crate nouvelle (la sérialisation de l'enfant d'essai reste dans
 `emu-ui`, qui a déjà `toml`). Les systèmes personnalisés n'ajoutent aucune migration de `library.sqlite` ; la 8.0
@@ -81,6 +82,34 @@ Décisions de l'utilisateur du 2026-11-26 (18:01) et recalage de la conception s
   pas seulement s'il est le plus récent, et ne le purge jamais. La décision ne change pas (confirmé par l'utilisateur
   le 2026-11-26) (version 2 réservée à la
   bascule, aucune bascule réelle en 8.0) ; le guide d'essai dit quel fichier mettre de côté.
+
+## Amendement du 2026-11-27 — textes de PD1, fusion des données au scan, essai à blanc
+
+Ces points priment sur le texte et sur les amendements précédents.
+
+- **Lot PD1 fait** : ADR 0005 amendée (§7 ci-dessous : acceptation une fois par core), ADR 0023 amendée
+  (« Amendement du 2026-11-27 » : grammaire complète du journal version 2, états, refus, reprise et fin de bascule,
+  retour à une 7.x, marque de scan au §4.5). La grammaire attend la relecture PV3 avant PB3.
+- **Marque de scan, fusion des données** (décision de l'utilisateur du 2026-11-27) : une ligne marquée qui porte des
+  données de l'utilisateur n'est jamais absorbée ; si elle est la jumelle **unique** d'une ligne dont le fichier a
+  disparu, elle reçoit ses données avant la purge — favori = le plus fort, parties additionnées, dernière date la
+  plus récente, jaquettes : `cached` l'emporte sur `missing`. Rien si le couple est ambigu, si le scan est prudent
+  (fichier `.scanning` d'une 7.6) ou annulé.
+- **Essai à blanc, dossier des copies privées** (relecture du lot PR1 ; choix technique réversible, tranché par la
+  session principale) : pour tenir « un essai ne touche jamais les données de l'utilisateur » (§5), l'enfant
+  n'écrit que sous le dossier de l'essai (`scratch_dir`) ; un `copy_dir` (copie privée d'un core résident,
+  ADR 0022) n'est accepté que s'il est **dans** `scratch_dir`, sinon la requête est refusée. Détail : design 8.0
+  §2.4.
+- **Rendu matériel facultatif** (limite, conforme au §8) : un core qui a fait une demande `SET_HW_RENDER` (même
+  facultative, avec repli logiciel) et dont le chargement du jeu échoue ensuite (ROM abîmée, par exemple) est
+  rapporté `HardwareRenderRequired` (« prévu en 9.0 ») et non « échec du chargement » : on ne sait pas distinguer
+  les deux causes. Écrit dans le guide d'essai 8.0.
+- **Relecture PV3 du journal version 2** (2026-11-27, aucun bloquant) : ADR 0023 précisée (« Amendement du
+  2026-11-27 ») — clos = dernière ligne `E`, `U`, `F` ou `I` ; `SwitchPending` indépendant de la racine ;
+  déplacement de la définition sans écrasement, dossiers synchronisés avant `F`, noms exacts ; Réglages bloqués
+  pendant tout journal de bascule ouvert, sauf le retrait proposé en cas de « place prise » ; annulation refusée si
+  le fichier retiré manque ; marque de scan gardée sur les lignes avec données après un scan annulé ou prudent.
+  §10.4 et §10.5 corrigés en place.
 
 ## Amendements après revue (2026-11-25)
 
@@ -366,8 +395,8 @@ son association, core déjà installé ou manuel) : « Ce core n'a pas été exa
 fichiers système d'origine dont le statut n'est pas vérifié. Usage personnel uniquement. » — **Accepter**
 (`content_accepted`, Q8) ou Annuler. Les cores de `cores.toml` n'affichent rien : ils servent déjà des systèmes
 officiels sous la règle « Builtin » ; les deux cas « à vérifier » de l'ADR 0005 §3 (mgba, picodrive) restent
-traités là (écart justifié à la remarque m12). L'ADR 0005 §3 sera amendée (lot PD1) : « … n'est pas proposé par
-défaut **sans acceptation explicite de l'utilisateur, demandée une fois par core** ».
+traités là (écart justifié à la remarque m12). L'ADR 0005 §3 est amendée (lot PD1, 2026-11-27) : « … n'est pas
+proposé par défaut **sans acceptation explicite de l'utilisateur, demandée une fois par core** ».
 
 ### 8. Rendu matériel : refus « prévu en 9.0 », préparé pour la 9.0
 
@@ -502,26 +531,29 @@ défaut **sans acceptation explicite de l'utilisateur, demandée une fois par co
      **Échec de la fin de bascule** (`complete_switch` : définition à restaurer dont la place est prise, fichier
      retiré absent, base ou disque en erreur) : le journal reste « fin due » ; il **bloque** tout nouveau rangement
      et toute annulation (un rangement plus récent rendrait la fin introuvable) et la fin est retentée à chaque
-     démarrage ; l'interface donne la raison et l'action (« `systems/<id>.toml` existe : supprimez ce système
-     puis relancez »).
+     démarrage ; l'interface donne la raison et l'action. Cas « place prise » (`systems/<id>.toml` déjà là) : les
+     Réglages, qui refusent sinon toute action sur la définition pendant un journal de bascule ouvert, proposent
+     « Retirer ce système et terminer la bascule » (retrait `Removed`, jamais de suppression, puis fin relancée ;
+     ADR 0023, amendement du 2026-11-27, test PU4). Cas « fichier retiré introuvable » : « remettez
+     `systems/.retired/<nom>` puis relancez ».
   5. **Annulation** : « Annuler le dernier rangement » n'est **proposée que si toutes les unités peuvent revenir**
      (contrôle d'ADR 0023 §4.6 fait d'avance : fichiers inchangés, places d'origine libres) **et, si l'aller a son
      `F`, que `systems/<id perso>.toml` est libre** (définition recréée entre-temps ⇒ « supprimez d'abord le
-     système (id) ») ; sinon elle est refusée avant toute action, avec la raison. Chaque unité revient (chemins
-     seulement). **Fin d'annulation** seulement si l'aller a son `F` : quand `U` est posée et que toutes les
-     unités de l'aller sont revenues, `reassign_system` de **toutes** les lignes de l'id officiel vers l'id perso
-     (même portée qu'à l'aller : aucune ligne basculée n'est oubliée ; une ligne ajoutée par un scan depuis la
-     bascule suit aussi et reste visible sous le système restauré), définition restaurée depuis le nom noté,
-     préférence de core et profil de touches antérieurs rendus, puis `F`. Aller sans `F` (bascule incomplète) :
-     l'annulation ramène les chemins, rien d'autre (les lignes n'ont jamais changé de système). **Annulation
-     partielle malgré tout** (annulation interrompue, devenue définitive, ADR 0023 §4.8 RV1 5 ; fichier changé
-     entre le contrôle et l'exécution) : pas de `F` ; la définition reste retirée, l'officiel actif ; les jeux
-     revenus restent rattachés à l'officiel (même `database` : même machine, jouables) depuis `roms/<id perso>/`,
-     dossier réservé au rangement (§12) et définition remplacée non restaurable (§9) : **le rapport et le guide
-     disent de les déplacer à la main vers `roms/<id officiel>/`** (puis scan). **Limites, écrites dans
-     l'aperçu et le guide** : seul le **dernier** journal s'annule (ADR 0023 §4.6) — tout rangement après la
-     bascule la rend définitive ; les jaquettes renommées (point 6) ne sont pas défaites (elles se retéléchargent
-     sur action).
+     système (id) ») **et que `systems/.retired/<nom-retiré>` est présent** (« fichier retiré introuvable ») ; sinon
+     elle est refusée avant toute action, avec la raison. Chaque unité revient (chemins seulement). **Fin d'annulation**
+     seulement si l'aller a son `F` : quand `U` est posée et que toutes les unités de l'aller sont revenues,
+     `reassign_system` de **toutes** les lignes de l'id officiel vers l'id perso (même portée qu'à l'aller : aucune
+     ligne basculée n'est oubliée ; une ligne ajoutée par un scan depuis la bascule suit aussi et reste visible sous le
+     système restauré), définition restaurée depuis le nom noté, préférence de core et profil de touches antérieurs
+     rendus, puis `F`. Aller sans `F` (bascule incomplète) : l'annulation ramène les chemins, rien d'autre (les lignes
+     n'ont jamais changé de système). **Annulation partielle malgré tout** (annulation interrompue, devenue définitive,
+     ADR 0023 §4.8 RV1 5 ; fichier changé entre le contrôle et l'exécution) : pas de `F` ; la définition reste retirée,
+     l'officiel actif ; les jeux revenus restent rattachés à l'officiel (même `database` : même machine, jouables)
+     depuis `roms/<id perso>/`, dossier réservé au rangement (§12) et définition remplacée non restaurable (§9) : **le
+     rapport et le guide disent de les déplacer à la main vers `roms/<id officiel>/`** (puis scan). **Limites, écrites
+     dans l'aperçu et le guide** : seul le **dernier** journal s'annule (ADR 0023 §4.6) — tout rangement après la
+     bascule la rend définitive ; les jaquettes renommées (point 6) ne sont pas défaites (elles se retéléchargent sur
+     action).
   6. Jaquettes en cache (`covers/<système>/`) : le dossier de l'ancien id est renommé vers l'id officiel s'il
      n'existe pas, sinon les jaquettes se retéléchargent sur action.
 - **Sauvegardes d'un même core** : les propriétés par core de `cores.toml` qui fixent le chemin des sauvegardes
@@ -604,8 +636,8 @@ PB2).
   l'exécution (lot PV3, sur le texte de PD1), puis `emu-library/src/tidy/` de PB3 comme code sensible (lot PV4).
 - Journal version 2 : écrit par la seule bascule avec déplacement. Un binaire 7.x refuse en entier un journal
   version 2, ce qui bloque chez lui tout rangement et toute annulation tant que ce journal est présent dans
-  `<data>/rangement/` (il ne le purge jamais : amendement du 2026-11-26) ;
-  écrit dans l'amendement PD1 et le guide d'essai 8.0. Sans conséquence pratique en 8.0 (aucune bascule réelle) ;
+  `<data>/rangement/` (il ne le purge jamais : amendement du 2026-11-26) ; écrit dans l'amendement d'ADR 0023
+  du 2026-11-27 (PD1) et dans le guide d'essai 8.0. Sans conséquence pratique en 8.0 (aucune bascule réelle) ;
   à partir de la version qui ajoute un officiel, revenir à une version plus ancienne perd de toute façon ce
   système.
 - Revue `reviewer` : `unsafe` des copies FFI et de `SetErrorMode` ; enfant d'essai (dès sa livraison) ; analyse des

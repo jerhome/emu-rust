@@ -14,8 +14,11 @@ ADR 0005 (rien de commercial n'est téléchargé), 0006 (arborescence `roms/<sys
 écritures atomiques, `config.toml`), 0012 (paquets), 0014 (bibliothèque), 0013 / 0021 (firmware, repli du core).
 Réutilise sans les changer les règles de classement des ADR 0015, 0017 à 0021 (ordinateurs, CD, extensions
 partagées). Conception et découpage : `docs/design/v7.1-finition-interface.md`.
+**Amendé le 2026-11-27 pour la 8.0** (lot PD1 : journal version 2 de la bascule, marque de scan en base ; **précisé
+le même jour après la relecture PV3**, 6 majeurs et 7 mineurs ; voir « Amendement du 2026-11-27 », qui prime sur §4.5
+et §4.8).
 **Graphe des crates inchangé. Schéma de `library.sqlite` inchangé (v7 depuis la 7.4 ; ni la 7.5 ni la 7.6 n'en
-ajoutent). Aucun code réseau nouveau.**
+ajoutent ; la v8 est celle de la 8.0, ADR 0025). Aucun code réseau nouveau.**
 
 ## Amendement de fusion (2026-11-25) — livraison en 7.5 et 7.6 sur la base Mac 7.4.0
 
@@ -43,6 +46,201 @@ le texte qui suit.
   d'`emu-runtime` sous `cfg(windows)`.
 - **Effet sur chaque système livré** : design 7.5 §10 (une ligne par système de `systems.toml`) ; le rangement
   (7.6) aura son propre tableau dans la conception 7.6.
+
+## Amendement du 2026-11-27 (8.0, lot PD1) — journal version 2 de la bascule, marque de scan
+
+Écrit pour la 8.0 (ADR 0025 §10.4, amendement du 2026-11-26 ; esquisse : `docs/design/v8.0-systemes-personnalises.md`
+§2.6). Ce paragraphe **prime** sur §4.5 et §4.8 pour ce qu'il touche ; tout le reste du format version 1
+(`docs/design/v7.1-finition-interface.md` §3.4.1, livré en 7.6) vaut pour la version 2, à l'identique. Grammaire
+relue par `reviewer` (lot PV3) **avant** que l'exécution soit écrite (lot PB3), comme le demandent les Conséquences.
+
+**§4.5 (filet du scan) — marque de scan en base, schéma v8 (lot PB0).** Le fichier `library.sqlite.scanning` de la 7.6
+n'est plus écrit : toute ligne `game` écrite par un scan porte `scan_pending = 1` dans la transaction de son lot ; la
+transaction finale d'un scan **terminé** (rapprochement, purge) remet **toutes** les marques à `NULL`. Un scan annulé
+proprement ou un scan prudent lève, dans sa dernière transaction, les marques de ses propres lignes mais **garde**
+celle des lignes marquées au départ qui portent des données de l'utilisateur (PV3, majeur 6) : le scan suivant doit
+encore les voir pour faire la fusion. Les lignes
+encore marquées au départ d'un scan (scan tué entre deux lots) sont candidates au rapprochement des fichiers déplacés
+sans l'heuristique « ligne vierge » de la 7.6, puis la purge se fait normalement (plus de scan « prudent »). Une ligne
+marquée qui porte des données de l'utilisateur (favori, historique, jaquette) n'est jamais absorbée ; **décision de
+l'utilisateur du 2026-11-27** : si elle est la **jumelle unique** d'une ligne dont le fichier a disparu (mêmes critères
+que le rapprochement, un seul candidat de chaque côté), les données de la ligne disparue lui sont **fusionnées** avant
+la purge — favori = le plus fort des deux, nombres de parties additionnés, dernière date de partie la plus récente,
+jaquettes : une jaquette `cached` l'emporte sur une réponse `missing` (une `cached` n'est jamais remplacée) — ; la ligne
+disparue ainsi fusionnée est comptée dans `ScanReport::moved`, pas dans `removed`. **Rien** n'est fusionné si le couple
+est ambigu, si le scan est prudent ou s'il est annulé (marques gardées, ci-dessus). Fichier `.scanning` laissé par une
+7.6 : le premier scan 8.0 est prudent (ni purge ni fusion de données) ; le fichier n'est retiré **qu'après la
+transaction finale d'un scan terminé** — jamais après un scan annulé ou en erreur, qui le laissent au scan suivant ; un
+retrait impossible donne `marker_failed`. Une base v8 est refusée par une 7.x (`NewerSchema`, base non modifiée).
+
+**§4.8 — journal version 2, réservé à la bascule avec déplacement.** Le rangement ordinaire (et son annulation)
+écrit toujours la version 1. Lecteurs de la 8.0 : versions 1 (à l'identique) et 2 ; tout autre en-tête : illisible.
+
+```text
+journal    = "emu-rust tidy 2" LF  "R " racine LF  bascule  [ aller [ annulation ] ]
+bascule    = "X " id-perso " " id-officiel " " nom-retiré " " n LF
+             "K " ( "copy" | "user" | "official" ) LF
+             "P " ( "-" | core { "," core } ) LF
+             "Q " ( "-" | profil-encodé ) LF
+aller      = { bloc }  [ "E" LF  [ "F" LF ]  [ "I" LF ] ]
+annulation = { bloc }  [ "U" LF  [ "F" LF ]  [ "I" LF ] ]   ; seulement après le "E" (suivi ou non de "F", "I")
+bloc       = (version 1, inchangé)
+```
+
+- **Champs de l'en-tête.** `id-perso`, `id-officiel` : `[a-z0-9]{1,24}`, distincts. `nom-retiré` =
+  `retired_file_name(id-perso, Replaced, unix)` où `unix` est celui du nom du journal ; le lecteur le recalcule
+  et refuse tout autre nom (aucun chemin libre). `n` : nombre d'unités du plan, `u32` ≥ 1, écriture décimale
+  canonique (règle de la version 1). `K` : choix des touches (`KeysChoice` : `Copy`, `KeepUser`,
+  `KeepOfficial`). `P` : préférence de core antérieure de l'id officiel, de 1 à 8 ids de core distincts à la
+  syntaxe de `CoreId`, ou `-` (aucune) ; un core nommé `-` est refusé (à l'écriture comme à la lecture) ;
+  `prior_preference: Some(vec![])` s'écrit `-` et se relit `None` (même effet). `Q` : profil de touches officiel
+  antérieur (fragment TOML opaque pour `emu-library`, ≤ 16 Kio **décodé**, UTF-8), ou `-` (aucun) ; un profil vide
+  (`Some("")`) s'écrit `-` et se relit `None`. Encodage canonique, **seul** accepté par le lecteur : octets `0x21`
+  à `0x7E` sauf `%` écrits tels quels, tous les autres (espace, fin de ligne, `%`, non ASCII) en `%XX`
+  (hexadécimal majuscule) ; un `%XX` en minuscules, incomplet ou qui code un octet à écrire tel quel rend le journal
+  illisible. Seule exception : un profil égal à `-` (un seul octet) s'écrit `%2D` ; partout ailleurs `-` s'écrit
+  tel quel et `%2D` est non canonique.
+- **Effet de `P` et `Q` à la fin d'annulation** : `P -` retire l'entrée de l'id officiel de `[cores.preferred]`,
+  `Q -` retire sa clé de profil ; sinon la valeur notée est remise. L'interface analyse le `Q` décodé comme une
+  **table TOML** : s'il n'en est pas une, le profil n'est pas rendu (signalé au journal de l'application et dans le
+  rapport) et la fin continue. `emu-library` ne l'analyse jamais.
+- **Nom du fichier** : un journal version 2 n'est **jamais** suffixé `-<k>` : `apply_switch` prend
+  `unix = max(maintenant, dernier + 1)` et l'augmente tant que `journal-<unix>.txt` ou `.retired/<nom-retiré>`
+  existent, si bien que deux bascules ne partagent jamais un nom retiré ; un journal version 2 dont le nom porte
+  `-<k>` est illisible.
+- **Création.** Comme en version 1 : le fichier est créé juste avant le premier `B` de l'aller ; les six lignes
+  d'en-tête sont écrites ensemble avec ce `B`, chacune synchronisée. Un **en-tête coupé** (fichier vide, ou moins
+  des six lignes complètes et contenu préfixe d'un en-tête valide) vaut « rien n'a bougé » (état 0 de la version 1) :
+  `recover_tidy` le supprime. **En-tête complet sans `B`** (coupure après la sixième ligne, avant la ligne `B`) :
+  aller en cours sans aucun bloc ; `recover_tidy` pose `E` ⇒ bascule **incomplète vide** (aucune unité validée,
+  rien n'a bougé, jamais de `F`, liste nette vide). L'invariant de la version 1 tient : tout préfixe d'un journal
+  valide coupé à une fin de ligne est valide.
+- **Bornes** (inchangées) : 16 Mio à la lecture ; l'aller est clos avant 7 Mio, **en-tête compris** (profil de
+  16 Kio encodé compris) ; 20 journaux gardés ; seuls ceux dont la dernière ligne est `I` sont purgés.
+- **`F` = fin de bascule faite** (étapes communes d'ADR 0025 §10.3 / §10.5, posée par `complete_switch`), toujours
+  **juste après** le `E` ou le `U` de sa section : ordre `E F I` (ou `U F I`). `F` d'aller : seulement si chacune
+  des `n` unités `0..n` a un bloc validé `C u` à l'aller. `F` d'annulation : seulement si l'aller a son `F` et
+  si chacune des `n` unités a un bloc validé dans la section d'annulation.
+- **Clos** = dernière ligne `E`, `U`, `F` ou `I` (règle du design 8.0 §2.6) ; sinon **en cours** (états 1 et 4
+  de la version 1, distingués par la présence d'un `E`). `TidyJournalInfo::complete` = clos ; `identities_done` =
+  dernière ligne `I`.
+
+**États** (en plus des états 0 à 6 de la version 1, lus de la même façon) :
+
+| Forme | Nom | Rangement, annulation | `pending_switch` | Identités dues |
+|---|---|---|---|---|
+| … `E`, les `n` unités validées | **fin due (aller)** | refusés : `SwitchPending`, quelle que soit la racine | `Forward` | non (rien tant que `F` manque) |
+| … `E`, une unité au moins sans `C` | bascule **incomplète** | permis ; annulation : chemins seulement | — | oui (liste nette) |
+| … `E` `F` | bascule faite | permis ; annulation sous `check_switch_undo` (fichier retiré présent, place libre) | — | oui |
+| … `U` après un aller à `F`, les `n` revenues | **fin due (annulation)** | refusés : `SwitchPending`, quelle que soit la racine | `Undo` | non |
+| … `U` sinon (aller sans `F`, ou annulation partielle) | annulé | rangement permis ; annulation refusée (état 5) | — | oui |
+| … `U` `F` | annulation faite | rangement permis ; annulation refusée (état 5) | — | oui |
+| … [`F`] `I` | clos (états 3, 6) | comme la version 1 | — | non |
+
+`mark_tidy_identities` refuse un journal à fin due (`TidyRefused { reason: SwitchPending }`) et accepte une dernière
+ligne `F` comme `E` ou `U` : la règle « dernière ligne ni `E` ni `U` ⇒ `NotClosed` » de la version 1 se lit
+« ni `E`, ni `U`, ni `F` ». La purge ne retire jamais un journal à fin due (sa dernière ligne n'est pas `I`).
+
+**`SwitchPending` ne dépend pas de la racine** (PV3, majeur 5) : la fin ne touche que la base et `systems/`, pas les
+fichiers. Un journal à fin due, quelle que soit sa ligne `R`, fait refuser `apply_tidy`, `apply_switch`, `undo_tidy` et
+`mark_tidy_identities` pour **toute** racine (le changement de dossier des ROMs ne la contourne pas) ; `pending_switch`
+et `complete_switch` lisent tous les journaux lisibles du dossier sans comparer `R` à la racine courante
+(`TidyRootMismatch` ne s'applique pas à eux). Il y a au plus un journal à fin due par construction ; s'il y en a
+plusieurs (fichiers copiés à la main), le plus ancien est rendu d'abord. Une bascule incomplète ne reçoit jamais de `F`
+: on relance une nouvelle bascule (nouveau journal, `plan_switch` reprend les unités restantes).
+
+**Refus du journal entier** (`LibraryError::Journal`), en plus des sept familles de la version 1 : en-tête suivi
+d'autre chose avant d'être complet, ou lignes `X K P Q` dans un autre ordre ; champ d'en-tête hors de sa syntaxe
+(ids égaux ou invalides, `nom-retiré` différent du nom recalculé, `n` nul ou non canonique, `K` inconnu, `P` vide,
+de plus de 8 cores, avec un doublon ou avec le core `-`, `Q` vide ou non canonique — `%2D` hors du profil `-`
+compris —, non UTF-8 une fois décodé ou de plus de 16 Kio) ; nom de fichier suffixé `-<k>` ; toute
+ligne `X`, `K`, `P`, `Q` hors de l'en-tête ; `B u` avec `u ≥ n` (aller ou annulation) ; `F` qui ne suit pas
+immédiatement `E` ou `U`, second `F` dans une section, `F` d'aller alors qu'une unité n'est pas validée, `F`
+d'annulation sans `F` d'aller ou alors qu'une unité n'est pas revenue ; `I` juste après le `E` (ou le `U`) d'une
+fin due (il faut `F` d'abord). La **règle 6** de la version 1 se lit, en version 2 : quoi que ce soit après `U` hors
+`[F] [I]` dans cet ordre (un seul de chaque) ; `I` ailleurs que juste après `E`, `U` ou `F` ; `F` ailleurs que
+juste après `E` ou `U` ; second `E`. La lettre `X` (et non `S`, prise par le dossier d'assemblage) nomme la bascule.
+
+**Reprise et fin.** `recover_tidy` traite un journal version 2 exactement comme un journal version 1 (blocs
+ouverts défaits, puis `E` ou `U`) ; il ne pose jamais `F`. Au démarrage, **après** la reprise et **avant** les
+identités (ADR 0025 §13), `pending_switch` rend la fin due ; l'interface applique touches et préférence de core
+d'après l'en-tête, sans aucune question, puis `complete_switch` fait, sous le verrou du rangement et de façon
+idempotente : (1) `reassign_system` de **toutes** les lignes (aller : id perso → id officiel ; annulation :
+l'inverse) ; (2) définition : à l'aller, `systems/<id perso>.toml` → `systems/.retired/<nom-retiré>`, à l'annulation
+l'inverse ; (3) `F`. Puis publication du catalogue, identités, scan. Règles de l'étape (2) (PV3, majeur 3 et mineur
+Windows) :
+
+- **Déplacement sans écrasement** : `systems/.retired/` est créé s'il manque (puis `systems/` synchronisé) ; lien
+  physique vers la destination puis retrait de la source — jamais `rename` simple, qui écrase sous Unix et sous
+  Windows. **Volume sans liens** (PV3 tour 2) : copie vers un **nom temporaire** du dossier de destination
+  (`.retired/` à l'aller, `systems/` à l'annulation ; nom `.<id perso>.emu-rust-tmp`, sans suffixe `.toml`,
+  ignoré par le catalogue et par la liste des retirés), synchronisée, puis posée sous son nom final **sans écraser**
+  (lien, ou renommage qui refuse d'écraser), puis retrait de la source ; une copie coupée ne laisse ainsi jamais de
+  destination tronquée, prise à tort pour une « place prise » puis gardée comme fichier retiré. Un temporaire orphelin
+  est supprimé à la reprise (`complete_switch`, avant les cas ci-dessous). `systems/.retired/` et `systems/`
+  synchronisés **avant** `F`.
+- **Existence par nom exact** : lecture du dossier et comparaison des noms octet par octet (sous Windows et macOS,
+  `Path::exists` répond aussi pour une autre casse) ; un nom qui ne diffère que par la casse compte comme une place
+  prise, jamais comme « déjà fait ».
+- **Cas** : seule la destination existe ⇒ déjà fait ; source et destination présentes et **identiques** (même fichier
+  physique, ou même contenu octet pour octet — une définition fait au plus 64 Kio) ⇒ déplacement interrompu, la
+  source est retirée ; présentes et différentes ⇒ échec (« place prise ») ; à l'aller, **définition active absente
+  traitée comme déjà retirée** (noté au journal de l'application) ; à l'annulation, aucune des deux ⇒ échec
+  (« fichier retiré absent »).
+
+- **Pendant tout journal de bascule ouvert** (relecture du 2026-11-25, mineur 1 ; PV3, majeur 2) — du premier `B` de
+  l'aller jusqu'à son `E`, ou son `F` s'il est dû (aller en cours, fin due), et de même pour l'annulation : les
+  Réglages **refusent** de créer, modifier, supprimer ou restaurer la définition `<id perso>` (« une bascule est en
+  cours » / « à terminer ») ; c'est ce qui rend sûre la règle « déjà fait » de l'étape (2). Un journal clos sans fin
+  due (bascule incomplète, faite, annulée) ne bloque plus rien. Test en PB3 (refus de l'API) et PU4 (interface).
+- **Seule exception : échec « place prise »** (PV3, majeur 1) — à l'aller, définition active et fichier retiré présents
+  et différents ; à l'annulation, `systems/<id perso>.toml` présent et différent du retiré. Le bandeau propose alors
+  « Retirer ce système et terminer la bascule » : la définition active est retirée par `retire_custom(…,
+  Retirement::Removed, maintenant)` (déplacée dans `.retired/`, jamais supprimée, restaurable plus tard), puis
+  `complete_switch` est relancé aussitôt. L'interface reconnaît ce cas en relisant `systems/` (noms exacts), pas d'après
+  le texte de l'erreur. Test PU4 : fin due en échec « place prise » à l'aller et à l'annulation, retrait proposé puis
+  fin réussie, définition retirée visible dans « Systèmes retirés ».
+- **Core de l'utilisateur à la fin d'aller** (PV3, majeur 2) : l'interface le lit dans la définition active, sinon dans
+  `.retired/<nom-retiré>` (copie entière de la définition, nom noté dans l'en-tête) ; si aucune des deux n'existe
+  (définition active absente), l'étape (b) d'ADR 0025 §10 est sautée, notée au journal de l'application, et les
+  cores officiels s'appliquent. Aucune question, même résultat à chaque reprise.
+- **Échec de la fin** (mineur 2) : le journal reste « fin due » ; rangement, annulation et pose de `I` sont refusés
+  (`SwitchPending`) et la fin est retentée à chaque démarrage. C'est la **seule exception** à « jamais de jeu
+  rattaché à un système absent du catalogue » (ADR 0025 §10) : après l'étape (1), les lignes portent l'id
+  officiel encore masqué (aller) ou l'id perso pas encore restauré (annulation). Le scan ne les touche pas (ADR 0025
+  §13), ils ne sont pas affichés ; la bibliothèque et les Réglages montrent un bandeau « Bascule de (système) à
+  terminer » avec la raison et l'action (« `systems/<id>.toml` existe déjà » avec le bouton « Retirer ce système et
+  terminer la bascule », exception ci-dessus ; « fichier retiré introuvable : remettez `systems/.retired/<nom>` puis
+  relancez »), et rien n'est jamais supprimé.
+- **Annulation d'une bascule faite** (PV3, majeur 2) : après un `F` d'aller, `check_switch_undo` refuse aussi, avant
+  toute action (`SwitchNotReversible`), si `.retired/<nom-retiré>` est absent (nom exact) — « fichier retiré
+  introuvable : remettez `systems/.retired/<nom>` » —, en plus de `systems/<id perso>.toml` présent ; sinon
+  l'annulation finirait en fin due bloquée.
+- **Bascule incomplète et scan** : une ligne connue (même chemin) garde son `game.system` tant que ce système est
+  dans l'instantané, même rangée sous `roms/<id officiel>/` alors que l'officiel est masqué ; le scan ne réattribue
+  pas son système d'après le dossier (test PB3 : bascule incomplète, puis scan, jeux déplacés toujours sous le
+  système personnalisé).
+- **Annulation partielle** (annulation interrompue, devenue définitive, §4.8 RV1 5 ; fichier changé entre le
+  contrôle et l'exécution) : pas de `F` ; la définition reste retirée, l'officiel actif ; les jeux revenus restent
+  rattachés à l'officiel depuis `roms/<id perso>/`, dossier réservé au rangement (ADR 0025 §12) : **le rapport et
+  le guide d'essai disent de les déplacer à la main vers `roms/<id officiel>/`, puis de relancer le scan**
+  (réponse R1 a)).
+- **Retour à une 7.x** : un binaire 7.x refuse en entier un journal version 2 (en-tête exact `emu-rust tidy 1`
+  attendu) et refuse alors tout rangement et toute annulation **tant que ce fichier est présent** dans
+  `<data>/rangement/`, même si un journal version 1 plus récent existe ; il ne le purge jamais. Revenir à une 7.x
+  après une bascule demande donc de mettre ce fichier de côté (écrit aussi dans `docs/guide-essai-8.0.md`, lot
+  PU3). Sans effet pratique en 8.0 (aucune bascule réelle) ; la base v8 est de toute façon refusée par une 7.x.
+- **Tests (PB3)** : ceux du design 8.0 §2.6 (troncature à chaque octet, en-tête compris ; annulation entre deux
+  unités puis coupure ; unité changée depuis l'aperçu ; ligne d'une racine externe débranchée ; définition recréée
+  avant l'annulation ; échec de `complete_switch` ; panne entre chaque étape de `complete_switch` ; journal
+  version 1 lu à l'identique), plus : définition active absente à l'aller (traitée comme retirée) ; création ou
+  suppression de la définition refusée pendant une fin due ; `I` refusé sur une fin due ; après la relecture PV3 :
+  panne entre le lien et le retrait de la source, puis entre le déplacement et `F` (reprise ⇒ déplacement fini,
+  `F`) ; `systems/.retired/` absent ; nom de casse différente (place prise, jamais « déjà fait ») ;
+  `check_switch_undo` sans fichier retiré ; `SwitchPending` sous une autre racine, `pending_switch` et
+  `complete_switch` d'un journal d'une autre racine ; `mark_tidy_identities` après `F` ; troncature juste avant
+  le premier `B` (bascule incomplète vide) ; `P` et `Q` non canoniques, `P` avec le core `-`, profil `-`
+  (`%2D`), profil et préférence vides écrits `-` ; nom suffixé `-<k>` refusé ; scan après bascule incomplète.
 
 ## Contexte
 
@@ -401,7 +599,8 @@ n'a encore été écrit chez un utilisateur.
 - Le rangement écrit dans le dossier de l'utilisateur : première fonction d'emu-rust qui déplace ses ROMs. Les
   garde-fous (aperçu, jamais d'écrasement ni de suppression de données, journal écrit avant d'agir, unité
   indivisible, annulation, reprise) sont le contrat ; `reviewer` relit le **format du journal avant** que
-  l'exécution soit écrite, puis `emu-library/src/tidy/` comme du code sensible.
+  l'exécution soit écrite, puis `emu-library/src/tidy/` comme du code sensible. Même règle pour le journal
+  version 2 de la 8.0 : PV3 avant PB3, puis PV4 (amendement du 2026-11-27).
 - Limites assumées : pas de rangement vers un autre volume ni sur un système de fichiers sans liens physiques
   (unité bloquée, à ranger à la main — à revoir si l'essai le demande) ; fichier en lecture seule ou dossier
   non inscriptible : unité laissée, jamais d'attribut ni de droit modifié (§4.8 RV3) ; `roms/<id>` lié ou monté ailleurs :
