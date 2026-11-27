@@ -355,6 +355,9 @@ fn copy_dir_inside_scratch_is_accepted_for_a_probe_and_for_a_run() {
     });
 }
 
+// Linux only, like emu-libretro/tests/reload_mock.rs: the mock core is linked with `-z nodelete`, a GNU ld option
+// that the macOS linker refuses.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_private_core_copy_lands_in_the_accepted_copy_dir() {
     // A library that stays mapped after unloading (nodelete) is reloaded from a private copy: the first dry run
