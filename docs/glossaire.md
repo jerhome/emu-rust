@@ -58,3 +58,12 @@ perso sont dans `../agents-home/docs/glossaire.md`.
 | Dry run (essai à blanc) | Pour une machine ajoutée (8.0) : un lancement caché et court du jeu, avant le premier vrai lancement, pour vérifier que le core ne plante pas. |
 | Haute résolution (HD) | Le rendu PlayStation agrandi (×2 à ×8) par swanstation en rendu matériel (9.0). |
 | Mesurer 60 s | La mesure de fluidité du menu en jeu (9.0) : images par seconde et saccades, dans un rapport copiable. |
+
+## Archives (8.1)
+
+| Terme | Sens |
+| --- | --- |
+| Copie de travail | La copie qu'emu-rust extrait d'une archive (`.zip`, `.7z`) au lancement et garde d'une partie à l'autre : le core y écrit (disquettes, sauvegardes) sans jamais toucher à l'archive. |
+| Cache d'extraction | La place disque réservée aux copies de travail (2 Go par défaut, réglable) ; les plus anciennes sans écritures sont retirées quand il faut de la place. |
+| Archive solide | Une archive `.7z` compressée d'un seul bloc : pour en sortir un fichier il faut décoder tout ce qui le précède, d'où une extraction lente la première fois. |
+| CD archivé | Un CD (`.cue` et ses pistes, `.iso`) rangé dans un `.zip` ou un `.7z` ; refusé au lancement jusqu'à la 8.1.1, qui proposera de l'extraire. |
