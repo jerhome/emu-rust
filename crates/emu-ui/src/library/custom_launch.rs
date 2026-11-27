@@ -568,28 +568,12 @@ mod tests {
     use std::path::PathBuf;
 
     use emu_assets::cores::CoreId;
-    use emu_library::{InputDefault, SystemInfo, SystemKind, SystemOrigin};
+    use emu_library::{SystemInfo, SystemOrigin};
 
     use super::*;
 
     fn system() -> SystemInfo {
-        SystemInfo {
-            id: "acme".to_owned(),
-            name: "Acme".to_owned(),
-            extensions: vec!["acm".to_owned()],
-            header: None,
-            database: String::new(),
-            screenscraper: None,
-            igdb: None,
-            kind: SystemKind::Console,
-            dats: Vec::new(),
-            folder_extensions: Vec::new(),
-            folder_games: false,
-            default_input: InputDefault::Keyboard,
-            disc: false,
-            group_discs: true,
-            origin: SystemOrigin::Custom,
-        }
+        SystemInfo::synthetic("acme", "Acme", "acm", SystemOrigin::Custom)
     }
 
     fn request(content: GameContent, core_path: PathBuf) -> LaunchRequest {

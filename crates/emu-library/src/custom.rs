@@ -398,8 +398,7 @@ pub(crate) fn build_system(draft: &CustomSystemDraft) -> SystemInfo {
         folder_extensions: extensions.clone(),
         extensions,
         header: None,
-        // Empty while the field is public (design 8.0 A10): `libretro_name()` is then `None`.
-        database: draft.database.clone().unwrap_or_default(),
+        database: draft.database.clone(),
         screenscraper: draft.screenscraper,
         igdb: draft.igdb,
         kind: SystemKind::Console,

@@ -3,7 +3,7 @@
 /// Ends the process at once with `code`, skipping `atexit` handlers, C++ static destructors,
 /// Rust destructors and (Windows) `DLL_PROCESS_DETACH` of the loaded libraries.
 ///
-/// Use it only in the dry-run child (watchdog or final exit), where a stuck core must not be able to
+/// Use it only in the dry-run child (watchdog only), where a stuck core must not be able to
 /// block the exit. Everywhere else prefer `std::process::exit`: nothing is flushed here, so
 /// buffered output and files not yet synced are lost.
 pub fn exit_immediately(code: i32) -> ! {

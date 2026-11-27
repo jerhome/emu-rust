@@ -266,23 +266,7 @@ mod steps_tests {
     use super::*;
 
     fn system(origin: SystemOrigin) -> SystemInfo {
-        SystemInfo {
-            id: "acme".to_owned(),
-            name: "Acme".to_owned(),
-            extensions: vec!["acm".to_owned()],
-            header: None,
-            database: String::new(),
-            screenscraper: None,
-            igdb: None,
-            kind: emu_library::SystemKind::Console,
-            dats: Vec::new(),
-            folder_extensions: Vec::new(),
-            folder_games: false,
-            default_input: emu_library::InputDefault::Keyboard,
-            disc: false,
-            group_discs: true,
-            origin,
-        }
+        SystemInfo::synthetic("acme", "Acme", "acm", origin)
     }
 
     fn core() -> CoreId {

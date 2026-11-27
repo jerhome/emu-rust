@@ -745,23 +745,7 @@ mod tests {
     }
 
     fn system_of(id: &str, origin: emu_library::SystemOrigin) -> emu_library::SystemInfo {
-        emu_library::SystemInfo {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            extensions: vec!["x".to_owned()],
-            header: None,
-            database: String::new(),
-            screenscraper: None,
-            igdb: None,
-            kind: emu_library::SystemKind::Console,
-            dats: Vec::new(),
-            folder_extensions: Vec::new(),
-            folder_games: false,
-            default_input: emu_library::InputDefault::Keyboard,
-            disc: false,
-            group_discs: true,
-            origin,
-        }
+        emu_library::SystemInfo::synthetic(id, id, "x", origin)
     }
 
     #[test]

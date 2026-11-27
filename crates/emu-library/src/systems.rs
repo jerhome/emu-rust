@@ -84,7 +84,8 @@ pub struct SystemInfo {
     pub header: Option<HeaderRule>,
     /// libretro database name (`Nintendo - Game Boy`): DAT file name, libretro-thumbnails folder, and the system key
     /// of `emu_assets::cores::choose_core` (ADR 0013 owns the cores of each system).
-    pub database: String,
+    /// `None` for a custom system without one. Read through [`SystemInfo::libretro_name`] (design 8.0 A10).
+    pub(crate) database: Option<String>,
     pub screenscraper: Option<u32>,
     pub igdb: Option<u32>,
     pub kind: SystemKind,
@@ -288,7 +289,7 @@ pub(crate) fn parse_catalog(text: &str) -> Result<Vec<SystemInfo>, String> {
                 RawHeader::Ines => HeaderRule::INes,
                 RawHeader::SnesCopier => HeaderRule::SnesCopier,
             }),
-            database: s.database,
+            database: Some(s.database),
             screenscraper: s.screenscraper,
             igdb: s.igdb,
             kind: match s.kind {
@@ -324,10 +325,31 @@ impl SystemInfo {
         self.origin == SystemOrigin::Custom
     }
 
-    /// libretro name: DAT file, thumbnails folder. `None` for a custom system without one (empty `database`
-    /// while the field is public, design 8.0 A10).
+    /// libretro name: DAT file, thumbnails folder. `None` for a custom system without one.
     pub fn libretro_name(&self) -> Option<&str> {
-        Some(self.database.as_str()).filter(|d| !d.is_empty())
+        self.database.as_deref()
+    }
+
+    /// A custom-looking system without libretro name, for the tests of other crates (one extension, no DAT).
+    #[doc(hidden)]
+    pub fn synthetic(id: &str, name: &str, extension: &str, origin: SystemOrigin) -> Self {
+        SystemInfo {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            extensions: vec![extension.to_owned()],
+            header: None,
+            database: None,
+            screenscraper: None,
+            igdb: None,
+            kind: SystemKind::Console,
+            dats: Vec::new(),
+            folder_extensions: Vec::new(),
+            folder_games: false,
+            default_input: InputDefault::Keyboard,
+            disc: false,
+            group_discs: true,
+            origin,
+        }
     }
 
     /// Key of `CorePreferences`: the libretro name, else the id (ids never contain « - »).
@@ -443,7 +465,7 @@ mod tests {
             (st.kind, st.dats.as_slice()),
             (SystemKind::Computer, &[DatSource::Tosec][..])
         );
-        assert_eq!(st.database, "Atari - ST");
+        assert_eq!(st.libretro_name(), Some("Atari - ST"));
         assert_eq!(st.extensions, ["st", "msa", "dim", "stx", "ipf", "m3u"]);
         assert_eq!(
             (st.dats[0].id(), st.dats[0].repo_dir()),
@@ -480,7 +502,7 @@ mod tests {
     fn amiga_has_two_dats_and_folder_only_extensions() {
         let amiga = system("amiga").unwrap();
         assert_eq!(amiga.kind, SystemKind::Computer);
-        assert_eq!(amiga.database, "Commodore - Amiga");
+        assert_eq!(amiga.libretro_name(), Some("Commodore - Amiga"));
         assert_eq!(amiga.dats, [DatSource::Tosec, DatSource::Libretro]);
         assert_eq!(amiga.folder_extensions, ["hdf", "hdz", "lha"]);
         assert!(amiga.is_folder_only("lha") && !amiga.is_folder_only("adf"));
@@ -512,7 +534,7 @@ mod tests {
         let dos = system("dos").unwrap();
         assert_eq!((dos.kind, dos.folder_games), (SystemKind::Computer, true));
         assert_eq!(
-            (dos.database.as_str(), dos.dats.as_slice()),
+            (dos.libretro_name().unwrap(), dos.dats.as_slice()),
             ("DOS", &[DatSource::Libretro][..])
         );
         assert!(
@@ -606,11 +628,11 @@ mod tests {
     fn cpc_and_c64_are_joystick_computers_and_the_others_keyboard() {
         let cpc = system("cpc").unwrap();
         assert_eq!(cpc.kind, SystemKind::Computer);
-        assert_eq!(cpc.database, "Amstrad - CPC");
+        assert_eq!(cpc.libretro_name(), Some("Amstrad - CPC"));
         assert_eq!(cpc.dats, [DatSource::Libretro, DatSource::Tosec]);
         assert_eq!(cpc.folder_extensions, ["sna", "voc", "tap"]);
         let c64 = system("c64").unwrap();
-        assert_eq!(c64.database, "Commodore - 64");
+        assert_eq!(c64.libretro_name(), Some("Commodore - 64"));
         assert_eq!(c64.dats, [DatSource::NoIntro]);
         assert!(c64.folder_extensions.is_empty());
         for s in systems() {
@@ -634,7 +656,10 @@ mod tests {
 
     #[test]
     fn lookups() {
-        assert_eq!(system("gb").unwrap().database, "Nintendo - Game Boy");
+        assert_eq!(
+            system("gb").unwrap().libretro_name(),
+            Some("Nintendo - Game Boy")
+        );
         assert_eq!(system("nes").unwrap().header, Some(HeaderRule::INes));
         assert_eq!(system("snes").unwrap().header, Some(HeaderRule::SnesCopier));
         assert_eq!(system("megadrive").unwrap().header, None);
@@ -708,7 +733,11 @@ mod tests {
     fn v6_systems_gba_32x_and_the_mega_cd_disc_system() {
         let gba = system("gba").unwrap();
         assert_eq!(
-            (gba.database.as_str(), gba.extensions.as_slice(), gba.kind),
+            (
+                gba.libretro_name().unwrap(),
+                gba.extensions.as_slice(),
+                gba.kind
+            ),
             (
                 "Nintendo - Game Boy Advance",
                 &["gba".to_owned()][..],
@@ -717,11 +746,11 @@ mod tests {
         );
         assert_eq!((gba.screenscraper, gba.igdb), (Some(12), Some(24)));
         let s32x = system("32x").unwrap();
-        assert_eq!(s32x.database, "Sega - 32X");
+        assert_eq!(s32x.libretro_name(), Some("Sega - 32X"));
         assert_eq!(s32x.extensions, ["32x"]);
         assert_eq!((s32x.screenscraper, s32x.igdb), (Some(19), Some(30)));
         let cd = system("megacd").unwrap();
-        assert_eq!(cd.database, "Sega - Mega-CD - Sega CD");
+        assert_eq!(cd.libretro_name(), Some("Sega - Mega-CD - Sega CD"));
         assert_eq!(cd.extensions, ["cue", "chd", "iso", "m3u"]);
         assert_eq!(cd.dats, [DatSource::Redump]);
         assert!(cd.disc && !gba.disc && !s32x.disc);
@@ -743,7 +772,7 @@ mod tests {
     fn v7_playstation_and_3do() {
         let psx = system("psx").unwrap();
         assert_eq!(
-            (psx.name.as_str(), psx.database.as_str(), psx.kind),
+            (psx.name.as_str(), psx.libretro_name().unwrap(), psx.kind),
             ("PlayStation", "Sony - PlayStation", SystemKind::Console)
         );
         assert_eq!(psx.extensions, ["cue", "chd", "iso", "pbp", "m3u"]);
@@ -753,7 +782,7 @@ mod tests {
         assert_eq!((psx.screenscraper, psx.igdb), (Some(57), Some(7)));
         let tdo = system("3do").unwrap();
         assert_eq!(
-            (tdo.name.as_str(), tdo.database.as_str(), tdo.kind),
+            (tdo.name.as_str(), tdo.libretro_name().unwrap(), tdo.kind),
             ("3DO", "The 3DO Company - 3DO", SystemKind::Console)
         );
         assert_eq!(tdo.extensions, ["cue", "chd", "iso"]);
